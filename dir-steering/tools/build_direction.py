@@ -129,7 +129,7 @@ def main() -> None:
                     help="desired/target prompts, one per line")
     ap.add_argument("--bad-file", required=True,
                     help="contrast/control prompts, one per line")
-    ap.add_argument("--out", default="dir-stearing/out/direction.json",
+    ap.add_argument("--out", default="dir-steering/out/direction.json",
                     help="metadata JSON path; .f32 is written next to it")
     ap.add_argument("--ctx", type=int, default=512)
     ap.add_argument("--system", default="You are a helpful assistant.")

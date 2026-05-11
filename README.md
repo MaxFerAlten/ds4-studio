@@ -3,8 +3,8 @@
 `ds4.c` is a small native inference engine for DeepSeek V4 Flash. It is
 intentionally narrow: not a generic GGUF runner, not a wrapper around another
 runtime, and not a framework. The main path is a DeepSeek V4 Flash-specific
-Metal graph executor with DS4-specific loading, prompt rendering, KV state, and
-server API glue.
+Metal and CUDA graph executor with DS4-specific loading, prompt rendering,
+KV state, and server API glue.
 
 This project would not exist without **llama.cpp and GGML**, make sure to read
 the acknowledgements section, a big thank you to Georgi Gerganov and all the
@@ -40,7 +40,7 @@ We are thankful and indebted to [`llama.cpp`](https://github.com/ggml-org/llama.
 and its contributors. Their implementation, kernels, tests, and design choices were
 an essential reference while building this DeepSeek V4 Flash-specific inference path.
 Some source-level pieces are retained or adapted here under the MIT license: GGUF
-quant layouts and tables, CPU quant/dot logic, and certain Metal kernels. For this
+quant layouts and tables, CPU quant/dot logic, and certain kernels. For this
 reason, and because we are genuinely grateful, we keep the GGML authors copyright
 notice in our `LICENSE` file.
 
@@ -111,6 +111,7 @@ Q4 requires the larger-memory machine class, so M3 Max Q4 numbers are `N/A`.
 | Mac Studio M3 Ultra, 512 GB | q2 | 11709 tokens | 468.03 t/s | 27.39 t/s |
 | Mac Studio M3 Ultra, 512 GB | q4 | short | 78.95 t/s | 35.50 t/s |
 | Mac Studio M3 Ultra, 512 GB | q4 | 12018 tokens | 448.82 t/s | 26.62 t/s |
+| DGX Spark GB10, 128 GB | q2 | 7047 tokens | 343.81 t/s | 13.75 t/s |
 
 ## CLI
 
@@ -584,6 +585,17 @@ Do not treat the CPU path as the production target. The CLI and `ds4-server`
 support the CPU backend for reference/debug use and share the same KV session
 and snapshot format as Metal and CUDA, but normal inference should use Metal or
 CUDA.
+
+## Steering
+
+This project supports steering with single-vector activation directions; see the
+`dir-steering` directory for more information. This follows the core idea of the
+[Refusal in Language Models Is Mediated by a Single Direction](https://arxiv.org/abs/2406.11717)
+paper. You can use it to make the model more or less verbose, less likely to
+answer programming questions if it is a chatbot for your car rental web site,
+and so forth, much faster than fine-tuning.
+This is also useful for cybersecurity researchers who want to reduce a model's
+willingness to provide dual-use or offensive security guidance.
 
 ## Test Vectors
 
