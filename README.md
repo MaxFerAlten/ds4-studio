@@ -68,21 +68,25 @@ projections, routing) are left untouched to guarantee quality.
 Download one main model:
 
 ```sh
-./download_model.sh q2   # 128 GB RAM machines
-./download_model.sh q4   # >= 256 GB RAM machines
+./download_model.sh q2           # 128 GB RAM machines
+./download_model.sh q2-imatrix   # 128 GB RAM machines, imatrix-tuned q2
+./download_model.sh q4           # >= 256 GB RAM machines
 ```
 
 The script downloads from `https://huggingface.co/antirez/deepseek-v4-gguf`,
 stores files under `./gguf/`, resumes partial downloads with `curl -C -`, and
-updates `./ds4flash.gguf` to point at the selected q2/q4 model. Authentication
-is optional for public downloads, but `--token TOKEN`, `HF_TOKEN`, or the local
-Hugging Face token cache are used when present.
+updates `./ds4flash.gguf` to point at the selected q2/q2-imatrix/q4 model.
+The plain q2 XXS weights are produced with the weights importance vector only,
+without an imatrix. The q2-imatrix variant uses an antirez-made recipe for
+imatrix generation that shows small error versus q4 quantization on logits.
+Authentication is optional for public downloads, but `--token TOKEN`,
+`HF_TOKEN`, or the local Hugging Face token cache are used when present.
 
 `./download_model.sh mtp` fetches the optional speculative decoding support
-GGUF. It can be used with both q2 and q4, but must be enabled explicitly with
-`--mtp`. The current MTP/speculative decoding path is still experimental: it is
-correctness-gated and currently provides at most a slight speedup, not a
-meaningful generation-speed win.
+GGUF. It can be used with q2, q2-imatrix, and q4, but must be enabled
+explicitly with `--mtp`. The current MTP/speculative decoding path is still
+experimental: it is correctness-gated and currently provides at most a slight
+speedup, not a meaningful generation-speed win.
 
 Then build:
 
