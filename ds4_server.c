@@ -6660,14 +6660,18 @@ static void server_progress_cb(void *ud, const char *event, int current, int tot
         if (p->srv && current > p->cached_tokens) kv_cache_maybe_store_continued(p->srv);
         return;
     }
-    int display_total = p->prompt_tokens > total ? p->prompt_tokens : total;
-    double pct = display_total > 0 ? 100.0 * (double)current / (double)display_total : 100.0;
-    if (pct > 100.0) pct = 100.0;
-    int processed = current - p->cached_tokens;
-    if (processed < 0) processed = current;
-    int suffix = p->prompt_tokens - p->cached_tokens;
-    if (suffix > 0 && processed > suffix) processed = suffix;
-    double avg_tps = elapsed > 0.0 ? (double)processed / elapsed : 0.0;
+    int display_start = p->cached_tokens;
+    if (display_start < 0 || display_start > p->prompt_tokens) display_start = 0;
+    int display_total = p->prompt_tokens - display_start;
+    if (display_total <= 0) {
+        display_start = 0;
+        display_total = p->prompt_tokens > total ? p->prompt_tokens : total;
+    }
+    int display_current = current - display_start;
+    if (display_current < 0) display_current = 0;
+    if (display_current > display_total) display_current = display_total;
+    double pct = display_total > 0 ? 100.0 * (double)display_current / (double)display_total : 100.0;
+    double avg_tps = elapsed > 0.0 ? (double)display_current / elapsed : 0.0;
     int interval_tokens = p->seen ? current - p->last_current : 0;
     if (interval_tokens < 0) interval_tokens = 0;
     double interval_s = p->seen ? now - p->last_t : 0.0;
@@ -6683,7 +6687,7 @@ static void server_progress_cb(void *ud, const char *event, int current, int tot
                p->ctx,
                flags[0] ? " " : "",
                flags,
-               current,
+               display_current,
                display_total,
                pct,
                chunk_tps,
