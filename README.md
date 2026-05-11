@@ -602,6 +602,14 @@ The default graph backend is Metal on macOS and CUDA on Linux CUDA builds:
 ./ds4 -p "Hello" --cuda
 ```
 
+CUDA builds default to `CUDA_ARCH=native`, so `nvcc` targets the visible GPU.
+Set `CUDA_ARCH` explicitly when cross-building or when you need a known target:
+
+```sh
+make CUDA_ARCH=sm_120
+make CUDA_ARCH=        # old nvcc default target behavior
+```
+
 There is also a CPU reference/debug path:
 
 ```sh
