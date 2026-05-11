@@ -27,7 +27,7 @@ Usage:
 
 Targets:
   q2   2-bit routed experts, about 81 GB on disk.
-       Main model for 128 GB RAM machines. The IQ2_XXS weights are produced
+       Main model for 96 and 128 GB RAM machines. The IQ2_XXS weights are produced
        with the weights importance vector only, without an imatrix.
 
   q2-imatrix
