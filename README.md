@@ -1,6 +1,6 @@
-# ds4.c
+# DwarfStar 4
 
-`ds4.c` is a small native inference engine for DeepSeek V4 Flash. It is
+DrawfStar 4 is a small native inference engine for DeepSeek V4 Flash. It is
 intentionally narrow: not a generic GGUF runner, not a wrapper around another
 runtime, and not a framework. The main path is a DeepSeek V4 Flash-specific
 Metal and CUDA graph executor with DS4-specific loading, prompt rendering,
