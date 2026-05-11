@@ -30,7 +30,7 @@ endif
 
 .PHONY: all clean test cpu
 
-all: ds4 ds4-server
+all: ds4 ds4-server ds4-bench
 
 ifeq ($(UNAME_S),Darwin)
 ds4: ds4_cli.o linenoise.o $(CORE_OBJS)
@@ -39,9 +39,13 @@ ds4: ds4_cli.o linenoise.o $(CORE_OBJS)
 ds4-server: ds4_server.o rax.o $(CORE_OBJS)
 	$(CC) $(CFLAGS) -o $@ ds4_server.o rax.o $(CORE_OBJS) $(METAL_LDLIBS)
 
-cpu: ds4_cli_cpu.o ds4_server_cpu.o linenoise.o rax.o $(CPU_CORE_OBJS)
+ds4-bench: ds4_bench.o $(CORE_OBJS)
+	$(CC) $(CFLAGS) -o $@ ds4_bench.o $(CORE_OBJS) $(METAL_LDLIBS)
+
+cpu: ds4_cli_cpu.o ds4_server_cpu.o ds4_bench_cpu.o linenoise.o rax.o $(CPU_CORE_OBJS)
 	$(CC) $(CFLAGS) -o ds4 ds4_cli_cpu.o linenoise.o $(CPU_CORE_OBJS) $(LDLIBS)
 	$(CC) $(CFLAGS) -o ds4-server ds4_server_cpu.o rax.o $(CPU_CORE_OBJS) $(LDLIBS)
+	$(CC) $(CFLAGS) -o ds4-bench ds4_bench_cpu.o $(CPU_CORE_OBJS) $(LDLIBS)
 else
 ds4: ds4_cli.o linenoise.o $(CORE_OBJS)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
@@ -49,9 +53,13 @@ ds4: ds4_cli.o linenoise.o $(CORE_OBJS)
 ds4-server: ds4_server.o rax.o $(CORE_OBJS)
 	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
 
-cpu: ds4_cli_cpu.o ds4_server_cpu.o linenoise.o rax.o $(CPU_CORE_OBJS)
+ds4-bench: ds4_bench.o $(CORE_OBJS)
+	$(NVCC) $(NVCCFLAGS) -o $@ $^ $(CUDA_LDLIBS)
+
+cpu: ds4_cli_cpu.o ds4_server_cpu.o ds4_bench_cpu.o linenoise.o rax.o $(CPU_CORE_OBJS)
 	$(CC) $(CFLAGS) -o ds4 ds4_cli_cpu.o linenoise.o $(CPU_CORE_OBJS) $(LDLIBS)
 	$(CC) $(CFLAGS) -o ds4-server ds4_server_cpu.o rax.o $(CPU_CORE_OBJS) $(LDLIBS)
+	$(CC) $(CFLAGS) -o ds4-bench ds4_bench_cpu.o $(CPU_CORE_OBJS) $(LDLIBS)
 endif
 
 ds4.o: ds4.c ds4.h ds4_gpu.h
@@ -62,6 +70,9 @@ ds4_cli.o: ds4_cli.c ds4.h linenoise.h
 
 ds4_server.o: ds4_server.c ds4.h rax.h
 	$(CC) $(CFLAGS) -c -o $@ ds4_server.c
+
+ds4_bench.o: ds4_bench.c ds4.h
+	$(CC) $(CFLAGS) -c -o $@ ds4_bench.c
 
 ds4_test.o: tests/ds4_test.c ds4_server.c ds4.h rax.h
 	$(CC) $(CFLAGS) -Wno-unused-function -c -o $@ tests/ds4_test.c
@@ -81,6 +92,9 @@ ds4_cli_cpu.o: ds4_cli.c ds4.h linenoise.h
 ds4_server_cpu.o: ds4_server.c ds4.h rax.h
 	$(CC) $(CFLAGS) -DDS4_NO_GPU -c -o $@ ds4_server.c
 
+ds4_bench_cpu.o: ds4_bench.c ds4.h
+	$(CC) $(CFLAGS) -DDS4_NO_GPU -c -o $@ ds4_bench.c
+
 ds4_metal.o: ds4_metal.m ds4_gpu.h $(METAL_SRCS)
 	$(CC) $(OBJCFLAGS) -c -o $@ ds4_metal.m
 
@@ -98,4 +112,4 @@ test: ds4_test
 	./ds4_test
 
 clean:
-	rm -f ds4 ds4-server ds4_cpu ds4_native ds4_server_test ds4_test *.o
+	rm -f ds4 ds4-server ds4-bench ds4_cpu ds4_native ds4_server_test ds4_test *.o
