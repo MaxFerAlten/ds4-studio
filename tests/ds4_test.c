@@ -19,7 +19,11 @@ static ds4_engine *test_get_engine(bool quality) {
 
     ds4_engine_options opt = {
         .model_path = test_model_path(),
+#ifdef __APPLE__
         .backend = DS4_BACKEND_METAL,
+#else
+        .backend = DS4_BACKEND_CUDA,
+#endif
         .quality = quality,
     };
     TEST_ASSERT(ds4_engine_open(slot, &opt) == 0);
