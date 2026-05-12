@@ -359,6 +359,10 @@ static uint64_t cuda_q8_f16_cache_reserve_bytes(uint64_t total_bytes) {
     const uint64_t reserve = cuda_parse_mib_env("DS4_CUDA_Q8_F16_CACHE_RESERVE_MB", &present);
     if (present) return reserve;
 
+    if (total_bytes >= 112ull * 1024ull * 1024ull * 1024ull) {
+        return 512ull * 1048576ull;
+    }
+
     /* The expanded Q8->F16 cache is only an acceleration path.  Keep enough
      * device memory free for cuBLAS workspaces, transient graph buffers, and
      * driver bookkeeping instead of letting optional cached weights consume the
