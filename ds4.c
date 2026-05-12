@@ -16823,10 +16823,11 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
 #ifdef DS4_NO_GPU
     (void)s;
     (void)prompt;
-    snprintf(err, errlen, "Metal support is not compiled in");
+    snprintf(err, errlen, "GPU support is not compiled in");
     return 1;
 #else
     ds4_engine *e = s->engine;
+    const char *backend_name = ds4_backend_name(e->backend);
 
     if (s->checkpoint_valid &&
         prompt->len >= s->checkpoint.len &&
@@ -16855,7 +16856,7 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
                                                         progress_fn,
                                                         progress_fn ? &progress : NULL);
             if (!ok) {
-                snprintf(err, errlen, "Metal resumed prefill failed while extending checkpoint");
+                snprintf(err, errlen, "%s resumed prefill failed while extending checkpoint", backend_name);
                 s->checkpoint_valid = false;
                 return 1;
             }
@@ -16870,7 +16871,7 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
                                                 (uint32_t)s->checkpoint.len,
                                                 s->logits))
             {
-                snprintf(err, errlen, "Metal decode failed while extending checkpoint");
+                snprintf(err, errlen, "%s decode failed while extending checkpoint", backend_name);
                 s->checkpoint_valid = false;
                 return 1;
             }
@@ -16897,7 +16898,7 @@ int ds4_session_sync(ds4_session *s, const ds4_tokens *prompt, char *err, size_t
                                          prompt, prompt->len, s->logits, false);
     }
     if (!ok) {
-        snprintf(err, errlen, "Metal prefill failed");
+        snprintf(err, errlen, "%s prefill failed", backend_name);
         s->checkpoint_valid = false;
         return 1;
     }
@@ -17062,7 +17063,7 @@ static int ds4_session_eval_internal(ds4_session *s, int token, bool probe_mtp,
     (void)s;
     (void)token;
     (void)probe_mtp;
-    snprintf(err, errlen, "Metal support is not compiled in");
+    snprintf(err, errlen, "GPU support is not compiled in");
     return 1;
 #else
     ds4_engine *e = s->engine;
@@ -17088,7 +17089,7 @@ static int ds4_session_eval_internal(ds4_session *s, int token, bool probe_mtp,
                                         (uint32_t)s->checkpoint.len,
                                         s->logits))
     {
-        snprintf(err, errlen, "Metal decode failed");
+        snprintf(err, errlen, "%s decode failed", ds4_backend_name(e->backend));
         s->checkpoint_valid = false;
         return 1;
     }
@@ -17140,7 +17141,7 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
 #ifdef DS4_NO_GPU
     (void)s; (void)first_token; (void)max_tokens; (void)eos_token;
     (void)accepted; (void)accepted_cap;
-    snprintf(err, errlen, "Metal support is not compiled in");
+    snprintf(err, errlen, "GPU support is not compiled in");
     return -1;
 #else
     if (!s || max_tokens <= 0 || accepted_cap <= 0) return 0;
@@ -17265,7 +17266,7 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
                                                      row_logits);
             if (!ok) {
                 free(row_logits);
-                snprintf(err, errlen, "Metal decode failed");
+                snprintf(err, errlen, "%s decode failed", ds4_backend_name(e->backend));
                 s->checkpoint_valid = false;
                 return -1;
             }
@@ -17668,7 +17669,7 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
                                                 &target_top,
                                                 NULL))
         {
-            snprintf(err, errlen, "Metal decode failed");
+            snprintf(err, errlen, "%s decode failed", ds4_backend_name(e->backend));
             s->checkpoint_valid = false;
             return -1;
         }
@@ -17684,7 +17685,7 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
                                   s->logits,
                                   (uint64_t)DS4_N_VOCAB * sizeof(s->logits[0])) == 0)
         {
-            snprintf(err, errlen, "Metal logits readback failed");
+            snprintf(err, errlen, "%s logits readback failed", ds4_backend_name(e->backend));
             s->checkpoint_valid = false;
             return -1;
         }
