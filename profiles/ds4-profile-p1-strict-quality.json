@@ -1,0 +1,61 @@
+{
+  "profile": "P1_STRICT_ANTI_HALLUCINATION",
+  "description": "Profilo deterministico per anti-allucinazione, calcoli, formule, estrazione fattuale e benchmark qualità.",
+  "server": {
+    "binary": "./ds4-server",
+    "model": "ds4flash.gguf",
+    "mtp_model": "",
+    "mtp_draft": 1,
+    "mtp_margin": 3,
+    "runtime": {
+      "context": 65536,
+      "default_tokens": 8192,
+      "threads": 0,
+      "backend": "auto"
+    },
+    "quality": {
+      "warm_weights": false
+    },
+    "http": {
+      "host": "127.0.0.1",
+      "port": 8002,
+      "trace_file": "./traces/ds4-quality.trace"
+    },
+    "kv_cache": {
+      "kv_disk_dir": "/home/tendermachine/.cache/ds4-kv",
+      "kv_disk_mb": 8192,
+      "kv_min_tokens": 512,
+      "kv_cold_max": 30000,
+      "kv_interval": 10000,
+      "kv_trim": 32,
+      "kv_align": 2048,
+      "reject_quant_mismatch": true
+    },
+    "tool_replay": {
+      "disable_exact_dsml_replay": false,
+      "tool_memory_ids": 100000
+    },
+    "steering": {
+      "direction_file": "",
+      "steer_ffn": null,
+      "steer_attention": null
+    },
+    "rocm_smi": {
+      "enabled": true
+    }
+  },
+  "request_defaults": {
+    "max_tokens": 4096,
+    "temperature": 0,
+    "top_p": 1,
+    "top_k": 1,
+    "min_p": 0,
+    "seed": 42,
+    "stream": true,
+    "thinking": {
+      "type": "disabled"
+    },
+    "reasoning_effort": "disabled",
+    "stop": []
+  }
+}

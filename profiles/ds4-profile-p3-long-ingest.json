@@ -1,0 +1,62 @@
+{
+  "profile": "P3_LONG_INGEST",
+  "description": "Profilo per ingestione e riuso di documenti lunghi, con context esteso e KV cache più ampia.",
+  "server": {
+    "binary": "./ds4-server",
+    "model": "ds4flash.gguf",
+    "mtp_model": "",
+    "mtp_draft": 1,
+    "mtp_margin": 3,
+    "runtime": {
+      "context": 132768,
+      "default_tokens": 16384,
+      "threads": 0,
+      "backend": "auto"
+    },
+    "quality": {
+      "warm_weights": false
+    },
+    "http": {
+      "host": "127.0.0.1",
+      "port": 8002,
+      "trace_file": "./traces/ds4-long-ingest.trace"
+    },
+    "kv_cache": {
+      "kv_disk_dir": "/home/tendermachine/.cache/ds4-kv",
+      "kv_disk_mb": 32768,
+      "kv_min_tokens": 512,
+      "kv_cold_max": 100000,
+      "kv_interval": 10000,
+      "kv_trim": 32,
+      "kv_align": 2048,
+      "reject_quant_mismatch": true
+    },
+    "tool_replay": {
+      "disable_exact_dsml_replay": false,
+      "tool_memory_ids": 100000
+    },
+    "steering": {
+      "direction_file": "",
+      "steer_ffn": null,
+      "steer_attention": null
+    },
+    "rocm_smi": {
+      "enabled": true
+    }
+  },
+  "request_defaults": {
+    "max_tokens": 8192,
+    "temperature": 0,
+    "top_p": 1,
+    "top_k": 1,
+    "min_p": 0,
+    "seed": 42,
+    "stream": true,
+    "thinking": {
+      "type": "disabled"
+    },
+    "reasoning_effort": "disabled",
+    "stop": []
+  },
+  "note": "Per confrontare qualità vs reasoning, riesegui lo stesso dataset anche con thinking enabled."
+}

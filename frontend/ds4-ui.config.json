@@ -1,0 +1,40 @@
+{
+  "selectedProfile": "ds4-profile-p1-strict-quality",
+  "control": {
+    "host": "127.0.0.1",
+    "port": "5173"
+  },
+  "history": {
+    "enabled": true,
+    "dir": "/home/tendermachine/workspace_ds4studio/history"
+  },
+  "server": {
+    "binary": "./ds4-server",
+    "model": "ds4flash.gguf",
+    "mtp": "",
+    "mtpDraft": 1,
+    "mtpMargin": 3,
+    "ctx": 65536,
+    "tokens": 8192,
+    "threads": 0,
+    "backend": "auto",
+    "quality": false,
+    "warmWeights": false,
+    "host": "127.0.0.1",
+    "port": 8002,
+    "trace": "./traces/ds4-quality.trace",
+    "dirSteeringFile": "",
+    "dirSteeringFfn": "",
+    "dirSteeringAttn": "",
+    "kvDiskDir": "/home/tendermachine/.cache/ds4-kv",
+    "kvDiskSpaceMb": 8192,
+    "kvCacheMinTokens": 512,
+    "kvCacheColdMaxTokens": 30000,
+    "kvCacheContinuedIntervalTokens": 10000,
+    "kvCacheBoundaryTrimTokens": 32,
+    "kvCacheBoundaryAlignTokens": 2048,
+    "kvCacheRejectDifferentQuant": true,
+    "disableExactDsmlToolReplay": false,
+    "toolMemoryMaxIds": 100000
+  }
+}
