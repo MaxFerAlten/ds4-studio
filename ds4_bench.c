@@ -33,7 +33,9 @@ typedef struct {
     int ctx_alloc;
     int step_incr;
     int gen_tokens;
+    int power_percent;
     double step_mul;
+    const char *dump_frontier_logits_dir;
     bool warm_weights;
     bool quality;
 } bench_config;
@@ -63,11 +65,12 @@ static void usage(FILE *fp) {
         "\n"
         "Model and backend:\n"
         "  -m, --model FILE       GGUF model path. Default: ds4flash.gguf\n"
-        "  --metal | --cuda | --rocm | --cpu | --backend NAME\n"
+        "  --metal | --cuda | --cpu | --backend NAME\n"
         "      Select backend explicitly. Defaults to Metal on macOS, CUDA elsewhere.\n"
         "  -t, --threads N        CPU helper threads.\n"
         "  --quality              Prefer exact kernels where applicable.\n"
         "  --warm-weights         Touch mapped tensor pages before benchmarking.\n"
+        "  --power N              Target GPU duty cycle percentage, 1..100. Default: 100\n"
         "\n"
         "Sweep:\n"
         "  --ctx-start N          First measured frontier. Default: 2048\n"
@@ -79,6 +82,8 @@ static void usage(FILE *fp) {
         "\n"
         "Output:\n"
         "  --csv FILE             Write CSV there instead of stdout.\n"
+        "  --dump-frontier-logits-dir DIR\n"
+        "      Write one full-logit JSON file per measured frontier. DIR must exist.\n"
         "  -h, --help             Show this help.\n");
 }
 
@@ -113,10 +118,9 @@ static const char *need_arg(int *i, int argc, char **argv, const char *opt) {
 static ds4_backend parse_backend(const char *s, const char *opt) {
     if (!strcmp(s, "metal")) return DS4_BACKEND_METAL;
     if (!strcmp(s, "cuda")) return DS4_BACKEND_CUDA;
-    if (!strcmp(s, "rocm")) return DS4_BACKEND_ROCM;
     if (!strcmp(s, "cpu")) return DS4_BACKEND_CPU;
     fprintf(stderr, "ds4-bench: invalid value for %s: %s\n", opt, s);
-    fprintf(stderr, "ds4-bench: valid backends are: metal, cuda, rocm, cpu\n");
+    fprintf(stderr, "ds4-bench: valid backends are: metal, cuda, cpu\n");
     exit(2);
 }
 
@@ -125,8 +129,6 @@ static ds4_backend default_backend(void) {
     return DS4_BACKEND_CPU;
 #elif defined(__APPLE__)
     return DS4_BACKEND_METAL;
-#elif defined(DS4_USE_ROCM)
-    return DS4_BACKEND_ROCM;
 #else
     return DS4_BACKEND_CUDA;
 #endif
@@ -210,6 +212,8 @@ static bench_config parse_options(int argc, char **argv) {
             c.gen_tokens = parse_int(need_arg(&i, argc, argv, arg), arg);
         } else if (!strcmp(arg, "--csv")) {
             c.csv_path = need_arg(&i, argc, argv, arg);
+        } else if (!strcmp(arg, "--dump-frontier-logits-dir")) {
+            c.dump_frontier_logits_dir = need_arg(&i, argc, argv, arg);
         } else if (!strcmp(arg, "-t") || !strcmp(arg, "--threads")) {
             c.threads = parse_int(need_arg(&i, argc, argv, arg), arg);
         } else if (!strcmp(arg, "--backend")) {
@@ -218,12 +222,16 @@ static bench_config parse_options(int argc, char **argv) {
             c.backend = DS4_BACKEND_METAL;
         } else if (!strcmp(arg, "--cuda")) {
             c.backend = DS4_BACKEND_CUDA;
-        } else if (!strcmp(arg, "--rocm")) {
-            c.backend = DS4_BACKEND_ROCM;
         } else if (!strcmp(arg, "--cpu")) {
             c.backend = DS4_BACKEND_CPU;
         } else if (!strcmp(arg, "--quality")) {
             c.quality = true;
+        } else if (!strcmp(arg, "--power")) {
+            c.power_percent = parse_int(need_arg(&i, argc, argv, arg), arg);
+            if (c.power_percent < 1 || c.power_percent > 100) {
+                fprintf(stderr, "ds4-bench: --power must be between 1 and 100\n");
+                exit(2);
+            }
         } else if (!strcmp(arg, "--warm-weights")) {
             c.warm_weights = true;
         } else {
@@ -261,6 +269,102 @@ static bench_config parse_options(int argc, char **argv) {
     return c;
 }
 
+static void json_write_string(FILE *fp, const char *s) {
+    fputc('"', fp);
+    if (s) {
+        for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+            switch (*p) {
+            case '"':  fputs("\\\"", fp); break;
+            case '\\': fputs("\\\\", fp); break;
+            case '\b': fputs("\\b", fp); break;
+            case '\f': fputs("\\f", fp); break;
+            case '\n': fputs("\\n", fp); break;
+            case '\r': fputs("\\r", fp); break;
+            case '\t': fputs("\\t", fp); break;
+            default:
+                if (*p < 0x20) fprintf(fp, "\\u%04x", (unsigned)*p);
+                else fputc((char)*p, fp);
+                break;
+            }
+        }
+    }
+    fputc('"', fp);
+}
+
+static int write_frontier_logits_json(
+        const bench_config *cfg,
+        ds4_engine         *engine,
+        ds4_session        *session,
+        int                 frontier,
+        int                 previous) {
+    if (!cfg->dump_frontier_logits_dir) return 0;
+
+    const int vocab = ds4_engine_vocab_size(engine);
+    float *logits = malloc((size_t)vocab * sizeof(logits[0]));
+    if (!logits) {
+        fprintf(stderr, "ds4-bench: out of memory copying frontier logits\n");
+        return 1;
+    }
+    if (ds4_session_copy_logits(session, logits, vocab) != vocab) {
+        fprintf(stderr, "ds4-bench: failed to copy frontier logits at %d\n", frontier);
+        free(logits);
+        return 1;
+    }
+
+    char path[PATH_MAX];
+    const int n = snprintf(path,
+                           sizeof(path),
+                           "%s/frontier_%06d.logits.json",
+                           cfg->dump_frontier_logits_dir,
+                           frontier);
+    if (n <= 0 || (size_t)n >= sizeof(path)) {
+        fprintf(stderr, "ds4-bench: frontier logits path is too long\n");
+        free(logits);
+        return 1;
+    }
+
+    FILE *fp = fopen(path, "wb");
+    if (!fp) {
+        fprintf(stderr, "ds4-bench: failed to open %s: %s\n", path, strerror(errno));
+        free(logits);
+        return 1;
+    }
+
+    const int argmax = ds4_session_argmax(session);
+    fprintf(fp, "{\n  \"source\":\"ds4-bench\",\n  \"model\":");
+    json_write_string(fp, cfg->model_path);
+    fprintf(fp,
+            ",\n  \"backend\":\"%s\",\n  \"quality\":%s,\n"
+            "  \"quant_bits\":%d,\n  \"prompt_tokens\":%d,\n"
+            "  \"frontier_tokens\":%d,\n  \"prefill_tokens\":%d,\n"
+            "  \"ctx\":%d,\n  \"vocab\":%d,\n"
+            "  \"argmax_id\":%d,\n  \"argmax_logit\":%.9g,\n  \"logits\":[",
+            ds4_backend_name(cfg->backend),
+            cfg->quality ? "true" : "false",
+            ds4_engine_routed_quant_bits(engine),
+            frontier,
+            frontier,
+            frontier - previous,
+            cfg->ctx_alloc,
+            vocab,
+            argmax,
+            logits[argmax]);
+    for (int i = 0; i < vocab; i++) {
+        if (i) fputc(',', fp);
+        if ((i % 8) == 0) fputs("\n    ", fp);
+        if (isfinite(logits[i])) fprintf(fp, "%.9g", logits[i]);
+        else fputs("null", fp);
+    }
+    fputs("\n  ]\n}\n", fp);
+    if (fclose(fp) != 0) {
+        fprintf(stderr, "ds4-bench: failed to close %s\n", path);
+        free(logits);
+        return 1;
+    }
+    free(logits);
+    return 0;
+}
+
 static int next_frontier(const bench_config *c, int cur) {
     if (cur >= c->ctx_max) return c->ctx_max;
     int next;
@@ -290,17 +394,18 @@ static void log_context_memory(ds4_backend backend, int ctx_size) {
 
 int main(int argc, char **argv) {
     bench_config cfg = parse_options(argc, argv);
-    log_context_memory(cfg.backend, cfg.ctx_alloc);
 
     ds4_engine_options opt = {
         .model_path = cfg.model_path,
         .backend = cfg.backend,
         .n_threads = cfg.threads,
+        .power_percent = cfg.power_percent,
         .warm_weights = cfg.warm_weights,
         .quality = cfg.quality,
     };
     ds4_engine *engine = NULL;
     if (ds4_engine_open(&engine, &opt) != 0) return 1;
+    log_context_memory(cfg.backend, cfg.ctx_alloc);
 
     char *text = read_file(cfg.prompt_path ? cfg.prompt_path : cfg.chat_prompt_path);
     ds4_tokens prompt = {0};
@@ -365,6 +470,11 @@ int main(int argc, char **argv) {
         const double prefill_t1 = bench_now_sec();
         const double prefill_sec = prefill_t1 - prefill_t0;
         const int prefill_tokens = frontier - previous;
+
+        if (write_frontier_logits_json(&cfg, engine, session, frontier, previous) != 0) {
+            rc = 1;
+            break;
+        }
 
         if (ds4_session_save_snapshot(session, &snap, err, sizeof(err)) != 0) {
             fprintf(stderr, "ds4-bench: snapshot at %d failed: %s\n", frontier, err);
