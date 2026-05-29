@@ -1,5 +1,5 @@
 # DS4-Studio is front-end for DwarfStar ROCM edition
-whith pi integration and katext editor latex and export end much more
+with pi integration and katext editor latex, and export, and much more...
 
 
 for run ./srun.sh
