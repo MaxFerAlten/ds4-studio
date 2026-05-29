@@ -9,6 +9,8 @@ Only tested on my beelink mini pc gtr9 pro 128gb
 
 ![my ROCM](speed-bench/ds4-studio.png)
 
+https://www.youtube.com/watch?v=yxCmhAdd86s
+
 # DwarfStar
 
 **DwarfStar** is a small native inference engine optimized first for
