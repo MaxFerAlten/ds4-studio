@@ -18,6 +18,7 @@ const AGENT_HEADERS = { "X-Agent-Session-Key": AGENT_SESSION_KEY };
 import { commandLineFromConfig } from "../server/commandBuilder.mjs";
 import { REQUEST_DEFAULTS } from "../server/defaultConfig.mjs";
 import { buildChatPayload } from "../server/requestPayload.mjs";
+import { backendHealthLabel, backendStartupDetail, streamFailureNotice } from "./backendStatus.mjs";
 import { exportConversationMarkdown, markdownFileName } from "./conversationExport.mjs";
 import {
   clearStoredExportIncludeReasoning,
@@ -27,6 +28,9 @@ import {
   writeStoredExportIncludeReasoning
 } from "./exportPreferences.mjs";
 import { MessageContent } from "./MessageContent.mjs";
+import { createDeltaBatcher } from "./deltaBatcher.mjs";
+import { documentIsVisible } from "./polling.mjs";
+import { metricRows, metricsAvailable, metricsSummary } from "./serverMetrics.mjs";
 import {
   createLiveStatsTracker,
   estimateTokenCount,
@@ -38,7 +42,18 @@ import {
 const STARTUP_GROUPS = [
   ["Model", ["binary", "model", "mtp", "mtpDraft", "mtpMargin"]],
   ["Runtime", ["ctx", "tokens", "threads", "backend", "quality", "warmWeights"]],
-  ["HTTP", ["host", "port", "trace"]],
+  ["HTTP", ["host", "port", "maxQueuedJobs", "trace"]],
+  [
+    "GPU Env",
+    [
+      "DS4_CUDA_Q8_F16_CACHE_MB",
+      "DS4_CUDA_Q8_F16_CACHE_RESERVE_MB",
+      "DS4_CUDA_WEIGHT_ARENA_CHUNK_MB",
+      "DS4_CUDA_COPY_MODEL_CHUNKED",
+      "DS4_CUDA_DIRECT_MODEL",
+      "DS4_CUDA_NO_FD_CACHE"
+    ]
+  ],
   [
     "KV Cache",
     [
@@ -70,7 +85,14 @@ const FIELD_LABELS = {
   warmWeights: "Warm weights",
   host: "Host",
   port: "Port",
+  maxQueuedJobs: "Max queue",
   trace: "Trace file",
+  DS4_CUDA_Q8_F16_CACHE_MB: "Q8/F16 cache MB",
+  DS4_CUDA_Q8_F16_CACHE_RESERVE_MB: "Q8/F16 reserve MB",
+  DS4_CUDA_WEIGHT_ARENA_CHUNK_MB: "Weight arena MB",
+  DS4_CUDA_COPY_MODEL_CHUNKED: "Chunked model copy",
+  DS4_CUDA_DIRECT_MODEL: "Direct model",
+  DS4_CUDA_NO_FD_CACHE: "No FD cache",
   kvDiskDir: "KV disk dir",
   kvDiskSpaceMb: "KV disk MB",
   kvCacheMinTokens: "KV min tokens",
@@ -100,7 +122,14 @@ const STARTUP_HELP = {
   warmWeights: "Preload/warm the weights at startup to reduce later latency.",
   host: "HTTP host ds4-server listens on; usually 127.0.0.1.",
   port: "HTTP port of the ds4-server backend.",
+  maxQueuedJobs: "Maximum requests waiting for the single worker before HTTP 503.",
   trace: "Optional file to save detailed request traces; empty disables tracing.",
+  DS4_CUDA_Q8_F16_CACHE_MB: "Optional ROCm/HIP Q8 to F16 cache size in MB.",
+  DS4_CUDA_Q8_F16_CACHE_RESERVE_MB: "Optional reserved MB kept outside the Q8 to F16 cache.",
+  DS4_CUDA_WEIGHT_ARENA_CHUNK_MB: "Optional ROCm/HIP weight arena chunk size in MB.",
+  DS4_CUDA_COPY_MODEL_CHUNKED: "Copy the full model image into GPU memory at startup.",
+  DS4_CUDA_DIRECT_MODEL: "Optional DS4_CUDA_DIRECT_MODEL override; empty leaves default.",
+  DS4_CUDA_NO_FD_CACHE: "Optional DS4_CUDA_NO_FD_CACHE override; empty leaves default.",
   kvDiskDir: "Optional directory for on-disk KV cache; empty disables disk persistence.",
   kvDiskSpaceMb: "Maximum MB reserved for the on-disk KV cache.",
   kvCacheMinTokens: "Minimum token threshold before considering cache reuse worthwhile.",
@@ -123,6 +152,12 @@ const STARTUP_PLACEHOLDERS = {
   threads: "0 = auto",
   host: "127.0.0.1",
   trace: "empty = trace disabled",
+  DS4_CUDA_Q8_F16_CACHE_MB: "empty = backend default",
+  DS4_CUDA_Q8_F16_CACHE_RESERVE_MB: "empty = backend default",
+  DS4_CUDA_WEIGHT_ARENA_CHUNK_MB: "empty = backend default",
+  DS4_CUDA_COPY_MODEL_CHUNKED: "empty = backend default",
+  DS4_CUDA_DIRECT_MODEL: "empty = backend default",
+  DS4_CUDA_NO_FD_CACHE: "empty = backend default",
   kvDiskDir: "empty = disk KV dir disabled",
   dirSteeringFile: "empty = steering disabled",
   dirSteeringFfn: "optional scale",
@@ -193,7 +228,22 @@ const TEXT_FIELDS = new Set([
   "binary",
   "trace",
   "kvDiskDir",
-  "dirSteeringFile"
+  "dirSteeringFile",
+  "DS4_CUDA_Q8_F16_CACHE_MB",
+  "DS4_CUDA_Q8_F16_CACHE_RESERVE_MB",
+  "DS4_CUDA_WEIGHT_ARENA_CHUNK_MB",
+  "DS4_CUDA_COPY_MODEL_CHUNKED",
+  "DS4_CUDA_DIRECT_MODEL",
+  "DS4_CUDA_NO_FD_CACHE"
+]);
+
+const ENV_FIELDS = new Set([
+  "DS4_CUDA_Q8_F16_CACHE_MB",
+  "DS4_CUDA_Q8_F16_CACHE_RESERVE_MB",
+  "DS4_CUDA_WEIGHT_ARENA_CHUNK_MB",
+  "DS4_CUDA_COPY_MODEL_CHUNKED",
+  "DS4_CUDA_DIRECT_MODEL",
+  "DS4_CUDA_NO_FD_CACHE"
 ]);
 
 function fieldType(key) {
@@ -205,6 +255,11 @@ function fieldType(key) {
 
 function startupHelp(key) {
   return STARTUP_HELP[key] || FIELD_LABELS[key] || key;
+}
+
+function serverFieldValue(server, key) {
+  if (ENV_FIELDS.has(key)) return server.env?.[key] ?? "";
+  return server[key];
 }
 
 function requestHelp(key) {
@@ -454,6 +509,8 @@ export default function App() {
   const [rocm, setRocm] = useState(null);
   const [error, setError] = useState("");
   const [runtimeStats, setRuntimeStats] = useState(null);
+  const [serverMetrics, setServerMetrics] = useState(null);
+  const [metricsError, setMetricsError] = useState("");
   const [commandDraft, setCommandDraft] = useState(null);
   const [agentMode, setAgentMode] = useState(false);
   const [agentStatus, setAgentStatus] = useState(null);
@@ -503,6 +560,14 @@ export default function App() {
       setRequest((prev) => ({ ...REQUEST_DEFAULTS, ...data.profile.requestDefaults, system: prev.system }));
     }
     setError("");
+    return data;
+  }
+
+  async function refreshServerMetrics() {
+    const data = await jsonFetch("/api/server/metrics");
+    setServerMetrics(data);
+    setMetricsError("");
+    return data;
   }
 
   async function refreshProfiles() {
@@ -553,7 +618,17 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    refreshStatus({ syncConfig: true }).catch((err) => setError(err.message));
+    refreshStatus({ syncConfig: true })
+      .then((data) => {
+        if (data?.running && data?.healthy) {
+          return refreshServerMetrics().catch((err) => {
+            setServerMetrics(null);
+            setMetricsError(err.message);
+          });
+        }
+        return null;
+      })
+      .catch((err) => setError(err.message));
     refreshRocmStatus().catch(() => setRocm({ ok: false, error: "rocm-smi unavailable", gpus: [] }));
     refreshProfiles().catch(() => setProfiles([]));
     jsonFetch("/api/files/supported")
@@ -565,10 +640,27 @@ export default function App() {
         setAgentStatus(data);
       })
       .catch(() => {});
-    const timer = setInterval(() => refreshStatus().catch((err) => setError(err.message)), 2000);
+    const timer = setInterval(() => {
+      if (!documentIsVisible()) return;
+      refreshStatus()
+        .then((data) => {
+          if (data?.running && data?.healthy) {
+            return refreshServerMetrics().catch((err) => {
+              setServerMetrics(null);
+              setMetricsError(err.message);
+            });
+          }
+          setServerMetrics(null);
+          return null;
+        })
+        .catch((err) => setError(err.message));
+    }, 3000);
     const rocmTimer = setInterval(
-      () => refreshRocmStatus().catch(() => setRocm({ ok: false, error: "rocm-smi unavailable", gpus: [] })),
-      2000
+      () => {
+        if (!documentIsVisible()) return;
+        refreshRocmStatus().catch(() => setRocm({ ok: false, error: "rocm-smi unavailable", gpus: [] }));
+      },
+      5000
     );
     return () => {
       clearInterval(timer);
@@ -651,10 +743,24 @@ export default function App() {
   const commandIsCustom = commandDraft !== null && commandDraft.trim() !== commandText.trim();
   const hasPendingStartup = Boolean(runningCommandText && effectiveCommand.trim() && effectiveCommand.trim() !== runningCommandText.trim());
   const canSend = Boolean(status?.running && status?.healthy && !generationBusy);
+  const startupDetail = backendStartupDetail(status);
   const historyConfig = config?.history || { enabled: false, dir: "" };
 
   function updateServerField(key, value) {
     setCommandDraft(null);
+    if (ENV_FIELDS.has(key)) {
+      setConfig((prev) => ({
+        ...prev,
+        server: {
+          ...prev.server,
+          env: {
+            ...(prev.server.env || {}),
+            [key]: value
+          }
+        }
+      }));
+      return;
+    }
     setConfig((prev) => ({ ...prev, server: { ...prev.server, [key]: value } }));
   }
 
@@ -990,6 +1096,9 @@ export default function App() {
       requestStartMs: tRequestStart,
       promptTokens: estimateTokenCount(`${attachedDoc.markdown}\n\n${text}`)
     });
+    const deltaBatcher = createDeltaBatcher((content, reasoning) => {
+      setMessages(appendAssistantDelta(content, reasoning));
+    });
 
     try {
       const payload = {
@@ -1046,6 +1155,7 @@ export default function App() {
               totalChunks = data.chunks;
               setChunkProgress({ phase: "split", current: 0, total: data.chunks });
             } else if (data.phase === "reduce") {
+              deltaBatcher.flush();
               setChunkProgress({ phase: "reduce", current: totalChunks, total: totalChunks });
               setMessages(appendAssistantNotice(`---\n\n### Final answer (reduce over ${totalChunks} sections)\n`));
             }
@@ -1080,16 +1190,19 @@ export default function App() {
               liveStats = live.tracker;
               setRuntimeStats(live.stats);
             }
-            setMessages(appendAssistantDelta(content, reasoning));
+            deltaBatcher.push(content, reasoning);
           } else if (event === "usage") {
             streamUsage = data;
           } else if (event === "error") {
+            deltaBatcher.flush();
             setMessages(appendTransientNotice(`Error: ${data.error}`));
           } else if (event === "done") {
+            deltaBatcher.flush();
             setChunkProgress(null);
           }
         }
       }
+      deltaBatcher.flush();
       if (streamUsage) {
         totalPromptTokens += streamUsage.prompt_tokens || 0;
         totalCompletionTokens += streamUsage.completion_tokens || 0;
@@ -1106,8 +1219,12 @@ export default function App() {
       }
       setAttachedDoc(null);
     } catch (err) {
-      if (err.name !== "AbortError") setMessages(appendTransientNotice(`Stream failed: ${err.message}`));
+      if (err.name !== "AbortError") {
+        deltaBatcher.flush();
+        setMessages(appendTransientNotice(`Stream failed: ${err.message}`));
+      }
     } finally {
+      deltaBatcher.cancel();
       setGenerationBusy(false);
       setChunkProgress(null);
       if (abortRef.current === controller) abortRef.current = null;
@@ -1164,6 +1281,9 @@ export default function App() {
         [...messages.map((message) => message.content || ""), text].join("\n\n")
       )
     });
+    const deltaBatcher = createDeltaBatcher((content, reasoning) => {
+      setMessages(appendAssistantDelta(content, reasoning));
+    });
 
     try {
       const payload = {
@@ -1213,7 +1333,7 @@ export default function App() {
               liveStats = live.tracker;
               setRuntimeStats(live.stats);
             }
-            setMessages(appendAssistantDelta(content, ""));
+            deltaBatcher.push(content, "");
           } else if (event === "agent_reasoning") {
             const reasoning = data.content || "";
             if (reasoning) {
@@ -1221,8 +1341,9 @@ export default function App() {
               liveStats = live.tracker;
               setRuntimeStats(live.stats);
             }
-            setMessages(appendAssistantDelta("", reasoning));
+            deltaBatcher.push("", reasoning);
           } else if (event === "agent_tool_call") {
+            deltaBatcher.flush();
             setMessages((prev) => {
               const last = prev[prev.length - 1];
               if (last.role !== "assistant") return prev;
@@ -1234,6 +1355,7 @@ export default function App() {
               ];
             });
           } else if (event === "agent_tool_progress") {
+            deltaBatcher.flush();
             setMessages((prev) => {
               const next = [...prev];
               for (let i = next.length - 1; i >= 0; i--) {
@@ -1252,6 +1374,7 @@ export default function App() {
               return next;
             });
           } else if (event === "agent_tool_result") {
+            deltaBatcher.flush();
             setMessages((prev) => [
               ...prev,
               { role: "tool", tool_call_id: data.id, name: data.name, content: data.content, isError: data.isError, guarded: data.guarded },
@@ -1265,12 +1388,14 @@ export default function App() {
               stream: true
             }));
           } else if (event === "agent_error") {
+            deltaBatcher.flush();
             setMessages(appendTransientNotice(`Agent Error: ${data.error}`));
           } else if (event === "agent_done") {
-            // Done
+            deltaBatcher.flush();
           }
         }
       }
+      deltaBatcher.flush();
       if (streamUsage) {
         setRuntimeStats(finalizeLiveStats(liveStats, {
           promptTokens: streamUsage.prompt_tokens,
@@ -1279,8 +1404,12 @@ export default function App() {
         }));
       }
     } catch (err) {
-      if (err.name !== "AbortError") setMessages(appendTransientNotice(`Agent Stream failed: ${err.message}`));
+      if (err.name !== "AbortError") {
+        deltaBatcher.flush();
+        setMessages(appendTransientNotice(streamFailureNotice(err).replace(/^Stream/, "Agent stream")));
+      }
     } finally {
+      deltaBatcher.cancel();
       setGenerationBusy(false);
       if (abortRef.current === controller) abortRef.current = null;
     }
@@ -1320,6 +1449,9 @@ export default function App() {
     const controller = new AbortController();
     abortRef.current = controller;
     setGenerationBusy(true);
+    const deltaBatcher = createDeltaBatcher((content, reasoning) => {
+      setMessages(appendAssistantDelta(content, reasoning));
+    });
 
     try {
       const chatMessages = [];
@@ -1395,10 +1527,11 @@ export default function App() {
             const live = updateLiveStats(liveStats, { content, reasoning, nowMs: tDelta });
             liveStats = live.tracker;
             setRuntimeStats(live.stats);
-            setMessages(appendAssistantDelta(content, reasoning));
+            deltaBatcher.push(content, reasoning);
           }
         }
       }
+      deltaBatcher.flush();
       if (streamUsage && tFirstToken !== null) {
         setRuntimeStats(streamStatsFromTiming({
           requestStartMs: tRequestStart,
@@ -1410,8 +1543,12 @@ export default function App() {
         }));
       }
     } catch (err) {
-      if (err.name !== "AbortError") setMessages(appendTransientNotice(`Stream failed: ${err.message}`));
+      if (err.name !== "AbortError") {
+        deltaBatcher.flush();
+        setMessages(appendTransientNotice(streamFailureNotice(err)));
+      }
     } finally {
+      deltaBatcher.cancel();
       setGenerationBusy(false);
       if (abortRef.current === controller) abortRef.current = null;
     }
@@ -1438,8 +1575,9 @@ export default function App() {
         </div>
         <div className={`status-pill ${status.running ? "ok" : "bad"}`}>{status.running ? "Running" : "Stopped"}</div>
         <div className={`status-pill ${status.healthy ? "ok" : "warn"}`}>
-          {status.healthy ? "Healthy" : "Waiting for backend"}
+          {backendHealthLabel(status)}
         </div>
+        {startupDetail ? <div className="status-detail">{startupDetail}</div> : null}
         {error ? <div className="status-pill bad">{error}</div> : null}
         <div className="button-row">
           <button type="button" onClick={() => serverAction("start")} disabled={serverBusy}>
@@ -1678,6 +1816,9 @@ export default function App() {
           <button type="button" className={tab === "logs" ? "active" : ""} onClick={() => setTab("logs")}>
             Logs
           </button>
+          <button type="button" className={tab === "metrics" ? "active" : ""} onClick={() => setTab("metrics")}>
+            Metrics
+          </button>
         </div>
         {tab === "request" ? (
           <div className="form-grid">
@@ -1752,13 +1893,13 @@ export default function App() {
                       {fieldType(key) === "checkbox" ? (
                         <input
                           type="checkbox"
-                          checked={Boolean(config.server[key])}
+                          checked={Boolean(serverFieldValue(config.server, key))}
                           aria-label={`${FIELD_LABELS[key]}: ${startupHelp(key)}`}
                           onChange={(event) => updateServerField(key, event.target.checked)}
                         />
                       ) : fieldType(key) === "select" ? (
                         <select
-                          value={config.server[key]}
+                          value={serverFieldValue(config.server, key)}
                           aria-label={`${FIELD_LABELS[key]}: ${startupHelp(key)}`}
                           onChange={(event) => updateServerField(key, event.target.value)}
                         >
@@ -1770,7 +1911,7 @@ export default function App() {
                       ) : (
                         <input
                           type={fieldType(key)}
-                          value={config.server[key]}
+                          value={serverFieldValue(config.server, key)}
                           placeholder={STARTUP_PLACEHOLDERS[key] || ""}
                           onChange={(event) =>
                             fieldType(key) === "number"
@@ -1918,6 +2059,22 @@ export default function App() {
                 {line.time} {line.stream}: {line.message}
               </pre>
             ))}
+          </div>
+        ) : null}
+        {tab === "metrics" ? (
+          <div className="metrics-panel">
+            <div className={`status-pill ${metricsAvailable(serverMetrics) ? "ok" : "warn"}`}>
+              {metricsSummary(serverMetrics)}
+            </div>
+            {metricsError ? <div className="status-pill bad">{metricsError}</div> : null}
+            <div className="metrics-grid">
+              {metricRows(serverMetrics).map((row) => (
+                <div key={row.label} className={`metric-row ${row.kind}`}>
+                  <span>{row.label}</span>
+                  <strong>{row.value}</strong>
+                </div>
+              ))}
+            </div>
           </div>
         ) : null}
         </aside>

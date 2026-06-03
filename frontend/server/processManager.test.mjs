@@ -70,6 +70,29 @@ test("manager starts child processes in the configured cwd", async () => {
   }
 });
 
+test("manager passes compacted environment overrides to child process", async () => {
+  const manager = new Ds4ProcessManager({
+    buildCommand: () => ({
+      command: process.execPath,
+      args: ["-e", "console.log(process.env.DS4_CUDA_Q8_F16_CACHE_MB || 'missing'); console.log(process.env.DS4_CUDA_NO_FD_CACHE || 'missing-empty'); setTimeout(() => {}, 2000)"]
+    }),
+    buildEnv: () => ({
+      DS4_CUDA_Q8_F16_CACHE_MB: "512",
+      DS4_CUDA_NO_FD_CACHE: ""
+    }),
+    healthCheck: async () => true
+  });
+  try {
+    await manager.start();
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const messages = manager.status().logs.map((line) => line.message);
+    assert.ok(messages.includes("512"));
+    assert.ok(messages.includes("missing-empty"));
+  } finally {
+    await manager.stop();
+  }
+});
+
 test("spawn errors are reported without leaving a running process", async () => {
   const manager = new Ds4ProcessManager({
     buildCommand: () => ({

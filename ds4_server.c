@@ -20,6 +20,7 @@
 #include <limits.h>
 #include <math.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
@@ -4121,31 +4122,70 @@ static long long wall_ms(void) {
     return (long long)tv.tv_sec * 1000 + tv.tv_usec / 1000;
 }
 
+static __thread server *g_metrics_server = NULL;
+
+static void server_metrics_set(server *s) {
+    g_metrics_server = s;
+}
+
+static void server_metrics_note_send(bool ok, bool stalled);
+static void server_metrics_note_sse_frames(size_t frames);
+
 static bool send_all(int fd, const void *p, size_t n) {
     const char *s = p;
     long long deadline = wall_ms() + DS4_SERVER_SEND_STALL_TIMEOUT_MS;
+    bool ok = true;
+    bool stalled = false;
     while (n) {
-        if (g_stop_requested) return false;
+        if (g_stop_requested) {
+            ok = false;
+            goto done;
+        }
         ssize_t w = send(fd, s, n, 0);
         if (w < 0 && errno == EINTR) continue;
         if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            stalled = true;
             long long remaining = deadline - wall_ms();
-            if (remaining <= 0) return false;
+            if (remaining <= 0) {
+                ok = false;
+                goto done;
+            }
             struct pollfd pfd = {.fd = fd, .events = POLLOUT};
             int timeout = remaining > 50 ? 50 : (int)remaining;
             int rc;
             do {
                 rc = poll(&pfd, 1, timeout);
             } while (rc < 0 && errno == EINTR);
-            if (rc < 0 || (pfd.revents & (POLLERR | POLLHUP | POLLNVAL))) return false;
+            if (rc < 0 || (pfd.revents & (POLLERR | POLLHUP | POLLNVAL))) {
+                ok = false;
+                goto done;
+            }
             continue;
         }
-        if (w <= 0) return false;
+        if (w <= 0) {
+            ok = false;
+            goto done;
+        }
         s += w;
         n -= (size_t)w;
         deadline = wall_ms() + DS4_SERVER_SEND_STALL_TIMEOUT_MS;
     }
-    return true;
+done:
+    server_metrics_note_send(ok, stalled);
+    return ok;
+}
+
+static size_t sse_frame_count_in_buffer(const char *s, size_t n) {
+    size_t frames = 0;
+    for (size_t i = 1; i < n; i++) {
+        if (s[i - 1] == '\n' && s[i] == '\n') frames++;
+    }
+    return frames;
+}
+
+static bool sse_send_buffer(int fd, const char *s, size_t n) {
+    server_metrics_note_sse_frames(sse_frame_count_in_buffer(s, n));
+    return send_all(fd, s, n);
 }
 
 static void json_escape(buf *b, const char *s) {
@@ -4813,6 +4853,30 @@ static bool http_error(int fd, bool enable_cors, int code, const char *msg) {
     return ok;
 }
 
+static bool http_error_retry_after(int fd, bool enable_cors, int code, int retry_after_sec, const char *msg) {
+    buf b = {0};
+    buf_puts(&b, "{\"error\":{\"message\":");
+    json_escape(&b, msg);
+    buf_puts(&b, ",\"type\":\"server_overloaded\"}}\n");
+
+    const char *reason = code == 503 ? "Service Unavailable" : "Error";
+    const size_t body_len = b.len;
+    buf h = {0};
+    buf_printf(&h,
+        "HTTP/1.1 %d %s\r\n"
+        "Content-Length: %zu\r\n"
+        "Content-Type: application/json\r\n"
+        "Retry-After: %d\r\n",
+        code, reason, body_len, retry_after_sec);
+    if (enable_cors) append_cors_headers(&h);
+    buf_puts(&h, "Connection: close\r\n\r\n");
+    bool ok = send_all(fd, h.ptr, h.len);
+    if (ok && body_len) ok = send_all(fd, b.ptr, body_len);
+    buf_free(&h);
+    buf_free(&b);
+    return ok;
+}
+
 static const char *context_length_error_param(const request *r) {
     if (!r) return "prompt";
     if (r->api == API_RESPONSES) return "input";
@@ -4863,6 +4927,42 @@ static bool http_error_context_length_exceeded(int fd, bool enable_cors,
 /* Streaming is a translation state machine over the raw DS4 text.  The model
  * may produce <think> and DSML tool blocks; clients should receive those as
  * protocol-native reasoning/tool deltas, never as visible assistant text. */
+#define DS4_STREAM_FLUSH_BYTES 512
+#define DS4_STREAM_FLUSH_MS 30
+
+typedef struct {
+    buf pending;
+    long long first_pending_ms;
+    bool flushed_once;
+} stream_batch;
+
+static void stream_batch_free(stream_batch *sb) {
+    if (!sb) return;
+    buf_free(&sb->pending);
+    sb->first_pending_ms = 0;
+}
+
+static void stream_batch_clear(stream_batch *sb) {
+    if (!sb) return;
+    sb->pending.len = 0;
+    if (sb->pending.ptr) sb->pending.ptr[0] = '\0';
+    sb->first_pending_ms = 0;
+}
+
+static void stream_batch_append(stream_batch *sb, const char *text, size_t len) {
+    if (!sb || !text || len == 0) return;
+    if (sb->pending.len == 0) sb->first_pending_ms = wall_ms();
+    buf_append(&sb->pending, text, len);
+}
+
+static bool stream_batch_should_flush(const stream_batch *sb) {
+    if (!sb || sb->pending.len == 0) return false;
+    if (!sb->flushed_once) return true;
+    if (sb->pending.len >= DS4_STREAM_FLUSH_BYTES) return true;
+    return sb->first_pending_ms > 0 &&
+           wall_ms() - sb->first_pending_ms >= DS4_STREAM_FLUSH_MS;
+}
+
 static bool sse_headers(int fd, bool enable_cors) {
     buf h = {0};
     buf_puts(&h,
@@ -4888,7 +4988,7 @@ static bool sse_error_event(int fd, const request *r, const char *msg) {
         json_escape(&b, message);
         buf_puts(&b, ",\"type\":\"server_error\"}}\n\n");
     }
-    bool ok = send_all(fd, b.ptr, b.len);
+    bool ok = sse_send_buffer(fd, b.ptr, b.len);
     buf_free(&b);
     return ok;
 }
@@ -4919,7 +5019,7 @@ static bool sse_chunk(int fd, const request *r, const char *id, const char *text
         if (finish) json_escape(&b, finish); else buf_puts(&b, "null");
         buf_puts(&b, "}]}\n\n");
     }
-    bool ok = send_all(fd, b.ptr, b.len);
+    bool ok = sse_send_buffer(fd, b.ptr, b.len);
     buf_free(&b);
     return ok;
 }
@@ -4965,7 +5065,7 @@ static bool sse_usage_chunk(int fd, const request *r, const char *id,
     append_openai_usage_json(&b, r, prompt_tokens, completion_tokens);
     buf_puts(&b, "}\n\n");
 
-    bool ok = send_all(fd, b.ptr, b.len);
+    bool ok = sse_send_buffer(fd, b.ptr, b.len);
     buf_free(&b);
     return ok;
 }
@@ -4973,7 +5073,7 @@ static bool sse_usage_chunk(int fd, const request *r, const char *id,
 static bool sse_done(int fd, const request *r, const char *id,
                      int prompt_tokens, int completion_tokens) {
     return sse_usage_chunk(fd, r, id, prompt_tokens, completion_tokens) &&
-           send_all(fd, "data: [DONE]\n\n", 14);
+           sse_send_buffer(fd, "data: [DONE]\n\n", 14);
 }
 
 static bool sse_chat_finish(int fd, const request *r, const char *id, const char *content,
@@ -5010,7 +5110,7 @@ static bool sse_chat_finish(int fd, const request *r, const char *id, const char
     json_escape(&b, finish);
     buf_puts(&b, "}]}\n\n");
 
-    bool ok = send_all(fd, b.ptr, b.len) &&
+    bool ok = sse_send_buffer(fd, b.ptr, b.len) &&
               sse_done(fd, r, id, prompt_tokens, completion_tokens);
     buf_free(&b);
     return ok;
@@ -5059,6 +5159,8 @@ typedef struct {
     bool checked_think_prefix;
     bool sent_reasoning;
     bool sent_content;
+    stream_batch reasoning_batch;
+    stream_batch content_batch;
     openai_tool_stream tool;
 } openai_stream;
 
@@ -5078,6 +5180,8 @@ static void openai_tool_stream_free(openai_tool_stream *ts) {
 
 static void openai_stream_free(openai_stream *st) {
     if (!st) return;
+    stream_batch_free(&st->reasoning_batch);
+    stream_batch_free(&st->content_batch);
     openai_tool_stream_free(&st->tool);
 }
 
@@ -5130,9 +5234,35 @@ static bool sse_chat_delta_n(int fd, const request *r, const char *id,
     buf_putc(&b, ':');
     json_escape_n(&b, text, len);
     buf_puts(&b, "},\"finish_reason\":null}]}\n\n");
-    bool ok = send_all(fd, b.ptr, b.len);
+    bool ok = sse_send_buffer(fd, b.ptr, b.len);
     buf_free(&b);
     return ok;
+}
+
+static bool openai_sse_flush_delta_batch(int fd, const request *r, const char *id,
+                                         const char *field, stream_batch *batch) {
+    if (!batch || batch->pending.len == 0) return true;
+    bool ok = sse_chat_delta_n(fd, r, id, field,
+                               batch->pending.ptr ? batch->pending.ptr : "",
+                               batch->pending.len);
+    if (ok) {
+        batch->flushed_once = true;
+        stream_batch_clear(batch);
+    }
+    return ok;
+}
+
+static bool openai_sse_emit_delta_batched(int fd, server *s, const request *r,
+                                          const char *id, const char *field,
+                                          stream_batch *batch,
+                                          const char *text, size_t len,
+                                          bool force) {
+    if (!s) return sse_chat_delta_n(fd, r, id, field, text, len);
+    stream_batch_append(batch, text, len);
+    if (force || stream_batch_should_flush(batch)) {
+        return openai_sse_flush_delta_batch(fd, r, id, field, batch);
+    }
+    return true;
 }
 
 /* OpenAI clients can consume function.arguments as a stream of JSON text
@@ -5154,7 +5284,7 @@ static bool sse_chat_tool_call_start_delta(int fd, const request *r, const char 
     buf_puts(&b, ",\"type\":\"function\",\"function\":{\"name\":");
     json_escape(&b, name ? name : "");
     buf_puts(&b, ",\"arguments\":\"\"}}]},\"finish_reason\":null}]}\n\n");
-    bool ok = send_all(fd, b.ptr, b.len);
+    bool ok = sse_send_buffer(fd, b.ptr, b.len);
     buf_free(&b);
     return ok;
 }
@@ -5171,7 +5301,7 @@ static bool sse_chat_tool_call_args_delta_n(int fd, const request *r, const char
     buf_puts(&b, ",\"function\":{\"arguments\":");
     json_escape_n(&b, text, len);
     buf_puts(&b, "}}]},\"finish_reason\":null}]}\n\n");
-    bool ok = send_all(fd, b.ptr, b.len);
+    bool ok = sse_send_buffer(fd, b.ptr, b.len);
     buf_free(&b);
     return ok;
 }
@@ -5873,17 +6003,23 @@ static bool openai_sse_stream_update(int fd, server *s, const request *r, const 
         }
 
         if (limit > st->emit_pos) {
-            if (!sse_chat_delta_n(fd, r, id, "reasoning_content",
-                                  raw + st->emit_pos,
-                                  limit - st->emit_pos)) return false;
+            if (!openai_sse_emit_delta_batched(fd, s, r, id, "reasoning_content",
+                                               &st->reasoning_batch,
+                                               raw + st->emit_pos,
+                                               limit - st->emit_pos,
+                                               close || final)) return false;
             st->sent_reasoning = true;
             st->emit_pos = limit;
         }
 
         if (close) {
+            if (!openai_sse_flush_delta_batch(fd, r, id, "reasoning_content",
+                                              &st->reasoning_batch)) return false;
             st->emit_pos = (size_t)(close - raw) + strlen("</think>");
             st->mode = OPENAI_STREAM_TEXT;
         } else if (final) {
+            if (!openai_sse_flush_delta_batch(fd, r, id, "reasoning_content",
+                                              &st->reasoning_batch)) return false;
             st->mode = OPENAI_STREAM_SUPPRESS;
             return true;
         } else {
@@ -5897,14 +6033,18 @@ static bool openai_sse_stream_update(int fd, server *s, const request *r, const 
                                               r->has_tools, final);
 
         if (limit > st->emit_pos) {
-            if (!sse_chat_delta_n(fd, r, id, "content",
-                                  raw + st->emit_pos,
-                                  limit - st->emit_pos)) return false;
+            if (!openai_sse_emit_delta_batched(fd, s, r, id, "content",
+                                               &st->content_batch,
+                                               raw + st->emit_pos,
+                                               limit - st->emit_pos,
+                                               tool || final)) return false;
             st->sent_content = true;
             st->emit_pos = limit;
         }
 
         if (tool) {
+            if (!openai_sse_flush_delta_batch(fd, r, id, "content",
+                                              &st->content_batch)) return false;
             st->emit_pos = (size_t)(tool - raw);
             if (openai_tool_stream_init(&st->tool, raw, raw_len, st->emit_pos)) {
                 st->mode = OPENAI_STREAM_TOOL;
@@ -5912,6 +6052,8 @@ static bool openai_sse_stream_update(int fd, server *s, const request *r, const 
                 st->mode = OPENAI_STREAM_SUPPRESS;
             }
         } else if (final) {
+            if (!openai_sse_flush_delta_batch(fd, r, id, "content",
+                                              &st->content_batch)) return false;
             st->mode = OPENAI_STREAM_SUPPRESS;
         }
     }
@@ -5929,6 +6071,10 @@ static bool openai_sse_finish_live(int fd, server *s, const request *r, const ch
                                    const char *finish, int prompt_tokens,
                                    int completion_tokens) {
     if (!openai_sse_stream_update(fd, s, r, id, st, raw, raw_len, true)) return false;
+    if (!openai_sse_flush_delta_batch(fd, r, id, "reasoning_content",
+                                      &st->reasoning_batch)) return false;
+    if (!openai_sse_flush_delta_batch(fd, r, id, "content",
+                                      &st->content_batch)) return false;
 
     buf b = {0};
     long now = (long)time(NULL);
@@ -5945,7 +6091,7 @@ static bool openai_sse_finish_live(int fd, server *s, const request *r, const ch
     json_escape(&b, finish);
     buf_puts(&b, "}]}\n\n");
 
-    bool ok = send_all(fd, b.ptr, b.len) &&
+    bool ok = sse_send_buffer(fd, b.ptr, b.len) &&
               sse_done(fd, r, id, prompt_tokens, completion_tokens);
     buf_free(&b);
     return ok;
@@ -6066,7 +6212,7 @@ static bool responses_sse_emit_event(int fd, responses_stream *st, const char *b
         buf_puts(&b, body);
     }
     buf_puts(&b, "\n\n");
-    bool ok = send_all(fd, b.ptr, b.len);
+    bool ok = sse_send_buffer(fd, b.ptr, b.len);
     buf_free(&b);
     return ok;
 }
@@ -6913,7 +7059,7 @@ static bool sse_event(int fd, const char *event, const char *data) {
     buf_puts(&b, "\ndata: ");
     buf_puts(&b, data);
     buf_puts(&b, "\n\n");
-    bool ok = send_all(fd, b.ptr, b.len);
+    bool ok = sse_send_buffer(fd, b.ptr, b.len);
     buf_free(&b);
     return ok;
 }
@@ -7620,6 +7766,12 @@ static void server_log(ds4_log_type type, const char *fmt, ...) {
 
 typedef struct job job;
 
+typedef enum {
+    ENQUEUE_OK = 0,
+    ENQUEUE_STOPPING,
+    ENQUEUE_FULL
+} enqueue_result;
+
 typedef ds4_kvstore_entry kv_entry;
 typedef ds4_kvstore_options kv_cache_options;
 typedef ds4_kvstore kv_disk_cache;
@@ -7713,12 +7865,131 @@ struct server {
     job *head;
     job *tail;
     bool stopping;
+    int queued_jobs;
+    int max_queued_jobs;
     int clients;
+    uint64_t total_requests;
+    uint64_t completed_requests;
+    uint64_t rejected_jobs;
+    uint64_t total_send_failures;
+    uint64_t total_stream_stalls;
+    uint64_t sse_frame_count;
+    uint64_t send_all_calls;
+    double last_prefill_sec;
+    double last_decode_sec;
+    double last_ttft_sec;
+    int last_prompt_tokens;
+    int last_completion_tokens;
+    int last_cached_tokens;
+    int mtp_enabled;
+    uint64_t mtp_drafted_tokens;
+    uint64_t mtp_accepted_tokens;
+    double mtp_accept_rate;
+    double mtp_verify_ms;
+    int kv_cache_enabled;
+    int kv_cache_entries;
+    uint64_t kv_cache_bytes;
+    uint64_t kv_cache_budget_bytes;
+    uint64_t kv_cache_full_scans;
+    uint64_t kv_cache_disk_hits;
+    uint64_t kv_cache_disk_misses;
+    uint64_t kv_cache_disk_loaded_tokens;
+    uint64_t kv_cache_store_successes;
+    uint64_t kv_cache_store_failures;
+    int kv_cache_last_load_tokens;
+    double kv_cache_last_load_ms;
+    int kv_cache_last_store_tokens;
     uint64_t seq;
     FILE *trace;
     pthread_mutex_t trace_mu;
     uint64_t trace_seq;
 };
+
+static uint64_t kv_cache_current_bytes(const kv_disk_cache *kc) {
+    uint64_t bytes = 0;
+    if (!kc || !kc->entry || kc->len <= 0) return 0;
+    for (int i = 0; i < kc->len; i++) bytes += kc->entry[i].file_size;
+    return bytes;
+}
+
+static void server_metrics_refresh_kv_snapshot(server *s) {
+    if (!s) return;
+    int enabled = s->kv.enabled ? 1 : 0;
+    int entries = s->kv.len;
+    uint64_t bytes = kv_cache_current_bytes(&s->kv);
+    uint64_t budget_bytes = s->kv.budget_bytes;
+    uint64_t full_scans = s->kv.full_scan_count;
+
+    pthread_mutex_lock(&s->mu);
+    s->kv_cache_enabled = enabled;
+    s->kv_cache_entries = entries;
+    s->kv_cache_bytes = bytes;
+    s->kv_cache_budget_bytes = budget_bytes;
+    s->kv_cache_full_scans = full_scans;
+    pthread_mutex_unlock(&s->mu);
+}
+
+static void server_metrics_refresh_mtp_snapshot(server *s) {
+    if (!s) return;
+    ds4_mtp_metrics m = ds4_session_mtp_metrics(s->session);
+
+    pthread_mutex_lock(&s->mu);
+    s->mtp_enabled = m.enabled;
+    s->mtp_drafted_tokens = m.drafted_tokens;
+    s->mtp_accepted_tokens = m.accepted_tokens;
+    s->mtp_accept_rate = m.accept_rate;
+    s->mtp_verify_ms = m.verify_ms;
+    pthread_mutex_unlock(&s->mu);
+}
+
+static void server_metrics_note_kv_load(server *s, int loaded,
+                                        const ds4_kvstore_load_result *lr) {
+    if (!s || !s->kv.enabled) return;
+    pthread_mutex_lock(&s->mu);
+    if (loaded > 0) {
+        s->kv_cache_disk_hits++;
+        s->kv_cache_disk_loaded_tokens += (uint64_t)loaded;
+        s->kv_cache_last_load_tokens = loaded;
+        s->kv_cache_last_load_ms = lr ? lr->load_ms : 0.0;
+    } else {
+        s->kv_cache_disk_misses++;
+        s->kv_cache_last_load_tokens = 0;
+        s->kv_cache_last_load_ms = 0.0;
+    }
+    pthread_mutex_unlock(&s->mu);
+    server_metrics_refresh_kv_snapshot(s);
+}
+
+static void server_metrics_note_kv_store(server *s, bool ok, int tokens) {
+    if (!s || !s->kv.enabled) return;
+    pthread_mutex_lock(&s->mu);
+    if (ok) {
+        s->kv_cache_store_successes++;
+        s->kv_cache_last_store_tokens = tokens;
+    } else {
+        s->kv_cache_store_failures++;
+    }
+    pthread_mutex_unlock(&s->mu);
+    server_metrics_refresh_kv_snapshot(s);
+}
+
+static void server_metrics_note_send(bool ok, bool stalled) {
+    server *s = g_metrics_server;
+    if (!s) return;
+    pthread_mutex_lock(&s->mu);
+    s->send_all_calls++;
+    if (!ok) s->total_send_failures++;
+    if (stalled) s->total_stream_stalls++;
+    pthread_mutex_unlock(&s->mu);
+}
+
+static void server_metrics_note_sse_frames(size_t frames) {
+    server *s = g_metrics_server;
+    if (!s || frames == 0) return;
+    pthread_mutex_lock(&s->mu);
+    s->sse_frame_count += (uint64_t)frames;
+    pthread_mutex_unlock(&s->mu);
+}
 
 /* Jobs are stack-owned by the client thread.  The worker signals completion
  * after the response has been written, so request data and the socket remain
@@ -8695,12 +8966,14 @@ static bool kv_cache_store_live_prefix_text(server *s, const ds4_tokens *tokens,
                                             const char *cache_text_key) {
     char err[160] = {0};
     ds4_kvstore_trailer_hooks hooks = kv_cache_tool_map_hooks(s, NULL);
-    return ds4_kvstore_store_live_prefix_text(&s->kv, s->engine, s->session,
-                                              tokens, store_len, reason,
-                                              cache_text_override,
-                                              cache_text_ext,
-                                              cache_text_key,
-                                              &hooks, err, sizeof(err));
+    bool ok = ds4_kvstore_store_live_prefix_text(&s->kv, s->engine, s->session,
+                                                 tokens, store_len, reason,
+                                                 cache_text_override,
+                                                 cache_text_ext,
+                                                 cache_text_key,
+                                                 &hooks, err, sizeof(err));
+    server_metrics_note_kv_store(s, ok, store_len);
+    return ok;
 }
 
 static bool kv_cache_store_live_prefix(server *s, const ds4_tokens *tokens,
@@ -8767,6 +9040,7 @@ static void kv_cache_restore_suppressed_continued(kv_disk_cache *kc,
 static void kv_cache_discard_failed_disk_entry(server *s, const char *path) {
     if (!s || !path) return;
     if (unlink(path) == 0) {
+        s->kv.index_dirty = true;
         server_log(DS4_LOG_KVCACHE,
                    "ds4-server: kv cache discarded reason=prefill-failed file=%s",
                    path);
@@ -8777,6 +9051,7 @@ static void kv_cache_discard_failed_disk_entry(server *s, const char *path) {
     }
     s->kv.continued_last_store_tokens = 0;
     ds4_session_invalidate(s->session);
+    server_metrics_refresh_kv_snapshot(s);
 }
 
 static void kv_cache_maybe_store_continued(server *s) {
@@ -8809,6 +9084,7 @@ static int kv_cache_try_load_text(server *s, const char *prompt_text,
     int loaded = ds4_kvstore_try_load_text(&s->kv, s->engine, s->session,
                                            prompt_text, effective_prompt, &lr,
                                            &hooks, responses_protocol);
+    server_metrics_note_kv_load(s, loaded, &lr);
     if (loaded > 0) {
         if (loaded_path_out && lr.path) *loaded_path_out = xstrdup(lr.path);
         if (loaded_ext_flags_out) *loaded_ext_flags_out = lr.ext_flags;
@@ -10184,13 +10460,14 @@ static void generate_job(server *s, job *j) {
     ds4_session_set_progress(s->session, NULL, NULL);
     ds4_session_set_display_progress(s->session, NULL, NULL);
     kv_cache_maybe_store_continued(s);
+    const double prefill_sec = now_sec() - t0;
     server_log(DS4_LOG_PREFILL,
                "ds4-server: %s ctx=%s%s%s prompt done %.3fs",
                j->req.kind == REQ_CHAT ? "chat" : "completion",
                ctx_span,
                req_flags[0] ? " " : "",
                req_flags,
-               now_sec() - t0);
+               prefill_sec);
     if (cold_store_len == prompt_for_sync->len) {
         if (kv_cache_store_live_prefix(s, prompt_for_sync, cold_store_len, "cold")) {
             kv_cache_note_store(&s->kv, cold_store_len);
@@ -10733,6 +11010,17 @@ decode_again:
                  parsed_content ? parsed_content : (text.ptr ? text.ptr : ""),
                  parsed_reasoning, &parsed_calls, now_sec() - t0);
 
+    server_metrics_refresh_mtp_snapshot(s);
+
+    pthread_mutex_lock(&s->mu);
+    s->last_prefill_sec = prefill_sec;
+    s->last_decode_sec = now_sec() - decode_t0;
+    s->last_ttft_sec = prefill_sec;
+    s->last_prompt_tokens = prompt_tokens;
+    s->last_completion_tokens = completion;
+    s->last_cached_tokens = cached;
+    pthread_mutex_unlock(&s->mu);
+
     if (j->req.api == API_RESPONSES) {
         if (strcmp(final_finish, "error") && strcmp(final_finish, "length")) {
             /* Store the post-turn visible transcript plus the live token
@@ -10919,17 +11207,24 @@ decode_again:
     ds4_tokens_free(&effective_prompt);
 }
 
-static bool enqueue(server *s, job *j) {
+static enqueue_result enqueue(server *s, job *j) {
     pthread_mutex_lock(&s->mu);
     if (s->stopping) {
         pthread_mutex_unlock(&s->mu);
-        return false;
+        return ENQUEUE_STOPPING;
+    }
+    if (s->max_queued_jobs > 0 && s->queued_jobs >= s->max_queued_jobs) {
+        s->rejected_jobs++;
+        pthread_mutex_unlock(&s->mu);
+        return ENQUEUE_FULL;
     }
     if (s->tail) s->tail->next = j; else s->head = j;
     s->tail = j;
+    s->queued_jobs++;
+    s->total_requests++;
     pthread_cond_signal(&s->cv);
     pthread_mutex_unlock(&s->mu);
-    return true;
+    return ENQUEUE_OK;
 }
 
 static job *dequeue(server *s) {
@@ -10942,6 +11237,7 @@ static job *dequeue(server *s) {
     job *j = s->head;
     s->head = j->next;
     if (!s->head) s->tail = NULL;
+    if (s->queued_jobs > 0) s->queued_jobs--;
     pthread_mutex_unlock(&s->mu);
     j->next = NULL;
     return j;
@@ -10952,7 +11248,12 @@ static void *worker_main(void *arg) {
     for (;;) {
         job *j = dequeue(s);
         if (!j) break;
+        server_metrics_set(s);
         generate_job(s, j);
+        server_metrics_set(NULL);
+        pthread_mutex_lock(&s->mu);
+        s->completed_requests++;
+        pthread_mutex_unlock(&s->mu);
         pthread_mutex_lock(&j->mu);
         j->done = true;
         pthread_cond_signal(&j->cv);
@@ -11118,6 +11419,152 @@ static bool send_models(server *s, int fd) {
     return ok;
 }
 
+static bool send_server_metrics(server *s, int fd) {
+    int queued_jobs;
+    int max_queued_jobs;
+    uint64_t total_requests;
+    uint64_t completed_requests;
+    uint64_t rejected_jobs;
+    uint64_t total_send_failures;
+    uint64_t total_stream_stalls;
+    uint64_t sse_frame_count;
+    uint64_t send_all_calls;
+    double last_prefill_sec;
+    double last_decode_sec;
+    double last_ttft_sec;
+    int last_prompt_tokens;
+    int last_completion_tokens;
+    int last_cached_tokens;
+    int mtp_enabled;
+    uint64_t mtp_drafted_tokens;
+    uint64_t mtp_accepted_tokens;
+    double mtp_accept_rate;
+    double mtp_verify_ms;
+    int kv_cache_enabled;
+    int kv_cache_entries;
+    uint64_t kv_cache_bytes;
+    uint64_t kv_cache_budget_bytes;
+    uint64_t kv_cache_full_scans;
+    uint64_t kv_cache_disk_hits;
+    uint64_t kv_cache_disk_misses;
+    uint64_t kv_cache_disk_loaded_tokens;
+    uint64_t kv_cache_store_successes;
+    uint64_t kv_cache_store_failures;
+    int kv_cache_last_load_tokens;
+    double kv_cache_last_load_ms;
+    int kv_cache_last_store_tokens;
+
+    pthread_mutex_lock(&s->mu);
+    queued_jobs = s->queued_jobs;
+    max_queued_jobs = s->max_queued_jobs;
+    total_requests = s->total_requests;
+    completed_requests = s->completed_requests;
+    rejected_jobs = s->rejected_jobs;
+    total_send_failures = s->total_send_failures;
+    total_stream_stalls = s->total_stream_stalls;
+    sse_frame_count = s->sse_frame_count;
+    send_all_calls = s->send_all_calls;
+    last_prefill_sec = s->last_prefill_sec;
+    last_decode_sec = s->last_decode_sec;
+    last_ttft_sec = s->last_ttft_sec;
+    last_prompt_tokens = s->last_prompt_tokens;
+    last_completion_tokens = s->last_completion_tokens;
+    last_cached_tokens = s->last_cached_tokens;
+    mtp_enabled = s->mtp_enabled;
+    mtp_drafted_tokens = s->mtp_drafted_tokens;
+    mtp_accepted_tokens = s->mtp_accepted_tokens;
+    mtp_accept_rate = s->mtp_accept_rate;
+    mtp_verify_ms = s->mtp_verify_ms;
+    kv_cache_enabled = s->kv_cache_enabled;
+    kv_cache_entries = s->kv_cache_entries;
+    kv_cache_bytes = s->kv_cache_bytes;
+    kv_cache_budget_bytes = s->kv_cache_budget_bytes;
+    kv_cache_full_scans = s->kv_cache_full_scans;
+    kv_cache_disk_hits = s->kv_cache_disk_hits;
+    kv_cache_disk_misses = s->kv_cache_disk_misses;
+    kv_cache_disk_loaded_tokens = s->kv_cache_disk_loaded_tokens;
+    kv_cache_store_successes = s->kv_cache_store_successes;
+    kv_cache_store_failures = s->kv_cache_store_failures;
+    kv_cache_last_load_tokens = s->kv_cache_last_load_tokens;
+    kv_cache_last_load_ms = s->kv_cache_last_load_ms;
+    kv_cache_last_store_tokens = s->kv_cache_last_store_tokens;
+    pthread_mutex_unlock(&s->mu);
+
+    buf b = {0};
+    buf_printf(&b,
+        "{"
+        "\"queued_jobs\":%d,"
+        "\"max_queued_jobs\":%d,"
+        "\"total_requests\":%llu,"
+        "\"completed_requests\":%llu,"
+        "\"rejected_jobs\":%llu,"
+        "\"total_send_failures\":%llu,"
+        "\"total_stream_stalls\":%llu,"
+        "\"sse_frame_count\":%llu,"
+        "\"send_all_calls\":%llu,"
+        "\"last_prefill_sec\":%.6f,"
+        "\"last_decode_sec\":%.6f,"
+        "\"last_ttft_sec\":%.6f,"
+        "\"last_prompt_tokens\":%d,"
+        "\"last_completion_tokens\":%d,"
+        "\"last_cached_tokens\":%d,"
+        "\"mtp_enabled\":%d,"
+        "\"mtp_drafted_tokens\":%llu,"
+        "\"mtp_accepted_tokens\":%llu,"
+        "\"mtp_accept_rate\":%.6f,"
+        "\"mtp_verify_ms\":%.6f,"
+        "\"kv_cache_enabled\":%d,"
+        "\"kv_cache_entries\":%d,"
+        "\"kv_cache_bytes\":%llu,"
+        "\"kv_cache_budget_bytes\":%llu,"
+        "\"kv_cache_full_scans\":%llu,"
+        "\"kv_cache_disk_hits\":%llu,"
+        "\"kv_cache_disk_misses\":%llu,"
+        "\"kv_cache_disk_loaded_tokens\":%llu,"
+        "\"kv_cache_store_successes\":%llu,"
+        "\"kv_cache_store_failures\":%llu,"
+        "\"kv_cache_last_load_tokens\":%d,"
+        "\"kv_cache_last_load_ms\":%.6f,"
+        "\"kv_cache_last_store_tokens\":%d"
+        "}\n",
+        queued_jobs,
+        max_queued_jobs,
+        (unsigned long long)total_requests,
+        (unsigned long long)completed_requests,
+        (unsigned long long)rejected_jobs,
+        (unsigned long long)total_send_failures,
+        (unsigned long long)total_stream_stalls,
+        (unsigned long long)sse_frame_count,
+        (unsigned long long)send_all_calls,
+        last_prefill_sec,
+        last_decode_sec,
+        last_ttft_sec,
+        last_prompt_tokens,
+        last_completion_tokens,
+        last_cached_tokens,
+        mtp_enabled,
+        (unsigned long long)mtp_drafted_tokens,
+        (unsigned long long)mtp_accepted_tokens,
+        mtp_accept_rate,
+        mtp_verify_ms,
+        kv_cache_enabled,
+        kv_cache_entries,
+        (unsigned long long)kv_cache_bytes,
+        (unsigned long long)kv_cache_budget_bytes,
+        (unsigned long long)kv_cache_full_scans,
+        (unsigned long long)kv_cache_disk_hits,
+        (unsigned long long)kv_cache_disk_misses,
+        (unsigned long long)kv_cache_disk_loaded_tokens,
+        (unsigned long long)kv_cache_store_successes,
+        (unsigned long long)kv_cache_store_failures,
+        kv_cache_last_load_tokens,
+        kv_cache_last_load_ms,
+        kv_cache_last_store_tokens);
+    bool ok = http_response(fd, s->enable_cors, 200, "application/json", b.ptr);
+    buf_free(&b);
+    return ok;
+}
+
 static void client_done(server *s) {
     pthread_mutex_lock(&s->mu);
     if (s->clients > 0) s->clients--;
@@ -11132,6 +11579,7 @@ static void *client_main(void *arg) {
     server *s = ca->srv;
     int fd = ca->fd;
     free(ca);
+    server_metrics_set(s);
 
     http_request hr = {0};
     if (!read_http_request(fd, &hr)) {
@@ -11147,6 +11595,11 @@ static void *client_main(void *arg) {
 
     if (!strcmp(hr.method, "GET") && !strcmp(hr.path, "/v1/models")) {
         send_models(s, fd);
+        http_request_free(&hr);
+        goto done;
+    }
+    if (!strcmp(hr.method, "GET") && !strcmp(hr.path, "/api/server/metrics")) {
+        send_server_metrics(s, fd);
         http_request_free(&hr);
         goto done;
     }
@@ -11207,9 +11660,14 @@ static void *client_main(void *arg) {
     pthread_cond_init(&j.cv, NULL);
 
     pthread_mutex_lock(&j.mu);
-    if (!enqueue(s, &j)) {
+    enqueue_result enq = enqueue(s, &j);
+    if (enq != ENQUEUE_OK) {
         pthread_mutex_unlock(&j.mu);
-        http_error(fd, s->enable_cors, 503, "server shutting down");
+        if (enq == ENQUEUE_FULL) {
+            http_error_retry_after(fd, s->enable_cors, 503, 1, "server queue full");
+        } else {
+            http_error(fd, s->enable_cors, 503, "server shutting down");
+        }
         pthread_cond_destroy(&j.cv);
         pthread_mutex_destroy(&j.mu);
         request_free(&j.req);
@@ -11222,6 +11680,7 @@ static void *client_main(void *arg) {
     pthread_mutex_destroy(&j.mu);
     request_free(&j.req);
 done:
+    server_metrics_set(NULL);
     close(fd);
     client_done(s);
     return NULL;
@@ -11260,6 +11719,9 @@ static void configure_client_socket(int fd) {
     tv.tv_usec = 0;
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    int one = 1;
+    (void)setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
 }
 
 static void set_client_socket_nonblocking(int fd) {
@@ -11284,6 +11746,7 @@ typedef struct {
     bool kv_cache_reject_different_quant;
     bool disable_exact_dsml_tool_replay;
     int tool_memory_max_ids;
+    int max_queued_jobs;
     bool enable_cors;
 } server_config;
 
@@ -11402,6 +11865,8 @@ static void usage(FILE *fp) {
         "      Add Access-Control-Allow-* headers for browser JS clients. Does not change --host.\n"
         "  --trace FILE\n"
         "      Write a human-readable session trace: prompts, cache decisions, output, tool calls.\n"
+        "  --max-queued-jobs N\n"
+        "      Maximum requests waiting for the single worker before HTTP 503. Default: 8\n"
         "\n"
         "Thinking and sampling:\n"
         "  DeepSeek-compatible chat requests default to thinking mode with high effort.\n"
@@ -11483,6 +11948,7 @@ static server_config parse_options(int argc, char **argv) {
         .ctx_size = 32768,
         .default_tokens = 393216,
         .tool_memory_max_ids = DS4_TOOL_MEMORY_DEFAULT_MAX_IDS,
+        .max_queued_jobs = 8,
     };
     c.kv_cache = kv_cache_default_options();
 
@@ -11516,6 +11982,8 @@ static server_config parse_options(int argc, char **argv) {
             c.enable_cors = true;
         } else if (!strcmp(arg, "--trace")) {
             c.trace_path = need_arg(&i, argc, argv, arg);
+        } else if (!strcmp(arg, "--max-queued-jobs")) {
+            c.max_queued_jobs = parse_int_arg(need_arg(&i, argc, argv, arg), arg);
         } else if (!strcmp(arg, "--kv-disk-dir")) {
             c.kv_disk_dir = need_arg(&i, argc, argv, arg);
         } else if (!strcmp(arg, "--kv-disk-space-mb")) {
@@ -11619,6 +12087,7 @@ int main(int argc, char **argv) {
     s.disable_exact_dsml_tool_replay = cfg.disable_exact_dsml_tool_replay;
     s.tool_mem.max_entries = cfg.tool_memory_max_ids;
     s.enable_cors = cfg.enable_cors;
+    s.max_queued_jobs = cfg.max_queued_jobs;
     if (cfg.kv_disk_dir) {
         kv_cache_open(&s.kv, cfg.kv_disk_dir, cfg.kv_disk_space_mb,
                       cfg.kv_cache_reject_different_quant, cfg.kv_cache);
@@ -11632,6 +12101,8 @@ int main(int argc, char **argv) {
     pthread_cond_init(&s.clients_cv, NULL);
     pthread_mutex_init(&s.tool_mu, NULL);
     pthread_mutex_init(&s.trace_mu, NULL);
+    server_metrics_refresh_kv_snapshot(&s);
+    server_metrics_refresh_mtp_snapshot(&s);
     if (cfg.trace_path) {
         s.trace = fopen(cfg.trace_path, "w");
         if (!s.trace) {
@@ -12113,6 +12584,218 @@ static void test_cors_preflight_response_is_no_content(void) {
     TEST_ASSERT(strstr(out, "Access-Control-Allow-Origin: *") != NULL);
 
     free(out);
+    close(sv[0]);
+    close(sv[1]);
+}
+
+static void test_http_retry_after_error_response(void) {
+    int sv[2];
+    TEST_ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
+    if (sv[0] < 0 || sv[1] < 0) return;
+
+    TEST_ASSERT(http_error_retry_after(sv[0], true, 503, 1, "server queue full"));
+    shutdown(sv[0], SHUT_WR);
+    char *out = read_socket_text(sv[1]);
+    TEST_ASSERT(strstr(out, "HTTP/1.1 503 Service Unavailable") != NULL);
+    TEST_ASSERT(strstr(out, "Retry-After: 1") != NULL);
+    TEST_ASSERT(strstr(out, "\"message\":\"server queue full\"") != NULL);
+    TEST_ASSERT(strstr(out, "Access-Control-Allow-Origin: *") != NULL);
+
+    free(out);
+    close(sv[0]);
+    close(sv[1]);
+}
+
+static void test_server_metrics_json_reports_queue_counters(void) {
+    server s;
+    memset(&s, 0, sizeof(s));
+    pthread_mutex_init(&s.mu, NULL);
+    s.queued_jobs = 2;
+    s.max_queued_jobs = 3;
+    s.total_requests = 5;
+    s.completed_requests = 4;
+    s.rejected_jobs = 1;
+    s.total_send_failures = 7;
+    s.total_stream_stalls = 8;
+    s.sse_frame_count = 9;
+    s.send_all_calls = 10;
+    s.last_prefill_sec = 1.25;
+    s.last_decode_sec = 2.5;
+    s.last_ttft_sec = 1.5;
+    s.last_prompt_tokens = 11;
+    s.last_completion_tokens = 12;
+    s.last_cached_tokens = 13;
+    s.kv_cache_enabled = 1;
+    s.kv_cache_entries = 2;
+    s.kv_cache_bytes = 4096;
+    s.kv_cache_budget_bytes = 8192;
+    s.kv_cache_full_scans = 3;
+    s.kv_cache_disk_hits = 4;
+    s.kv_cache_disk_misses = 5;
+    s.kv_cache_disk_loaded_tokens = 6000;
+    s.kv_cache_store_successes = 6;
+    s.kv_cache_store_failures = 1;
+    s.kv_cache_last_load_tokens = 2048;
+    s.kv_cache_last_load_ms = 12.5;
+    s.kv_cache_last_store_tokens = 4096;
+
+    int sv[2];
+    TEST_ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
+    if (sv[0] < 0 || sv[1] < 0) return;
+
+    TEST_ASSERT(send_server_metrics(&s, sv[0]));
+    shutdown(sv[0], SHUT_WR);
+    char *out = read_socket_text(sv[1]);
+    TEST_ASSERT(strstr(out, "HTTP/1.1 200 OK") != NULL);
+    TEST_ASSERT(strstr(out, "\"queued_jobs\":2") != NULL);
+    TEST_ASSERT(strstr(out, "\"max_queued_jobs\":3") != NULL);
+    TEST_ASSERT(strstr(out, "\"total_requests\":5") != NULL);
+    TEST_ASSERT(strstr(out, "\"completed_requests\":4") != NULL);
+    TEST_ASSERT(strstr(out, "\"rejected_jobs\":1") != NULL);
+    TEST_ASSERT(strstr(out, "\"sse_frame_count\":9") != NULL);
+    TEST_ASSERT(strstr(out, "\"send_all_calls\":10") != NULL);
+    TEST_ASSERT(strstr(out, "\"last_prompt_tokens\":11") != NULL);
+    TEST_ASSERT(strstr(out, "\"last_completion_tokens\":12") != NULL);
+    TEST_ASSERT(strstr(out, "\"last_cached_tokens\":13") != NULL);
+    TEST_ASSERT(strstr(out, "\"kv_cache_enabled\":1") != NULL);
+    TEST_ASSERT(strstr(out, "\"kv_cache_entries\":2") != NULL);
+    TEST_ASSERT(strstr(out, "\"kv_cache_bytes\":4096") != NULL);
+    TEST_ASSERT(strstr(out, "\"kv_cache_budget_bytes\":8192") != NULL);
+    TEST_ASSERT(strstr(out, "\"kv_cache_full_scans\":3") != NULL);
+    TEST_ASSERT(strstr(out, "\"kv_cache_disk_hits\":4") != NULL);
+    TEST_ASSERT(strstr(out, "\"kv_cache_disk_misses\":5") != NULL);
+    TEST_ASSERT(strstr(out, "\"kv_cache_disk_loaded_tokens\":6000") != NULL);
+    TEST_ASSERT(strstr(out, "\"kv_cache_store_successes\":6") != NULL);
+    TEST_ASSERT(strstr(out, "\"kv_cache_store_failures\":1") != NULL);
+    TEST_ASSERT(strstr(out, "\"kv_cache_last_load_tokens\":2048") != NULL);
+    TEST_ASSERT(strstr(out, "\"kv_cache_last_load_ms\":12.500000") != NULL);
+    TEST_ASSERT(strstr(out, "\"kv_cache_last_store_tokens\":4096") != NULL);
+    TEST_ASSERT(strstr(out, "\"mtp_enabled\":0") != NULL);
+    TEST_ASSERT(strstr(out, "\"mtp_drafted_tokens\":0") != NULL);
+    TEST_ASSERT(strstr(out, "\"mtp_accepted_tokens\":0") != NULL);
+    TEST_ASSERT(strstr(out, "\"mtp_accept_rate\":0.000000") != NULL);
+    TEST_ASSERT(strstr(out, "\"mtp_verify_ms\":0.000000") != NULL);
+
+    free(out);
+    close(sv[0]);
+    close(sv[1]);
+    pthread_mutex_destroy(&s.mu);
+}
+
+static void test_enqueue_rejects_when_queue_is_full(void) {
+    server s;
+    memset(&s, 0, sizeof(s));
+    s.max_queued_jobs = 1;
+    pthread_mutex_init(&s.mu, NULL);
+    pthread_cond_init(&s.cv, NULL);
+
+    job first = {0};
+    job second = {0};
+    TEST_ASSERT(enqueue(&s, &first) == ENQUEUE_OK);
+    TEST_ASSERT(enqueue(&s, &second) == ENQUEUE_FULL);
+    TEST_ASSERT(s.queued_jobs == 1);
+    TEST_ASSERT(s.rejected_jobs == 1);
+    TEST_ASSERT(s.total_requests == 1);
+
+    job *out = dequeue(&s);
+    TEST_ASSERT(out == &first);
+    TEST_ASSERT(s.queued_jobs == 0);
+
+    pthread_cond_destroy(&s.cv);
+    pthread_mutex_destroy(&s.mu);
+}
+
+static int count_substr(const char *s, const char *needle) {
+    int n = 0;
+    size_t needle_len = strlen(needle);
+    if (!s || !needle || needle_len == 0) return 0;
+    while ((s = strstr(s, needle)) != NULL) {
+        n++;
+        s += needle_len;
+    }
+    return n;
+}
+
+static void test_sse_metrics_count_frames_and_send_calls(void) {
+    int sv[2];
+    TEST_ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
+    if (sv[0] < 0 || sv[1] < 0) return;
+
+    server s;
+    memset(&s, 0, sizeof(s));
+    pthread_mutex_init(&s.mu, NULL);
+    server_metrics_set(&s);
+
+    request r;
+    request_init(&r, REQ_CHAT, 128);
+    r.api = API_OPENAI;
+    r.stream = true;
+
+    TEST_ASSERT(sse_chunk(sv[0], &r, "chatcmpl_metrics", NULL, NULL));
+    TEST_ASSERT(sse_done(sv[0], &r, "chatcmpl_metrics", 4, 1));
+    server_metrics_set(NULL);
+    shutdown(sv[0], SHUT_WR);
+    char *out = read_socket_text(sv[1]);
+
+    TEST_ASSERT(strstr(out, "\"role\":\"assistant\"") != NULL);
+    TEST_ASSERT(strstr(out, "data: [DONE]") != NULL);
+    TEST_ASSERT(s.sse_frame_count == 2);
+    TEST_ASSERT(s.send_all_calls == 2);
+    TEST_ASSERT(s.total_send_failures == 0);
+
+    free(out);
+    request_free(&r);
+    pthread_mutex_destroy(&s.mu);
+    close(sv[0]);
+    close(sv[1]);
+}
+
+static void test_openai_live_stream_batches_small_text_deltas(void) {
+    int sv[2];
+    TEST_ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
+    if (sv[0] < 0 || sv[1] < 0) return;
+
+    server s;
+    memset(&s, 0, sizeof(s));
+    pthread_mutex_init(&s.mu, NULL);
+    server_metrics_set(&s);
+
+    request r;
+    request_init(&r, REQ_CHAT, 128);
+    r.api = API_OPENAI;
+    r.stream = true;
+    r.think_mode = DS4_THINK_NONE;
+
+    openai_stream st;
+    openai_stream_start(&r, &st);
+    const char *raw1 = "hello ";
+    TEST_ASSERT(openai_sse_stream_update(sv[0], &s, &r, "chatcmpl_batch", &st,
+                                         raw1, strlen(raw1), false));
+    TEST_ASSERT(s.sse_frame_count == 1);
+
+    const char *raw2 = "hello brave ";
+    TEST_ASSERT(openai_sse_stream_update(sv[0], &s, &r, "chatcmpl_batch", &st,
+                                         raw2, strlen(raw2), false));
+    TEST_ASSERT(s.sse_frame_count == 1);
+
+    const char *raw3 = "hello brave world";
+    TEST_ASSERT(openai_sse_finish_live(sv[0], &s, &r, "chatcmpl_batch", &st,
+                                       raw3, strlen(raw3), NULL,
+                                       "stop", 5, 2));
+    server_metrics_set(NULL);
+    shutdown(sv[0], SHUT_WR);
+    char *out = read_socket_text(sv[1]);
+
+    TEST_ASSERT(strstr(out, "\"content\":\"hello \"") != NULL);
+    TEST_ASSERT(strstr(out, "\"content\":\"brave world\"") != NULL);
+    TEST_ASSERT(count_substr(out, "\"content\":") == 2);
+    TEST_ASSERT(strstr(out, "data: [DONE]") != NULL);
+    TEST_ASSERT(s.sse_frame_count == 4);
+
+    free(out);
+    openai_stream_free(&st);
+    request_free(&r);
+    pthread_mutex_destroy(&s.mu);
     close(sv[0]);
     close(sv[1]);
 }
@@ -14788,6 +15471,170 @@ static void test_kv_cache_lookup_rejects_stale_payload_abi(void) {
     rmdir(dir);
 }
 
+static void test_kv_cache_refresh_skips_fresh_scan(void) {
+    char tmpl[] = "/tmp/ds4-kv-refresh-skip-test.XXXXXX";
+    char *dir = mkdtemp(tmpl);
+    TEST_ASSERT(dir != NULL);
+    if (!dir) return;
+
+    const char *text = "refresh cached prefix";
+    test_kv_text_stub_file(dir, text, KV_REASON_COLD, 512, 0);
+
+    kv_disk_cache kc = {0};
+    kc.enabled = true;
+    kc.dir = xstrdup(dir);
+    kc.opt = kv_cache_default_options();
+
+    int idx = kv_cache_find_text_prefix(&kc, "refresh cached prefix and suffix",
+                                        2, 32768);
+    TEST_ASSERT(idx >= 0);
+    TEST_ASSERT(kc.index_loaded);
+    TEST_ASSERT(!kc.index_dirty);
+    TEST_ASSERT(kc.full_scan_count == 1);
+
+    idx = kv_cache_find_text_prefix(&kc, "refresh cached prefix and suffix",
+                                    2, 32768);
+    TEST_ASSERT(idx >= 0);
+    TEST_ASSERT(kc.full_scan_count == 1);
+
+    kv_cache_close(&kc);
+    char sha[41];
+    sha1_bytes_hex(text, strlen(text), sha);
+    char name[44];
+    snprintf(name, sizeof(name), "%.40s.kv", sha);
+    char *path = path_join(dir, name);
+    unlink(path);
+    free(path);
+    rmdir(dir);
+}
+
+static void test_kv_cache_refresh_rescans_when_dirty(void) {
+    char tmpl[] = "/tmp/ds4-kv-refresh-dirty-test.XXXXXX";
+    char *dir = mkdtemp(tmpl);
+    TEST_ASSERT(dir != NULL);
+    if (!dir) return;
+
+    const char *first = "first cached prefix";
+    const char *second = "second cached prefix";
+    test_kv_text_stub_file(dir, first, KV_REASON_COLD, 512, 0);
+
+    kv_disk_cache kc = {0};
+    kc.enabled = true;
+    kc.dir = xstrdup(dir);
+    kc.opt = kv_cache_default_options();
+
+    TEST_ASSERT(kv_cache_find_text_prefix(&kc, "first cached prefix tail",
+                                          2, 32768) >= 0);
+    TEST_ASSERT(kc.full_scan_count == 1);
+
+    test_kv_text_stub_file(dir, second, KV_REASON_COLD, 768, 0);
+    TEST_ASSERT(kv_cache_find_text_prefix(&kc, "second cached prefix tail",
+                                          2, 32768) < 0);
+    TEST_ASSERT(kc.full_scan_count == 1);
+
+    kc.index_dirty = true;
+    int idx = kv_cache_find_text_prefix(&kc, "second cached prefix tail",
+                                        2, 32768);
+    TEST_ASSERT(idx >= 0);
+    TEST_ASSERT(idx >= 0 && kc.entry[idx].tokens == 768);
+    TEST_ASSERT(!kc.index_dirty);
+    TEST_ASSERT(kc.full_scan_count == 2);
+
+    kv_cache_close(&kc);
+    const char *texts[] = { first, second };
+    for (size_t i = 0; i < sizeof(texts) / sizeof(texts[0]); i++) {
+        char sha[41];
+        sha1_bytes_hex(texts[i], strlen(texts[i]), sha);
+        char name[44];
+        snprintf(name, sizeof(name), "%.40s.kv", sha);
+        char *path = path_join(dir, name);
+        unlink(path);
+        free(path);
+    }
+    rmdir(dir);
+}
+
+static void test_kv_cache_touch_defers_header_write_until_flush(void) {
+    char tmpl[] = "/tmp/ds4-kv-touch-defer-test.XXXXXX";
+    char *dir = mkdtemp(tmpl);
+    TEST_ASSERT(dir != NULL);
+    if (!dir) return;
+
+    const char *text = "touch deferred prefix";
+    test_kv_text_stub_file(dir, text, KV_REASON_COLD, 512, 0);
+
+    char sha[41];
+    sha1_bytes_hex(text, strlen(text), sha);
+    char name[44];
+    snprintf(name, sizeof(name), "%.40s.kv", sha);
+    char *path = path_join(dir, name);
+
+    kv_disk_cache kc = {0};
+    kc.enabled = true;
+    kc.dir = xstrdup(dir);
+    kc.opt = kv_cache_default_options();
+
+    int idx = kv_cache_find_text_prefix(&kc, "touch deferred prefix tail",
+                                        2, 32768);
+    TEST_ASSERT(idx >= 0);
+    TEST_ASSERT(ds4_kvstore_touch_entry(&kc, idx));
+    TEST_ASSERT(kc.entry[idx].hits == 1);
+    TEST_ASSERT(kc.entry[idx].touch_dirty);
+
+    ds4_kvstore_entry disk = {0};
+    TEST_ASSERT(ds4_kvstore_read_entry_file(path, sha, &disk));
+    TEST_ASSERT(disk.hits == 0);
+    ds4_kvstore_entry_free(&disk);
+
+    TEST_ASSERT(ds4_kvstore_flush_deferred_touches(&kc));
+    TEST_ASSERT(!kc.entry[idx].touch_dirty);
+
+    TEST_ASSERT(ds4_kvstore_read_entry_file(path, sha, &disk));
+    TEST_ASSERT(disk.hits == 1);
+    ds4_kvstore_entry_free(&disk);
+
+    kv_cache_close(&kc);
+    unlink(path);
+    free(path);
+    rmdir(dir);
+}
+
+static void test_kv_cache_close_flushes_deferred_touches(void) {
+    char tmpl[] = "/tmp/ds4-kv-touch-close-test.XXXXXX";
+    char *dir = mkdtemp(tmpl);
+    TEST_ASSERT(dir != NULL);
+    if (!dir) return;
+
+    const char *text = "touch close prefix";
+    test_kv_text_stub_file(dir, text, KV_REASON_COLD, 512, 0);
+
+    char sha[41];
+    sha1_bytes_hex(text, strlen(text), sha);
+    char name[44];
+    snprintf(name, sizeof(name), "%.40s.kv", sha);
+    char *path = path_join(dir, name);
+
+    kv_disk_cache kc = {0};
+    kc.enabled = true;
+    kc.dir = xstrdup(dir);
+    kc.opt = kv_cache_default_options();
+
+    int idx = kv_cache_find_text_prefix(&kc, "touch close prefix tail",
+                                        2, 32768);
+    TEST_ASSERT(idx >= 0);
+    TEST_ASSERT(ds4_kvstore_touch_entry(&kc, idx));
+    kv_cache_close(&kc);
+
+    ds4_kvstore_entry disk = {0};
+    TEST_ASSERT(ds4_kvstore_read_entry_file(path, sha, &disk));
+    TEST_ASSERT(disk.hits == 1);
+    ds4_kvstore_entry_free(&disk);
+
+    unlink(path);
+    free(path);
+    rmdir(dir);
+}
+
 static void test_kv_tool_map_filters_by_dsml_text(void) {
     const char *dsml_keep =
         "\n\n<｜DSML｜tool_calls>\n"
@@ -15508,6 +16355,53 @@ static void test_thinking_canonical_non_thinking_mode_noop(void) {
     chat_msgs_free(&msgs);
 }
 
+bool ds4_accelerator_startup_cache_failure_is_fatal(void);
+
+static char *test_env_save(const char *name) {
+    const char *value = getenv(name);
+    return value ? xstrdup(value) : NULL;
+}
+
+static void test_env_restore(const char *name, char *saved) {
+    if (saved) {
+        setenv(name, saved, 1);
+        free(saved);
+    } else {
+        unsetenv(name);
+    }
+}
+
+static void test_accelerator_startup_cache_failure_policy(void) {
+    char *saved = test_env_save("DS4_CUDA_STRICT_WEIGHT_CACHE");
+
+    unsetenv("DS4_CUDA_STRICT_WEIGHT_CACHE");
+    TEST_ASSERT(!ds4_accelerator_startup_cache_failure_is_fatal());
+
+    setenv("DS4_CUDA_STRICT_WEIGHT_CACHE", "1", 1);
+    TEST_ASSERT(ds4_accelerator_startup_cache_failure_is_fatal());
+
+    test_env_restore("DS4_CUDA_STRICT_WEIGHT_CACHE", saved);
+}
+
+#if !defined(__APPLE__) && !defined(DS4_NO_GPU)
+uint64_t ds4_cuda_model_cache_reserve_bytes(uint64_t total_bytes);
+
+static void test_cuda_model_cache_reserve_policy(void) {
+    const uint64_t gib = 1073741824ull;
+    char *saved = test_env_save("DS4_CUDA_WEIGHT_CACHE_RESERVE_MB");
+
+    unsetenv("DS4_CUDA_WEIGHT_CACHE_RESERVE_MB");
+    TEST_ASSERT(ds4_cuda_model_cache_reserve_bytes(16ull * gib) == 8ull * gib);
+    TEST_ASSERT(ds4_cuda_model_cache_reserve_bytes(96ull * gib) == 24ull * gib);
+    TEST_ASSERT(ds4_cuda_model_cache_reserve_bytes(256ull * gib) == 40ull * gib);
+
+    setenv("DS4_CUDA_WEIGHT_CACHE_RESERVE_MB", "4096", 1);
+    TEST_ASSERT(ds4_cuda_model_cache_reserve_bytes(96ull * gib) == 4ull * gib);
+
+    test_env_restore("DS4_CUDA_WEIGHT_CACHE_RESERVE_MB", saved);
+}
+#endif
+
 static void ds4_server_unit_tests_run(void) {
     test_request_defaults_use_min_p_filtering();
     test_reasoning_effort_mapping();
@@ -15532,6 +16426,11 @@ static void ds4_server_unit_tests_run(void) {
     test_context_length_error_uses_protocol_standard_shape();
     test_cors_headers_are_opt_in();
     test_cors_preflight_response_is_no_content();
+    test_http_retry_after_error_response();
+    test_server_metrics_json_reports_queue_counters();
+    test_enqueue_rejects_when_queue_is_full();
+    test_sse_metrics_count_frames_and_send_calls();
+    test_openai_live_stream_batches_small_text_deltas();
     test_cors_sse_headers();
     test_anthropic_live_stream_sends_incremental_blocks();
     test_anthropic_usage_reports_cache_details();
@@ -15577,6 +16476,10 @@ static void ds4_server_unit_tests_run(void) {
     test_thinking_canonical_multi_turn();
     test_thinking_canonical_with_tools_preserves_reasoning();
     test_thinking_canonical_non_thinking_mode_noop();
+    test_accelerator_startup_cache_failure_policy();
+#if !defined(__APPLE__) && !defined(DS4_NO_GPU)
+    test_cuda_model_cache_reserve_policy();
+#endif
     test_tool_separator_whitespace_is_not_content();
     test_dsml_prompt_escapes_tool_supplied_text();
     test_stop_list_parses_all_sequences();
@@ -15598,6 +16501,10 @@ static void ds4_server_unit_tests_run(void) {
     test_kv_cache_lookup_uses_longest_text_prefix();
     test_kv_cache_lookup_rejects_wrong_model();
     test_kv_cache_lookup_rejects_stale_payload_abi();
+    test_kv_cache_refresh_skips_fresh_scan();
+    test_kv_cache_refresh_rescans_when_dirty();
+    test_kv_cache_touch_defers_header_write_until_flush();
+    test_kv_cache_close_flushes_deferred_touches();
     test_kv_cache_eviction_values_fresh_snapshots();
     test_kv_cache_eviction_prefers_anchor_reason();
     test_kv_cache_eviction_makes_room_before_store();

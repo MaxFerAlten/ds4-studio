@@ -145,6 +145,7 @@ static uint64_t g_q8_f16_bytes;
 static uint64_t g_q8_f32_bytes;
 static int g_q8_f16_disabled_after_oom;
 static int g_q8_f16_budget_notice_printed;
+static int g_model_cache_budget_notice_printed;
 static uint64_t g_model_load_progress_next;
 static double g_model_load_progress_last;
 static int g_model_load_progress_started;
@@ -946,6 +947,65 @@ static uint64_t cuda_model_cache_limit_bytes(void) {
     return gb * 1073741824ull;
 }
 
+extern "C" uint64_t ds4_cuda_model_cache_reserve_bytes(uint64_t total_bytes) {
+    int present = 0;
+    const uint64_t reserve = cuda_parse_mib_env("DS4_CUDA_WEIGHT_CACHE_RESERVE_MB", &present);
+    if (present) return reserve;
+
+    const uint64_t min_reserve = 8ull * 1073741824ull;
+    const uint64_t max_reserve = 40ull * 1073741824ull;
+    uint64_t auto_reserve = total_bytes / 4u;
+    if (auto_reserve < min_reserve) auto_reserve = min_reserve;
+    if (auto_reserve > max_reserve) auto_reserve = max_reserve;
+    return auto_reserve;
+}
+
+static void cuda_model_cache_budget_notice(
+        const char *reason,
+        uint64_t request_bytes,
+        uint64_t free_bytes,
+        uint64_t total_bytes,
+        uint64_t reserve_bytes) {
+    if (g_model_cache_budget_notice_printed &&
+        getenv("DS4_CUDA_WEIGHT_CACHE_VERBOSE") == NULL) return;
+    g_model_cache_budget_notice_printed = 1;
+    fprintf(stderr,
+            "ds4: CUDA model cache %s; using on-demand model access "
+            "(request=%.2f MiB cached=%.2f GiB free=%.2f GiB reserve=%.2f GiB total=%.2f GiB)\n",
+            reason,
+            (double)request_bytes / 1048576.0,
+            (double)g_model_range_bytes / 1073741824.0,
+            (double)free_bytes / 1073741824.0,
+            (double)reserve_bytes / 1073741824.0,
+            (double)total_bytes / 1073741824.0);
+}
+
+static int cuda_model_cache_has_device_budget(uint64_t request_bytes, const char *what) {
+    (void)what;
+    if (request_bytes == 0) return 1;
+    size_t free_b = 0;
+    size_t total_b = 0;
+    cudaError_t err = cudaMemGetInfo(&free_b, &total_b);
+    if (err != cudaSuccess) {
+        fprintf(stderr, "ds4: CUDA model cache memory query failed: %s; using on-demand model access\n",
+                cudaGetErrorString(err));
+        (void)cudaGetLastError();
+        return 0;
+    }
+
+    const uint64_t free_bytes = (uint64_t)free_b;
+    const uint64_t total_bytes = (uint64_t)total_b;
+    const uint64_t reserve_bytes = ds4_cuda_model_cache_reserve_bytes(total_bytes);
+    if (request_bytes > free_bytes ||
+        free_bytes - request_bytes < reserve_bytes) {
+        cuda_model_cache_budget_notice("budget exhausted", request_bytes,
+                                       free_bytes, total_bytes,
+                                       reserve_bytes);
+        return 0;
+    }
+    return 1;
+}
+
 static uint64_t cuda_model_arena_chunk_bytes(uint64_t need) {
     uint64_t mb = 1792;
     const char *env = getenv("DS4_CUDA_WEIGHT_ARENA_CHUNK_MB");
@@ -983,6 +1043,10 @@ static char *cuda_model_arena_alloc(uint64_t bytes, const char *what) {
     if (g_model_range_bytes > limit || aligned > limit - g_model_range_bytes) return NULL;
 
     const uint64_t chunk = cuda_model_arena_chunk_bytes(aligned);
+    if (!cuda_model_cache_has_device_budget(chunk, what)) {
+        g_model_cache_full = 1;
+        return NULL;
+    }
     void *dev = NULL;
     cudaError_t err = cudaMalloc(&dev, (size_t)chunk);
     if (err != cudaSuccess) {
@@ -1243,6 +1307,7 @@ extern "C" void ds4_gpu_cleanup(void) {
     cuda_q8_f16_cache_release_all();
     g_q8_f16_disabled_after_oom = 0;
     g_q8_f16_budget_notice_printed = 0;
+    g_model_cache_budget_notice_printed = 0;
     for (const cuda_q8_f32_range &r : g_q8_f32_ranges) {
         (void)cudaFree(r.device_ptr);
     }
@@ -1432,6 +1497,28 @@ extern "C" int ds4_gpu_flush_commands(void) { return cuda_ok(cudaDeviceSynchroni
 extern "C" int ds4_gpu_end_commands(void) { return cuda_ok(cudaDeviceSynchronize(), "end commands"); }
 extern "C" int ds4_gpu_synchronize(void) { return cuda_ok(cudaDeviceSynchronize(), "synchronize"); }
 
+static int cuda_model_register_host_map(const void *model_map, uint64_t model_size) {
+    cudaError_t err = cudaHostRegister((void *)model_map, (size_t)model_size,
+                                       cudaHostRegisterMapped | cudaHostRegisterReadOnly);
+    if (err == cudaSuccess) {
+        void *dev = NULL;
+        err = cudaHostGetDevicePointer(&dev, (void *)model_map, 0);
+        if (err == cudaSuccess && dev) {
+            g_model_device_base = (const char *)dev;
+            g_model_registered = 1;
+            fprintf(stderr, "ds4: CUDA registered %.2f GiB model mapping for device access\n",
+                    (double)model_size / 1073741824.0);
+            return 1;
+        }
+        fprintf(stderr, "ds4: CUDA host registration pointer lookup failed: %s\n", cudaGetErrorString(err));
+        (void)cudaGetLastError();
+    } else {
+        fprintf(stderr, "ds4: CUDA host registration skipped: %s\n", cudaGetErrorString(err));
+        (void)cudaGetLastError();
+    }
+    return 0;
+}
+
 extern "C" int ds4_gpu_set_model_map(const void *model_map, uint64_t model_size) {
     if (!model_map || model_size == 0) return 0;
     if (g_model_host_base == model_map && g_model_registered_size == model_size) return 1;
@@ -1439,6 +1526,7 @@ extern "C" int ds4_gpu_set_model_map(const void *model_map, uint64_t model_size)
     cuda_q8_f16_cache_release_all();
     g_q8_f16_disabled_after_oom = 0;
     g_q8_f16_budget_notice_printed = 0;
+    g_model_cache_budget_notice_printed = 0;
     for (const cuda_q8_f32_range &r : g_q8_f32_ranges) {
         (void)cudaFree(r.device_ptr);
     }
@@ -1488,23 +1576,8 @@ extern "C" int ds4_gpu_set_model_map(const void *model_map, uint64_t model_size)
         }
     }
 
-    cudaError_t err = cudaHostRegister((void *)model_map, (size_t)model_size,
-                                       cudaHostRegisterMapped | cudaHostRegisterReadOnly);
-    if (err == cudaSuccess) {
-        void *dev = NULL;
-        err = cudaHostGetDevicePointer(&dev, (void *)model_map, 0);
-        if (err == cudaSuccess && dev) {
-            g_model_device_base = (const char *)dev;
-            g_model_registered = 1;
-            fprintf(stderr, "ds4: CUDA registered %.2f GiB model mapping for device access\n",
-                    (double)model_size / 1073741824.0);
-        } else {
-            fprintf(stderr, "ds4: CUDA host registration pointer lookup failed: %s\n", cudaGetErrorString(err));
-            (void)cudaGetLastError();
-        }
-    } else {
-        fprintf(stderr, "ds4: CUDA host registration skipped: %s\n", cudaGetErrorString(err));
-        (void)cudaGetLastError();
+    if (getenv("DS4_CUDA_COPY_MODEL_CHUNKED") == NULL) {
+        (void)cuda_model_register_host_map(model_map, model_size);
     }
     return 1;
 }
@@ -1514,7 +1587,9 @@ extern "C" int ds4_gpu_set_model_map_range(const void *model_map, uint64_t model
     if (!ds4_gpu_set_model_map(model_map, model_size)) return 0;
     if (getenv("DS4_CUDA_COPY_MODEL_CHUNKED") != NULL &&
         !cuda_model_copy_chunked(model_map, model_size, map_offset, map_size)) {
-        (void)cuda_model_prefetch_range(model_map, model_size, map_offset, map_size);
+        if (!cuda_model_prefetch_range(model_map, model_size, map_offset, map_size)) {
+            (void)cuda_model_register_host_map(model_map, model_size);
+        }
     }
     return 1;
 }
@@ -9298,6 +9373,35 @@ __global__ static void moe_down_q4K_sum6_qwarp32_kernel(
     if (lane == 0) out[row] = total;
 }
 
+__global__ static void moe_down_q4K_sum6_batch_qwarp32_kernel(
+        float *out,
+        const char *down_base,
+        const cuda_block_q8_K *midq,
+        const int32_t *selected,
+        uint64_t down_expert_bytes,
+        uint64_t down_row_bytes,
+        uint32_t midq_blocks,
+        uint32_t out_dim,
+        uint32_t n_expert) {
+    uint32_t lane = threadIdx.x & 7u;
+    uint32_t row = blockIdx.x * 32u + (threadIdx.x >> 3u);
+    uint32_t tok = blockIdx.y;
+    if (row >= out_dim) return;
+    float total = 0.0f;
+    #pragma unroll
+    for (uint32_t slot = 0; slot < 6u; slot++) {
+        int32_t expert_i = selected[(uint64_t)tok * n_expert + slot];
+        if (expert_i < 0) expert_i = 0;
+        const cuda_block_q4_K *wr = (const cuda_block_q4_K *)(down_base + (uint64_t)(uint32_t)expert_i * down_expert_bytes + (uint64_t)row * down_row_bytes);
+        const cuda_block_q8_K *xq = midq + ((uint64_t)tok * n_expert + slot) * midq_blocks;
+        float acc = 0.0f;
+        for (uint32_t b = lane; b < midq_blocks; b += 8u) acc += dev_dot_q4_K_q8_K_block(wr + b, xq + b);
+        acc = quarter_warp_sum_f32(acc, lane);
+        if (lane == 0) total += acc;
+    }
+    if (lane == 0) out[(uint64_t)tok * out_dim + row] = total;
+}
+
 __global__ static void moe_down_sorted_qwarp32_kernel(
         float *down_out,
         const char *down_base,
@@ -9940,7 +10044,7 @@ static int routed_moe_launch(
     }
     const int q4k_path = (gate_type == 12u && down_type == 12u);
     if (!q4k_path && (gate_type != 16u || down_type != 10u)) return 0;
-    if (q4k_path && (n_tokens != 1u || n_expert != 6u)) return 0;
+    if (q4k_path && n_expert != 6u) return 0;
     const uint64_t gate_bytes = (uint64_t)n_total_expert * gate_expert_bytes;
     const uint64_t down_bytes = (uint64_t)n_total_expert * down_expert_bytes;
     if (gate_bytes > model_size - gate_offset ||
@@ -9976,7 +10080,7 @@ static int routed_moe_launch(
             if (prof_ev[0]) (void)cudaEventRecord(prof_ev[0], 0);
         }
         const uint32_t pair_count = n_tokens * n_expert;
-        const uint32_t use_sorted_pairs = n_tokens > 1u;
+        const uint32_t use_sorted_pairs = !q4k_path && n_tokens > 1u;
         const uint32_t use_expert_tiles = use_sorted_pairs && getenv("DS4_CUDA_MOE_NO_EXPERT_TILES") == NULL;
         const uint32_t expert_tile_m = getenv("DS4_CUDA_MOE_TILE4") ? 4u : 8u;
         const uint32_t write_gate_up = getenv("DS4_CUDA_MOE_WRITE_GATE_UP") != NULL;
@@ -10016,6 +10120,7 @@ static int routed_moe_launch(
         const uint32_t use_direct_down_sum6 =
             n_tokens == 1u && n_expert == 6u &&
             getenv("DS4_CUDA_MOE_NO_DIRECT_DOWN_SUM6") == NULL;
+        const uint32_t use_q4k_direct_down_sum6 = q4k_path && n_expert == 6u;
         uint32_t *sorted_pairs = NULL;
         uint32_t *sorted_offsets = NULL;
         uint32_t *sorted_counts = NULL;
@@ -10115,7 +10220,25 @@ static int routed_moe_launch(
         if (prof_ev[2]) (void)cudaEventRecord(prof_ev[2], 0);
         if (ok) {
             dim3 mgrid((expert_mid_dim + 31u) / 32u, n_tokens * n_expert, 1);
-            if (ok && sorted_pairs && use_expert_tiles && sorted_offsets && sorted_counts && tile_total && tile_experts && tile_starts) {
+            if (q4k_path) {
+                dim3 qgrid((expert_mid_dim + 127u) / 128u, n_tokens * n_expert, 1);
+                moe_gate_up_mid_decode_q4K_qwarp32_kernel<<<qgrid, 256>>>(
+                    (float *)gate->ptr,
+                    (float *)up->ptr,
+                    (float *)mid->ptr,
+                    gate_w,
+                    up_w,
+                    xq,
+                    (const int32_t *)selected->ptr,
+                    (const float *)weights->ptr,
+                    gate_expert_bytes,
+                    gate_row_bytes,
+                    xq_blocks,
+                    expert_mid_dim,
+                    n_expert,
+                    write_gate_up,
+                    clamp);
+            } else if (ok && sorted_pairs && use_expert_tiles && sorted_offsets && sorted_counts && tile_total && tile_experts && tile_starts) {
                 if (use_gate_row2048) {
                     if (gate_row_span == 512u) {
                         dim3 tgrid((expert_mid_dim + 511u) / 512u, tile_capacity, 1);
@@ -10270,35 +10393,35 @@ static int routed_moe_launch(
                 down_tile_starts = tile16_starts;
                 down_tile_capacity = tile16_capacity;
             }
-            if (use_direct_down_sum6) {
+            if (use_q4k_direct_down_sum6) {
+                dim3 sgrid((out_dim + 31u) / 32u, n_tokens, 1);
+                moe_down_q4K_sum6_batch_qwarp32_kernel<<<sgrid, 256>>>(
+                    (float *)out->ptr,
+                    down_w,
+                    midq,
+                    (const int32_t *)selected->ptr,
+                    down_expert_bytes,
+                    down_row_bytes,
+                    midq_blocks,
+                    out_dim,
+                    n_expert);
+            } else if (use_direct_down_sum6) {
                 dim3 sgrid((out_dim + 31u) / 32u, 1, 1);
-                if (q4k_path) {
-                    moe_down_q4K_sum6_qwarp32_kernel<<<sgrid, 256>>>(
-                        (float *)out->ptr,
-                        down_w,
-                        midq,
-                        (const int32_t *)selected->ptr,
-                        down_expert_bytes,
-                        down_row_bytes,
-                        midq_blocks,
-                        out_dim);
-                } else {
-                    moe_down_sum6_qwarp32_kernel<<<sgrid, 256>>>(
-                        (float *)out->ptr,
-                        down_w,
-                        midq,
-                        (const int32_t *)selected->ptr,
-                        down_expert_bytes,
-                        down_row_bytes,
-                        midq_blocks,
-                        out_dim);
-                }
+                moe_down_sum6_qwarp32_kernel<<<sgrid, 256>>>(
+                    (float *)out->ptr,
+                    down_w,
+                    midq,
+                    (const int32_t *)selected->ptr,
+                    down_expert_bytes,
+                    down_row_bytes,
+                    midq_blocks,
+                    out_dim);
             } else if (use_atomic_down) {
                 uint64_t n = (uint64_t)n_tokens * out_dim;
                 zero_kernel<<<(n + 255u) / 256u, 256>>>((float *)out->ptr, n);
                 ok = cuda_ok(cudaGetLastError(), "routed_moe atomic zero launch");
             }
-            if (use_direct_down_sum6) {
+            if (use_q4k_direct_down_sum6 || use_direct_down_sum6) {
                 /* The direct decode kernel writes the final token row. */
             } else if (sorted_pairs && use_expert_tiles && sorted_offsets && sorted_counts &&
                 down_tile_total && down_tile_experts && down_tile_starts) {
@@ -10388,7 +10511,7 @@ static int routed_moe_launch(
             ok = cuda_ok(cudaGetLastError(), "routed_moe down launch");
         }
         if (prof_ev[5]) (void)cudaEventRecord(prof_ev[5], 0);
-        if (ok && !use_atomic_down && !use_direct_down_sum6) {
+        if (ok && !use_atomic_down && !use_direct_down_sum6 && !use_q4k_direct_down_sum6) {
             uint64_t n = (uint64_t)n_tokens * out_dim;
             moe_sum_kernel<<<(n + 255) / 256, 256>>>((float *)out->ptr, (const float *)down->ptr, out_dim, n_expert, n_tokens);
             ok = cuda_ok(cudaGetLastError(), "routed_moe sum launch");
@@ -10452,6 +10575,12 @@ static int routed_moe_launch(
         ok = cuda_ok(cudaGetLastError(), "routed_moe sum launch");
     }
     return ok;
+}
+
+extern "C" int ds4_gpu_routed_moe_batch_supported(uint32_t gate_type, uint32_t down_type, uint32_t n_tokens, uint32_t n_expert) {
+    const int q4k_path = (gate_type == 12u && down_type == 12u);
+    if (q4k_path) return n_tokens > 0u && n_expert == 6u;
+    return gate_type == 16u && down_type == 10u;
 }
 
 extern "C" int ds4_gpu_routed_moe_one_tensor(ds4_gpu_tensor *out, ds4_gpu_tensor *gate, ds4_gpu_tensor *up, ds4_gpu_tensor *mid, ds4_gpu_tensor *down, const void *model_map, uint64_t model_size, uint64_t gate_offset, uint64_t up_offset, uint64_t down_offset, uint32_t gate_type, uint32_t down_type, uint64_t gate_expert_bytes, uint64_t gate_row_bytes, uint64_t down_expert_bytes, uint64_t down_row_bytes, uint32_t expert_in_dim, uint32_t expert_mid_dim, uint32_t out_dim, const ds4_gpu_tensor *selected, const ds4_gpu_tensor *weights, uint32_t n_total_expert, uint32_t n_expert, float clamp, const ds4_gpu_tensor *x) {

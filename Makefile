@@ -7,12 +7,27 @@ else
 NATIVE_CPU_FLAG ?= -march=native
 endif
 
-DEBUG_FLAGS ?= -g
-CFLAGS ?= -O3 -ffast-math $(DEBUG_FLAGS) $(NATIVE_CPU_FLAG) -Wall -Wextra -std=c99
-OBJCFLAGS ?= -O3 -ffast-math $(DEBUG_FLAGS) $(NATIVE_CPU_FLAG) -Wall -Wextra -fobjc-arc
+BUILD ?= release
+
+ifeq ($(BUILD),release)
+DEBUG_FLAGS :=
+NVCC_DEBUG :=
+else ifeq ($(BUILD),profile)
+DEBUG_FLAGS := -g -fno-omit-frame-pointer
+NVCC_DEBUG := -g -lineinfo
+else ifeq ($(BUILD),debug)
+DEBUG_FLAGS := -g -O0
+NVCC_DEBUG := -g -G
+else
+$(error invalid BUILD '$(BUILD)': use release, profile, or debug)
+endif
+
+CFLAGS ?= -O3 $(DEBUG_FLAGS) $(NATIVE_CPU_FLAG) -Wall -Wextra -std=c99
+OBJCFLAGS ?= -O3 $(DEBUG_FLAGS) $(NATIVE_CPU_FLAG) -Wall -Wextra -fobjc-arc
 
 LDLIBS ?= -lm -pthread
 METAL_SRCS := $(wildcard metal/*.metal)
+EXTRA_DEPS :=
 
 ifeq ($(UNAME_S),Darwin)
 METAL_LDLIBS := $(LDLIBS) -framework Foundation -framework Metal
@@ -27,12 +42,10 @@ ROCM_PATH ?= /opt/rocm
 GPU_CC = $(ROCM_PATH)/bin/hipcc
 ROCM_ARCH ?= gfx1151
 
-GPU_CFLAGS ?= -O3 -fno-finite-math-only -pthread -D__HIP_PLATFORM_AMD__ -Wno-unused-command-line-argument --offload-arch=$(ROCM_ARCH)
+GPU_CFLAGS ?= -O3 $(DEBUG_FLAGS) -fno-finite-math-only -pthread -D__HIP_PLATFORM_AMD__ -Wno-unused-command-line-argument --offload-arch=$(ROCM_ARCH)
 GPU_LDLIBS = -lm -pthread -L$(ROCM_PATH)/lib -lhipblas
 
-@echo "ROCM_ARCH: $(ROCM_ARCH)"
-
-EXTRA_DEPS = ds4_rocm.h
+EXTRA_DEPS += ds4_rocm.h
 
 else
 
@@ -42,7 +55,7 @@ CUDA_ARCH ?=
 ifneq ($(strip $(CUDA_ARCH)),)
 NVCC_ARCH_FLAGS := -arch=$(CUDA_ARCH)
 endif
-NVCCFLAGS ?= -O3 -g -lineinfo --use_fast_math $(NVCC_ARCH_FLAGS) -Xcompiler $(NATIVE_CPU_FLAG) -Xcompiler -pthread
+NVCCFLAGS ?= -O3 $(NVCC_DEBUG) --use_fast_math $(NVCC_ARCH_FLAGS) -Xcompiler $(NATIVE_CPU_FLAG) -Xcompiler -pthread
 CUDA_LDLIBS ?= -lm -Xcompiler -pthread -L$(CUDA_HOME)/targets/sbsa-linux/lib -L$(CUDA_HOME)/lib64 -lcudart -lcublas
 
 GPU_CC = $(NVCC)
@@ -52,13 +65,12 @@ GPU_LDLIBS = $(CUDA_LDLIBS)
 endif
 
 CORE_OBJS = ds4.o ds4_cuda.o
-EXTRA_DEPS =
 CPU_CORE_OBJS = ds4_cpu.o
 METAL_LDLIBS := $(LDLIBS)
 
 endif
 
-.PHONY: all help clean test cpu cuda cuda-spark cuda-generic cuda-regression
+.PHONY: all help clean test cpu cuda cuda-spark cuda-generic cuda-regression rocm
 
 ifeq ($(UNAME_S),Darwin)
 all: ds4 ds4-server ds4-bench ds4-eval ds4-agent
@@ -126,6 +138,7 @@ rocm:
 		echo "error: specify ROCM_ARCH, for example: make rocm ROCM_ARCH=gfx1151"; \
 		exit 2; \
 	fi
+	@echo "ROCM_ARCH: $(ROCM_ARCH)"
 	$(MAKE) ds4 ds4-server ds4-bench GPU_BACKEND=rocm ROCM_ARCH=$(ROCM_ARCH)
 
 
@@ -222,7 +235,7 @@ ds4_test: ds4_test.o ds4_kvstore.o rax.o $(CORE_OBJS)
 ifeq ($(UNAME_S),Darwin)
 	$(CC) $(CFLAGS) -o $@ ds4_test.o ds4_kvstore.o rax.o $(CORE_OBJS) $(METAL_LDLIBS)
 else
-	$(NVCC) $(NVCCFLAGS) -o $@ ds4_test.o ds4_kvstore.o rax.o $(CORE_OBJS) $(CUDA_LDLIBS)
+	$(GPU_CC) $(GPU_CFLAGS) -o $@ ds4_test.o ds4_kvstore.o rax.o $(CORE_OBJS) $(GPU_LDLIBS)
 endif
 
 test: ds4_test ds4-eval

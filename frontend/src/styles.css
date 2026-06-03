@@ -234,6 +234,14 @@ pre {
   border-color: #803636;
 }
 
+.status-detail {
+  color: #b9c6d4;
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  padding: 0 2px;
+}
+
 .field {
   display: flex;
   flex-direction: column;
@@ -401,6 +409,51 @@ pre {
   gap: 6px;
   min-height: 0;
   overflow: auto;
+}
+
+.metrics-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  overflow: auto;
+}
+
+.metrics-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.metric-row {
+  background: #181d25;
+  border: 1px solid #303845;
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 9px;
+}
+
+.metric-row span {
+  color: #9fb0c4;
+  font-size: 11px;
+}
+
+.metric-row strong {
+  color: #eef2f5;
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.metric-row.warn {
+  border-color: #80622a;
+}
+
+.metric-row.bad {
+  border-color: #803636;
 }
 
 .strategy-panel {

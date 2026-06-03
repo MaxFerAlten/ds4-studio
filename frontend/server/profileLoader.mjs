@@ -1,15 +1,23 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { DEFAULT_CONFIG } from "./defaultConfig.mjs";
 
 const FRONTEND_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PROJECT_ROOT = path.resolve(FRONTEND_ROOT, "..");
 export const PROFILES_DIR = path.join(PROJECT_ROOT, "profiles");
 export const DEFAULT_PROFILE_NAME = "ds4-profile-p1-strict-quality";
+const GPU_ENV_KEYS = Object.keys(DEFAULT_CONFIG.server.env || {});
 
 function nullable(value) {
   if (value === null || value === undefined) return "";
   return value;
+}
+
+function mapProfileEnv(env = {}) {
+  return Object.fromEntries(
+    GPU_ENV_KEYS.map((key) => [key, nullable(env[key] ?? DEFAULT_CONFIG.server.env[key])])
+  );
 }
 
 export function mapProfileToServerConfig(profile) {
@@ -34,6 +42,8 @@ export function mapProfileToServerConfig(profile) {
     warmWeights: Boolean(quality.warm_weights),
     host: http.host ?? "127.0.0.1",
     port: http.port ?? 8002,
+    maxQueuedJobs: http.max_queued_jobs ?? 8,
+    env: mapProfileEnv(s.env || {}),
     trace: nullable(http.trace_file),
     dirSteeringFile: nullable(steering.direction_file),
     dirSteeringFfn: steering.steer_ffn ?? "",
@@ -65,6 +75,25 @@ export function mapProfileToRequestDefaults(profile) {
     thinking: thinkingType === "enabled",
     reasoning_effort: r.reasoning_effort && r.reasoning_effort !== "disabled" ? r.reasoning_effort : "high",
     stop: Array.isArray(r.stop) ? r.stop.join(",") : (r.stop ?? "")
+  };
+}
+
+export function buildProfileCandidate(entry, baseConfig, baseRequestDefaults, selectedProfile = entry?.name || "") {
+  const serverPatch = mapProfileToServerConfig(entry.profile);
+  return {
+    entry,
+    config: {
+      ...baseConfig,
+      selectedProfile,
+      server: {
+        ...baseConfig.server,
+        ...serverPatch
+      }
+    },
+    requestDefaults: {
+      ...baseRequestDefaults,
+      ...mapProfileToRequestDefaults(entry.profile)
+    }
   };
 }
 

@@ -19,23 +19,29 @@ import { fileURLToPath } from "node:url";
 import { buildChatPayload } from "./requestPayload.mjs";
 import {
   DEFAULT_PROFILE_NAME,
+  buildProfileCandidate,
   listProfiles,
   loadProfileByName,
-  loadProfileOrDefault,
-  mapProfileToRequestDefaults,
-  mapProfileToServerConfig
+  loadProfileOrDefault
 } from "./profileLoader.mjs";
 import {
   ACCEPT_ATTRIBUTE,
-  approxTokenCount,
   ensureWorkspace,
   ingestUploadedFile,
   isSupportedFileName,
   splitMarkdownChunks
 } from "./fileIngestion.mjs";
+import {
+  agentBudgetStatus,
+  analyzeChunkLimitExceeded,
+  analyzeChunkPlan,
+  formatAgentBudgetError,
+  maxAgentTotalTokens,
+  maxAnalyzeChunks
+} from "./costLimits.mjs";
 import { Ds4ProcessManager } from "./processManager.mjs";
 import { readRequestBody, requestHeadersForProxy } from "./proxy.mjs";
-import { readRocmStatus } from "./rocmSmi.mjs";
+import { readRocmStatusCached } from "./rocmSmi.mjs";
 import { AgentSessionStore, AGENT_SYSTEM_PROMPT, AGENT_TOOLS } from "./agentSession.mjs";
 import { checkBashFileReadFallback, executeTool } from "./agentTools.mjs";
 
@@ -80,9 +86,9 @@ async function applyProfileByName(name) {
     activeRequestDefaults = { ...REQUEST_DEFAULTS };
     return null;
   }
-  const serverPatch = mapProfileToServerConfig(entry.profile);
-  config = { ...config, server: { ...config.server, ...serverPatch } };
-  activeRequestDefaults = { ...REQUEST_DEFAULTS, ...mapProfileToRequestDefaults(entry.profile) };
+  const candidate = buildProfileCandidate(entry, config, REQUEST_DEFAULTS, entry.name);
+  config = candidate.config;
+  activeRequestDefaults = candidate.requestDefaults;
   activeProfile = entry;
   await ensureBackendDirs();
   return entry;
@@ -168,6 +174,7 @@ async function writeProxyChunk(res, chunk) {
 
 const manager = new Ds4ProcessManager({
   buildCommand: () => buildDs4Args(config),
+  buildEnv: () => config.server.env,
   healthCheck,
   cwd: PROJECT_ROOT
 });
@@ -435,14 +442,24 @@ app.post("/api/files/chunked-analyze", asyncHandler(async (req, res) => {
 
   try {
     const chunks = splitMarkdownChunks(document, Number(chunkTokens) || 25000);
+    const chunkLimit = maxAnalyzeChunks(process.env);
     writeSse(res, "phase", {
       phase: "split",
       chunks: chunks.length,
       tokensPerChunk: chunks.map((c) => c.approxTokens)
     });
+    writeSse(res, "phase", analyzeChunkPlan(chunks, chunkLimit));
 
     if (chunks.length === 0) {
       writeSse(res, "error", { error: "no chunks produced" });
+      return res.end();
+    }
+    if (analyzeChunkLimitExceeded(chunks, chunkLimit)) {
+      writeSse(res, "error", {
+        error: `too many chunks: ${chunks.length}`,
+        chunks: chunks.length,
+        maxChunks: chunkLimit
+      });
       return res.end();
     }
 
@@ -522,7 +539,7 @@ app.post("/api/files/chunked-analyze", asyncHandler(async (req, res) => {
 }));
 
 app.get("/api/rocm/status", asyncHandler(async (_req, res) => {
-  res.json(await readRocmStatus());
+  res.json(await readRocmStatusCached());
 }));
 
 app.get("/api/profiles", asyncHandler(async (_req, res) => {
@@ -552,11 +569,13 @@ app.post("/api/profiles/select", asyncHandler(async (req, res) => {
   if (!entry || entry.error) {
     return res.status(404).json({ error: `profile not found: ${name}` });
   }
-  await applyProfileByName(name);
-  const next = { ...config, selectedProfile: name };
-  const validation = validateConfig(next);
+  const candidate = buildProfileCandidate(entry, config, REQUEST_DEFAULTS, name);
+  const validation = validateConfig(candidate.config);
   if (!validation.ok) return res.status(400).json(validation);
-  config = await saveConfig(next);
+  config = await saveConfig(candidate.config);
+  activeRequestDefaults = candidate.requestDefaults;
+  activeProfile = entry;
+  await ensureBackendDirs();
   res.json({
     selected: activeProfile?.name || null,
     requestDefaults: activeRequestDefaults,
@@ -580,6 +599,14 @@ app.get("/api/server/status", asyncHandler(async (_req, res) => {
     },
     ...manager.status()
   });
+}));
+
+app.get("/api/server/metrics", asyncHandler(async (_req, res) => {
+  const upstream = await fetch(`${backendBase()}/api/server/metrics`, { signal: AbortSignal.timeout(1000) });
+  const text = await upstream.text();
+  res.status(upstream.status);
+  res.type(upstream.headers.get("content-type") || "application/json");
+  res.send(text);
 }));
 
 app.get("/api/server/config", (_req, res) => {
@@ -833,6 +860,15 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
   }
   if (userMessage) fullMessages.push({ role: "user", content: String(userMessage) });
 
+  const agentTokenBudget = maxAgentTotalTokens(process.env);
+  const initialBudgetStatus = agentBudgetStatus(fullMessages, agentSession.usageTotals, agentTokenBudget);
+  if (initialBudgetStatus.exceeded) {
+    return res.status(400).json({
+      error: formatAgentBudgetError(initialBudgetStatus),
+      ...initialBudgetStatus
+    });
+  }
+
   // SSE response setup
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
@@ -856,6 +892,14 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
 
     while (iteration < AGENT_MAX_ITERATIONS) {
       if (controller.signal.aborted) break;
+      const budgetStatus = agentBudgetStatus(fullMessages, agentSession.usageTotals, agentTokenBudget);
+      if (budgetStatus.exceeded) {
+        writeAgentSse("agent_error", {
+          error: formatAgentBudgetError(budgetStatus),
+          ...budgetStatus
+        });
+        break;
+      }
       iteration++;
 
       const basePayload = buildChatPayload({ ...reqParams, stream: true }, fullMessages);
@@ -956,6 +1000,10 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
           if (event.usage) {
             const totals = agentSession.recordUsage(event.usage);
             writeAgentSse("agent_usage", { ...event.usage, totals });
+            const budgetStatus = agentBudgetStatus(fullMessages, totals, agentTokenBudget);
+            if (budgetStatus.exceeded) {
+              throw new Error(formatAgentBudgetError(budgetStatus));
+            }
           }
 
           const choice = event.choices?.[0];
