@@ -20,6 +20,8 @@ test("updates prefill and generation throughput while deltas stream", () => {
   const first = updateLiveStats(tracker, { content: "hello", nowMs: 3000 });
   tracker = first.tracker;
 
+  assert.equal("renderedText" in tracker, false);
+  assert.equal(tracker.renderedChars, 5);
   assert.equal(first.stats.promptTokens, 80);
   assert.equal(first.stats.completionTokens, 2);
   assert.equal(first.stats.prefillTps, 40);
@@ -28,8 +30,18 @@ test("updates prefill and generation throughput while deltas stream", () => {
   const second = updateLiveStats(tracker, { content: " world, this is streaming", nowMs: 5000 });
 
   assert.equal(second.stats.promptTokens, 80);
+  assert.equal(second.tracker.renderedChars, "hello world, this is streaming".length);
   assert.ok(second.stats.completionTokens > first.stats.completionTokens);
   assert.ok(second.stats.genTps > 0);
+});
+
+test("tracks streamed content by character count without retaining text", () => {
+  let tracker = createLiveStatsTracker({ requestStartMs: 0, promptTokens: 1 });
+  tracker = updateLiveStats(tracker, { content: "ab", reasoning: "cd", nowMs: 10 }).tracker;
+  tracker = updateLiveStats(tracker, { content: "efgh", nowMs: 20 }).tracker;
+
+  assert.equal(tracker.renderedChars, 8);
+  assert.equal("renderedText" in tracker, false);
 });
 
 test("uses exact usage values for final stream stats", () => {

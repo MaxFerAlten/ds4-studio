@@ -21,6 +21,17 @@ test("mergeConfig keeps defaults for missing fields", () => {
   assert.deepEqual(merged.history, DEFAULT_CONFIG.history);
 });
 
+test("mergeConfig uses tuned CUDA env defaults for fresh starts", () => {
+  const merged = mergeConfig({});
+  assert.equal(merged.server.env.DS4_METAL_PREFILL_CHUNK, "4096");
+  assert.equal(merged.server.env.DS4_CUDA_Q8_F16_CACHE_MB, "11264");
+  assert.equal(merged.server.env.DS4_CUDA_Q8_F16_CACHE_RESERVE_MB, "512");
+  assert.equal(merged.server.env.DS4_CUDA_WEIGHT_ARENA_CHUNK_MB, "1024");
+  assert.equal(merged.server.env.DS4_CUDA_COPY_MODEL_CHUNKED, "1");
+  assert.equal(merged.server.env.DS4_CUDA_MOE_PROFILE, "");
+  assert.equal(merged.server.env.DS4_METAL_GRAPH_PREFILL_PROFILE, "");
+});
+
 test("validateConfig rejects invalid ports and context", () => {
   const bad = mergeConfig({ server: { port: 70000, ctx: 0 } });
   const result = validateConfig(bad);
@@ -49,7 +60,8 @@ test("validateConfig accepts decimal integer strings only", () => {
     "mtpDraft",
     "kvDiskSpaceMb",
     "kvCacheMinTokens",
-    "toolMemoryMaxIds"
+    "toolMemoryMaxIds",
+    "maxQueuedJobs"
   ];
   const nonNegativeIntKeys = [
     "threads",
@@ -162,6 +174,67 @@ test("validateConfig rejects negative and overflowing integer fields", () => {
   assert.match(overflow.errors.server.threads, /non-negative integer/);
 });
 
+test("validateConfig accepts DS4 startup tuning env keys", () => {
+  const good = validateConfig(mergeConfig({
+    server: {
+      env: {
+        DS4_METAL_PREFILL_CHUNK: "4096",
+        DS4_CUDA_Q8_F16_CACHE_MB: "512",
+        DS4_CUDA_Q8_F16_CACHE_RESERVE_MB: "",
+        DS4_CUDA_WEIGHT_ARENA_CHUNK_MB: "1024",
+        DS4_CUDA_COPY_MODEL_CHUNKED: "1",
+        DS4_CUDA_DIRECT_MODEL: "1",
+        DS4_CUDA_NO_FD_CACHE: "",
+        DS4_CUDA_MOE_PROFILE: "1",
+        DS4_METAL_GRAPH_PREFILL_PROFILE: "1",
+        DS4_CUDA_MOE_NO_DIRECT_DOWN_SUM6: "1",
+        DS4_CUSTOM_EXPERIMENT_FLAG: "enabled"
+      }
+    }
+  }));
+  assert.equal(good.ok, true);
+
+  const bad = validateConfig(mergeConfig({
+    server: {
+      env: {
+        DS4_CUDA_Q8_F16_CACHE_MB: "512",
+        LD_PRELOAD: "/tmp/not-allowed.so"
+      }
+    }
+  }));
+  assert.equal(bad.ok, false);
+  assert.match(bad.errors.server.env, /unsupported env key/);
+});
+
+test("validateConfig rejects CUDA env values outside the GPU OOM guardrail", () => {
+  for (const [key, value, pattern] of [
+    ["DS4_METAL_PREFILL_CHUNK", "0", /prefill chunk.*between 1 and 131072 tokens/],
+    ["DS4_CUDA_Q8_F16_CACHE_MB", "12289", /Q8\/F16 cache.*0 and 12288 MiB/],
+    ["DS4_CUDA_Q8_F16_CACHE_RESERVE_MB", "0", /Q8\/F16 reserve.*at least 512 MiB/],
+    ["DS4_CUDA_WEIGHT_ARENA_CHUNK_MB", "128", /weight arena.*between 256 and 8192 MiB/],
+    ["DS4_CUDA_COPY_MODEL_CHUNKED", "0", /DS4_CUDA_COPY_MODEL_CHUNKED.*empty or 1/],
+    ["DS4_CUDA_DIRECT_MODEL", "0", /DS4_CUDA_DIRECT_MODEL.*empty or 1/],
+    ["DS4_CUDA_NO_FD_CACHE", "0", /DS4_CUDA_NO_FD_CACHE.*empty or 1/],
+    ["DS4_CUDA_MOE_PROFILE", "yes", /DS4_CUDA_MOE_PROFILE.*empty or 1/],
+    ["DS4_METAL_GRAPH_PREFILL_PROFILE", "yes", /DS4_METAL_GRAPH_PREFILL_PROFILE.*empty or 1/]
+  ]) {
+    const result = validateConfig(mergeConfig({
+      server: {
+        backend: "cuda",
+        env: {
+          DS4_CUDA_Q8_F16_CACHE_MB: "11264",
+          DS4_CUDA_Q8_F16_CACHE_RESERVE_MB: "512",
+          DS4_CUDA_WEIGHT_ARENA_CHUNK_MB: "1024",
+          DS4_CUDA_COPY_MODEL_CHUNKED: "1",
+          [key]: value
+        }
+      }
+    }));
+    assert.equal(result.ok, false, `${key}=${value} should fail`);
+    assert.match(result.errors.server.env, pattern);
+  }
+});
+
 test("validateConfig requires a history directory when history is enabled", () => {
   const bad = validateConfig(mergeConfig({ history: { enabled: true, dir: "" } }));
   assert.equal(bad.ok, false);
@@ -227,7 +300,8 @@ test("buildDs4Args emits every enabled startup flag without shell quoting", () =
       kvCacheBoundaryAlignTokens: 1024,
       kvCacheRejectDifferentQuant: true,
       disableExactDsmlToolReplay: true,
-      toolMemoryMaxIds: 5000
+      toolMemoryMaxIds: 5000,
+      maxQueuedJobs: 3
     }
   });
   const { command, args } = buildDs4Args(config);
@@ -245,6 +319,7 @@ test("buildDs4Args emits every enabled startup flag without shell quoting", () =
     "--warm-weights",
     "--host", "127.0.0.1",
     "--port", "8100",
+    "--max-queued-jobs", "3",
     "--trace", "/tmp/ds4-trace.txt",
     "--dir-steering-file", "direction.f32",
     "--dir-steering-ffn", "1.25",

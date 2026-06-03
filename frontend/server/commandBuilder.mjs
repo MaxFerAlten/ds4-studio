@@ -20,6 +20,7 @@ export function buildDs4Args(config) {
   if (s.warmWeights) args.push("--warm-weights");
   pushValue(args, "--host", s.host);
   pushValue(args, "--port", s.port);
+  pushValue(args, "--max-queued-jobs", s.maxQueuedJobs);
   pushValue(args, "--trace", s.trace);
   pushValue(args, "--dir-steering-file", s.dirSteeringFile);
   pushValue(args, "--dir-steering-ffn", s.dirSteeringFfn);

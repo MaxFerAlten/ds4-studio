@@ -7,6 +7,8 @@
 /ds4_server_test
 /ds4_test
 /ds4flash.gguf
+/benchmarks
+/docs
 /TODO.md
 /gguf/
 *.o
@@ -18,3 +20,4 @@ __pycache__/
 .DS_Store
 /dist
 /traces
+/tmp

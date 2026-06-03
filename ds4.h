@@ -94,6 +94,14 @@ typedef struct {
     uint64_t cap;
 } ds4_session_snapshot;
 
+typedef struct {
+    int enabled;
+    uint64_t drafted_tokens;
+    uint64_t accepted_tokens;
+    double accept_rate;
+    double verify_ms;
+} ds4_mtp_metrics;
+
 int ds4_engine_open(ds4_engine **out, const ds4_engine_options *opt);
 void ds4_engine_close(ds4_engine *e);
 void ds4_engine_summary(ds4_engine *e);
@@ -205,6 +213,7 @@ int ds4_engine_routed_quant_bits(ds4_engine *e);
 bool ds4_engine_has_mtp(ds4_engine *e);
 int ds4_engine_mtp_draft_tokens(ds4_engine *e);
 const ds4_tokens *ds4_session_tokens(ds4_session *s);
+ds4_mtp_metrics ds4_session_mtp_metrics(ds4_session *s);
 
 /* Disk KV payload helpers.  HTTP/agent code owns the outer file header and
  * persistence policy; the engine owns the DS4-specific serialized graph state. */

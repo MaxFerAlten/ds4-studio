@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseRocmSmiJson } from "./rocmSmi.mjs";
+import { createRocmStatusReader, parseRocmSmiJson } from "./rocmSmi.mjs";
 
 test("parseRocmSmiJson extracts essential ROCm SMI fields", () => {
   const status = parseRocmSmiJson(JSON.stringify({
@@ -46,4 +46,38 @@ test("parseRocmSmiJson handles missing or N/A fields", () => {
   assert.equal(status.gpus[0].temperatureC, null);
   assert.equal(status.gpus[0].gpuUsePercent, null);
   assert.equal(status.gpus[0].powerW, null);
+});
+
+test("cached ROCm status reader deduplicates in-flight calls and respects TTL", async () => {
+  let calls = 0;
+  let now = 1000;
+  const sample = JSON.stringify({
+    card0: {
+      "GPU use (%)": "9"
+    }
+  });
+  const reader = createRocmStatusReader({
+    execFileAsync: async () => {
+      calls++;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return { stdout: sample };
+    },
+    now: () => now,
+    ttlMs: 5000
+  });
+
+  const [first, second] = await Promise.all([
+    reader.readCached(),
+    reader.readCached()
+  ]);
+  assert.equal(calls, 1);
+  assert.equal(first.gpus[0].gpuUsePercent, 9);
+  assert.deepEqual(second.gpus, first.gpus);
+
+  await reader.readCached();
+  assert.equal(calls, 1);
+
+  now += 5001;
+  await reader.readCached();
+  assert.equal(calls, 2);
 });

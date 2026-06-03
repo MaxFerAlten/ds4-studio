@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+const ROCM_STATUS_TTL_MS = 5000;
 const ROCM_SMI_ARGS = [
   "--showtemp",
   "--showpower",
@@ -66,20 +67,60 @@ export function parseRocmSmiJson(raw) {
   };
 }
 
-export async function readRocmStatus() {
-  try {
-    const { stdout } = await execFileAsync("rocm-smi", ROCM_SMI_ARGS, {
-      timeout: 2500,
-      maxBuffer: 1024 * 1024
-    });
-    return parseRocmSmiJson(stdout);
-  } catch (err) {
-    return {
-      ok: false,
-      source: "rocm-smi",
-      timestamp: new Date().toISOString(),
-      error: err.message,
-      gpus: []
-    };
+export function createRocmStatusReader({
+  execFileAsync: run = execFileAsync,
+  now = Date.now,
+  ttlMs = ROCM_STATUS_TTL_MS
+} = {}) {
+  let cachedStatus = null;
+  let cachedAt = 0;
+  let inflight = null;
+
+  async function read() {
+    try {
+      const { stdout } = await run("rocm-smi", ROCM_SMI_ARGS, {
+        timeout: 2500,
+        maxBuffer: 1024 * 1024
+      });
+      return parseRocmSmiJson(stdout);
+    } catch (err) {
+      return {
+        ok: false,
+        source: "rocm-smi",
+        timestamp: new Date().toISOString(),
+        error: err.message,
+        gpus: []
+      };
+    }
   }
+
+  async function readCached() {
+    const nowMs = now();
+    if (cachedStatus && nowMs - cachedAt < ttlMs) return cachedStatus;
+    if (inflight) return inflight;
+
+    inflight = read()
+      .then((status) => {
+        cachedStatus = status;
+        cachedAt = now();
+        return status;
+      })
+      .finally(() => {
+        inflight = null;
+      });
+
+    return inflight;
+  }
+
+  return { read, readCached };
+}
+
+const defaultReader = createRocmStatusReader();
+
+export function readRocmStatus() {
+  return defaultReader.read();
+}
+
+export function readRocmStatusCached() {
+  return defaultReader.readCached();
 }

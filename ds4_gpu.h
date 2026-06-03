@@ -663,6 +663,12 @@ int ds4_gpu_routed_moe_one_tensor(
         float                   clamp,
         const ds4_gpu_tensor *x);
 
+int ds4_gpu_routed_moe_batch_supported(
+        uint32_t                gate_type,
+        uint32_t                down_type,
+        uint32_t                n_tokens,
+        uint32_t                n_expert);
+
 int ds4_gpu_routed_moe_batch_tensor(
         ds4_gpu_tensor       *out,
         ds4_gpu_tensor       *gate,

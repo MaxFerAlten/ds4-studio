@@ -34,23 +34,24 @@ export function createLiveStatsTracker({
     requestStartMs,
     firstTokenMs: null,
     lastTokenMs: null,
-    renderedText: "",
+    renderedChars: 0,
     promptTokens,
     completionTokensBase
   };
 }
 
 export function updateLiveStats(tracker, { content = "", reasoning = "", nowMs, promptTokens }) {
-  const renderedText = `${tracker.renderedText}${content}${reasoning}`;
+  const deltaChars = String(content || "").length + String(reasoning || "").length;
+  const renderedChars = tracker.renderedChars + deltaChars;
   const firstTokenMs = tracker.firstTokenMs ?? nowMs;
   const next = {
     ...tracker,
     firstTokenMs,
     lastTokenMs: nowMs,
-    renderedText,
+    renderedChars,
     promptTokens: promptTokens ?? tracker.promptTokens
   };
-  const completionTokens = next.completionTokensBase + estimateTokenCount(renderedText);
+  const completionTokens = next.completionTokensBase + Math.ceil(renderedChars / 4);
   return {
     tracker: next,
     stats: streamStatsFromTiming({
@@ -65,7 +66,7 @@ export function updateLiveStats(tracker, { content = "", reasoning = "", nowMs, 
 }
 
 export function finalizeLiveStats(tracker, { promptTokens, completionTokens, stream = true } = {}) {
-  const fallbackCompletionTokens = tracker.completionTokensBase + estimateTokenCount(tracker.renderedText);
+  const fallbackCompletionTokens = tracker.completionTokensBase + Math.ceil(tracker.renderedChars / 4);
   return streamStatsFromTiming({
     requestStartMs: tracker.requestStartMs,
     firstTokenMs: tracker.firstTokenMs,

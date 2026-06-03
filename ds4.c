@@ -1608,6 +1608,10 @@ static ds4_tensor *model_find_tensor(const ds4_model *m, const char *name) {
     return NULL;
 }
 
+bool ds4_accelerator_startup_cache_failure_is_fatal(void) {
+    return getenv("DS4_CUDA_STRICT_WEIGHT_CACHE") != NULL;
+}
+
 #ifndef DS4_NO_GPU
 #ifndef __APPLE__
 typedef struct {
@@ -1672,6 +1676,16 @@ static bool accelerator_cache_model_tensor_spans(const ds4_model *m, uint64_t *c
             char label[96];
             snprintf(label, sizeof(label), "tensor-span:%" PRIu64, merged);
             if (ds4_gpu_cache_model_range(m->map, m->size, off, chunk_end - off, label) == 0) {
+                if (!ds4_accelerator_startup_cache_failure_is_fatal()) {
+                    fprintf(stderr,
+                            "ds4: accelerator skipped remaining startup model cache after"
+                            " tensor span %" PRIu64 " at offset %" PRIu64
+                            "; using on-demand model access\n",
+                            merged, off);
+                    free(spans);
+                    if (cached_out) *cached_out = cached;
+                    return true;
+                }
                 fprintf(stderr,
                         "ds4: accelerator failed to cache model tensor span %" PRIu64
                         " at offset %" PRIu64 "\n",
@@ -13174,6 +13188,93 @@ static bool metal_graph_encode_layer_attention_batch(
     return ok;
 }
 
+static bool metal_graph_routed_moe_batch_token_fallback(
+        ds4_gpu_graph  *g,
+        const ds4_model        *model,
+        const ds4_layer_weights *layer,
+        uint32_t                n_tokens,
+        uint64_t                gate_expert_bytes,
+        uint64_t                gate_row_bytes,
+        uint64_t                down_expert_bytes,
+        uint64_t                down_row_bytes,
+        uint32_t                expert_in_dim,
+        uint32_t                expert_mid_dim,
+        uint32_t                out_dim) {
+    bool ok = true;
+    const uint64_t routed_mid_bytes = (uint64_t)DS4_N_EXPERT_USED * expert_mid_dim * sizeof(float);
+    const uint64_t routed_down_bytes = (uint64_t)DS4_N_EXPERT_USED * out_dim * sizeof(float);
+    const uint64_t selected_bytes = (uint64_t)DS4_N_EXPERT_USED * sizeof(int);
+    const uint64_t weights_bytes = (uint64_t)DS4_N_EXPERT_USED * sizeof(float);
+    const uint64_t x_bytes = (uint64_t)expert_in_dim * sizeof(float);
+    const uint64_t out_bytes = (uint64_t)out_dim * sizeof(float);
+
+    g->batch_routed_mid_is_f16 = false;
+    for (uint32_t t = 0; ok && t < n_tokens; t++) {
+        ds4_gpu_tensor *out_view = ds4_gpu_tensor_view(g->batch_routed_out,
+                                                       (uint64_t)t * out_bytes,
+                                                       out_bytes);
+        ds4_gpu_tensor *gate_view = ds4_gpu_tensor_view(g->batch_routed_gate,
+                                                        (uint64_t)t * routed_mid_bytes,
+                                                        routed_mid_bytes);
+        ds4_gpu_tensor *up_view = ds4_gpu_tensor_view(g->batch_routed_up,
+                                                      (uint64_t)t * routed_mid_bytes,
+                                                      routed_mid_bytes);
+        ds4_gpu_tensor *mid_view = ds4_gpu_tensor_view(g->batch_routed_mid,
+                                                       (uint64_t)t * routed_mid_bytes,
+                                                       routed_mid_bytes);
+        ds4_gpu_tensor *down_view = ds4_gpu_tensor_view(g->batch_routed_down,
+                                                        (uint64_t)t * routed_down_bytes,
+                                                        routed_down_bytes);
+        ds4_gpu_tensor *selected_view = ds4_gpu_tensor_view(g->batch_router_selected,
+                                                            (uint64_t)t * selected_bytes,
+                                                            selected_bytes);
+        ds4_gpu_tensor *weights_view = ds4_gpu_tensor_view(g->batch_router_weights,
+                                                           (uint64_t)t * weights_bytes,
+                                                           weights_bytes);
+        ds4_gpu_tensor *x_view = ds4_gpu_tensor_view(g->batch_ffn_norm,
+                                                     (uint64_t)t * x_bytes,
+                                                     x_bytes);
+        ok = out_view && gate_view && up_view && mid_view && down_view &&
+             selected_view && weights_view && x_view;
+        if (ok) {
+            ok = ds4_gpu_routed_moe_one_tensor(out_view,
+                                               gate_view,
+                                               up_view,
+                                               mid_view,
+                                               down_view,
+                                               model->map,
+                                               model->size,
+                                               layer->ffn_gate_exps->abs_offset,
+                                               layer->ffn_up_exps->abs_offset,
+                                               layer->ffn_down_exps->abs_offset,
+                                               layer->ffn_gate_exps->type,
+                                               layer->ffn_down_exps->type,
+                                               gate_expert_bytes,
+                                               gate_row_bytes,
+                                               down_expert_bytes,
+                                               down_row_bytes,
+                                               expert_in_dim,
+                                               expert_mid_dim,
+                                               out_dim,
+                                               selected_view,
+                                               weights_view,
+                                               DS4_N_EXPERT,
+                                               DS4_N_EXPERT_USED,
+                                               DS4_SWIGLU_CLAMP_EXP,
+                                               x_view) != 0;
+        }
+        ds4_gpu_tensor_free(x_view);
+        ds4_gpu_tensor_free(weights_view);
+        ds4_gpu_tensor_free(selected_view);
+        ds4_gpu_tensor_free(down_view);
+        ds4_gpu_tensor_free(mid_view);
+        ds4_gpu_tensor_free(up_view);
+        ds4_gpu_tensor_free(gate_view);
+        ds4_gpu_tensor_free(out_view);
+    }
+    return ok;
+}
+
 /* Encode the batched prefill FFN half: HC pre/norm, shared expert, routed
  * experts, sum, and HC post. */
 static bool metal_graph_encode_layer_ffn_batch(
@@ -13313,34 +13414,58 @@ static bool metal_graph_encode_layer_ffn_batch(
     DS4_METAL_PROFILE_FFN_STAGE("router");
 
     if (ok) {
-        ok = ds4_gpu_routed_moe_batch_tensor(g->batch_routed_out,
-                                               g->batch_routed_gate,
-                                               g->batch_routed_up,
-                                               g->batch_routed_mid,
-                                               g->batch_routed_down,
-                                               model->map,
-                                               model->size,
-                                               layer->ffn_gate_exps->abs_offset,
-                                               layer->ffn_up_exps->abs_offset,
-                                               layer->ffn_down_exps->abs_offset,
-                                               layer->ffn_gate_exps->type,
+        if (ds4_gpu_routed_moe_batch_supported(layer->ffn_gate_exps->type,
                                                layer->ffn_down_exps->type,
-                                               gate_expert_bytes,
-                                               gate_row_bytes,
-                                               down_expert_bytes,
-                                               down_row_bytes,
-                                               (uint32_t)expert_in_dim,
-                                               (uint32_t)down_in_dim,
-                                               (uint32_t)routed_out_dim,
-                                               g->batch_router_selected,
-                                               g->batch_router_weights,
-                                               DS4_N_EXPERT,
-                                               DS4_N_EXPERT_USED,
-                                               DS4_SWIGLU_CLAMP_EXP,
-                                               g->batch_ffn_norm,
-                                               il,
                                                n_tokens,
-                                               &g->batch_routed_mid_is_f16) != 0;
+                                               DS4_N_EXPERT_USED))
+        {
+            ok = ds4_gpu_routed_moe_batch_tensor(g->batch_routed_out,
+                                                   g->batch_routed_gate,
+                                                   g->batch_routed_up,
+                                                   g->batch_routed_mid,
+                                                   g->batch_routed_down,
+                                                   model->map,
+                                                   model->size,
+                                                   layer->ffn_gate_exps->abs_offset,
+                                                   layer->ffn_up_exps->abs_offset,
+                                                   layer->ffn_down_exps->abs_offset,
+                                                   layer->ffn_gate_exps->type,
+                                                   layer->ffn_down_exps->type,
+                                                   gate_expert_bytes,
+                                                   gate_row_bytes,
+                                                   down_expert_bytes,
+                                                   down_row_bytes,
+                                                   (uint32_t)expert_in_dim,
+                                                   (uint32_t)down_in_dim,
+                                                   (uint32_t)routed_out_dim,
+                                                   g->batch_router_selected,
+                                                   g->batch_router_weights,
+                                                   DS4_N_EXPERT,
+                                                   DS4_N_EXPERT_USED,
+                                                   DS4_SWIGLU_CLAMP_EXP,
+                                                   g->batch_ffn_norm,
+                                                   il,
+                                                   n_tokens,
+                                                   &g->batch_routed_mid_is_f16) != 0;
+        } else if (ds4_gpu_routed_moe_batch_supported(layer->ffn_gate_exps->type,
+                                                      layer->ffn_down_exps->type,
+                                                      1,
+                                                      DS4_N_EXPERT_USED))
+        {
+            ok = metal_graph_routed_moe_batch_token_fallback(g,
+                                                             model,
+                                                             layer,
+                                                             n_tokens,
+                                                             gate_expert_bytes,
+                                                             gate_row_bytes,
+                                                             down_expert_bytes,
+                                                             down_row_bytes,
+                                                             (uint32_t)expert_in_dim,
+                                                             (uint32_t)down_in_dim,
+                                                             (uint32_t)routed_out_dim);
+        } else {
+            ok = false;
+        }
     }
     if (ok) {
         metal_graph_debug_dump_tensor("ffn_moe_gate_clamped", g->batch_routed_gate,
@@ -16417,6 +16542,9 @@ struct ds4_session {
     int mtp_draft_token;
     uint64_t mtp_probe_total;
     uint64_t mtp_probe_hit;
+    uint64_t mtp_drafted_tokens;
+    uint64_t mtp_accepted_tokens;
+    double mtp_verify_ms;
     ds4_session_progress_fn progress;
     void *progress_ud;
     ds4_session_progress_fn display_progress;
@@ -16766,6 +16894,28 @@ int ds4_engine_mtp_draft_tokens(ds4_engine *e) {
 
 const ds4_tokens *ds4_session_tokens(ds4_session *s) {
     return s ? &s->checkpoint : NULL;
+}
+
+ds4_mtp_metrics ds4_session_mtp_metrics(ds4_session *s) {
+    ds4_mtp_metrics m = {0};
+    if (!s) return m;
+    m.enabled = ds4_engine_mtp_draft_tokens(s->engine) > 1 ? 1 : 0;
+    m.drafted_tokens = s->mtp_drafted_tokens;
+    m.accepted_tokens = s->mtp_accepted_tokens;
+    m.accept_rate = m.drafted_tokens ?
+        (double)m.accepted_tokens / (double)m.drafted_tokens : 0.0;
+    m.verify_ms = s->mtp_verify_ms;
+    return m;
+}
+
+static void ds4_session_note_mtp_attempt(ds4_session *s, int drafted, int accepted, double verify_ms) {
+    if (!s || drafted <= 0) return;
+    if (accepted < 0) accepted = 0;
+    if (accepted > drafted) accepted = drafted;
+    if (verify_ms < 0.0) verify_ms = 0.0;
+    s->mtp_drafted_tokens += (uint64_t)drafted;
+    s->mtp_accepted_tokens += (uint64_t)accepted;
+    s->mtp_verify_ms += verify_ms;
 }
 
 #ifndef DS4_NO_GPU
@@ -18740,6 +18890,7 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
         (!strict_mtp && mtp_margin_threshold > 0.0f);
     const double mtp_t0 = mtp_timing ? now_sec() : 0.0;
     double mtp_t_after_draft = mtp_t0;
+    double mtp_verify_t0 = 0.0;
     float mtp_last_margin = 0.0f;
     int mtp_last_top0 = -1, mtp_last_top1 = -1;
 
@@ -18753,6 +18904,7 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
         if (getenv("DS4_MTP_SPEC_LOG")) {
             fprintf(stderr, "ds4: mtp spec miss first draft=%d\n", drafts[0]);
         }
+        ds4_session_note_mtp_attempt(s, draft_n, 0, 0.0);
         return n_accept;
     }
     if (drafts[0] == eos_token) draft_cap = 1;
@@ -18785,6 +18937,7 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
                                                 mtp_need_logits ? s->mtp_logits : NULL,
                                                 &mtp_top))
         {
+            ds4_session_note_mtp_attempt(s, draft_n, 0, 0.0);
             return n_accept;
         }
         drafts[draft_n] = mtp_top >= 0 ? mtp_top : sample_argmax(s->mtp_logits, DS4_N_VOCAB);
@@ -18799,6 +18952,18 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
         mtp_last_margin = v0 - v1;
     }
     if (mtp_timing) mtp_t_after_draft = now_sec();
+    mtp_verify_t0 = now_sec();
+
+#define DS4_MTP_ACCEPTED_DRAFTS() (n_accept > 1 ? n_accept - 1 : 0)
+#define DS4_MTP_VERIFY_MS() (mtp_verify_t0 > 0.0 ? (now_sec() - mtp_verify_t0) * 1000.0 : 0.0)
+#define DS4_MTP_RETURN_OK() do { \
+        ds4_session_note_mtp_attempt(s, draft_n, DS4_MTP_ACCEPTED_DRAFTS(), DS4_MTP_VERIFY_MS()); \
+        return n_accept; \
+    } while (0)
+#define DS4_MTP_RETURN_ERR() do { \
+        ds4_session_note_mtp_attempt(s, draft_n, DS4_MTP_ACCEPTED_DRAFTS(), DS4_MTP_VERIFY_MS()); \
+        return -1; \
+    } while (0)
 
     if (!strict_mtp && draft_n == 2 && mtp_margin_threshold > 0.0f) {
         if (!mtp_conf_log) {
@@ -18820,7 +18985,7 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
                 free(row_logits);
                 snprintf(err, errlen, "%s decode failed", ds4_backend_name(e->backend));
                 s->checkpoint_valid = false;
-                return -1;
+                DS4_MTP_RETURN_ERR();
             }
             memcpy(s->logits, row_logits, (size_t)DS4_N_VOCAB * sizeof(s->logits[0]));
             free(row_logits);
@@ -18839,7 +19004,7 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
                         (done - verify_t0) * 1000.0,
                         (done - mtp_t0) * 1000.0);
             }
-            return n_accept;
+            DS4_MTP_RETURN_OK();
         }
     }
 
@@ -18896,7 +19061,7 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
             spec_frontier_free(&frontier);
             free(row0_logits);
             free(row_logits);
-            return n_accept;
+            DS4_MTP_RETURN_OK();
         }
 
         if (ok) {
@@ -18923,7 +19088,7 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
             spec_frontier_free(&frontier);
             free(row0_logits);
             free(row_logits);
-            return n_accept;
+            DS4_MTP_RETURN_OK();
         }
         if (have_frontier) {
             s->checkpoint.len = start;
@@ -19025,7 +19190,7 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
                         spec_frontier_free(&frontier);
                         free(row_logits);
                         free(row_tops);
-                        return n_accept;
+                        DS4_MTP_RETURN_OK();
                     }
                 }
             }
@@ -19056,7 +19221,7 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
                     spec_frontier_free(&frontier);
                     free(row_logits);
                     free(row_tops);
-                    return n_accept;
+                    DS4_MTP_RETURN_OK();
                 }
             }
 
@@ -19087,7 +19252,7 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
                     spec_frontier_free(&frontier);
                     free(row_logits);
                     free(row_tops);
-                    return n_accept;
+                    DS4_MTP_RETURN_OK();
                 }
             } else {
                 s->checkpoint.len = start;
@@ -19122,7 +19287,7 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
                     spec_frontier_free(&frontier);
                     free(row_logits);
                     free(row_tops);
-                    return n_accept;
+                    DS4_MTP_RETURN_OK();
                 }
             }
             if (ok) {
@@ -19163,7 +19328,7 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
                     spec_frontier_free(&frontier);
                     free(row_logits);
                     free(row_tops);
-                    return n_accept;
+                    DS4_MTP_RETURN_OK();
                 }
             }
         }
@@ -19180,7 +19345,7 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
             spec_frontier_free(&frontier);
             free(row_logits);
             free(row_tops);
-            return -1;
+            DS4_MTP_RETURN_ERR();
         }
         spec_frontier_free(&frontier);
         free(row_logits);
@@ -19223,7 +19388,7 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
         {
             snprintf(err, errlen, "%s decode failed", ds4_backend_name(e->backend));
             s->checkpoint_valid = false;
-            return -1;
+            DS4_MTP_RETURN_ERR();
         }
         token_vec_push(&s->checkpoint, drafts[i]);
         logits_on_host = false;
@@ -19239,7 +19404,7 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
         {
             snprintf(err, errlen, "%s logits readback failed", ds4_backend_name(e->backend));
             s->checkpoint_valid = false;
-            return -1;
+            DS4_MTP_RETURN_ERR();
         }
         logits_on_host = true;
     }
@@ -19269,6 +19434,11 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
                     n_accept);
         }
     }
+    ds4_session_note_mtp_attempt(s, draft_n, DS4_MTP_ACCEPTED_DRAFTS(), DS4_MTP_VERIFY_MS());
+#undef DS4_MTP_RETURN_ERR
+#undef DS4_MTP_RETURN_OK
+#undef DS4_MTP_VERIFY_MS
+#undef DS4_MTP_ACCEPTED_DRAFTS
     return n_accept;
 #endif
 }

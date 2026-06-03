@@ -4,10 +4,19 @@ import { EventEmitter } from "node:events";
 const STOP_TIMEOUT_MS = 5000;
 const MAX_LOG_LINES = 500;
 
+export function compactEnv(env = {}) {
+  return Object.fromEntries(
+    Object.entries(env || {})
+      .filter(([, value]) => value !== undefined && value !== null && String(value) !== "")
+      .map(([key, value]) => [key, String(value)])
+  );
+}
+
 export class Ds4ProcessManager extends EventEmitter {
-  constructor({ buildCommand, healthCheck, cwd = process.cwd() }) {
+  constructor({ buildCommand, buildEnv = () => ({}), healthCheck, cwd = process.cwd() }) {
     super();
     this.buildCommand = buildCommand;
+    this.buildEnv = buildEnv;
     this.healthCheck = healthCheck;
     this.cwd = cwd;
     this.child = null;
@@ -55,7 +64,11 @@ export class Ds4ProcessManager extends EventEmitter {
     this.healthy = false;
     const child = spawn(command, args, {
       cwd: this.cwd,
-      stdio: ["ignore", "pipe", "pipe"]
+      stdio: ["ignore", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        ...compactEnv(this.buildEnv())
+      }
     });
     this.child = child;
     child.stdout.on("data", (chunk) => this.appendLog("stdout", chunk));
