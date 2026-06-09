@@ -1,7 +1,7 @@
 import express from "express";
 import multer from "multer";
 import { createServer as createViteServer } from "vite";
-import { parseCommandLine } from "./commandBuilder.mjs";
+import { parseCommandLine, buildDs4WrapperArgs } from "./commandBuilder.mjs";
 import { buildDs4Args, loadConfig, saveConfig, validateConfig } from "./config.mjs";
 import { DEFAULT_CONFIG, REQUEST_DEFAULTS } from "./defaultConfig.mjs";
 import {
@@ -52,6 +52,7 @@ const UPLOAD_LIMIT_BYTES = 50 * 1024 * 1024;
 const FRONTEND_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PROJECT_ROOT = path.resolve(FRONTEND_ROOT, "..");
 
+const NATIVE_AGENT_CMDS = new Set(["save", "list", "switch", "strip", "new", "compact"]);
 let config = await loadConfig();
 if (process.env.DS4_UI_HOST) config.control.host = process.env.DS4_UI_HOST;
 if (process.env.DS4_UI_PORT) config.control.port = process.env.DS4_UI_PORT;
@@ -107,8 +108,24 @@ function backendBase() {
 }
 
 async function healthCheck() {
+  // The wrapper gates server endpoints by mode (/v1/models -> 409 in agent mode),
+  // so health must be probed via the mode-agnostic /api/wrapper/status, otherwise
+  // the UI falsely reports "Loading GPU model" whenever the agent mode is active.
+  if (wrapperEnabled()) {
+    try {
+      const res = await fetch(`${backendBase()}/api/wrapper/status`, { signal: AbortSignal.timeout(1000) });
+      if (!res.ok) return false;
+      const status = await res.json();
+      return status.state === "ready" || status.state === "busy" || status.state === "switching";
+    } catch {
+      return false;
+    }
+  }
   const res = await fetch(`${backendBase()}/v1/models`, { signal: AbortSignal.timeout(1000) });
   return res.ok;
+}
+function wrapperEnabled() {
+  return Boolean(config.wrapper?.enabled);
 }
 
 function mergeRequestConfig(body = {}) {
@@ -117,7 +134,8 @@ function mergeRequestConfig(body = {}) {
     ...body,
     server: { ...config.server, ...(body.server || {}) },
     control: { ...config.control, ...(body.control || {}) },
-    history: { ...config.history, ...(body.history || {}) }
+    history: { ...config.history, ...(body.history || {}) },
+    wrapper: { ...config.wrapper, ...(body.wrapper || {}) }
   };
 }
 
@@ -173,7 +191,7 @@ async function writeProxyChunk(res, chunk) {
 }
 
 const manager = new Ds4ProcessManager({
-  buildCommand: () => buildDs4Args(config),
+  buildCommand: () => (wrapperEnabled() ? buildDs4WrapperArgs(config) : buildDs4Args(config)),
   buildEnv: () => config.server.env,
   healthCheck,
   cwd: PROJECT_ROOT
@@ -812,11 +830,37 @@ function agentSessionKey(req) {
 }
 
 app.post("/api/agent/start", asyncHandler(async (req, res) => {
-  res.json(agentSessions.start(agentSessionKey(req)));
+  if (wrapperEnabled()) {
+    const up = await fetch(`${backendBase()}/api/wrapper/switch-mode`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "agent" }),
+      signal: AbortSignal.timeout(config.wrapper?.modeSwitchTimeoutMs || 120000)
+    });
+    const body = await up.json();
+    if (!up.ok) return res.status(up.status).json(body);
+    agentSessions.start(agentSessionKey(req));
+    return res.json({ active: true, native: true, wrapper: body });
+  }
+  agentSessions.start(agentSessionKey(req));
+  res.json({ active: true, native: false });
 }));
 
 app.post("/api/agent/stop", asyncHandler(async (req, res) => {
-  res.json(agentSessions.stop(agentSessionKey(req)));
+  if (wrapperEnabled()) {
+    const up = await fetch(`${backendBase()}/api/wrapper/switch-mode`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "server" }),
+      signal: AbortSignal.timeout(config.wrapper?.modeSwitchTimeoutMs || 120000)
+    });
+    const body = await up.json();
+    if (!up.ok) return res.status(up.status).json(body);
+    agentSessions.stop(agentSessionKey(req));
+    return res.json({ active: false, native: true, wrapper: body });
+  }
+  agentSessions.stop(agentSessionKey(req));
+  res.json({ active: false, native: false });
 }));
 
 app.get("/api/agent/status", async (req, res) => {
@@ -837,10 +881,58 @@ app.get("/api/agent/status", async (req, res) => {
  * agent_tool_call, agent_tool_result, agent_usage, agent_done, agent_error.
  */
 app.post("/api/agent/chat", asyncHandler(async (req, res) => {
+  if (wrapperEnabled()) {
+    const { message } = req.body;
+    if (typeof message !== "string" || !message.trim()) {
+      return res.status(400).json({ error: "message is required and must be a non-empty string" });
+    }
+
+    /* Intercept slash commands and route them to the native-agent endpoint. */
+    const slashMatch = message.trim().match(/^\/(\w+)(?:\s+(.*))?$/s);
+    if (slashMatch) {
+      const cmd = slashMatch[1];
+      const arg = slashMatch[2]?.trim() || "";
+      if (NATIVE_AGENT_CMDS.has(cmd)) {
+        const body = cmd === "switch" ? { sha: arg } :
+                     cmd === "strip"  ? { sha: arg } : {};
+        const up = await fetch(`${backendBase()}/api/native-agent/${cmd}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body)
+        });
+        const json = await up.json().catch(() => ({}));
+        return res.status(up.status).json(json);
+      }
+    }
+
+    const up = await fetch(`${backendBase()}/api/native-agent/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message }),
+      signal: req.signal
+    });
+
+    if (!up.ok) {
+      const errorBody = await up.text();
+      return res.status(up.status).json({ error: `Wrapper error: ${errorBody}` });
+    }
+
+    res.status(up.status);
+    up.headers.forEach((value, key) => res.setHeader(key, value));
+    if (up.body) {
+      for await (const chunk of up.body) {
+        res.write(chunk);
+      }
+    }
+    res.end();
+    return;
+  }
+
+  // Existing JS agent loop logic (wrapper disabled)
   const sessionKey = agentSessionKey(req);
   const agentSession = agentSessions.get(sessionKey);
   if (!agentSession || !agentSession.active) {
-    return res.status(400).json({ error: "Agent mode is not active. Use /agent pi start first." });
+    return res.status(400).json({ error: "Agent mode is not active. Use /agent start first." });
   }
 
   const userMessage = req.body?.message;
@@ -1179,6 +1271,43 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
   } finally {
     req.off("aborted", abort);
   }
+}));
+
+// --- Wrapper / native-agent passthrough (only meaningful when wrapper backend is on) ---
+app.get("/api/wrapper/status", asyncHandler(async (_req, res) => {
+  if (!wrapperEnabled()) return res.status(400).json({ error: "wrapper is not enabled" });
+  const up = await fetch(`${backendBase()}/api/wrapper/status`, { signal: AbortSignal.timeout(5000) });
+  res.status(up.status).json(await up.json());
+}));
+
+app.post("/api/wrapper/switch-mode", asyncHandler(async (req, res) => {
+  if (!wrapperEnabled()) return res.status(400).json({ error: "wrapper is not enabled" });
+  const up = await fetch(`${backendBase()}/api/wrapper/switch-mode`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req.body || {}),
+    signal: AbortSignal.timeout(config.wrapper?.modeSwitchTimeoutMs || 120000)
+  });
+  res.status(up.status).json(await up.json());
+}));
+
+// Native-agent persistent-session commands: save/list/switch/strip/new/compact.
+app.all("/api/native-agent/:cmd", asyncHandler(async (req, res) => {
+  const cmd = String(req.params.cmd || "");
+  if (!NATIVE_AGENT_CMDS.has(cmd)) return res.status(404).json({ error: `unknown native-agent command: ${cmd}` });
+  if (!wrapperEnabled()) return res.status(400).json({ error: "wrapper is not enabled" });
+  const method = cmd === "list" ? "GET" : "POST";
+  const up = await fetch(`${backendBase()}/api/native-agent/${cmd}`, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: method === "POST" ? JSON.stringify(req.body || {}) : undefined,
+    signal: AbortSignal.timeout(60000)
+  });
+  const text = await up.text();
+  res.status(up.status);
+  const ct = up.headers.get("content-type");
+  if (ct) res.setHeader("content-type", ct);
+  res.send(text);
 }));
 
 app.use((err, _req, res, next) => {

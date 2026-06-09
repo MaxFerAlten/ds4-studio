@@ -761,7 +761,7 @@ pre {
   background: #1c1710;
 }
 
-.message strong {
+.message > strong {
   display: block;
   margin-bottom: 6px;
   color: #c7d4e2;

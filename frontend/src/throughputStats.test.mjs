@@ -57,7 +57,29 @@ test("uses exact usage values for final stream stats", () => {
   assert.equal(stats.promptTokens, 120);
   assert.equal(stats.completionTokens, 48);
   assert.equal(stats.prefillTps, 60);
+  assert.equal(stats.prefillWithCacheTps, 60);
   assert.equal(stats.genTps, 12);
+});
+
+test("separates effective prefill throughput from throughput with cache", () => {
+  const stats = streamStatsFromTiming({
+    requestStartMs: 1000,
+    firstTokenMs: 3000,
+    lastTokenMs: 7000,
+    promptTokens: 120,
+    promptTokensDetails: {
+      cached_tokens: 100,
+      cache_write_tokens: 20
+    },
+    completionTokens: 48,
+    stream: true
+  });
+
+  assert.equal(stats.promptTokens, 120);
+  assert.equal(stats.cachedTokens, 100);
+  assert.equal(stats.prefillTokens, 20);
+  assert.equal(stats.prefillTps, 10);
+  assert.equal(stats.prefillWithCacheTps, 60);
 });
 
 test("finalizes live stream stats with exact usage without dropping throughput", () => {
@@ -67,11 +89,37 @@ test("finalizes live stream stats with exact usage without dropping throughput",
 
   const stats = finalizeLiveStats(tracker, {
     promptTokens: 120,
+    promptTokensDetails: {
+      cached_tokens: 96,
+      cache_write_tokens: 24
+    },
     completionTokens: 48
   });
 
   assert.equal(stats.promptTokens, 120);
   assert.equal(stats.completionTokens, 48);
-  assert.equal(stats.prefillTps, 60);
+  assert.equal(stats.prefillTps, 12);
+  assert.equal(stats.prefillWithCacheTps, 60);
   assert.equal(stats.genTps, 24);
+});
+
+test("uses backend phase timings for agent throughput", () => {
+  let tracker = createLiveStatsTracker({ requestStartMs: 1000, promptTokens: 80 });
+  tracker = updateLiveStats(tracker, { content: "hello", nowMs: 5000 }).tracker;
+  tracker = updateLiveStats(tracker, { content: " world", nowMs: 15000 }).tracker;
+
+  const stats = finalizeLiveStats(tracker, {
+    promptTokens: 120,
+    promptTokensDetails: {
+      cached_tokens: 100,
+      cache_write_tokens: 20
+    },
+    completionTokens: 48,
+    prefillSeconds: 0.5,
+    generationSeconds: 3
+  });
+
+  assert.equal(stats.prefillTps, 40);
+  assert.equal(stats.prefillWithCacheTps, 240);
+  assert.equal(stats.genTps, 16);
 });

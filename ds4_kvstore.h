@@ -54,7 +54,6 @@ typedef struct {
     uint64_t payload_bytes;
     uint64_t text_bytes;
     uint64_t file_size;
-    bool touch_dirty;
 } ds4_kvstore_entry;
 
 typedef struct {
@@ -75,11 +74,6 @@ typedef struct {
     ds4_kvstore_entry *entry;
     int len;
     int cap;
-    bool index_loaded;
-    bool index_dirty;
-    uint64_t last_refresh_ms;
-    uint64_t full_scan_count;
-    uint64_t last_touch_flush_ms;
     const char *log_name;
     void *log_ud;
     void (*log)(void *ud, ds4_kvstore_log_type type, const char *msg);
@@ -214,8 +208,6 @@ void ds4_kvstore_fill_header(uint8_t h[DS4_KVSTORE_FIXED_HEADER],
                              uint64_t created_at, uint64_t last_used,
                              uint64_t payload_bytes);
 bool ds4_kvstore_touch_file(const char *path, uint32_t hits);
-bool ds4_kvstore_touch_entry(ds4_kvstore *kc, int idx);
-bool ds4_kvstore_flush_deferred_touches(ds4_kvstore *kc);
 bool ds4_kvstore_sha_hex_name(const char *name, char sha[41]);
 void ds4_kvstore_sha1_bytes_hex(const void *ptr, size_t len, char out[41]);
 char *ds4_kvstore_path_join(const char *dir, const char *name);

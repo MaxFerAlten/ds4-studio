@@ -13,6 +13,31 @@ static const char *test_model_path(void) {
     return (model_path && model_path[0]) ? model_path : "ds4flash.gguf";
 }
 
+static bool test_env_bool(const char *name) {
+    const char *v = getenv(name);
+    return v && v[0] && strcmp(v, "0") != 0;
+}
+
+static uint32_t test_env_u32(const char *name) {
+    const char *v = getenv(name);
+    if (!v || !v[0]) return 0;
+    char *end = NULL;
+    unsigned long n = strtoul(v, &end, 10);
+    if (end == v) return 0;
+    return n > UINT32_MAX ? UINT32_MAX : (uint32_t)n;
+}
+
+static uint64_t test_env_gib(const char *name) {
+    const char *v = getenv(name);
+    if (!v || !v[0]) return 0;
+    char *end = NULL;
+    unsigned long long n = strtoull(v, &end, 10);
+    if (end == v || n == 0) return 0;
+    const uint64_t one_gib = 1024ull * 1024ull * 1024ull;
+    if (n > UINT64_MAX / one_gib) return UINT64_MAX;
+    return (uint64_t)n * one_gib;
+}
+
 static char *test_save_env(const char *name) {
     const char *value = getenv(name);
     if (!value) return NULL;
@@ -33,8 +58,38 @@ static void test_restore_env(const char *name, char *saved) {
     }
 }
 
+typedef struct {
+    char *cold_decode;
+    char *batch_selected_addr;
+} test_streaming_prefill_env;
+
+static test_streaming_prefill_env test_force_canonical_streaming_prefill(void) {
+    test_streaming_prefill_env saved = {
+        .cold_decode =
+            test_save_env("DS4_METAL_DISABLE_STREAMING_COLD_DECODE_PREFILL"),
+        .batch_selected_addr =
+            test_save_env("DS4_METAL_DISABLE_STREAMING_PREFILL_BATCH_SELECTED_ADDR"),
+    };
+    if (test_env_bool("DS4_TEST_SSD_STREAMING")) {
+        setenv("DS4_METAL_DISABLE_STREAMING_COLD_DECODE_PREFILL", "1", 1);
+        setenv("DS4_METAL_DISABLE_STREAMING_PREFILL_BATCH_SELECTED_ADDR", "1", 1);
+    }
+    return saved;
+}
+
+static void test_restore_canonical_streaming_prefill(
+        test_streaming_prefill_env saved) {
+    test_restore_env("DS4_METAL_DISABLE_STREAMING_COLD_DECODE_PREFILL",
+                     saved.cold_decode);
+    test_restore_env("DS4_METAL_DISABLE_STREAMING_PREFILL_BATCH_SELECTED_ADDR",
+                     saved.batch_selected_addr);
+}
+
 static ds4_engine *test_open_engine(bool quality) {
     ds4_engine *engine = NULL;
+    /* DS4_TEST_MTP loads the MTP head on the fast engine so the speculative
+     * verify regression can reuse it; draft=4 hits the multi-row verify path. */
+    const char *mtp = getenv("DS4_TEST_MTP");
     ds4_engine_options opt = {
         .model_path = test_model_path(),
 #ifdef __APPLE__
@@ -43,6 +98,16 @@ static ds4_engine *test_open_engine(bool quality) {
         .backend = DS4_BACKEND_CUDA,
 #endif
         .quality = quality,
+        .ssd_streaming = test_env_bool("DS4_TEST_SSD_STREAMING"),
+        .ssd_streaming_cold = test_env_bool("DS4_TEST_SSD_STREAMING_COLD"),
+        .ssd_streaming_cache_experts =
+            test_env_u32("DS4_TEST_SSD_STREAMING_CACHE_EXPERTS"),
+        .ssd_streaming_cache_bytes =
+            test_env_gib("DS4_TEST_SSD_STREAMING_CACHE_GB"),
+        .ssd_streaming_preload_experts =
+            test_env_u32("DS4_TEST_SSD_STREAMING_PRELOAD_EXPERTS"),
+        .mtp_path = (mtp && mtp[0] && !quality) ? mtp : NULL,
+        .mtp_draft_tokens = (mtp && mtp[0] && !quality) ? 4 : 0,
     };
     TEST_ASSERT(ds4_engine_open(&engine, &opt) == 0);
     return engine;
@@ -862,6 +927,8 @@ static void test_official_logprob_vectors(void) {
 
     char *saved_prefill_chunk = test_save_env("DS4_METAL_PREFILL_CHUNK");
     char *saved_disable_metal4 = test_save_env("DS4_METAL_DISABLE_METAL4");
+    test_streaming_prefill_env saved_canonical_streaming_prefill =
+        test_force_canonical_streaming_prefill();
     setenv("DS4_METAL_PREFILL_CHUNK", "2048", 1);
     if (getenv("DS4_TEST_LOGPROB_AUTO_METAL") == NULL) {
         setenv("DS4_METAL_DISABLE_METAL4", "1", 1);
@@ -870,6 +937,7 @@ static void test_official_logprob_vectors(void) {
     }
     ds4_engine *engine = test_open_engine(false);
     if (!engine) {
+        test_restore_canonical_streaming_prefill(saved_canonical_streaming_prefill);
         test_restore_env("DS4_METAL_DISABLE_METAL4", saved_disable_metal4);
         test_restore_env("DS4_METAL_PREFILL_CHUNK", saved_prefill_chunk);
         fclose(fp);
@@ -888,6 +956,7 @@ static void test_official_logprob_vectors(void) {
         test_logprob_vector_case(engine, &vc);
     }
     ds4_engine_close(engine);
+    test_restore_canonical_streaming_prefill(saved_canonical_streaming_prefill);
     test_restore_env("DS4_METAL_DISABLE_METAL4", saved_disable_metal4);
     test_restore_env("DS4_METAL_PREFILL_CHUNK", saved_prefill_chunk);
     fclose(fp);
@@ -1077,12 +1146,15 @@ static void test_local_golden_vectors(void) {
     char *saved_prefill_chunk = test_save_env("DS4_METAL_PREFILL_CHUNK");
     char *saved_disable_metal4 = test_save_env("DS4_METAL_DISABLE_METAL4");
     char *saved_moe_tile_max = test_save_env("DS4_METAL_MOE_TILE_MAX");
+    test_streaming_prefill_env saved_canonical_streaming_prefill =
+        test_force_canonical_streaming_prefill();
     setenv("DS4_METAL_PREFILL_CHUNK", "4096", 1);
     setenv("DS4_METAL_DISABLE_METAL4", "1", 1);
     unsetenv("DS4_METAL_MOE_TILE_MAX");
 
     ds4_engine *engine = test_open_engine(false);
     if (!engine) {
+        test_restore_canonical_streaming_prefill(saved_canonical_streaming_prefill);
         test_restore_env("DS4_METAL_MOE_TILE_MAX", saved_moe_tile_max);
         test_restore_env("DS4_METAL_DISABLE_METAL4", saved_disable_metal4);
         test_restore_env("DS4_METAL_PREFILL_CHUNK", saved_prefill_chunk);
@@ -1097,6 +1169,7 @@ static void test_local_golden_vectors(void) {
     }
 
     ds4_engine_close(engine);
+    test_restore_canonical_streaming_prefill(saved_canonical_streaming_prefill);
     test_restore_env("DS4_METAL_MOE_TILE_MAX", saved_moe_tile_max);
     test_restore_env("DS4_METAL_DISABLE_METAL4", saved_disable_metal4);
     test_restore_env("DS4_METAL_PREFILL_CHUNK", saved_prefill_chunk);
@@ -1346,6 +1419,25 @@ static bool test_mpp_capture(ds4_engine *engine, const test_mpp_eq_case *tc,
     return ok;
 }
 
+static bool test_mpp_capture_logits_only(ds4_engine *engine,
+                                         const test_mpp_eq_case *tc,
+                                         float *logits) {
+    ds4_session *session = NULL;
+    TEST_ASSERT(ds4_session_create(&session, engine, tc->ctx) == 0);
+    if (!session) return false;
+
+    char err[160];
+    bool ok = ds4_session_sync(session, &tc->prompt, err, sizeof(err)) == 0;
+    TEST_ASSERT(ok);
+    if (ok) {
+        ok = ds4_session_copy_logits(session, logits, tc->vocab_size) == tc->vocab_size;
+        TEST_ASSERT(ok);
+    }
+
+    ds4_session_free(session);
+    return ok;
+}
+
 static bool test_mpp_eq_case_selected(const char *id) {
     const char *filter = getenv("DS4_TEST_MPP_EQ_CASE");
     if (!filter || !filter[0]) return true;
@@ -1509,6 +1601,121 @@ static void test_metal_mpp_equivalence(void) {
     for (int i = 0; i < ncase; i++) test_mpp_eq_case_free(&cases[i]);
 }
 
+static void test_streaming_decode_prefill_correctness(void) {
+    test_close_engines();
+    if (!test_env_bool("DS4_TEST_SSD_STREAMING")) {
+        fprintf(stderr,
+                "ds4-test: streaming decode-prefill correctness skipped "
+                "(set DS4_TEST_SSD_STREAMING=1 to enable)\n");
+        return;
+    }
+
+    test_mpp_eq_case cases[TEST_MPP_EQ_MAX_CASES];
+    memset(cases, 0, sizeof(cases));
+
+    test_streaming_prefill_env saved_canonical_streaming_prefill =
+        test_force_canonical_streaming_prefill();
+
+    ds4_engine *ref_engine = test_open_engine(false);
+    if (!ref_engine) {
+        test_restore_canonical_streaming_prefill(saved_canonical_streaming_prefill);
+        return;
+    }
+
+    const int ncase = test_load_mpp_cases(ref_engine, cases, TEST_MPP_EQ_MAX_CASES);
+    TEST_ASSERT(ncase > 0);
+    for (int i = 0; i < ncase; i++) {
+        test_mpp_eq_case *tc = &cases[i];
+        tc->ref_logits = malloc((size_t)tc->vocab_size * sizeof(tc->ref_logits[0]));
+        TEST_ASSERT(tc->ref_logits != NULL);
+        if (!tc->ref_logits) continue;
+        TEST_ASSERT(test_mpp_capture(ref_engine, tc,
+                                     tc->ref_logits,
+                                     tc->ref_gen,
+                                     &tc->ref_gen_len));
+    }
+    ds4_engine_close(ref_engine);
+
+    unsetenv("DS4_METAL_DISABLE_STREAMING_COLD_DECODE_PREFILL");
+    unsetenv("DS4_METAL_DISABLE_STREAMING_PREFILL_BATCH_SELECTED_ADDR");
+
+    ds4_engine *cand_engine = test_open_engine(false);
+    if (cand_engine) {
+        for (int i = 0; i < ncase; i++) {
+            test_mpp_eq_case *tc = &cases[i];
+            if (!tc->ref_logits) continue;
+
+            float *cand_cold = malloc((size_t)tc->vocab_size * sizeof(cand_cold[0]));
+            float *cand_warm_a = malloc((size_t)tc->vocab_size * sizeof(cand_warm_a[0]));
+            float *cand_warm_b = malloc((size_t)tc->vocab_size * sizeof(cand_warm_b[0]));
+            TEST_ASSERT(cand_cold != NULL);
+            TEST_ASSERT(cand_warm_a != NULL);
+            TEST_ASSERT(cand_warm_b != NULL);
+            if (!cand_cold || !cand_warm_a || !cand_warm_b) {
+                free(cand_cold);
+                free(cand_warm_a);
+                free(cand_warm_b);
+                continue;
+            }
+
+            TEST_ASSERT(test_mpp_capture_logits_only(cand_engine, tc, cand_cold));
+            TEST_ASSERT(test_mpp_capture_logits_only(cand_engine, tc, cand_warm_a));
+            TEST_ASSERT(test_mpp_capture_logits_only(cand_engine, tc, cand_warm_b));
+
+            test_mpp_eq_result result = test_compare_mpp_logits(tc, cand_cold, false);
+            TEST_ASSERT(result.nonfinite == 0);
+            TEST_ASSERT(result.top5_overlap >= 2);
+            TEST_ASSERT(result.overlap >= 10);
+            TEST_ASSERT(result.rms <= 4.0f);
+            TEST_ASSERT(result.top20_max_abs <= 12.0f);
+
+            int cold_warm_neq = 0;
+            int warm_repeat_neq = 0;
+            int repeat_nonfinite = 0;
+            float cold_warm_max_abs = 0.0f;
+            float warm_repeat_max_abs = 0.0f;
+            for (int j = 0; j < tc->vocab_size; j++) {
+                if (!isfinite(cand_cold[j]) ||
+                    !isfinite(cand_warm_a[j]) ||
+                    !isfinite(cand_warm_b[j])) {
+                    repeat_nonfinite++;
+                    continue;
+                }
+                const float cold_warm_d = fabsf(cand_cold[j] - cand_warm_a[j]);
+                if (cold_warm_d != 0.0f) cold_warm_neq++;
+                if (cold_warm_d > cold_warm_max_abs) cold_warm_max_abs = cold_warm_d;
+                const float warm_repeat_d = fabsf(cand_warm_a[j] - cand_warm_b[j]);
+                if (warm_repeat_d != 0.0f) warm_repeat_neq++;
+                if (warm_repeat_d > warm_repeat_max_abs) {
+                    warm_repeat_max_abs = warm_repeat_d;
+                }
+            }
+            TEST_ASSERT(repeat_nonfinite == 0);
+            TEST_ASSERT(cold_warm_neq == 0);
+            TEST_ASSERT(warm_repeat_neq == 0);
+            fprintf(stderr,
+                    "ds4-test: streaming decode-prefill %s cold_warm_neq=%d "
+                    "cold_warm_max_abs=%g warm_repeat_neq=%d "
+                    "warm_repeat_max_abs=%g top1 canonical=%d decode=%d\n",
+                    tc->id,
+                    cold_warm_neq,
+                    cold_warm_max_abs,
+                    warm_repeat_neq,
+                    warm_repeat_max_abs,
+                    result.ref_top1,
+                    result.cand_top1);
+
+            free(cand_cold);
+            free(cand_warm_a);
+            free(cand_warm_b);
+        }
+        ds4_engine_close(cand_engine);
+    }
+
+    test_restore_canonical_streaming_prefill(saved_canonical_streaming_prefill);
+    for (int i = 0; i < ncase; i++) test_mpp_eq_case_free(&cases[i]);
+}
+
 static const char *test_tool_call_request_json(void) {
     return
         "{"
@@ -1593,6 +1800,153 @@ static void test_tool_call_quality(void) {
     test_close_engine(true);
 }
 
+/* Greedy speculative decode: capture committed tokens and the largest accepted
+ * chunk, so the caller can confirm the multi-row verify path actually ran. */
+static bool test_mtp_capture_speculative(ds4_engine *engine, const ds4_tokens *prompt,
+                                         int max_tokens, int *out, int *out_len,
+                                         int *max_chunk) {
+    *out_len = 0;
+    *max_chunk = 0;
+    ds4_session *session = NULL;
+    TEST_ASSERT(ds4_session_create(&session, engine, 32768) == 0);
+    if (!session) return false;
+
+    char err[160];
+    bool ok = ds4_session_sync(session, prompt, err, sizeof(err)) == 0;
+    TEST_ASSERT(ok);
+
+    const int eos = ds4_token_eos(engine);
+    int n = 0;
+    bool stop = false;
+    while (ok && !stop && n < max_tokens) {
+        const int token = ds4_session_argmax(session);
+        if (token == eos) break;
+
+        int toks[17]; /* base token + draft depth, which the engine clamps to 16 */
+        const int ntok = ds4_session_eval_speculative_argmax(
+            session, token, max_tokens - n, eos, toks,
+            (int)(sizeof(toks) / sizeof(toks[0])), err, sizeof(err));
+        if (ntok < 0) { ok = false; TEST_ASSERT(false); break; }
+        if (ntok > *max_chunk) *max_chunk = ntok;
+
+        for (int j = 0; j < ntok; j++) {
+            if (toks[j] == eos) { stop = true; break; }
+            out[n++] = toks[j];
+            if (n >= max_tokens) { stop = true; break; }
+        }
+    }
+
+    *out_len = n;
+    ds4_session_free(session);
+    return ok;
+}
+
+/* Replay toks[] through plain decode and return the largest gap between a
+ * position's argmax logit and the committed token's logit.  Correct speculation
+ * commits (near-)argmax tokens (gap ~0); a mis-committed token gives a big gap. */
+static bool test_mtp_worst_argmax_gap(ds4_engine *engine, const ds4_tokens *prompt,
+                                      const int *toks, int n,
+                                      float *worst_gap, int *worst_at) {
+    *worst_gap = 0.0f;
+    *worst_at = -1;
+    ds4_session *session = NULL;
+    TEST_ASSERT(ds4_session_create(&session, engine, 32768) == 0);
+    if (!session) return false;
+
+    char err[160];
+    bool ok = ds4_session_sync(session, prompt, err, sizeof(err)) == 0;
+    TEST_ASSERT(ok);
+
+    for (int i = 0; ok && i < n; i++) {
+        ds4_token_score best, cur;
+        ok = ds4_session_top_logprobs(session, &best, 1) >= 1 &&
+             ds4_session_token_logprob(session, toks[i], &cur) == 1;
+        TEST_ASSERT(ok);
+        if (!ok) break;
+
+        const float gap = best.logit - cur.logit;
+        if (gap > *worst_gap) { *worst_gap = gap; *worst_at = i; }
+        if (ds4_session_eval(session, toks[i], err, sizeof(err)) != 0) { ok = false; TEST_ASSERT(false); break; }
+    }
+
+    ds4_session_free(session);
+    return ok;
+}
+
+/* Verbatim-copy task: keeps the model confident (a mis-committed token shows as
+ * a large argmax gap) and draft acceptance high (so the multi-row verify path is
+ * exercised across the generation). */
+static const char *test_mtp_copy_prompt(void) {
+    return
+        "Reproduce the following C code EXACTLY, character for character, "
+        "inside a single code block and output nothing else:\n\n"
+        "```c\n"
+        "static uint32_t clamp_u32(uint32_t v, uint32_t lo, uint32_t hi) {\n"
+        "    if (v < lo) return lo;\n"
+        "    if (v > hi) return hi;\n"
+        "    return v;\n"
+        "}\n"
+        "\n"
+        "static uint32_t ring_advance(uint32_t pos, uint32_t cap) {\n"
+        "    uint32_t next = pos + 1u;\n"
+        "    return next >= cap ? 0u : next;\n"
+        "}\n"
+        "\n"
+        "static int scratch_init(scratch *s, uint32_t ctx_size) {\n"
+        "    if (ctx_size == 0u) ctx_size = 1u;\n"
+        "    s->ctx_size = ctx_size;\n"
+        "    s->comp_cap = ctx_size / 4u + 2u;\n"
+        "    s->rows = clamp_u32(s->comp_cap, 1u, 4096u);\n"
+        "    s->head = 0u;\n"
+        "    return s->rows > 0u ? 0 : -1;\n"
+        "}\n"
+        "```\n";
+}
+
+#define TEST_MTP_MAXGEN 256
+
+/* Regression for the swapped top-k arguments in metal_graph_verify_suffix_tops
+ * at draft depth > 2.  Replays the committed speculative tokens through plain
+ * decode and requires each to be a (near-)argmax: that is the verify invariant,
+ * and unlike comparing token streams it tolerates the near-greedy tie
+ * divergences.  Needs an MTP head, so it self-skips without DS4_TEST_MTP. */
+static void test_mtp_verify_depth(void) {
+    ds4_engine *engine = test_get_engine(false);
+    if (!engine || !ds4_engine_has_mtp(engine)) {
+        fprintf(stderr, "ds4-test: mtp-verify-depth skipped (set DS4_TEST_MTP to an MTP GGUF)\n");
+        return;
+    }
+    TEST_ASSERT(ds4_engine_mtp_draft_tokens(engine) > 2);
+
+    ds4_tokens prompt = {0};
+    ds4_chat_begin(engine, &prompt);
+    ds4_chat_append_message(engine, &prompt, "user", test_mtp_copy_prompt());
+    ds4_chat_append_assistant_prefix(engine, &prompt, DS4_THINK_NONE);
+    TEST_ASSERT(prompt.len > 0);
+
+    int *spec = malloc((size_t)TEST_MTP_MAXGEN * sizeof(*spec));
+    TEST_ASSERT(spec != NULL);
+    if (spec && prompt.len > 0) {
+        int nspec = 0, max_chunk = 0;
+        const bool ok_spec = test_mtp_capture_speculative(engine, &prompt, TEST_MTP_MAXGEN,
+                                                          spec, &nspec, &max_chunk);
+        TEST_ASSERT(ok_spec);
+        TEST_ASSERT(max_chunk > 1);  /* multi-token chunks committed: the multi-row path ran */
+        TEST_ASSERT(nspec > 128);    /* enough output to surface the bug, incl. a spurious-EOS truncation */
+
+        float worst_gap = 0.0f;
+        int worst_at = -1;
+        const bool ok_check = test_mtp_worst_argmax_gap(engine, &prompt, spec, nspec,
+                                                        &worst_gap, &worst_at);
+        TEST_ASSERT(ok_check);
+        fprintf(stderr, "ds4-test: mtp-verify-depth nspec=%d max_chunk=%d worst_argmax_gap=%.3f at=%d\n",
+                nspec, max_chunk, worst_gap, worst_at);
+        TEST_ASSERT(worst_gap <= 2.0f);  /* correct: ~0; bug: ~21 on the reference model */
+    }
+
+    free(spec);
+    ds4_tokens_free(&prompt);
+}
 #endif
 
 static void test_server_unit_group(void) {
@@ -1617,6 +1971,8 @@ static const ds4_test_entry test_entries[] = {
     {"--metal-short-prefill", "metal-short-prefill", "Metal ratio-4 short prefill regression", test_metal_short_prefill_ratio4},
     {"--metal-kernels", "metal-kernels", "isolated Metal kernel numeric regressions", test_metal_kernel_group},
     {"--metal-tensor-equivalence", "metal-tensor-equivalence", "fast/quality Metal prompt-logit and greedy equivalence", test_metal_mpp_equivalence},
+    {"--streaming-decode-prefill-correctness", "streaming-decode-prefill-correctness", "streaming decode-style cold prefill drift and repeatability", test_streaming_decode_prefill_correctness},
+    {"--mtp-verify-depth", "mtp-verify-depth", "MTP speculative verify commits autoregressive-identical tokens at draft depth > 2", test_mtp_verify_depth},
 #endif
     {"--server", "server", "server parser/rendering/cache unit tests", test_server_unit_group},
 };
@@ -1639,6 +1995,11 @@ static void test_print_help(const char *prog) {
     puts("      Show this help.");
     puts("\nEnvironment:");
     puts("  DS4_TEST_MODEL=FILE        Model path. Default: ds4flash.gguf");
+    puts("  DS4_TEST_SSD_STREAMING=1   Run model tests through Metal SSD streaming.");
+    puts("  DS4_TEST_SSD_STREAMING_CACHE_GB=N  Streaming routed expert cache in GiB.");
+    puts("  DS4_TEST_SSD_STREAMING_CACHE_EXPERTS=N  Streaming routed expert cache count.");
+    puts("  DS4_TEST_SSD_STREAMING_COLD=1  Skip streaming hot expert preload.");
+    puts("  DS4_METAL_DISABLE_STREAMING_COLD_DECODE_PREFILL=1  Force canonical streamed cold prefill.");
     puts("  DS4_TEST_LONG_PROMPT=FILE  Rendered long-context story fact prompt.");
     puts("  DS4_TEST_VECTOR_FILE=FILE  Simple official-vector fixture.");
     puts("  DS4_TEST_LOCAL_GOLDEN_FILE=FILE  Local top-k golden-vector fixture.");
