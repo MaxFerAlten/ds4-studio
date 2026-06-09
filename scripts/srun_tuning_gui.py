@@ -101,6 +101,17 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "disableExactDsmlToolReplay": False,
         "toolMemoryMaxIds": 100000,
     },
+    "wrapper": {
+        "enabled": False,
+        "binary": "./ds4-wrapper",
+        "startupMode": "server",
+        "freezeOnSwitch": True,
+        "freeInactiveSession": True,
+        "mutualExclusive": True,
+        "agentEnabledAtStartup": False,
+        "ramFreezeMaxMb": 4096,
+        "modeSwitchTimeoutMs": 120000,
+    },
 }
 
 
@@ -141,6 +152,12 @@ FIELDS: list[Field] = [
     Field("server.kvCacheRejectDifferentQuant", "Reject different quant", "bool", "KV/Tools"),
     Field("server.disableExactDsmlToolReplay", "Disable exact DSML tool replay", "bool", "KV/Tools"),
     Field("server.toolMemoryMaxIds", "Tool memory max ids", "positive_int", "KV/Tools"),
+    Field("wrapper.enabled", "Enable wrapper backend (server/agent switch)", "bool", "Wrapper"),
+    Field("wrapper.binary", "Wrapper binary", "string", "Wrapper"),
+    Field("wrapper.startupMode", "Startup mode", "startup_mode", "Wrapper"),
+    Field("wrapper.freezeOnSwitch", "Freeze on switch", "bool", "Wrapper"),
+    Field("wrapper.freeInactiveSession", "Free inactive session", "bool", "Wrapper"),
+    Field("wrapper.ramFreezeMaxMb", "RAM freeze max MiB", "nonnegative_int", "Wrapper"),
 ]
 
 
@@ -310,6 +327,16 @@ def validate_config(config: dict[str, Any]) -> list[str]:
             value = env.get(key, "")
             if value not in {"", "1"}:
                 errors.append(f"{key} must be empty or 1")
+    wrapper = config.get("wrapper", {})
+    if not isinstance(wrapper, dict):
+        errors.append("wrapper must be an object")
+    else:
+        if not str(wrapper.get("binary", "")).strip():
+            errors.append("wrapper.binary is required")
+        if wrapper.get("startupMode") not in {"server", "agent"}:
+            errors.append("wrapper.startupMode must be server or agent")
+        if int_value(wrapper.get("ramFreezeMaxMb")) is None:
+            errors.append("wrapper.ramFreezeMaxMb must be a non-negative integer")
     return errors
 
 
@@ -337,7 +364,7 @@ class TuningDialog:
         notebook.pack(fill="both", expand=True, padx=10, pady=10)
 
         tabs: dict[str, Any] = {}
-        for tab in ["Server", "KV/Tools", "CUDA/Prefill", "Profiling", "MoE Kernel", "MoE Rows", "Extra Env"]:
+        for tab in ["Server", "Wrapper", "KV/Tools", "CUDA/Prefill", "Profiling", "MoE Kernel", "MoE Rows", "Extra Env"]:
             frame = ttk.Frame(notebook)
             notebook.add(frame, text=tab)
             tabs[tab] = self.scroll_frame(frame)
@@ -377,6 +404,9 @@ class TuningDialog:
         elif field.kind == "backend":
             var = tk.StringVar(value=str(value))
             widget = ttk.Combobox(parent, textvariable=var, values=["auto", "metal", "cuda", "cpu"], state="readonly")
+        elif field.kind == "startup_mode":
+            var = tk.StringVar(value=str(value))
+            widget = ttk.Combobox(parent, textvariable=var, values=["server", "agent"], state="readonly")
         elif field.kind == "env_flag":
             var = tk.StringVar(value=str(value))
             widget = ttk.Combobox(parent, textvariable=var, values=["", "1"], state="readonly")

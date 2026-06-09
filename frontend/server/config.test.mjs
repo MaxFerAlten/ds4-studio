@@ -345,3 +345,26 @@ test("buildDs4Args omits optional empty and zero thread fields", () => {
   assert.equal(args.includes("--backend"), false);
   assert.equal(args.includes("--kv-disk-dir"), false);
 });
+
+test("validateConfig accepts a valid wrapper block", () => {
+  const result = validateConfig(mergeConfig({ wrapper: { enabled: true } }));
+  assert.equal(result.ok, true);
+});
+
+test("validateConfig rejects an invalid wrapper startupMode", () => {
+  const result = validateConfig(mergeConfig({ wrapper: { startupMode: "bogus" } }));
+  assert.equal(result.ok, false);
+  assert.match(result.errors.wrapper.startupMode, /server.*agent/);
+});
+
+test("validateConfig rejects a negative wrapper ramFreezeMaxMb", () => {
+  const result = validateConfig(mergeConfig({ wrapper: { ramFreezeMaxMb: -1 } }));
+  assert.equal(result.ok, false);
+  assert.match(result.errors.wrapper.ramFreezeMaxMb, /non-negative/);
+});
+
+test("validateConfig rejects an empty wrapper binary", () => {
+  const result = validateConfig(mergeConfig({ wrapper: { binary: "" } }));
+  assert.equal(result.ok, false);
+  assert.match(result.errors.wrapper.binary, /required/);
+});

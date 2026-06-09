@@ -52,10 +52,6 @@ export const DEFAULT_CONFIG = Object.freeze({
       DS4_CUDA_MOE_DOWN_ROW1024: "",
       DS4_CUDA_MOE_DOWN_ROW2048: "",
       DS4_CUDA_MOE_DOWN_ROW256: "",
-      DS4_CUDA_MOE_DOWN_ROW128: "",
-      DS4_CUDA_MOE_DOWN_ROW64: "",
-      DS4_CUDA_MOE_NO_DOWN_ROW2048: "",
-      DS4_CUDA_MOE_NO_DOWN_ROW256: "",
       DS4_CUDA_MOE_NO_DOWN_ROW128: "",
       DS4_CUDA_MOE_NO_DOWN_ROW64: "",
       DS4_CUDA_MOE_NO_DIRECT_DOWN_SUM6: ""
@@ -74,6 +70,17 @@ export const DEFAULT_CONFIG = Object.freeze({
     kvCacheRejectDifferentQuant: false,
     disableExactDsmlToolReplay: false,
     toolMemoryMaxIds: 100000
+  }),
+  wrapper: Object.freeze({
+    enabled: false,
+    binary: "./ds4-wrapper",
+    startupMode: "server",
+    freezeOnSwitch: true,
+    freeInactiveSession: true,
+    mutualExclusive: true,
+    agentEnabledAtStartup: false,
+    ramFreezeMaxMb: 4096,
+    modeSwitchTimeoutMs: 120000
   })
 });
 

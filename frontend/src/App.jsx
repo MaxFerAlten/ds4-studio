@@ -390,7 +390,12 @@ function RocmFooter({ rocm, stats }) {
       {stats ? (
         <span className="rocm-card">
           <strong>Throughput</strong>
-          <b>prefill {stats.prefillTps != null ? `${stats.prefillTps.toFixed(2)} t/s` : "n/a"}</b>
+          <b title="Token realmente prefilleri divisi per il tempo al primo token">
+            prefill effettivo {stats.prefillTps != null ? `${stats.prefillTps.toFixed(2)} t/s` : "n/a"}
+          </b>
+          <b title="Prompt totale, inclusi i token recuperati dalla cache, diviso per il tempo al primo token">
+            prefill con cache {stats.prefillWithCacheTps != null ? `${stats.prefillWithCacheTps.toFixed(2)} t/s` : "n/a"}
+          </b>
           <b>gen {stats.genTps != null ? `${stats.genTps.toFixed(2)} t/s` : "n/a"}</b>
           <b>in {stats.promptTokens ?? 0}</b>
           <b>out {stats.completionTokens ?? 0}</b>
@@ -1091,6 +1096,9 @@ export default function App() {
     let streamUsage = null;
     let totalPromptTokens = 0;
     let totalCompletionTokens = 0;
+    let totalCachedTokens = 0;
+    let totalPrefillTokens = 0;
+    let hasPromptTokenDetails = false;
     let totalChunks = 0;
     let liveStats = createLiveStatsTracker({
       requestStartMs: tRequestStart,
@@ -1168,6 +1176,12 @@ export default function App() {
             if (data.usage) {
               totalPromptTokens += data.usage.prompt_tokens || 0;
               totalCompletionTokens += data.usage.completion_tokens || 0;
+              const details = data.usage.prompt_tokens_details;
+              if (details) {
+                hasPromptTokenDetails = true;
+                totalCachedTokens += details.cached_tokens || 0;
+                totalPrefillTokens += details.cache_write_tokens || 0;
+              }
               liveStats = {
                 ...liveStats,
                 promptTokens: totalPromptTokens || liveStats.promptTokens,
@@ -1206,6 +1220,12 @@ export default function App() {
       if (streamUsage) {
         totalPromptTokens += streamUsage.prompt_tokens || 0;
         totalCompletionTokens += streamUsage.completion_tokens || 0;
+        const details = streamUsage.prompt_tokens_details;
+        if (details) {
+          hasPromptTokenDetails = true;
+          totalCachedTokens += details.cached_tokens || 0;
+          totalPrefillTokens += details.cache_write_tokens || 0;
+        }
       }
       if (tFirstToken !== null) {
         setRuntimeStats(streamStatsFromTiming({
@@ -1213,6 +1233,10 @@ export default function App() {
           firstTokenMs: tFirstToken,
           lastTokenMs: tLastToken,
           promptTokens: totalPromptTokens,
+          promptTokensDetails: hasPromptTokenDetails ? {
+            cached_tokens: totalCachedTokens,
+            cache_write_tokens: totalPrefillTokens
+          } : undefined,
           completionTokens: totalCompletionTokens,
           stream: true
         }));
@@ -1259,6 +1283,34 @@ export default function App() {
     }
   }
 
+  // Native-agent persistent-session commands (wrapper backend): proxied to
+  // /api/native-agent/* and /api/wrapper/status. Result rendered as a chat notice.
+  async function callNativeAgentCommand(method, url, body, label) {
+    try {
+      const res = await fetch(url, {
+        method,
+        headers: { "Content-Type": "application/json", ...AGENT_HEADERS },
+        body: method === "POST" ? JSON.stringify(body || {}) : undefined
+      });
+      const text = await res.text();
+      let pretty = text;
+      try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch { /* keep raw */ }
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: `**/agent ${label}** (HTTP ${res.status})\n\n\`\`\`json\n${pretty}\n\`\`\``,
+          agentNotice: true
+        }
+      ]);
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: `Failed /agent ${label}: ${err.message}`, agentNotice: true }
+      ]);
+    }
+  }
+
   async function sendAgentMessage(text) {
     setInput("");
     setError("");
@@ -1275,6 +1327,11 @@ export default function App() {
     setGenerationBusy(true);
     const tRequestStart = performance.now();
     let streamUsage = null;
+    let totalPromptTokens = 0;
+    let totalCompletionTokens = 0;
+    let totalCachedTokens = 0;
+    let totalPrefillTokens = 0;
+    let hasPromptTokenDetails = false;
     let liveStats = createLiveStatsTracker({
       requestStartMs: tRequestStart,
       promptTokens: estimateTokenCount(
@@ -1381,10 +1438,29 @@ export default function App() {
               { role: "assistant", content: "", reasoning: "" }
             ]);
           } else if (event === "agent_usage") {
-            streamUsage = data;
+            totalPromptTokens += data.prompt_tokens || 0;
+            totalCompletionTokens += data.completion_tokens || 0;
+            const details = data.prompt_tokens_details;
+            if (details) {
+              hasPromptTokenDetails = true;
+              totalCachedTokens += details.cached_tokens || 0;
+              totalPrefillTokens += details.cache_write_tokens || 0;
+            }
+            streamUsage = {
+              ...data,
+              prompt_tokens: totalPromptTokens,
+              completion_tokens: totalCompletionTokens,
+              prompt_tokens_details: hasPromptTokenDetails ? {
+                cached_tokens: totalCachedTokens,
+                cache_write_tokens: totalPrefillTokens
+              } : undefined
+            };
             setRuntimeStats(finalizeLiveStats(liveStats, {
-              promptTokens: data.prompt_tokens,
-              completionTokens: data.completion_tokens,
+              promptTokens: streamUsage.prompt_tokens,
+              promptTokensDetails: streamUsage.prompt_tokens_details,
+              completionTokens: streamUsage.completion_tokens,
+              prefillSeconds: streamUsage.timing?.prefill_sec,
+              generationSeconds: streamUsage.timing?.decode_sec,
               stream: true
             }));
           } else if (event === "agent_error") {
@@ -1399,7 +1475,10 @@ export default function App() {
       if (streamUsage) {
         setRuntimeStats(finalizeLiveStats(liveStats, {
           promptTokens: streamUsage.prompt_tokens,
+          promptTokensDetails: streamUsage.prompt_tokens_details,
           completionTokens: streamUsage.completion_tokens,
+          prefillSeconds: streamUsage.timing?.prefill_sec,
+          generationSeconds: streamUsage.timing?.decode_sec,
           stream: true
         }));
       }
@@ -1419,13 +1498,43 @@ export default function App() {
     const text = input.trim();
     if (!text || !canSend) return;
 
-    if (text.toLowerCase() === "/agent pi start") {
+    if (text.toLowerCase() === "/agent start") {
       setInput("");
       return toggleAgentMode(true);
     }
-    if (text.toLowerCase() === "/agent pi stop") {
+    if (text.toLowerCase() === "/agent stop") {
       setInput("");
       return toggleAgentMode(false);
+    }
+    if (text.toLowerCase() === "/agent status") {
+      setInput("");
+      return callNativeAgentCommand("GET", "/api/wrapper/status", null, "status");
+    }
+    if (text.toLowerCase() === "/agent save") {
+      setInput("");
+      return callNativeAgentCommand("POST", "/api/native-agent/save", {}, "save");
+    }
+    if (text.toLowerCase() === "/agent list") {
+      setInput("");
+      return callNativeAgentCommand("GET", "/api/native-agent/list", null, "list");
+    }
+    if (text.toLowerCase() === "/agent new") {
+      setInput("");
+      return callNativeAgentCommand("POST", "/api/native-agent/new", {}, "new");
+    }
+    if (text.toLowerCase() === "/agent compact") {
+      setInput("");
+      return callNativeAgentCommand("POST", "/api/native-agent/compact", {}, "compact");
+    }
+    if (text.toLowerCase().startsWith("/agent switch ")) {
+      setInput("");
+      const sha = text.slice("/agent switch ".length).trim();
+      return callNativeAgentCommand("POST", "/api/native-agent/switch", { sha }, "switch");
+    }
+    if (text.toLowerCase().startsWith("/agent strip ")) {
+      setInput("");
+      const sha = text.slice("/agent strip ".length).trim();
+      return callNativeAgentCommand("POST", "/api/native-agent/strip", { sha }, "strip");
     }
 
     if (agentMode) {
@@ -1538,6 +1647,7 @@ export default function App() {
           firstTokenMs: tFirstToken,
           lastTokenMs: tLastToken,
           promptTokens: streamUsage.prompt_tokens,
+          promptTokensDetails: streamUsage.prompt_tokens_details,
           completionTokens: streamUsage.completion_tokens,
           stream: true
         }));

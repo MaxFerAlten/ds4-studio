@@ -38,8 +38,51 @@ export function buildDs4Args(config) {
   return { command: s.binary, args };
 }
 
+export function buildDs4WrapperArgs(config) {
+  const s = config.server;
+  const w = config.wrapper;
+  const args = [];
+  // Server-like options
+  pushValue(args, "--model", s.model);
+  pushValue(args, "--mtp", s.mtp);
+  pushValue(args, "--mtp-draft", s.mtpDraft);
+  pushValue(args, "--mtp-margin", s.mtpMargin);
+  pushValue(args, "--ctx", s.ctx);
+  pushValue(args, "--tokens", s.tokens);
+  if (Number(s.threads) > 0) pushValue(args, "--threads", s.threads);
+  if (s.backend === "metal") args.push("--metal");
+  if (s.backend === "cuda") args.push("--cuda");
+  if (s.backend === "cpu") args.push("--cpu");
+  if (s.quality) args.push("--quality");
+  if (s.warmWeights) args.push("--warm-weights");
+  pushValue(args, "--host", s.host);
+  pushValue(args, "--port", s.port);
+  pushValue(args, "--max-queued-jobs", "1"); // wrapper mutual-exclusive mode
+  pushValue(args, "--trace", s.trace);
+  pushValue(args, "--dir-steering-file", s.dirSteeringFile);
+  pushValue(args, "--dir-steering-ffn", s.dirSteeringFfn);
+  pushValue(args, "--dir-steering-attn", s.dirSteeringAttn);
+  pushValue(args, "--kv-disk-dir", s.kvDiskDir);
+  pushValue(args, "--kv-disk-space-mb", s.kvDiskSpaceMb);
+  pushValue(args, "--kv-cache-min-tokens", s.kvCacheMinTokens);
+  pushValue(args, "--kv-cache-cold-max-tokens", s.kvCacheColdMaxTokens);
+  pushValue(args, "--kv-cache-continued-interval-tokens", s.kvCacheContinuedIntervalTokens);
+  pushValue(args, "--kv-cache-boundary-trim-tokens", s.kvCacheBoundaryTrimTokens);
+  pushValue(args, "--kv-cache-boundary-align-tokens", s.kvCacheBoundaryAlignTokens);
+  if (s.kvCacheRejectDifferentQuant) args.push("--kv-cache-reject-different-quant");
+  pushValue(args, "--tool-memory-max-ids", s.toolMemoryMaxIds);
+  // Wrapper-specific options
+  pushValue(args, "--startup-mode", w.startupMode);
+  if (w.freezeOnSwitch) args.push("--freeze-on-switch");
+  if (w.freeInactiveSession) args.push("--free-inactive-session");
+  pushValue(args, "--ram-freeze-max-mb", w.ramFreezeMaxMb);
+  return { command: w.binary, args };
+}
+
 export function commandLineFromConfig(config) {
-  const { command, args } = buildDs4Args(config);
+  const { command, args } = config?.wrapper?.enabled
+    ? buildDs4WrapperArgs(config)
+    : buildDs4Args(config);
   return [command, ...args].join(" ");
 }
 

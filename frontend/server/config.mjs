@@ -59,6 +59,7 @@ export function mergeConfig(input = {}) {
     serverInput.env && typeof serverInput.env === "object" && !Array.isArray(serverInput.env)
       ? serverInput.env
       : {};
+  const wrapperInput = input.wrapper || {};
   return {
     selectedProfile: typeof input.selectedProfile === "string"
       ? input.selectedProfile
@@ -78,6 +79,10 @@ export function mergeConfig(input = {}) {
         ...DEFAULT_CONFIG.server.env,
         ...serverEnvInput
       }
+    },
+    wrapper: {
+      ...DEFAULT_CONFIG.wrapper,
+      ...wrapperInput
     }
   };
 }
@@ -132,7 +137,8 @@ function validateOptionalEnvMiB(env, key, label, min, max, { minMessage = false 
 
 function validateCudaEnv(env) {
   for (const key of CUDA_PRESENCE_FLAGS) {
-    if (env[key] !== "" && env[key] !== "1") {
+    const value = env[key] ?? "";
+    if (value !== "" && value !== "1") {
       return `${key} must be empty or 1`;
     }
   }
@@ -155,7 +161,7 @@ function validateOptionalEnvTokens(env, key, label, min, max) {
 }
 
 export function validateConfig(config) {
-  const errors = { control: {}, history: {}, server: {} };
+  const errors = { control: {}, history: {}, server: {}, wrapper: {} };
   if (!validatePort(config.control.port)) errors.control.port = "must be between 1 and 65535";
   if (!validatePort(config.server.port)) errors.server.port = "must be between 1 and 65535";
   if (!config.control.host) errors.control.host = "is required";
@@ -228,10 +234,22 @@ export function validateConfig(config) {
       if (cudaEnvError) errors.server.env = cudaEnvError;
     }
   }
+  // Wrapper validation
+  if (typeof config.wrapper.enabled !== "boolean") errors.wrapper.enabled = "must be boolean";
+  if (!config.wrapper.binary || typeof config.wrapper.binary !== "string" || !config.wrapper.binary.trim()) errors.wrapper.binary = "is required";
+  const validStartupModes = new Set(["server", "agent"]);
+  if (!validStartupModes.has(config.wrapper.startupMode)) errors.wrapper.startupMode = "must be 'server' or 'agent'";
+  if (typeof config.wrapper.freezeOnSwitch !== "boolean") errors.wrapper.freezeOnSwitch = "must be boolean";
+  if (typeof config.wrapper.freeInactiveSession !== "boolean") errors.wrapper.freeInactiveSession = "must be boolean";
+  if (typeof config.wrapper.mutualExclusive !== "boolean") errors.wrapper.mutualExclusive = "must be boolean";
+  if (typeof config.wrapper.agentEnabledAtStartup !== "boolean") errors.wrapper.agentEnabledAtStartup = "must be boolean";
+  if (!isNonNegativeInt(config.wrapper.ramFreezeMaxMb)) errors.wrapper.ramFreezeMaxMb = "must be a non-negative integer";
+  if (!isPositiveInt(config.wrapper.modeSwitchTimeoutMs)) errors.wrapper.modeSwitchTimeoutMs = "must be a positive integer";
   const ok =
     Object.keys(errors.control).length === 0 &&
     Object.keys(errors.history).length === 0 &&
-    Object.keys(errors.server).length === 0;
+    Object.keys(errors.server).length === 0 &&
+    Object.keys(errors.wrapper).length === 0;
   return { ok, errors };
 }
 

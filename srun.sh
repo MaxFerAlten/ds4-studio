@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$ROOT_DIR/scripts/rocm_settings.sh"
+
 FRONTEND_DIR="$ROOT_DIR/frontend"
 HOST="127.0.0.1"
 PORT="5173"
@@ -40,9 +42,45 @@ Environment:
   DS4_MODEL_VARIANT    Model variant downloaded when ./ds4flash.gguf is missing.
                        Values: q2-imatrix (default), q4-imatrix, q2, q4.
   DS4_SRUN_NO_GUI=1    Skip the Python startup tuning window.
+  DS4_SERVER_FAST_FULL=1
+                       Enable the max-performance ROCm preset (default).
+  DS4_SERVER_FAST_FULL=0
+                       Disable the preset and use explicit environment settings.
+  DS4_SERVER_PERFLEVEL=high|auto
+                       ROCm performance level; use off/skip/none to bypass.
 
 After startup, open the printed local URL in your browser.
 USAGE
+}
+
+configure_rocm_runtime() {
+  export DS4_SERVER_FAST_FULL="${DS4_SERVER_FAST_FULL:-1}"
+  if [[ "$DS4_SERVER_FAST_FULL" == "1" ]]; then
+    ds4_rocm_apply_fast_full_defaults 4096
+  fi
+
+  ds4_rocm_apply_tensor_env
+  ds4_rocm_apply_prefill_env 128 512
+  ds4_rocm_export_runtime_env
+  ds4_rocm_normalize_perflevel_var DS4_SERVER_PERFLEVEL
+
+  echo "srun.sh: ROCm FAST_FULL=$DS4_SERVER_FAST_FULL prefill_chunk=${DS4_METAL_PREFILL_CHUNK:-auto}"
+  if [[ -n "${DS4_SERVER_PERFLEVEL:-}" ]] && command -v rocm-smi >/dev/null 2>&1; then
+    echo "srun.sh: setting ROCm perflevel ${DS4_SERVER_PERFLEVEL}"
+    local rocm_smi_bin
+    local perflevel_set=0
+    rocm_smi_bin="$(command -v rocm-smi)"
+    if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+      "$rocm_smi_bin" --setperflevel "$DS4_SERVER_PERFLEVEL" </dev/null >&2 &&
+        perflevel_set=1
+    elif command -v sudo >/dev/null 2>&1; then
+      sudo -n -- "$rocm_smi_bin" --setperflevel "$DS4_SERVER_PERFLEVEL" </dev/null >&2 &&
+        perflevel_set=1
+    fi
+    if [[ "$perflevel_set" != "1" ]]; then
+      echo "srun.sh: warning: unable to set ROCm perflevel ${DS4_SERVER_PERFLEVEL}; continuing" >&2
+    fi
+  fi
 }
 
 stop_pattern() {
@@ -179,11 +217,12 @@ stop_launch_ports() {
 
 stop_all_ds4() {
   stop_pattern "frontend" "node .*frontend/server/index\.mjs"
-  stop_pattern "ds4-server" "(^|/)ds4-server( |$)"
-  stop_pattern "ds4-bench"  "(^|/)ds4-bench( |$)"
-  stop_pattern "ds4-eval"   "(^|/)ds4-eval( |$)"
-  stop_pattern "ds4-agent"  "(^|/)ds4-agent( |$)"
-  stop_pattern "ds4 cli"    "(^|/)ds4( |$)"
+  stop_pattern "ds4-server"  "(^|/)ds4-server( |$)"
+  stop_pattern "ds4-wrapper" "(^|/)ds4-wrapper( |$)"
+  stop_pattern "ds4-bench"   "(^|/)ds4-bench( |$)"
+  stop_pattern "ds4-eval"    "(^|/)ds4-eval( |$)"
+  stop_pattern "ds4-agent"   "(^|/)ds4-agent( |$)"
+  stop_pattern "ds4 cli"     "(^|/)ds4( |$)"
 }
 
 if [[ $# -gt 0 && "$1" == "stop" ]]; then
@@ -323,17 +362,42 @@ run_tuning_gui() {
 }
 
 ensure_backend() {
-  if [[ -x "$ROOT_DIR/ds4-server" ]]; then
-    return 0
+  # Check if the config requests wrapper mode
+  local use_wrapper=0
+  if [[ -f "$CONFIG_PATH" ]] && command -v node >/dev/null 2>&1; then
+    use_wrapper="$(node -e '
+      const fs = require("fs");
+      try {
+        const cfg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+        console.log(cfg && cfg.wrapper && cfg.wrapper.enabled ? "1" : "0");
+      } catch { console.log("0"); }
+    ' "$CONFIG_PATH" 2>/dev/null || echo "0")"
   fi
-  echo "srun.sh: ds4-server binary not found, building ROCm (incremental, no make clean)"
-  (cd "$ROOT_DIR" && make rocm ROCM_ARCH="$ROCM_ARCH")
-  if [[ ! -x "$ROOT_DIR/ds4-server" ]]; then
-    echo "srun.sh: backend build did not produce ./ds4-server" >&2
-    exit 1
+
+  if [[ "$use_wrapper" == "1" ]]; then
+    if [[ -x "$ROOT_DIR/ds4-wrapper" ]]; then
+      return 0
+    fi
+    echo "srun.sh: ds4-wrapper binary not found, building ROCm (incremental, no make clean)"
+    (cd "$ROOT_DIR" && make ds4-wrapper GPU_BACKEND=rocm ROCM_ARCH="$ROCM_ARCH")
+    if [[ ! -x "$ROOT_DIR/ds4-wrapper" ]]; then
+      echo "srun.sh: backend build did not produce ./ds4-wrapper" >&2
+      exit 1
+    fi
+  else
+    if [[ -x "$ROOT_DIR/ds4-server" ]]; then
+      return 0
+    fi
+    echo "srun.sh: ds4-server binary not found, building ROCm (incremental, no make clean)"
+    (cd "$ROOT_DIR" && make ds4-server GPU_BACKEND=rocm ROCM_ARCH="$ROCM_ARCH")
+    if [[ ! -x "$ROOT_DIR/ds4-server" ]]; then
+      echo "srun.sh: backend build did not produce ./ds4-server" >&2
+      exit 1
+    fi
   fi
 }
 
+configure_rocm_runtime
 run_tuning_gui
 
 if ! command -v node >/dev/null 2>&1; then
@@ -363,6 +427,20 @@ export DS4_UI_PORT="$PORT"
 export DS4_UI_CONFIG="$CONFIG_PATH"
 
 cd "$ROOT_DIR"
-echo "srun.sh: launching DS4 Studio at http://$HOST:$PORT"
+
+# Determine what backend will be used (for log only)
+_backend_label="ds4-server"
+if [[ -f "$CONFIG_PATH" ]] && command -v node >/dev/null 2>&1; then
+  _uw="$(node -e '
+    const fs = require("fs");
+    try {
+      const cfg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+      console.log(cfg && cfg.wrapper && cfg.wrapper.enabled ? "1" : "0");
+    } catch { console.log("0"); }
+  ' "$CONFIG_PATH" 2>/dev/null || echo "0")"
+  [[ "$_uw" == "1" ]] && _backend_label="ds4-wrapper"
+fi
+
+echo "srun.sh: launching DS4 Studio at http://$HOST:$PORT (backend: $_backend_label)"
 echo "srun.sh: backend GPU model load can take about 2 minutes before Healthy"
 exec node frontend/server/index.mjs

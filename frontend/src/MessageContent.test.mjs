@@ -78,3 +78,92 @@ test("renders GFM tables with math that contains vertical bars", () => {
   assert.doesNotMatch(html, /\$\\rho\(x\) =/);
   assert.doesNotMatch(html, /<td>\^2\$\.<\/td>/);
 });
+
+test("renders complete LaTeX documents as Markdown and KaTeX", () => {
+  const html = renderToStaticMarkup(
+    createElement(MessageContent, {
+      content: [
+        "Ecco la spiegazione richiesta.",
+        "",
+        "\\documentclass{article}",
+        "\\usepackage{amsmath}",
+        "\\title{Oscillatori armonici negli LLM}",
+        "\\author{}",
+        "\\date{}",
+        "\\begin{document}",
+        "\\maketitle",
+        "\\section{Introduzione}",
+        "Un oscillatore segue \\(x(t)=A\\cos(\\omega t+\\phi)\\).",
+        "\\begin{equation}",
+        "\\ddot{x} + \\omega^2 x = 0",
+        "\\end{equation}",
+        "\\end{document}"
+      ].join("\n")
+    })
+  );
+
+  assert.match(html, /<h1>Oscillatori armonici negli LLM<\/h1>/);
+  assert.match(html, /<h2>Introduzione<\/h2>/);
+  assert.match(html, /class="[^"]*katex/);
+  assert.match(html, /katex-display/);
+  assert.doesNotMatch(html, /\\documentclass|\\usepackage|\\begin\{document\}|\\maketitle/);
+});
+
+test("keeps complete LaTeX documents inside ordinary code fences", () => {
+  const html = renderToStaticMarkup(
+    createElement(MessageContent, {
+      content: [
+        "```text",
+        "\\documentclass{article}",
+        "\\begin{document}",
+        "\\section{Example}",
+        "\\end{document}",
+        "```"
+      ].join("\n")
+    })
+  );
+
+  assert.match(html, /<pre><code/);
+  assert.match(html, /\\documentclass\{article\}/);
+  assert.doesNotMatch(html, /<h2>Example<\/h2>/);
+});
+
+test("converts LaTeX prose formatting, lists, references, and trailing Markdown", () => {
+  const html = renderToStaticMarkup(
+    createElement(MessageContent, {
+      content: [
+        "\\documentclass{article}",
+        "\\begin{document}",
+        "\\section{Definizione}",
+        "La \\textbf{risonanza semantica} usa \\emph{frequenze affini}.",
+        "\\begin{equation}",
+        "A = \\frac{F_0}{\\omega_0}",
+        "\\label{eq:ampiezza}",
+        "\\end{equation}",
+        "Come mostrato nell'equazione \\ref{eq:ampiezza}:",
+        "\\begin{itemize}",
+        "\\item \\textbf{Caso risonante}: risposta elevata.",
+        "\\item Caso smorzato: risposta debole.",
+        "\\end{itemize}",
+        "\\begin{enumerate}",
+        "\\item Primo effetto.",
+        "\\item Secondo effetto.",
+        "\\end{enumerate}",
+        "\\end{document}",
+        "",
+        "## Nota finale",
+        "Il testo successivo deve rimanere visibile."
+      ].join("\n")
+    })
+  );
+
+  assert.match(html, /<strong>risonanza semantica<\/strong>/);
+  assert.match(html, /<em>frequenze affini<\/em>/);
+  assert.match(html, /equazione 1/);
+  assert.match(html, /<ul>/);
+  assert.match(html, /<ol>/);
+  assert.match(html, /<strong>Caso risonante<\/strong>/);
+  assert.match(html, /<h2>Nota finale<\/h2>/);
+  assert.match(html, /Il testo successivo deve rimanere visibile/);
+  assert.doesNotMatch(html, /\\(?:textbf|emph|ref|item|begin\{itemize\}|begin\{enumerate\})/);
+});

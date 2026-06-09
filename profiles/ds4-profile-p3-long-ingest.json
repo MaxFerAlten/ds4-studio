@@ -11,7 +11,7 @@
       "context": 132768,
       "default_tokens": 16384,
       "threads": 0,
-      "backend": "cuda"
+      "backend": "auto"
     },
     "quality": {
       "warm_weights": false
@@ -20,14 +20,6 @@
       "host": "127.0.0.1",
       "port": 8002,
       "trace_file": "./traces/ds4-long-ingest.trace"
-    },
-    "env": {
-      "DS4_CUDA_Q8_F16_CACHE_MB": "11264",
-      "DS4_CUDA_Q8_F16_CACHE_RESERVE_MB": "512",
-      "DS4_CUDA_WEIGHT_ARENA_CHUNK_MB": "1024",
-      "DS4_CUDA_COPY_MODEL_CHUNKED": "1",
-      "DS4_CUDA_DIRECT_MODEL": "",
-      "DS4_CUDA_NO_FD_CACHE": ""
     },
     "kv_cache": {
       "kv_disk_dir": "/home/tendermachine/.cache/ds4-kv",
