@@ -1,7 +1,7 @@
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **ds4** (6951 symbols, 13286 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **ds4-studio** (6987 symbols, 13341 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
@@ -24,10 +24,10 @@ This project is indexed by GitNexus as **ds4** (6951 symbols, 13286 relationship
 
 | Resource | Use for |
 |----------|---------|
-| `gitnexus://repo/ds4/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/ds4/clusters` | All functional areas |
-| `gitnexus://repo/ds4/processes` | All execution flows |
-| `gitnexus://repo/ds4/process/{name}` | Step-by-step execution trace |
+| `gitnexus://repo/ds4-studio/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/ds4-studio/clusters` | All functional areas |
+| `gitnexus://repo/ds4-studio/processes` | All execution flows |
+| `gitnexus://repo/ds4-studio/process/{name}` | Step-by-step execution trace |
 
 ## CLI
 
