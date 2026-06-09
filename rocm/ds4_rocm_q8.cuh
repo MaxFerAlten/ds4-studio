@@ -19,11 +19,19 @@ __device__ __forceinline__ static int32_t load_i8x4_i32_unaligned(const int8_t *
                      ((uint32_t)u[3] << 24));
 }
 
+/* Q8_0 qs payloads live at +2 inside 34-byte blocks whose strides are all
+ * even, so they are always 2-byte aligned: two u16 loads replace four byte
+ * loads per dword. */
+__device__ __forceinline__ static int32_t load_i8x4_i32_align2(const int8_t *p) {
+    const uint16_t *u = (const uint16_t *)p;
+    return (int32_t)((uint32_t)u[0] | ((uint32_t)u[1] << 16));
+}
+
 __device__ __forceinline__ static int32_t dot_i8x32_dp4a(const int8_t *a, const int8_t *b) {
     int32_t dot = 0;
 #pragma unroll
     for (uint32_t i = 0; i < 32u; i += 4u) {
-        dot = __dp4a(load_i8x4_i32_unaligned(a + i), load_i8x4_i32_aligned(b + i), dot);
+        dot = __dp4a(load_i8x4_i32_align2(a + i), load_i8x4_i32_aligned(b + i), dot);
     }
     return dot;
 }
@@ -1687,23 +1695,43 @@ __global__ static void dequant_q8_0_to_f32_kernel(
     out[gid] = scale * (float)q;
 }
 
+/* 32x32 LDS tile transpose: dequant reads stay coalesced along in_dim and
+ * the transposed stores stay coalesced along out_dim.  The previous
+ * per-element version scattered 2-byte writes with a stride of out_dim,
+ * which made building the startup F16 transpose cache take seconds per
+ * tensor.  Launched with grid (in_dim/32, out_dim/32) and block (32, 8). */
 __global__ static void dequant_q8_0_to_f16_transpose_kernel(
         __half *out,
         const unsigned char *w,
         uint64_t in_dim,
         uint64_t out_dim,
         uint64_t blocks) {
-    const uint64_t gid = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
-    const uint64_t n = in_dim * out_dim;
-    if (gid >= n) return;
-    const uint64_t row = gid / in_dim;
-    const uint64_t i = gid - row * in_dim;
-    const uint64_t b = i / 32u;
-    const uint64_t j = i - b * 32u;
-    const unsigned char *blk = w + (row * blocks + b) * 34u;
-    const __half scale = *(const __half *)blk;
-    const int8_t q = *(const int8_t *)(blk + 2u + j);
-    out[i * out_dim + row] = __hmul(scale, __float2half((float)q));
+    __shared__ __half tile[32][33];
+    const uint64_t i0 = (uint64_t)blockIdx.x * 32u;
+    const uint64_t r0 = (uint64_t)blockIdx.y * 32u;
+    const uint32_t tx = threadIdx.x;
+    const uint32_t ty = threadIdx.y;
+#pragma unroll
+    for (uint32_t k = 0; k < 4u; k++) {
+        const uint64_t r = r0 + ty + k * 8u;
+        const uint64_t i = i0 + tx;
+        if (r < out_dim && i < in_dim) {
+            const uint64_t b = i >> 5u;
+            const unsigned char *blk = w + (r * blocks + b) * 34u;
+            const __half scale = *(const __half *)blk;
+            const int8_t q = *(const int8_t *)(blk + 2u + (i & 31u));
+            tile[ty + k * 8u][tx] = __hmul(scale, __float2half((float)q));
+        }
+    }
+    __syncthreads();
+#pragma unroll
+    for (uint32_t k = 0; k < 4u; k++) {
+        const uint64_t i = i0 + ty + k * 8u;
+        const uint64_t r = r0 + tx;
+        if (i < in_dim && r < out_dim) {
+            out[i * out_dim + r] = tile[tx][ty + k * 8u];
+        }
+    }
 }
 
 __global__ static void grouped_q8_0_a_preq_warp8_kernel(

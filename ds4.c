@@ -16061,16 +16061,22 @@ static int metal_graph_first_token_full_test(
  */
 
 static uint32_t metal_graph_token_split_after_layers(void) {
+#ifdef DS4_ROCM_BUILD
+    /* On Metal the split commits the first command buffer so the GPU starts
+     * while the CPU encodes the rest.  On ROCm kernel launches are already
+     * asynchronous on the stream and ds4_gpu_flush_commands() is a full
+     * device synchronize, so a mid-token split only drains the pipeline. */
+    return 0;
+#else
     uint32_t split_after_layers = 4;
-#ifndef DS4_ROCM_BUILD
     const char *split_env = getenv("DS4_METAL_GRAPH_TOKEN_SPLIT_LAYERS");
     if (split_env && split_env[0]) {
         char *end = NULL;
         unsigned long v = strtoul(split_env, &end, 10);
         if (end != split_env && v <= DS4_N_LAYER) split_after_layers = (uint32_t)v;
     }
-#endif
     return split_after_layers;
+#endif
 }
 
 /* Encode a full single-token decode step on Metal.  This is the generation

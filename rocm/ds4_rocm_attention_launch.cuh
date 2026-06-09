@@ -1227,7 +1227,11 @@ extern "C" int ds4_gpu_attention_output_q8_batch_tensor(
         if (!cuda_ok(cudaGetLastError(), "attention_output_q8_a preq launch")) return 0;
     }
 
-    if (cuda_runtime_config()->attention_output_cublas_all && !g_quality_mode) {
+    /* Single-token decode is bandwidth bound: the F16 expansion reads twice
+     * the bytes of the native Q8 row scan, so route n_tokens==1 through the
+     * preq matvec below and keep the F16 GEMM for batched prefill shapes. */
+    if (cuda_runtime_config()->attention_output_cublas_all && !g_quality_mode &&
+        n_tokens > 1u) {
         if (cuda_matmul_q8_0_tensor_f16_gemm(out,
                                              model_map,
                                              model_size,

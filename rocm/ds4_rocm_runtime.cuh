@@ -684,12 +684,14 @@ static const __half *cuda_q8_f16_transpose_ptr(
         return NULL;
     }
     const uint64_t blocks = (in_dim + 31u) / 32u;
-    const uint64_t n = in_dim * out_dim;
-    dequant_q8_0_to_f16_transpose_kernel<<<(n + 255u) / 256u, 256>>>(dev,
-                                                                     (const unsigned char *)q8,
-                                                                     in_dim,
-                                                                     out_dim,
-                                                                     blocks);
+    const dim3 tgrid((unsigned)((in_dim + 31u) / 32u),
+                     (unsigned)((out_dim + 31u) / 32u),
+                     1u);
+    dequant_q8_0_to_f16_transpose_kernel<<<tgrid, dim3(32u, 8u, 1u)>>>(dev,
+                                                                       (const unsigned char *)q8,
+                                                                       in_dim,
+                                                                       out_dim,
+                                                                       blocks);
     if (!cuda_ok(cudaGetLastError(), "q8 fp16 transpose dequant launch")) {
         (void)cudaFree(dev);
         cuda_q8_f16_cache_disable_after_failure("transpose launch failure", out_bytes);
