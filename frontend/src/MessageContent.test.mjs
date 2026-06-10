@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MessageContent } from "./MessageContent.mjs";
+import * as messageContentModule from "./MessageContent.mjs";
+
+const { MessageContent } = messageContentModule;
 
 test("renders inline and display LaTeX with KaTeX markup", () => {
   const html = renderToStaticMarkup(
@@ -22,6 +24,63 @@ test("keeps dollar signs inside code blocks as code text", () => {
   assert.match(html, /<pre><code/);
   assert.match(html, /\$HOME/);
   assert.doesNotMatch(html, /katex/);
+});
+
+test("renders Mermaid fenced blocks as diagram placeholders", () => {
+  const html = renderToStaticMarkup(
+    createElement(MessageContent, {
+      content: "```mermaid\nflowchart LR\n  A[Prompt] --> B[Decode]\n```"
+    })
+  );
+
+  assert.match(html, /class="mermaid-diagram"/);
+  assert.match(html, /data-state="pending"/);
+  assert.match(html, /Diagramma Mermaid/);
+  assert.match(html, /class="mermaid-diagram-toggle"/);
+  assert.match(html, /aria-pressed="false"/);
+  assert.match(html, /aria-label="Mostra sorgente Mermaid"/);
+  assert.match(html, />Testo<\/button>/);
+  assert.doesNotMatch(html, /mermaid-diagram-fullscreen-trigger/);
+  assert.doesNotMatch(html, /<pre><code class="language-mermaid"/);
+});
+
+test("keeps an unfinished Mermaid fence in a stable generating state", () => {
+  const html = renderToStaticMarkup(
+    createElement(MessageContent, {
+      content: "Introduzione.\n\n```mermaid\nflowchart LR\n  A[Prompt] --> B[Decode]"
+    })
+  );
+
+  assert.match(html, /Introduzione\./);
+  assert.match(html, /class="mermaid-diagram"/);
+  assert.match(html, /data-state="generating"/);
+  assert.match(html, /Diagramma in generazione\.\.\./);
+  assert.doesNotMatch(html, /Rendering diagramma Mermaid/);
+  assert.doesNotMatch(html, /flowchart LR/);
+  assert.doesNotMatch(html, /mermaid-diagram-toggle/);
+  assert.doesNotMatch(html, /mermaid-diagram-fullscreen-trigger/);
+});
+
+test("keeps Markdown after a closed Mermaid fence visible", () => {
+  const html = renderToStaticMarkup(
+    createElement(MessageContent, {
+      content: [
+        "Prima.",
+        "",
+        "```mermaid",
+        "flowchart LR",
+        "  A --> B",
+        "```",
+        "",
+        "Dopo."
+      ].join("\n")
+    })
+  );
+
+  assert.match(html, /Prima\./);
+  assert.match(html, /data-state="pending"/);
+  assert.match(html, /Dopo\./);
+  assert.doesNotMatch(html, /Diagramma in generazione/);
 });
 
 test("renders LaTeX backslash delimiters", () => {

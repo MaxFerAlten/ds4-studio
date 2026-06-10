@@ -1,11 +1,239 @@
-import { createElement } from "react";
+import { Children, createElement, isValidElement, useEffect, useId, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
+import {
+  canShowMermaidFullscreen,
+  MermaidFullscreen
+} from "./MermaidFullscreen.mjs";
 
 const remarkPlugins = [remarkGfm, remarkMath];
 const rehypePlugins = [rehypeKatex];
+const markdownComponents = { pre: MarkdownPre };
+let mermaidModulePromise;
+let mermaidRenderSequence = 0;
+
+function loadMermaid() {
+  if (!mermaidModulePromise) {
+    mermaidModulePromise = import("mermaid").then((module) => {
+      const mermaid = module.default || module;
+      mermaid.initialize({
+        startOnLoad: false,
+        securityLevel: "strict",
+        suppressErrorRendering: true,
+        theme: "dark",
+        fontFamily: "inherit",
+        flowchart: { useMaxWidth: true }
+      });
+      return mermaid;
+    });
+  }
+  return mermaidModulePromise;
+}
+
+export function markIncompleteMermaidFences(content) {
+  if (!content) return "";
+
+  const output = [];
+  const lines = content.match(/[^\n]*\n|[^\n]+/g) || [];
+  let inFence = false;
+  let fenceChar = "";
+  let fenceLength = 0;
+  let mermaidOpeningIndex = -1;
+
+  for (const rawLine of lines) {
+    const line = rawLine.endsWith("\n") ? rawLine.slice(0, -1) : rawLine;
+
+    if (!inFence) {
+      const openingFence = line.match(/^[ \t]*(`{3,}|~{3,})\s*([A-Za-z0-9_+-]+)?/);
+      if (openingFence) {
+        inFence = true;
+        fenceChar = openingFence[1][0];
+        fenceLength = openingFence[1].length;
+        if ((openingFence[2] || "").toLowerCase() === "mermaid") {
+          mermaidOpeningIndex = output.length;
+        }
+      }
+      output.push(rawLine);
+      continue;
+    }
+
+    const closingFence = line.match(/^[ \t]*(`{3,}|~{3,})[ \t]*$/);
+    const closing = Boolean(
+      closingFence && closingFence[1][0] === fenceChar && closingFence[1].length >= fenceLength
+    );
+    output.push(rawLine);
+    if (closing) {
+      inFence = false;
+      mermaidOpeningIndex = -1;
+    }
+  }
+
+  if (inFence && mermaidOpeningIndex >= 0) {
+    output[mermaidOpeningIndex] = output[mermaidOpeningIndex].replace(
+      /^([ \t]*(?:`{3,}|~{3,})\s*)mermaid\b/i,
+      "$1mermaid-incomplete"
+    );
+  }
+
+  return output.join("");
+}
+
+function MermaidDiagram({ source, complete }) {
+  const reactId = useId().replace(/[^A-Za-z0-9_-]/g, "");
+  const [showSource, setShowSource] = useState(false);
+  const [renderState, setRenderState] = useState({
+    status: complete ? "pending" : "generating",
+    svg: "",
+    error: ""
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    setShowSource(false);
+
+    if (!complete) {
+      setRenderState({ status: "generating", svg: "", error: "" });
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const definition = String(source || "").trim();
+    setRenderState({ status: "pending", svg: "", error: "" });
+
+    if (!definition) {
+      setRenderState({
+        status: "error",
+        svg: "",
+        error: "Il blocco Mermaid è vuoto."
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const diagramId = `ds4-mermaid-${reactId}-${++mermaidRenderSequence}`;
+    loadMermaid()
+      .then((mermaid) => mermaid.render(diagramId, definition))
+      .then(({ svg }) => {
+        if (!cancelled) setRenderState({ status: "ready", svg, error: "" });
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        const message = error instanceof Error && error.message
+          ? error.message.split("\n", 1)[0]
+          : "Sintassi Mermaid non valida.";
+        setRenderState({ status: "error", svg: "", error: message });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [complete, source]);
+
+  const children = [];
+  if (showSource) {
+    children.push(
+      createElement(
+        "pre",
+        { className: "mermaid-diagram-source", key: "source" },
+        createElement("code", null, source)
+      )
+    );
+  } else if (renderState.status === "ready") {
+    children.push(
+      createElement("div", {
+        className: "mermaid-diagram-svg",
+        dangerouslySetInnerHTML: { __html: renderState.svg },
+        key: "svg"
+      })
+    );
+  } else {
+    children.push(
+      createElement(
+        "div",
+        { className: "mermaid-diagram-status", key: "status" },
+        renderState.status === "generating"
+          ? "Diagramma in generazione..."
+          : renderState.status === "error"
+            ? `Diagramma Mermaid non valido: ${renderState.error}`
+            : "Rendering diagramma Mermaid..."
+      )
+    );
+    if (renderState.status === "error") {
+      children.push(
+        createElement(
+          "pre",
+          { className: "mermaid-diagram-source", key: "source" },
+          createElement("code", null, source)
+        )
+      );
+    }
+  }
+
+  if (complete) {
+    const actions = [
+      createElement(
+        "button",
+        {
+          "aria-label": showSource ? "Mostra diagramma Mermaid" : "Mostra sorgente Mermaid",
+          "aria-pressed": showSource,
+          className: "mermaid-diagram-toggle",
+          key: "toggle",
+          onClick: () => setShowSource((current) => !current),
+          type: "button"
+        },
+        showSource ? "Diagramma" : "Testo"
+      )
+    ];
+    if (canShowMermaidFullscreen(renderState.status, showSource)) {
+      actions.push(
+        createElement(MermaidFullscreen, {
+          key: "fullscreen",
+          svg: renderState.svg
+        })
+      );
+    }
+    children.push(
+      createElement(
+        "div",
+        { className: "mermaid-diagram-actions", key: "actions" },
+        actions
+      )
+    );
+  }
+
+  return createElement(
+    "div",
+    {
+      className: "mermaid-diagram",
+      "data-state": renderState.status,
+      "aria-label": "Diagramma Mermaid"
+    },
+    children
+  );
+}
+
+function MarkdownPre({ children, node: _node, ...props }) {
+  const items = Children.toArray(children);
+  const code = items.length === 1 && isValidElement(items[0]) ? items[0] : null;
+  const className = code?.props?.className || "";
+  if (/(?:^|\s)language-mermaid-incomplete(?:\s|$)/.test(className)) {
+    return createElement(MermaidDiagram, {
+      source: String(code.props.children || "").replace(/\n$/, ""),
+      complete: false
+    });
+  }
+  if (/(?:^|\s)language-mermaid(?:\s|$)/.test(className)) {
+    return createElement(MermaidDiagram, {
+      source: String(code.props.children || "").replace(/\n$/, ""),
+      complete: true
+    });
+  }
+  return createElement("pre", props, children);
+}
 
 function replaceBracedCommand(content, command, render) {
   const marker = `\\${command}`;
@@ -259,6 +487,10 @@ export function MessageContent({ content }) {
   return createElement(
     "div",
     { className: "message-content" },
-    createElement(ReactMarkdown, { remarkPlugins, rehypePlugins }, normalizeMathDelimiters(content))
+    createElement(
+      ReactMarkdown,
+      { remarkPlugins, rehypePlugins, components: markdownComponents },
+      normalizeMathDelimiters(markIncompleteMermaidFences(content))
+    )
   );
 }

@@ -46,6 +46,7 @@ const STARTUP_GROUPS = [
   [
     "GPU Env",
     [
+      "DS4_METAL_PREFILL_CHUNK",
       "DS4_CUDA_Q8_F16_CACHE_MB",
       "DS4_CUDA_Q8_F16_CACHE_RESERVE_MB",
       "DS4_CUDA_WEIGHT_ARENA_CHUNK_MB",
@@ -87,6 +88,7 @@ const FIELD_LABELS = {
   port: "Port",
   maxQueuedJobs: "Max queue",
   trace: "Trace file",
+  DS4_METAL_PREFILL_CHUNK: "Prefill chunk tokens",
   DS4_CUDA_Q8_F16_CACHE_MB: "Q8/F16 cache MB",
   DS4_CUDA_Q8_F16_CACHE_RESERVE_MB: "Q8/F16 reserve MB",
   DS4_CUDA_WEIGHT_ARENA_CHUNK_MB: "Weight arena MB",
@@ -124,6 +126,7 @@ const STARTUP_HELP = {
   port: "HTTP port of the ds4-server backend.",
   maxQueuedJobs: "Maximum requests waiting for the single worker before HTTP 503.",
   trace: "Optional file to save detailed request traces; empty disables tracing.",
+  DS4_METAL_PREFILL_CHUNK: "GPU prefill chunk in tokens; 8192 is the measured optimum on Strix Halo (ROCm caps chunks at 8192).",
   DS4_CUDA_Q8_F16_CACHE_MB: "Optional ROCm/HIP Q8 to F16 cache size in MB.",
   DS4_CUDA_Q8_F16_CACHE_RESERVE_MB: "Optional reserved MB kept outside the Q8 to F16 cache.",
   DS4_CUDA_WEIGHT_ARENA_CHUNK_MB: "Optional ROCm/HIP weight arena chunk size in MB.",
@@ -229,6 +232,7 @@ const TEXT_FIELDS = new Set([
   "trace",
   "kvDiskDir",
   "dirSteeringFile",
+  "DS4_METAL_PREFILL_CHUNK",
   "DS4_CUDA_Q8_F16_CACHE_MB",
   "DS4_CUDA_Q8_F16_CACHE_RESERVE_MB",
   "DS4_CUDA_WEIGHT_ARENA_CHUNK_MB",
@@ -238,6 +242,7 @@ const TEXT_FIELDS = new Set([
 ]);
 
 const ENV_FIELDS = new Set([
+  "DS4_METAL_PREFILL_CHUNK",
   "DS4_CUDA_Q8_F16_CACHE_MB",
   "DS4_CUDA_Q8_F16_CACHE_RESERVE_MB",
   "DS4_CUDA_WEIGHT_ARENA_CHUNK_MB",

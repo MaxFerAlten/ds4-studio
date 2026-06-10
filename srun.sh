@@ -56,7 +56,9 @@ USAGE
 configure_rocm_runtime() {
   export DS4_SERVER_FAST_FULL="${DS4_SERVER_FAST_FULL:-1}"
   if [[ "$DS4_SERVER_FAST_FULL" == "1" ]]; then
-    ds4_rocm_apply_fast_full_defaults 4096
+    # 8192 is the measured prefill optimum on Strix Halo (and the ROCm
+    # attention-score cap); 4096 loses ~3-7% long-prompt throughput.
+    ds4_rocm_apply_fast_full_defaults 8192
   fi
 
   ds4_rocm_apply_tensor_env

@@ -1007,6 +1007,197 @@ pre {
   padding: 4px 0;
 }
 
+.message-content .mermaid-diagram {
+  background: #0c1118;
+  border: 1px solid #2b3542;
+  border-radius: 6px;
+  color: #cbd7e3;
+  margin: 0 0 8px;
+  min-height: 72px;
+  overflow: hidden;
+  padding: 12px 12px 42px;
+  position: relative;
+}
+
+.message-content .mermaid-diagram-svg {
+  display: flex;
+  justify-content: center;
+  min-width: min-content;
+  overflow: auto;
+}
+
+.message-content .mermaid-diagram svg {
+  display: block;
+  height: auto;
+  margin: auto;
+  max-width: 100%;
+}
+
+.message-content .mermaid-diagram-status {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+  min-height: 46px;
+  text-align: center;
+}
+
+.message-content .mermaid-diagram[data-state="error"] {
+  border-color: #79434a;
+}
+
+.message-content .mermaid-diagram-source {
+  margin: 0;
+  max-height: 420px;
+  overflow: auto;
+  text-align: left;
+}
+
+.message-content .mermaid-diagram-actions {
+  align-items: center;
+  bottom: 8px;
+  display: flex;
+  gap: 6px;
+  position: absolute;
+  right: 8px;
+}
+
+.message-content .mermaid-diagram-toggle,
+.message-content .mermaid-diagram-fullscreen-trigger {
+  appearance: none;
+  background: #17212d;
+  border: 1px solid #3b4a5d;
+  border-radius: 4px;
+  color: #cbd7e3;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  min-height: 24px;
+  padding: 5px 8px;
+}
+
+.message-content .mermaid-diagram-toggle:hover,
+.message-content .mermaid-diagram-fullscreen-trigger:hover {
+  background: #213044;
+  border-color: #52677f;
+}
+
+.message-content .mermaid-diagram-toggle:focus-visible,
+.message-content .mermaid-diagram-fullscreen-trigger:focus-visible {
+  outline: 2px solid #62a8ff;
+  outline-offset: 2px;
+}
+
+.mermaid-fullscreen-viewer {
+  background: #070b10;
+  color: #d7e3ef;
+  height: 100%;
+  inset: 0;
+  overflow: hidden;
+  position: fixed;
+  width: 100%;
+  z-index: 10000;
+}
+
+.mermaid-fullscreen-viewer:fullscreen {
+  height: 100%;
+  width: 100%;
+}
+
+.mermaid-fullscreen-viewport {
+  background-color: #080d13;
+  background-image:
+    linear-gradient(rgba(95, 126, 158, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(95, 126, 158, 0.08) 1px, transparent 1px);
+  background-size: 24px 24px;
+  cursor: grab;
+  inset: 0;
+  overflow: hidden;
+  position: absolute;
+  touch-action: none;
+  user-select: none;
+}
+
+.mermaid-fullscreen-viewport.is-dragging {
+  cursor: grabbing;
+}
+
+.mermaid-fullscreen-diagram {
+  left: 0;
+  opacity: 0;
+  position: absolute;
+  top: 0;
+  transform-origin: 0 0;
+  transition: opacity 100ms ease;
+  will-change: transform;
+}
+
+.mermaid-fullscreen-diagram[data-fitted="true"] {
+  opacity: 1;
+}
+
+.mermaid-fullscreen-diagram svg {
+  display: block;
+  height: 100%;
+  max-width: none;
+  width: 100%;
+}
+
+.mermaid-fullscreen-hint {
+  bottom: 14px;
+  color: #8497aa;
+  font-size: 12px;
+  left: 16px;
+  pointer-events: none;
+  position: absolute;
+  z-index: 2;
+}
+
+.mermaid-fullscreen-controls {
+  align-items: center;
+  backdrop-filter: blur(8px);
+  background: rgba(18, 28, 39, 0.94);
+  border: 1px solid #3a4a5d;
+  border-radius: 7px;
+  bottom: 12px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+  display: flex;
+  gap: 6px;
+  padding: 6px;
+  position: absolute;
+  right: 12px;
+  z-index: 3;
+}
+
+.mermaid-fullscreen-controls button {
+  appearance: none;
+  background: #243346;
+  border: 1px solid #465b72;
+  border-radius: 4px;
+  color: #eef6ff;
+  cursor: pointer;
+  font-size: 12px;
+  min-height: 30px;
+  min-width: 32px;
+  padding: 6px 9px;
+}
+
+.mermaid-fullscreen-controls button:hover {
+  background: #30445c;
+  border-color: #607892;
+}
+
+.mermaid-fullscreen-controls button:focus-visible {
+  outline: 2px solid #62a8ff;
+  outline-offset: 2px;
+}
+
+.mermaid-fullscreen-scale {
+  color: #b9c8d8;
+  font-variant-numeric: tabular-nums;
+  min-width: 44px;
+  text-align: center;
+}
+
 .message details {
   margin-bottom: 8px;
   color: #cbd7e3;
