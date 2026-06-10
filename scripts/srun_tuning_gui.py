@@ -50,7 +50,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "port": 8000,
         "maxQueuedJobs": 8,
         "env": {
-            "DS4_METAL_PREFILL_CHUNK": "4096",
+            "DS4_METAL_PREFILL_CHUNK": "8192",
             "DS4_CUDA_Q8_F16_CACHE_MB": "11264",
             "DS4_CUDA_Q8_F16_CACHE_RESERVE_MB": "512",
             "DS4_CUDA_WEIGHT_ARENA_CHUNK_MB": "1024",

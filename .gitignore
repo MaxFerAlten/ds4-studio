@@ -16,3 +16,11 @@ __pycache__/
 /misc/
 .*.swp
 .DS_Store
+.claude/**
+doc/
+.superpowers/
+.docs/
+/docs/superpowers/plans/
+/frontend/dist/
+/.claude/skills/gitnexus/
+/frontend/node_modules/

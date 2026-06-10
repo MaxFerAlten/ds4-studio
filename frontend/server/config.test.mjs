@@ -23,7 +23,7 @@ test("mergeConfig keeps defaults for missing fields", () => {
 
 test("mergeConfig uses tuned CUDA env defaults for fresh starts", () => {
   const merged = mergeConfig({});
-  assert.equal(merged.server.env.DS4_METAL_PREFILL_CHUNK, "4096");
+  assert.equal(merged.server.env.DS4_METAL_PREFILL_CHUNK, "8192");
   assert.equal(merged.server.env.DS4_CUDA_Q8_F16_CACHE_MB, "11264");
   assert.equal(merged.server.env.DS4_CUDA_Q8_F16_CACHE_RESERVE_MB, "512");
   assert.equal(merged.server.env.DS4_CUDA_WEIGHT_ARENA_CHUNK_MB, "1024");

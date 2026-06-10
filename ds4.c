@@ -26116,6 +26116,11 @@ int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
                                                 mtp_need_logits ? s->mtp_logits : NULL,
                                                 &mtp_top))
         {
+            if (getenv("DS4_MTP_SPEC_LOG")) {
+                fprintf(stderr,
+                        "ds4: mtp recursive draft %d failed; speculation skipped this cycle\n",
+                        draft_n);
+            }
             return n_accept;
         }
         drafts[draft_n] = mtp_top >= 0 ? mtp_top : sample_argmax(s->mtp_logits, DS4_N_VOCAB);
