@@ -443,6 +443,7 @@ static void *client_thread_main(void *arg) {
         }
     } else if (!strcmp(hr.method, "POST") && (
                !strcmp(hr.path, "/v1/chat/completions") ||
+               !strcmp(hr.path, "/v1/token-count") ||
                !strcmp(hr.path, "/v1/responses") ||
                !strcmp(hr.path, "/v1/messages") ||
                !strcmp(hr.path, "/v1/completions"))) {
@@ -455,6 +456,8 @@ static void *client_thread_main(void *arg) {
             struct http_response res = { .fd = fd, .enable_cors = true };
             if (!strcmp(hr.path, "/v1/chat/completions")) {
                 ds4_server_runtime_handle_chat_completions(w->server_rt, &req, &res);
+            } else if (!strcmp(hr.path, "/v1/token-count")) {
+                ds4_server_runtime_handle_token_count(w->server_rt, &req, &res);
             } else if (!strcmp(hr.path, "/v1/responses")) {
                 ds4_server_runtime_handle_responses(w->server_rt, &req, &res);
             } else if (!strcmp(hr.path, "/v1/messages")) {
