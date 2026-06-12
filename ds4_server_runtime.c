@@ -215,6 +215,36 @@ int ds4_server_runtime_handle_chat_completions(ds4_server_runtime *rt,
     return ds4_server_runtime_run_job(rt, &r, res->fd, res->enable_cors);
 }
 
+int ds4_server_runtime_handle_token_count(ds4_server_runtime *rt,
+                                          struct http_request *req,
+                                          struct http_response *res) {
+    server *s = &rt->s;
+    s->session = rt->wrapper->active_session;
+
+    request r;
+    char err_buf[160];
+    const int ctx_size = ds4_session_ctx(s->session);
+
+    bool ok = parse_chat_request(s->engine, s, req->body, s->default_tokens,
+                                 ctx_size, &r, err_buf, sizeof(err_buf));
+    if (!ok) {
+        http_error(res->fd, res->enable_cors, 400, err_buf);
+        return 400;
+    }
+
+    if (!r.model_from_request) {
+        free(r.model);
+        r.model = xstrdup(server_model_id_from_engine(s->engine));
+    }
+
+    bool saved_cors = s->enable_cors;
+    s->enable_cors = res->enable_cors;
+    send_token_count(s, res->fd, &r, ctx_size);
+    s->enable_cors = saved_cors;
+    request_free(&r);
+    return 0;
+}
+
 int ds4_server_runtime_handle_responses(ds4_server_runtime *rt,
                                          struct http_request *req,
                                          struct http_response *res) {

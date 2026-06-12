@@ -4862,6 +4862,36 @@ static bool http_error_context_length_exceeded(int fd, bool enable_cors,
     return ok;
 }
 
+typedef struct {
+    int prompt_tokens;
+    int max_tokens;
+    int context_length;
+    int required_tokens;
+    int available_tokens;
+    int excess_tokens;
+    bool fits;
+} token_count_result;
+
+static token_count_result token_count_calculate(const request *r, int ctx_size) {
+    const int prompt_tokens = r ? r->prompt.len : 0;
+    const int max_tokens = r && r->max_tokens > 0 ? r->max_tokens : 0;
+    /* 64-bit sum: prompt.len and max_tokens are both ints, so their sum can
+     * overflow int before the fit comparison. */
+    const int64_t required = (int64_t)prompt_tokens + (int64_t)max_tokens;
+    const int64_t ctx = ctx_size;
+    const int64_t available = required <= ctx ? ctx - required : 0;
+    const int64_t excess = required > ctx ? required - ctx : 0;
+    return (token_count_result) {
+        .prompt_tokens = prompt_tokens,
+        .max_tokens = max_tokens,
+        .context_length = ctx_size,
+        .required_tokens = required > INT_MAX ? INT_MAX : (int)required,
+        .available_tokens = available > INT_MAX ? INT_MAX : (int)available,
+        .excess_tokens = excess > INT_MAX ? INT_MAX : (int)excess,
+        .fits = required <= ctx,
+    };
+}
+
 /* Streaming is a translation state machine over the raw DS4 text.  The model
  * may produce <think> and DSML tool blocks; clients should receive those as
  * protocol-native reasoning/tool deltas, never as visible assistant text. */
@@ -11201,6 +11231,23 @@ static void append_model_json(buf *b, const server *s, const char *id) {
                              s->default_tokens);
 }
 
+static bool send_token_count(server *s, int fd, const request *r, int ctx_size) {
+    token_count_result result = token_count_calculate(r, ctx_size);
+    buf b = {0};
+    buf_puts(&b, "{\"model\":");
+    json_escape(&b, r && r->model ? r->model : server_model_id_from_engine(s->engine));
+    buf_printf(&b,
+        ",\"prompt_tokens\":%d,\"max_tokens\":%d,\"context_length\":%d,"
+        "\"required_tokens\":%d,\"available_tokens\":%d,\"excess_tokens\":%d,"
+        "\"fits\":%s}\n",
+        result.prompt_tokens, result.max_tokens, result.context_length,
+        result.required_tokens, result.available_tokens, result.excess_tokens,
+        result.fits ? "true" : "false");
+    bool ok = http_response(fd, s->enable_cors, 200, "application/json", b.ptr);
+    buf_free(&b);
+    return ok;
+}
+
 static bool send_model(server *s, int fd, const char *id) {
     buf b = {0};
     append_model_json(&b, s, id);
@@ -11268,6 +11315,7 @@ static void *client_main(void *arg) {
     request req;
     char err[160];
     bool ok = false;
+    bool token_count_only = false;
     const int ctx_size = ds4_session_ctx(s->session);
     if (!strcmp(hr.method, "POST") && !strcmp(hr.path, "/v1/messages")) {
         ok = parse_anthropic_request(s->engine, s, hr.body, s->default_tokens,
@@ -11275,6 +11323,10 @@ static void *client_main(void *arg) {
     } else if (!strcmp(hr.method, "POST") && !strcmp(hr.path, "/v1/chat/completions")) {
         ok = parse_chat_request(s->engine, s, hr.body, s->default_tokens,
                                 ctx_size, &req, err, sizeof(err));
+    } else if (!strcmp(hr.method, "POST") && !strcmp(hr.path, "/v1/token-count")) {
+        ok = parse_chat_request(s->engine, s, hr.body, s->default_tokens,
+                                ctx_size, &req, err, sizeof(err));
+        token_count_only = true;
     } else if (!strcmp(hr.method, "POST") && !strcmp(hr.path, "/v1/responses")) {
         ok = parse_responses_request(s->engine, s, hr.body, s->default_tokens,
                                      ctx_size, &req, err, sizeof(err));
@@ -11295,6 +11347,11 @@ static void *client_main(void *arg) {
     if (!req.model_from_request) {
         free(req.model);
         req.model = xstrdup(server_model_id_from_engine(s->engine));
+    }
+    if (token_count_only) {
+        send_token_count(s, fd, &req, ctx_size);
+        request_free(&req);
+        goto done;
     }
     if (request_exceeds_context(&req, ctx_size)) {
         http_error_context_length_exceeded(fd, s->enable_cors, &req, req.prompt.len, ctx_size);
@@ -12176,6 +12233,57 @@ static void test_context_length_error_uses_protocol_standard_shape(void) {
         close(sv[1]);
     }
     request_free(&a);
+}
+
+static void test_token_count_result_reports_exact_budget(void) {
+    request r;
+    request_init(&r, REQ_CHAT, 8192);
+    r.prompt.len = 9210;
+    free(r.model);
+    r.model = xstrdup("deepseek-v4-flash");
+
+    token_count_result result = token_count_calculate(&r, 65536);
+
+    TEST_ASSERT(result.prompt_tokens == 9210);
+    TEST_ASSERT(result.max_tokens == 8192);
+    TEST_ASSERT(result.required_tokens == 17402);
+    TEST_ASSERT(result.available_tokens == 48134);
+    TEST_ASSERT(result.excess_tokens == 0);
+    TEST_ASSERT(result.fits);
+
+    r.prompt.len = 60000;
+    result = token_count_calculate(&r, 65536);
+    TEST_ASSERT(result.required_tokens == 68192);
+    TEST_ASSERT(result.excess_tokens == 2656);
+    TEST_ASSERT(!result.fits);
+    request_free(&r);
+}
+
+static void test_token_count_response_uses_openai_request_parser(void) {
+    server s = {0};
+    request r;
+    request_init(&r, REQ_CHAT, 32);
+    r.prompt.len = 12;
+    free(r.model);
+    r.model = xstrdup("deepseek-v4-flash");
+
+    int sv[2];
+    TEST_ASSERT(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0);
+    TEST_ASSERT(send_token_count(&s, sv[0], &r, 64));
+    shutdown(sv[0], SHUT_WR);
+    char *out = read_socket_text(sv[1]);
+
+    TEST_ASSERT(strstr(out, "HTTP/1.1 200 OK") != NULL);
+    TEST_ASSERT(strstr(out, "\"prompt_tokens\":12") != NULL);
+    TEST_ASSERT(strstr(out, "\"max_tokens\":32") != NULL);
+    TEST_ASSERT(strstr(out, "\"context_length\":64") != NULL);
+    TEST_ASSERT(strstr(out, "\"required_tokens\":44") != NULL);
+    TEST_ASSERT(strstr(out, "\"fits\":true") != NULL);
+
+    free(out);
+    close(sv[0]);
+    close(sv[1]);
+    request_free(&r);
 }
 
 static void test_cors_headers_are_opt_in(void) {
@@ -15638,6 +15746,8 @@ static void ds4_server_unit_tests_run(void) {
     test_openai_tool_args_preserve_call_order();
     test_anthropic_thinking_and_tool_args_preserve_call_order();
     test_context_length_error_uses_protocol_standard_shape();
+    test_token_count_result_reports_exact_budget();
+    test_token_count_response_uses_openai_request_parser();
     test_cors_headers_are_opt_in();
     test_cors_preflight_response_is_no_content();
     test_cors_sse_headers();

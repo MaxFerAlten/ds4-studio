@@ -45,6 +45,10 @@ int ds4_server_runtime_handle_chat_completions(ds4_server_runtime *rt,
                                                struct http_request *req,
                                                struct http_response *res);
 
+int ds4_server_runtime_handle_token_count(ds4_server_runtime *rt,
+                                          struct http_request *req,
+                                          struct http_response *res);
+
 int ds4_server_runtime_handle_responses(ds4_server_runtime *rt,
                                          struct http_request *req,
                                          struct http_response *res);
