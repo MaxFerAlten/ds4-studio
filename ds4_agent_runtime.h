@@ -38,6 +38,15 @@ typedef struct {
     bool allow_browser;  /* allow the agent to open a visible Chrome browser */
 } ds4_agent_runtime_options;
 
+typedef struct {
+    bool ok;
+    int http_status;
+    bool switch_to_server;
+    char command[16];
+    char *message;
+    char *data_json;
+} ds4_agent_command_result;
+
 int ds4_agent_runtime_init(ds4_agent_runtime **out,
                            ds4_wrapper *wrapper,
                            const ds4_agent_runtime_options *opt);
@@ -62,5 +71,9 @@ int ds4_agent_runtime_switch(ds4_agent_runtime *rt, const char *sha, char *err, 
 int ds4_agent_runtime_strip(ds4_agent_runtime *rt, const char *sha, char *err, size_t err_len);
 int ds4_agent_runtime_new(ds4_agent_runtime *rt, char *err, size_t err_len);
 int ds4_agent_runtime_compact(ds4_agent_runtime *rt, char *err, size_t err_len);
+
+int ds4_agent_runtime_command(ds4_agent_runtime *rt, const char *command,
+                              ds4_agent_command_result *result);
+void ds4_agent_command_result_free(ds4_agent_command_result *result);
 
 #endif

@@ -19,6 +19,7 @@ import { commandLineFromConfig } from "../server/commandBuilder.mjs";
 import { REQUEST_DEFAULTS } from "../server/defaultConfig.mjs";
 import { buildChatPayload } from "../server/requestPayload.mjs";
 import { backendHealthLabel, backendStartupDetail, streamFailureNotice } from "./backendStatus.mjs";
+import { formatNativeAgentNotice, parseAgentInput } from "./agentCommands.mjs";
 import { exportConversationMarkdown, markdownFileName } from "./conversationExport.mjs";
 import {
   clearStoredExportIncludeReasoning,
@@ -216,6 +217,23 @@ const STRATEGY_OPTIONS = [
     recommended: true,
     disabled: false
   }
+];
+
+const AGENT_COMMANDS = [
+  { name: "/help", desc: "Show list of available commands" },
+  { name: "/save", desc: "Save the current agent session" },
+  { name: "/compact", desc: "Compact the current session context" },
+  { name: "/list", desc: "List all saved agent sessions" },
+  { name: "/switch", desc: "Load a saved session (e.g. /switch <SHA>)" },
+  { name: "/del", desc: "Delete a saved session (e.g. /del <SHA>)" },
+  { name: "/strip", desc: "Strip KV payload from session (e.g. /strip <SHA>)" },
+  { name: "/history", desc: "Show recent user turns (e.g. /history [N])" },
+  { name: "/power", desc: "Set GPU duty cycle % (e.g. /power <1..100>)" },
+  { name: "/new", desc: "Start a fresh agent session" },
+  { name: "/quit", desc: "Save and return to server mode" },
+  { name: "/exit", desc: "Save and return to server mode" },
+  { name: "/agent stop", desc: "Exit agent mode and return to server mode" },
+  { name: "/agent status", desc: "Show agent worker status" },
 ];
 
 const CHECKBOX_FIELDS = new Set([
@@ -523,6 +541,8 @@ export default function App() {
   const [metricsError, setMetricsError] = useState("");
   const [commandDraft, setCommandDraft] = useState(null);
   const [agentMode, setAgentMode] = useState(false);
+  const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0);
+  const [hideSuggestions, setHideSuggestions] = useState(false);
   const [agentStatus, setAgentStatus] = useState(null);
   const [searchStrategy, setSearchStrategy] = useState("D");
   const [searchChunkTokens, setSearchChunkTokens] = useState(25000);
@@ -879,7 +899,7 @@ export default function App() {
     setCurrentSessionFileName(null);
     setAttachedDoc(null);
     setChunkProgress(null);
-    setInput("");
+    handleInputChange("");
     lastSavedHistorySignatureRef.current = "";
     setHistoryAutoLoaded(true);
     setHistoryStatus("New session");
@@ -1077,7 +1097,7 @@ export default function App() {
   }
 
   async function sendChunkedMessage(text) {
-    setInput("");
+    handleInputChange("");
     setError("");
     const userVisible = attachedDoc
       ? `${text}\n\n_(attachment: ${attachedDoc.name}, ~${attachedDoc.approxTokens} tokens)_`
@@ -1269,6 +1289,8 @@ export default function App() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       setAgentMode(data.active);
+      setActiveSuggestionIndex(0);
+      setHideSuggestions(false);
       setAgentStatus(data);
       if (notice) {
         setMessages((prev) => [
@@ -1288,36 +1310,73 @@ export default function App() {
     }
   }
 
-  // Native-agent persistent-session commands (wrapper backend): proxied to
-  // /api/native-agent/* and /api/wrapper/status. Result rendered as a chat notice.
-  async function callNativeAgentCommand(method, url, body, label) {
+  async function callNativeAgentCommand(command) {
     try {
-      const res = await fetch(url, {
-        method,
+      const res = await fetch("/api/native-agent/command", {
+        method: "POST",
         headers: { "Content-Type": "application/json", ...AGENT_HEADERS },
-        body: method === "POST" ? JSON.stringify(body || {}) : undefined
+        body: JSON.stringify({ command })
       });
       const text = await res.text();
-      let pretty = text;
-      try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch { /* keep raw */ }
+      let payload;
+      try {
+        payload = JSON.parse(text);
+      } catch {
+        payload = { ok: false, message: text || `HTTP ${res.status}` };
+      }
+      if (payload.active === false) {
+        setAgentMode(false);
+        setAgentStatus((prev) => ({ ...prev, active: false }));
+      }
       setMessages((prev) => [
         ...prev,
         {
           role: "assistant",
-          content: `**/agent ${label}** (HTTP ${res.status})\n\n\`\`\`json\n${pretty}\n\`\`\``,
+          content: formatNativeAgentNotice(command, payload, res.status),
           agentNotice: true
         }
       ]);
     } catch (err) {
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", content: `Failed /agent ${label}: ${err.message}`, agentNotice: true }
+        {
+          role: "assistant",
+          content: `Failed ${command}: ${err.message}`,
+          agentNotice: true
+        }
       ]);
     }
   }
 
+  async function callAgentStatus() {
+    try {
+      const res = await fetch("/api/wrapper/status", { headers: AGENT_HEADERS });
+      const text = await res.text();
+      let payload;
+      try {
+        payload = JSON.parse(text);
+      } catch {
+        payload = text;
+      }
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: formatNativeAgentNotice(
+            "/agent status",
+            { message: "Wrapper status.", data: payload },
+            res.status
+          ),
+          agentNotice: true
+        }
+      ]);
+    } catch (err) {
+      setMessages(appendTransientNotice(`Failed /agent status: ${err.message}`));
+    }
+  }
+
   async function sendAgentMessage(text) {
-    setInput("");
+    handleInputChange("");
     setError("");
     const nextMessages = [
       ...messages,
@@ -1499,47 +1558,39 @@ export default function App() {
     }
   }
 
+  const handleInputChange = (val) => {
+    setInput(val);
+    setActiveSuggestionIndex(0);
+    if (!val.startsWith("/")) {
+      setHideSuggestions(false);
+    }
+  };
+
+  const handleSelectSuggestion = (cmd) => {
+    const hasArgs = ["/switch", "/del", "/strip", "/history", "/power"].includes(cmd.name);
+    const newVal = cmd.name + (hasArgs ? " " : "");
+    setInput(newVal);
+    setActiveSuggestionIndex(0);
+    setHideSuggestions(false);
+    // Keep focus in the textarea
+    setTimeout(() => {
+      composerRef.current?.focus();
+    }, 10);
+  };
+
   async function sendMessage() {
     const text = input.trim();
     if (!text || !canSend) return;
 
-    if (text.toLowerCase() === "/agent start") {
-      setInput("");
-      return toggleAgentMode(true);
-    }
-    if (text.toLowerCase() === "/agent stop") {
-      setInput("");
-      return toggleAgentMode(false);
-    }
-    if (text.toLowerCase() === "/agent status") {
-      setInput("");
-      return callNativeAgentCommand("GET", "/api/wrapper/status", null, "status");
-    }
-    if (text.toLowerCase() === "/agent save") {
-      setInput("");
-      return callNativeAgentCommand("POST", "/api/native-agent/save", {}, "save");
-    }
-    if (text.toLowerCase() === "/agent list") {
-      setInput("");
-      return callNativeAgentCommand("GET", "/api/native-agent/list", null, "list");
-    }
-    if (text.toLowerCase() === "/agent new") {
-      setInput("");
-      return callNativeAgentCommand("POST", "/api/native-agent/new", {}, "new");
-    }
-    if (text.toLowerCase() === "/agent compact") {
-      setInput("");
-      return callNativeAgentCommand("POST", "/api/native-agent/compact", {}, "compact");
-    }
-    if (text.toLowerCase().startsWith("/agent switch ")) {
-      setInput("");
-      const sha = text.slice("/agent switch ".length).trim();
-      return callNativeAgentCommand("POST", "/api/native-agent/switch", { sha }, "switch");
-    }
-    if (text.toLowerCase().startsWith("/agent strip ")) {
-      setInput("");
-      const sha = text.slice("/agent strip ".length).trim();
-      return callNativeAgentCommand("POST", "/api/native-agent/strip", { sha }, "strip");
+    const agentInput = parseAgentInput(text, agentMode);
+    if (agentInput) {
+      handleInputChange("");
+      if (agentInput.type === "control") {
+        if (agentInput.action === "start") return toggleAgentMode(true);
+        if (agentInput.action === "stop") return toggleAgentMode(false);
+        return callAgentStatus();
+      }
+      return callNativeAgentCommand(agentInput.command);
     }
 
     if (agentMode) {
@@ -1550,7 +1601,7 @@ export default function App() {
       return sendChunkedMessage(text);
     }
 
-    setInput("");
+    handleInputChange("");
     setError("");
     const nextMessages = [
       ...messages,
@@ -1668,6 +1719,12 @@ export default function App() {
       if (abortRef.current === controller) abortRef.current = null;
     }
   }
+
+  const filteredSuggestions = agentMode && input.startsWith("/") && !hideSuggestions
+    ? AGENT_COMMANDS.filter(cmd => cmd.name.toLowerCase().startsWith(input.toLowerCase()))
+    : [];
+  const isSuggestionsOpen = filteredSuggestions.length > 0;
+  const activeIndex = Math.max(0, Math.min(activeSuggestionIndex, filteredSuggestions.length - 1));
 
   if (!config || !status) {
     return (
@@ -1878,14 +1935,48 @@ export default function App() {
           >
             <Plus size={18} />
           </button>
+          {isSuggestionsOpen && (
+            <div className="composer-suggestions">
+              {filteredSuggestions.map((cmd, idx) => (
+                <div
+                  key={cmd.name}
+                  className={`suggestion-item ${idx === activeIndex ? "active" : ""}`}
+                  onClick={() => handleSelectSuggestion(cmd)}
+                  onMouseEnter={() => setActiveSuggestionIndex(idx)}
+                >
+                  <strong className="suggestion-name">{cmd.name}</strong>
+                  <span className="suggestion-desc">{cmd.desc}</span>
+                </div>
+              ))}
+            </div>
+          )}
           <textarea
             ref={composerRef}
             value={input}
             title="Message to send to the model. Paste text with right-click."
             placeholder="Write a message..."
-            onChange={(event) => setInput(event.target.value)}
+            onChange={(event) => handleInputChange(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) sendMessage();
+              if (isSuggestionsOpen) {
+                if (event.key === "ArrowDown") {
+                  event.preventDefault();
+                  setActiveSuggestionIndex((prev) => (prev + 1) % filteredSuggestions.length);
+                } else if (event.key === "ArrowUp") {
+                  event.preventDefault();
+                  setActiveSuggestionIndex((prev) => (prev - 1 + filteredSuggestions.length) % filteredSuggestions.length);
+                } else if (event.key === "Enter" || event.key === "Tab") {
+                  event.preventDefault();
+                  const selected = filteredSuggestions[activeIndex];
+                  if (selected) {
+                    handleSelectSuggestion(selected);
+                  }
+                } else if (event.key === "Escape") {
+                  event.preventDefault();
+                  setHideSuggestions(true);
+                }
+              } else {
+                if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) sendMessage();
+              }
             }}
           />
           {generationBusy ? (

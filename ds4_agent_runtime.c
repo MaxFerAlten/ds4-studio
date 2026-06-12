@@ -145,6 +145,18 @@ int ds4_agent_runtime_init(ds4_agent_runtime **out,
     rt->cfg.gen.system = opt ? opt->system_prompt : NULL;
     rt->cfg.non_interactive = true;
 
+    /* Release the wrapper's placeholder agent session before spawning the
+     * worker.  agent_worker_init() calls ds4_session_create() internally; at
+     * large context sizes (e.g. 64 K tokens) the GPU has no headroom for a
+     * second KV-cache context alongside an already-live session.  Freeing
+     * here lets the worker allocate cleanly.  The post-init transfer below
+     * re-attaches the system-prompt-processed worker session to
+     * wrapper->active_session. */
+    if (wrapper->active_session) {
+        ds4_session_free(wrapper->active_session);
+        wrapper->active_session = NULL;
+    }
+
     if (agent_worker_init(&rt->worker, wrapper->engine, &rt->cfg) != 0) {
         free(rt);
         return -1;
@@ -396,18 +408,16 @@ int ds4_agent_runtime_save(ds4_agent_runtime *rt, char *sha_out, size_t sha_len)
 int ds4_agent_runtime_list(ds4_agent_runtime *rt, char **json_out) {
     if (!rt || !rt->worker_valid || !json_out) return -1;
 
-    /* Scan cache_dir for sessions compatible with this model. */
     DIR *d = opendir(rt->worker.cache_dir);
     if (!d) {
         *json_out = xstrdup("[]");
         return 0;
     }
 
+    agent_session_list_item *sessions = NULL;
+    int sessions_len = 0;
+    int sessions_cap = 0;
     const uint8_t model_id = (uint8_t)ds4_engine_model_id(rt->worker.engine);
-    agent_buf buf = {0};
-    agent_buf_puts(&buf, "[");
-    int count = 0;
-
     struct dirent *de;
     while ((de = readdir(d)) != NULL) {
         char sha[41];
@@ -417,47 +427,68 @@ int ds4_agent_runtime_list(ds4_agent_runtime *rt, char **json_out) {
         if (ds4_kvstore_read_entry_file(path, sha, &e)) {
             if (e.model_id == model_id) {
                 char *title = agent_session_title_from_file(path, 160);
-                if (count > 0) agent_buf_puts(&buf, ",");
-
-                /* JSON-escape the title */
-                size_t title_len = title ? strlen(title) : 0;
-                size_t esc_cap = title_len * 6 + 16;
-                char *esc_title = malloc(esc_cap);
-                if (esc_title) {
-                    json_escape_into(esc_title, esc_cap, title ? title : "", title_len);
-                } else {
-                    esc_title = xstrdup("");
-                }
-
-                char entry_json[512];
-                snprintf(entry_json, sizeof(entry_json),
-                    "{\"sha\":\"%.40s\","
-                    "\"title\":\"%s\","
-                    "\"tokens\":%u,"
-                    "\"file_size\":%llu,"
-                    "\"last_used\":%llu,"
-                    "\"created_at\":%llu,"
-                    "\"stripped\":%s}",
-                    sha,
-                    esc_title,
-                    e.tokens,
-                    (unsigned long long)e.file_size,
-                    (unsigned long long)e.last_used,
-                    (unsigned long long)e.created_at,
-                    e.payload_bytes == 0 ? "true" : "false");
-                agent_buf_puts(&buf, entry_json);
-                free(esc_title);
-                free(title);
-                count++;
+                agent_session_list_push(&sessions, &sessions_len, &sessions_cap,
+                                        e, title);
+            } else {
+                ds4_kvstore_entry_free(&e);
             }
-            ds4_kvstore_entry_free(&e);
         }
         free(path);
     }
     closedir(d);
 
+    if (sessions_len > 1) {
+        qsort(sessions, (size_t)sessions_len, sizeof(sessions[0]),
+              agent_session_list_cmp_recent);
+    }
+
+    agent_buf buf = {0};
+    agent_buf_puts(&buf, "[");
+    for (int i = 0; i < sessions_len; i++) {
+        ds4_kvstore_entry *e = &sessions[i].entry;
+        size_t title_len = sessions[i].title ? strlen(sessions[i].title) : 0;
+        size_t esc_cap = title_len * 6 + 16;
+        char *esc_title = malloc(esc_cap);
+        if (esc_title) {
+            json_escape_into(esc_title, esc_cap,
+                             sessions[i].title ? sessions[i].title : "",
+                             title_len);
+        } else {
+            esc_title = xstrdup("");
+        }
+        if (i) agent_buf_puts(&buf, ",");
+        const char *entry_fmt =
+            "{\"sha\":\"%.40s\","
+            "\"title\":\"%s\","
+            "\"tokens\":%u,"
+            "\"file_size\":%llu,"
+            "\"last_used\":%llu,"
+            "\"created_at\":%llu,"
+            "\"stripped\":%s}";
+        int entry_len = snprintf(NULL, 0, entry_fmt,
+                                 e->sha,
+                                 esc_title,
+                                 e->tokens,
+                                 (unsigned long long)e->file_size,
+                                 (unsigned long long)e->last_used,
+                                 (unsigned long long)e->created_at,
+                                 e->payload_bytes == 0 ? "true" : "false");
+        char *entry_json = xmalloc((size_t)entry_len + 1);
+        snprintf(entry_json, (size_t)entry_len + 1, entry_fmt,
+                 e->sha,
+                 esc_title,
+                 e->tokens,
+                 (unsigned long long)e->file_size,
+                 (unsigned long long)e->last_used,
+                 (unsigned long long)e->created_at,
+                 e->payload_bytes == 0 ? "true" : "false");
+        agent_buf_puts(&buf, entry_json);
+        free(entry_json);
+        free(esc_title);
+    }
     agent_buf_puts(&buf, "]");
     *json_out = agent_buf_take(&buf);
+    agent_session_list_free(sessions, sessions_len);
     return 0;
 }
 
@@ -525,5 +556,297 @@ int ds4_agent_runtime_compact(ds4_agent_runtime *rt, char *err, size_t err_len) 
     if (!agent_worker_compact(&rt->worker, "API requested compaction",
                                err, err_len))
         return -1;
+    return 0;
+}
+
+/* =========================================================================
+ * Native slash-command dispatcher
+ * ========================================================================= */
+
+typedef struct {
+    agent_buf output;
+} runtime_command_capture;
+
+static void runtime_command_capture_cb(void *ud, const char *s, size_t n) {
+    runtime_command_capture *capture = ud;
+    char *clean = strip_ansi(s, n);
+    if (!clean) return;
+    agent_buf_puts(&capture->output, clean);
+    free(clean);
+}
+
+static const char *runtime_command_name(agent_slash_command_kind kind) {
+    switch (kind) {
+    case AGENT_SLASH_HELP:    return "help";
+    case AGENT_SLASH_SAVE:    return "save";
+    case AGENT_SLASH_COMPACT: return "compact";
+    case AGENT_SLASH_LIST:    return "list";
+    case AGENT_SLASH_QUIT:    return "quit";
+    case AGENT_SLASH_EXIT:    return "exit";
+    case AGENT_SLASH_NEW:     return "new";
+    case AGENT_SLASH_POWER:   return "power";
+    case AGENT_SLASH_SWITCH:  return "switch";
+    case AGENT_SLASH_DELETE:  return "del";
+    case AGENT_SLASH_STRIP:   return "strip";
+    case AGENT_SLASH_HISTORY: return "history";
+    default:                  return "unknown";
+    }
+}
+
+static void runtime_command_set_message(ds4_agent_command_result *result,
+                                        const char *fmt, ...) {
+    free(result->message);
+    result->message = NULL;
+    va_list ap;
+    va_start(ap, fmt);
+    if (vasprintf(&result->message, fmt, ap) < 0) result->message = NULL;
+    va_end(ap);
+    if (!result->message) result->message = xstrdup("");
+}
+
+static int runtime_command_fail(ds4_agent_command_result *result,
+                                int status, const char *fmt, ...) {
+    result->ok = false;
+    result->http_status = status;
+    free(result->message);
+    result->message = NULL;
+    va_list ap;
+    va_start(ap, fmt);
+    if (vasprintf(&result->message, fmt, ap) < 0) result->message = NULL;
+    va_end(ap);
+    if (!result->message) result->message = xstrdup("native agent command failed");
+    return -1;
+}
+
+static bool runtime_command_require_session(ds4_agent_runtime *rt,
+                                            ds4_agent_command_result *result) {
+    if (!rt || !rt->worker_valid) {
+        runtime_command_fail(result, 503, "agent runtime is not initialized");
+        return false;
+    }
+    rt->worker.session = rt->wrapper->active_session;
+    if (!rt->worker.session) {
+        runtime_command_fail(result, 409, "no active agent session");
+        return false;
+    }
+    if (!worker_is_idle(&rt->worker)) {
+        runtime_command_fail(result, 409, "model is busy");
+        return false;
+    }
+    return true;
+}
+
+static bool runtime_command_save_if_dirty(ds4_agent_runtime *rt,
+                                          ds4_agent_command_result *result) {
+    if (!agent_worker_needs_save(&rt->worker)) return true;
+    char sha[41] = {0};
+    int tokens = 0;
+    char err[256] = {0};
+    if (agent_worker_save_session_now(&rt->worker, sha, &tokens,
+                                      err, sizeof(err)))
+        return true;
+    runtime_command_fail(result, 500, "save failed: %s",
+                         err[0] ? err : "unknown error");
+    return false;
+}
+
+static char *runtime_command_capture_history(ds4_agent_runtime *rt,
+                                             int turns,
+                                             char *err, size_t err_len) {
+    runtime_command_capture capture = {0};
+    void (*old_cb)(void *, const char *, size_t) = rt->worker.publish_cb;
+    void *old_ud = rt->worker.publish_ud;
+    rt->worker.publish_cb = runtime_command_capture_cb;
+    rt->worker.publish_ud = &capture;
+    bool ok = agent_worker_show_history(&rt->worker, turns, err, err_len);
+    rt->worker.publish_cb = old_cb;
+    rt->worker.publish_ud = old_ud;
+    if (!ok) {
+        free(capture.output.ptr);
+        return NULL;
+    }
+    return agent_buf_take(&capture.output);
+}
+
+void ds4_agent_command_result_free(ds4_agent_command_result *result) {
+    if (!result) return;
+    free(result->message);
+    free(result->data_json);
+    memset(result, 0, sizeof(*result));
+}
+
+int ds4_agent_runtime_command(ds4_agent_runtime *rt, const char *command,
+                              ds4_agent_command_result *result) {
+    if (!result) return -1;
+    memset(result, 0, sizeof(*result));
+    result->http_status = 200;
+
+    agent_slash_command parsed = {0};
+    if (!agent_parse_slash_command(command, &parsed)) {
+        return runtime_command_fail(result, 400,
+                                    "unknown or invalid native agent command: %s",
+                                    command ? command : "");
+    }
+    snprintf(result->command, sizeof(result->command), "%s",
+             runtime_command_name(parsed.kind));
+
+    if (!runtime_command_require_session(rt, result)) return -1;
+
+    char err[256] = {0};
+    switch (parsed.kind) {
+    case AGENT_SLASH_HELP:
+        runtime_command_set_message(
+            result,
+            "Commands:\n"
+            "  /help        Show this help.\n"
+            "  /save        Save the current session.\n"
+            "  /compact     Compact the current session context now.\n"
+            "  /list        List saved sessions.\n"
+            "  /switch SHA  Load a saved session and show recent history.\n"
+            "  /del SHA     Delete a saved session.\n"
+            "  /strip SHA   Strip KV payload; /switch rebuilds it by prefill.\n"
+            "  /history [N] Show N recent user turns from the current session.\n"
+            "  /power N     Set GPU duty cycle percentage, 1..100.\n"
+            "  /new         Start a fresh session from the system prompt.\n"
+            "  /quit, /exit Save if needed and return to server mode.");
+        break;
+
+    case AGENT_SLASH_SAVE: {
+        char sha[41] = {0};
+        int tokens = 0;
+        if (!agent_worker_save_session_now(&rt->worker, sha, &tokens,
+                                           err, sizeof(err)))
+            return runtime_command_fail(result, 500, "save failed: %s",
+                                        err[0] ? err : "unknown error");
+        runtime_command_set_message(result, "Saved session %.8s (%d tokens).",
+                                    sha, tokens);
+        if (asprintf(&result->data_json,
+                     "{\"sha\":\"%.40s\",\"tokens\":%d}", sha, tokens) < 0)
+            result->data_json = NULL;
+        break;
+    }
+
+    case AGENT_SLASH_COMPACT: {
+        int before = rt->worker.transcript.len;
+        if (!agent_worker_compact(&rt->worker, "API requested compaction",
+                                  err, sizeof(err))) {
+            if (agent_err_is_interrupted(err)) {
+                worker_clear_interrupt(&rt->worker);
+                agent_set_status(&rt->worker, AGENT_WORKER_IDLE);
+            } else {
+                agent_set_error(&rt->worker,
+                                err[0] ? err : "context compaction failed");
+            }
+            return runtime_command_fail(result, 500, "compact failed: %s",
+                                        err[0] ? err : "unknown error");
+        }
+        if (rt->worker.transcript.len != before) {
+            pthread_mutex_lock(&rt->worker.mu);
+            rt->worker.session_dirty = true;
+            agent_wake_locked(&rt->worker);
+            pthread_mutex_unlock(&rt->worker.mu);
+        }
+        agent_set_status(&rt->worker, AGENT_WORKER_IDLE);
+        runtime_command_set_message(result, "Compacted context: %d -> %d tokens.",
+                                    before, rt->worker.transcript.len);
+        break;
+    }
+
+    case AGENT_SLASH_LIST:
+        if (ds4_agent_runtime_list(rt, &result->data_json) != 0)
+            return runtime_command_fail(result, 500,
+                                        "failed to list saved sessions");
+        runtime_command_set_message(result, "Saved sessions.");
+        break;
+
+    case AGENT_SLASH_SWITCH: {
+        if (!runtime_command_save_if_dirty(rt, result)) return -1;
+        if (!agent_worker_switch_session(&rt->worker, parsed.arg, 0,
+                                         err, sizeof(err)))
+            return runtime_command_fail(result, 500, "switch failed: %s",
+                                        err[0] ? err : "unknown error");
+        char *history = runtime_command_capture_history(
+            rt, AGENT_HISTORY_DEFAULT_TURNS, err, sizeof(err));
+        if (!history)
+            return runtime_command_fail(result, 500, "history failed: %s",
+                                        err[0] ? err : "unknown error");
+        runtime_command_set_message(result, "Switched to session %.8s.\n\n%s",
+                                    rt->worker.session_sha, history);
+        free(history);
+        break;
+    }
+
+    case AGENT_SLASH_DELETE: {
+        char sha[41] = {0};
+        if (!agent_worker_delete_session(&rt->worker, parsed.arg, sha,
+                                         err, sizeof(err)))
+            return runtime_command_fail(result, 500, "delete failed: %s",
+                                        err[0] ? err : "unknown error");
+        runtime_command_set_message(result, "Deleted session %.8s.", sha);
+        if (asprintf(&result->data_json, "{\"sha\":\"%.40s\"}", sha) < 0)
+            result->data_json = NULL;
+        break;
+    }
+
+    case AGENT_SLASH_STRIP: {
+        char sha[41] = {0};
+        uint32_t tokens = 0;
+        if (!agent_worker_strip_session(&rt->worker, parsed.arg, sha, &tokens,
+                                        err, sizeof(err)))
+            return runtime_command_fail(result, 500, "strip failed: %s",
+                                        err[0] ? err : "unknown error");
+        runtime_command_set_message(result, "Stripped session %.8s (%u tokens).",
+                                    sha, tokens);
+        if (asprintf(&result->data_json,
+                     "{\"sha\":\"%.40s\",\"tokens\":%u}", sha, tokens) < 0)
+            result->data_json = NULL;
+        break;
+    }
+
+    case AGENT_SLASH_HISTORY: {
+        char *history = runtime_command_capture_history(
+            rt, parsed.number, err, sizeof(err));
+        if (!history)
+            return runtime_command_fail(result, 500, "history failed: %s",
+                                        err[0] ? err : "unknown error");
+        result->message = history;
+        break;
+    }
+
+    case AGENT_SLASH_POWER:
+        if (ds4_session_set_power(rt->worker.session, parsed.number) != 0)
+            return runtime_command_fail(result, 500,
+                                        "power change failed");
+        pthread_mutex_lock(&rt->worker.mu);
+        rt->worker.cfg->engine.power_percent = parsed.number;
+        rt->worker.status.power_percent = parsed.number;
+        agent_wake_locked(&rt->worker);
+        pthread_mutex_unlock(&rt->worker.mu);
+        runtime_command_set_message(result, "GPU duty cycle set to %d%%.",
+                                    parsed.number);
+        break;
+
+    case AGENT_SLASH_NEW:
+        if (!runtime_command_save_if_dirty(rt, result)) return -1;
+        if (ds4_agent_runtime_new(rt, err, sizeof(err)) != 0)
+            return runtime_command_fail(result, 500, "new session failed: %s",
+                                        err[0] ? err : "unknown error");
+        runtime_command_set_message(result, "Started a fresh agent session.");
+        break;
+
+    case AGENT_SLASH_QUIT:
+    case AGENT_SLASH_EXIT:
+        if (!runtime_command_save_if_dirty(rt, result)) return -1;
+        result->switch_to_server = true;
+        runtime_command_set_message(result,
+                                    "Agent session closed; returning to server mode.");
+        break;
+
+    default:
+        return runtime_command_fail(result, 400,
+                                    "unsupported native agent command");
+    }
+
+    result->ok = true;
     return 0;
 }

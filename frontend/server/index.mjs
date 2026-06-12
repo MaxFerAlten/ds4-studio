@@ -44,6 +44,12 @@ import { readRequestBody, requestHeadersForProxy } from "./proxy.mjs";
 import { readRocmStatusCached } from "./rocmSmi.mjs";
 import { AgentSessionStore, AGENT_SYSTEM_PROMPT, AGENT_TOOLS } from "./agentSession.mjs";
 import { checkBashFileReadFallback, executeTool } from "./agentTools.mjs";
+import {
+  canonicalLegacyCommand,
+  isAgentSlashCommand,
+  nativeCommandEvents,
+  proxyNativeAgentCommand
+} from "./nativeAgentCommands.mjs";
 
 const PROXY_TIMEOUT_MS = 60 * 60 * 1000;
 const HTTP_DRAIN_GRACE_MS = 2000;
@@ -52,7 +58,6 @@ const UPLOAD_LIMIT_BYTES = 50 * 1024 * 1024;
 const FRONTEND_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PROJECT_ROOT = path.resolve(FRONTEND_ROOT, "..");
 
-const NATIVE_AGENT_CMDS = new Set(["save", "list", "switch", "strip", "new", "compact"]);
 let config = await loadConfig();
 if (process.env.DS4_UI_HOST) config.control.host = process.env.DS4_UI_HOST;
 if (process.env.DS4_UI_PORT) config.control.port = process.env.DS4_UI_PORT;
@@ -887,22 +892,27 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
       return res.status(400).json({ error: "message is required and must be a non-empty string" });
     }
 
-    /* Intercept slash commands and route them to the native-agent endpoint. */
-    const slashMatch = message.trim().match(/^\/(\w+)(?:\s+(.*))?$/s);
-    if (slashMatch) {
-      const cmd = slashMatch[1];
-      const arg = slashMatch[2]?.trim() || "";
-      if (NATIVE_AGENT_CMDS.has(cmd)) {
-        const body = cmd === "switch" ? { sha: arg } :
-                     cmd === "strip"  ? { sha: arg } : {};
-        const up = await fetch(`${backendBase()}/api/native-agent/${cmd}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body)
-        });
-        const json = await up.json().catch(() => ({}));
-        return res.status(up.status).json(json);
+    if (isAgentSlashCommand(message)) {
+      const result = await proxyNativeAgentCommand(
+        fetch,
+        backendBase(),
+        message.trim(),
+        req.signal
+      );
+      if (result.payload.active === false) {
+        agentSessions.stop(agentSessionKey(req));
       }
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no"
+      });
+      for (const item of nativeCommandEvents(result.payload, result.ok)) {
+        res.write(`event: ${item.event}\ndata: ${JSON.stringify(item.data)}\n\n`);
+      }
+      res.end();
+      return;
     }
 
     const up = await fetch(`${backendBase()}/api/native-agent/chat`, {
@@ -1291,23 +1301,42 @@ app.post("/api/wrapper/switch-mode", asyncHandler(async (req, res) => {
   res.status(up.status).json(await up.json());
 }));
 
-// Native-agent persistent-session commands: save/list/switch/strip/new/compact.
-app.all("/api/native-agent/:cmd", asyncHandler(async (req, res) => {
-  const cmd = String(req.params.cmd || "");
-  if (!NATIVE_AGENT_CMDS.has(cmd)) return res.status(404).json({ error: `unknown native-agent command: ${cmd}` });
+app.post("/api/native-agent/command", asyncHandler(async (req, res) => {
   if (!wrapperEnabled()) return res.status(400).json({ error: "wrapper is not enabled" });
-  const method = cmd === "list" ? "GET" : "POST";
-  const up = await fetch(`${backendBase()}/api/native-agent/${cmd}`, {
-    method,
-    headers: { "Content-Type": "application/json" },
-    body: method === "POST" ? JSON.stringify(req.body || {}) : undefined,
-    signal: AbortSignal.timeout(60000)
-  });
-  const text = await up.text();
-  res.status(up.status);
-  const ct = up.headers.get("content-type");
-  if (ct) res.setHeader("content-type", ct);
-  res.send(text);
+  const command = typeof req.body?.command === "string" ? req.body.command.trim() : "";
+  if (!command) return res.status(400).json({ error: "command is required" });
+  const result = await proxyNativeAgentCommand(
+    fetch,
+    backendBase(),
+    command,
+    AbortSignal.timeout(5 * 60 * 1000)
+  );
+  if (result.payload.active === false) {
+    agentSessions.stop(agentSessionKey(req));
+  }
+  res.status(result.status).json(result.payload);
+}));
+
+// Legacy native-agent routes delegate to the common command dispatcher.
+app.all("/api/native-agent/:cmd", asyncHandler(async (req, res) => {
+  if (!wrapperEnabled()) return res.status(400).json({ error: "wrapper is not enabled" });
+  const cmd = String(req.params.cmd || "").toLowerCase();
+  const command = canonicalLegacyCommand(cmd, req.body);
+  if (!command) {
+    return res.status(404).json({ error: `unknown or invalid native-agent command: ${cmd}` });
+  }
+  const result = await proxyNativeAgentCommand(
+    fetch,
+    backendBase(),
+    command,
+    AbortSignal.timeout(5 * 60 * 1000)
+  );
+  if (!result.ok) return res.status(result.status).json(result.payload);
+  if (cmd === "list") return res.status(result.status).json(result.payload.data || []);
+  if (cmd === "save") {
+    return res.status(result.status).json({ ok: true, ...(result.payload.data || {}) });
+  }
+  res.status(result.status).json({ ok: true });
 }));
 
 app.use((err, _req, res, next) => {

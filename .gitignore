@@ -24,3 +24,5 @@ doc/
 /frontend/dist/
 /.claude/skills/gitnexus/
 /frontend/node_modules/
+traces/
+ds4-studio.1.md

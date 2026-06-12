@@ -447,6 +447,103 @@ static bool parse_power_percent(const char *arg, int *out) {
     return true;
 }
 
+#define AGENT_HISTORY_DEFAULT_TURNS 3
+#define AGENT_HISTORY_MAX_TURNS 200
+
+typedef enum {
+    AGENT_SLASH_UNKNOWN,
+    AGENT_SLASH_HELP,
+    AGENT_SLASH_SAVE,
+    AGENT_SLASH_COMPACT,
+    AGENT_SLASH_LIST,
+    AGENT_SLASH_QUIT,
+    AGENT_SLASH_EXIT,
+    AGENT_SLASH_NEW,
+    AGENT_SLASH_POWER,
+    AGENT_SLASH_SWITCH,
+    AGENT_SLASH_DELETE,
+    AGENT_SLASH_STRIP,
+    AGENT_SLASH_HISTORY,
+} agent_slash_command_kind;
+
+typedef struct {
+    agent_slash_command_kind kind;
+    char arg[128];
+    int number;
+} agent_slash_command;
+
+static bool agent_parse_command_number(const char *arg, int min, int max,
+                                       int *out) {
+    char *end = NULL;
+    long value = strtol(arg, &end, 10);
+    if (!arg[0] || end == arg) return false;
+    while (*end && isspace((unsigned char)*end)) end++;
+    if (*end || value < min || value > max) return false;
+    *out = (int)value;
+    return true;
+}
+
+static bool agent_parse_slash_command(const char *input,
+                                      agent_slash_command *out) {
+    if (!input || !out) return false;
+    memset(out, 0, sizeof(*out));
+
+    while (*input && isspace((unsigned char)*input)) input++;
+    size_t len = strlen(input);
+    while (len && isspace((unsigned char)input[len - 1])) len--;
+    if (!len || len >= 256 || input[0] != '/') return false;
+
+    char command[256];
+    memcpy(command, input, len);
+    command[len] = '\0';
+
+    char *arg = command;
+    while (*arg && !isspace((unsigned char)*arg)) arg++;
+    if (*arg) {
+        *arg++ = '\0';
+        while (*arg && isspace((unsigned char)*arg)) arg++;
+    }
+
+    if (!strcmp(command, "/help")) out->kind = AGENT_SLASH_HELP;
+    else if (!strcmp(command, "/save")) out->kind = AGENT_SLASH_SAVE;
+    else if (!strcmp(command, "/compact")) out->kind = AGENT_SLASH_COMPACT;
+    else if (!strcmp(command, "/list")) out->kind = AGENT_SLASH_LIST;
+    else if (!strcmp(command, "/quit")) out->kind = AGENT_SLASH_QUIT;
+    else if (!strcmp(command, "/exit")) out->kind = AGENT_SLASH_EXIT;
+    else if (!strcmp(command, "/new")) out->kind = AGENT_SLASH_NEW;
+    else if (!strcmp(command, "/power")) out->kind = AGENT_SLASH_POWER;
+    else if (!strcmp(command, "/switch")) out->kind = AGENT_SLASH_SWITCH;
+    else if (!strcmp(command, "/del")) out->kind = AGENT_SLASH_DELETE;
+    else if (!strcmp(command, "/strip")) out->kind = AGENT_SLASH_STRIP;
+    else if (!strcmp(command, "/history")) out->kind = AGENT_SLASH_HISTORY;
+    else return false;
+
+    if (out->kind == AGENT_SLASH_POWER) {
+        return agent_parse_command_number(arg, 1, 100, &out->number);
+    }
+    if (out->kind == AGENT_SLASH_HISTORY) {
+        if (!arg[0]) {
+            out->number = AGENT_HISTORY_DEFAULT_TURNS;
+            return true;
+        }
+        return agent_parse_command_number(arg, 1, AGENT_HISTORY_MAX_TURNS,
+                                          &out->number);
+    }
+    if (out->kind == AGENT_SLASH_SWITCH ||
+        out->kind == AGENT_SLASH_DELETE ||
+        out->kind == AGENT_SLASH_STRIP)
+    {
+        size_t arg_len = strlen(arg);
+        if (!arg_len || arg_len >= sizeof(out->arg)) return false;
+        for (size_t i = 0; i < arg_len; i++) {
+            if (isspace((unsigned char)arg[i])) return false;
+        }
+        memcpy(out->arg, arg, arg_len + 1);
+        return true;
+    }
+    return !arg[0];
+}
+
 static bool agent_slash_command_with_args(const char *cmd, const char *name) {
     size_t len = strlen(name);
     return !strncmp(cmd, name, len) &&
@@ -4532,8 +4629,6 @@ static char *agent_session_title_from_file(const char *path, size_t max_bytes) {
     return title;
 }
 
-#define AGENT_HISTORY_DEFAULT_TURNS 3
-#define AGENT_HISTORY_MAX_TURNS 200
 #define AGENT_HISTORY_ASSISTANT_MAX_LINES 80
 #define AGENT_HISTORY_ASSISTANT_MAX_BYTES 12000
 
@@ -6212,9 +6307,63 @@ static void test_agent_edit_upto_requires_tail_after_newline_strip(void) {
     AGENT_TEST_ASSERT(strstr(err, "must include a unique tail anchor") != NULL);
 }
 
+static void test_agent_parse_native_slash_commands(void) {
+    agent_slash_command parsed = {0};
+
+    AGENT_TEST_ASSERT(agent_parse_slash_command("/help", &parsed));
+    AGENT_TEST_ASSERT(parsed.kind == AGENT_SLASH_HELP);
+    AGENT_TEST_ASSERT(agent_parse_slash_command("  /save  ", &parsed));
+    AGENT_TEST_ASSERT(parsed.kind == AGENT_SLASH_SAVE);
+    AGENT_TEST_ASSERT(agent_parse_slash_command("/compact", &parsed));
+    AGENT_TEST_ASSERT(parsed.kind == AGENT_SLASH_COMPACT);
+    AGENT_TEST_ASSERT(agent_parse_slash_command("/list", &parsed));
+    AGENT_TEST_ASSERT(parsed.kind == AGENT_SLASH_LIST);
+    AGENT_TEST_ASSERT(agent_parse_slash_command("/quit", &parsed));
+    AGENT_TEST_ASSERT(parsed.kind == AGENT_SLASH_QUIT);
+    AGENT_TEST_ASSERT(agent_parse_slash_command("/exit", &parsed));
+    AGENT_TEST_ASSERT(parsed.kind == AGENT_SLASH_EXIT);
+    AGENT_TEST_ASSERT(agent_parse_slash_command("/new", &parsed));
+    AGENT_TEST_ASSERT(parsed.kind == AGENT_SLASH_NEW);
+
+    AGENT_TEST_ASSERT(agent_parse_slash_command("/power 80", &parsed));
+    AGENT_TEST_ASSERT(parsed.kind == AGENT_SLASH_POWER);
+    AGENT_TEST_ASSERT(parsed.number == 80);
+    AGENT_TEST_ASSERT(agent_parse_slash_command("/switch abc123", &parsed));
+    AGENT_TEST_ASSERT(parsed.kind == AGENT_SLASH_SWITCH);
+    AGENT_TEST_ASSERT(!strcmp(parsed.arg, "abc123"));
+    AGENT_TEST_ASSERT(agent_parse_slash_command("/del deadbeef", &parsed));
+    AGENT_TEST_ASSERT(parsed.kind == AGENT_SLASH_DELETE);
+    AGENT_TEST_ASSERT(agent_parse_slash_command("/strip cafe", &parsed));
+    AGENT_TEST_ASSERT(parsed.kind == AGENT_SLASH_STRIP);
+    AGENT_TEST_ASSERT(agent_parse_slash_command("/history", &parsed));
+    AGENT_TEST_ASSERT(parsed.kind == AGENT_SLASH_HISTORY);
+    AGENT_TEST_ASSERT(parsed.number == AGENT_HISTORY_DEFAULT_TURNS);
+    AGENT_TEST_ASSERT(agent_parse_slash_command("/history 10", &parsed));
+    AGENT_TEST_ASSERT(parsed.number == 10);
+}
+
+static void test_agent_rejects_invalid_native_slash_commands(void) {
+    agent_slash_command parsed = {0};
+
+    AGENT_TEST_ASSERT(!agent_parse_slash_command("/save extra", &parsed));
+    AGENT_TEST_ASSERT(!agent_parse_slash_command("/power", &parsed));
+    AGENT_TEST_ASSERT(!agent_parse_slash_command("/power 0", &parsed));
+    AGENT_TEST_ASSERT(!agent_parse_slash_command("/power 101", &parsed));
+    AGENT_TEST_ASSERT(!agent_parse_slash_command("/power eighty", &parsed));
+    AGENT_TEST_ASSERT(!agent_parse_slash_command("/switch", &parsed));
+    AGENT_TEST_ASSERT(!agent_parse_slash_command("/del", &parsed));
+    AGENT_TEST_ASSERT(!agent_parse_slash_command("/strip", &parsed));
+    AGENT_TEST_ASSERT(!agent_parse_slash_command("/history 0", &parsed));
+    AGENT_TEST_ASSERT(!agent_parse_slash_command("/history 999999", &parsed));
+    AGENT_TEST_ASSERT(!agent_parse_slash_command("/unknown", &parsed));
+    AGENT_TEST_ASSERT(!agent_parse_slash_command("hello", &parsed));
+}
+
 static void ds4_agent_unit_tests_run(void) {
     test_agent_edit_upto_tail_newline_is_not_part_of_anchor();
     test_agent_edit_upto_requires_tail_after_newline_strip();
+    test_agent_parse_native_slash_commands();
+    test_agent_rejects_invalid_native_slash_commands();
 }
 #endif
 

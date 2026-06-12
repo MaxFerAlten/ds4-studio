@@ -294,6 +294,155 @@ static void send_json_error(int fd, bool enable_cors, int code, const char *err_
     }
 }
 
+static char *wrap_json_escape_dup(const char *s) {
+    if (!s) s = "";
+    size_t len = strlen(s);
+    size_t cap = len * 6 + 1;
+    char *out = malloc(cap);
+    if (!out) return NULL;
+    size_t w = 0;
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (c == '"' || c == '\\') {
+            out[w++] = '\\';
+            out[w++] = (char)c;
+        } else if (c == '\n') {
+            out[w++] = '\\';
+            out[w++] = 'n';
+        } else if (c == '\r') {
+            out[w++] = '\\';
+            out[w++] = 'r';
+        } else if (c == '\t') {
+            out[w++] = '\\';
+            out[w++] = 't';
+        } else if (c < 0x20) {
+            w += (size_t)snprintf(out + w, cap - w, "\\u%04x", c);
+        } else {
+            out[w++] = (char)c;
+        }
+    }
+    out[w] = '\0';
+    return out;
+}
+
+static char *native_agent_result_json(const ds4_agent_command_result *result,
+                                      bool active) {
+    char *message = wrap_json_escape_dup(result->message);
+    if (!message) return NULL;
+    const char *data = result->data_json ? result->data_json : "null";
+    char *body = NULL;
+    if (asprintf(&body,
+                 "{\"ok\":%s,\"command\":\"%s\",\"message\":\"%s\","
+                 "\"data\":%s,\"active\":%s}\n",
+                 result->ok ? "true" : "false",
+                 result->command,
+                 message,
+                 data,
+                 active ? "true" : "false") < 0)
+        body = NULL;
+    free(message);
+    return body;
+}
+
+static int execute_native_agent_command(ds4_wrapper *w, const char *command,
+                                        ds4_agent_command_result *result) {
+    char err[256] = {0};
+    int code = ds4_wrapper_enter_request(w, DS4_WRAP_MODE_AGENT,
+                                         err, sizeof(err));
+    if (code != 0) {
+        memset(result, 0, sizeof(*result));
+        result->http_status = code;
+        result->message = strdup(err[0] ? err : "failed to enter agent mode");
+        return -1;
+    }
+
+    bool request_open = true;
+    if (ds4_wrapper_ensure_agent_rt(w, err, sizeof(err)) != 0) {
+        memset(result, 0, sizeof(*result));
+        result->http_status = 500;
+        result->message = strdup(err[0] ? err : "failed to initialize agent runtime");
+        ds4_wrapper_leave_request(w);
+        return -1;
+    }
+
+    int rc = ds4_agent_runtime_command(w->agent_rt, command, result);
+    if (rc == 0 && result->switch_to_server) {
+        ds4_wrapper_leave_request(w);
+        request_open = false;
+        code = ds4_wrapper_switch_mode(w, DS4_WRAP_MODE_SERVER,
+                                       err, sizeof(err));
+        if (code != 0) {
+            result->ok = false;
+            result->http_status = code;
+            result->switch_to_server = false;
+            free(result->message);
+            result->message = strdup(err[0] ? err :
+                                     "failed to switch to server mode");
+            rc = -1;
+        }
+    }
+    if (request_open) ds4_wrapper_leave_request(w);
+    return rc;
+}
+
+static void send_native_agent_command_response(ds4_wrapper *w, int fd,
+                                               const char *command) {
+    ds4_agent_command_result result = {0};
+    execute_native_agent_command(w, command, &result);
+    pthread_mutex_lock(&w->mu);
+    bool active = w->active_mode == DS4_WRAP_MODE_AGENT;
+    pthread_mutex_unlock(&w->mu);
+    char *body = native_agent_result_json(&result, active);
+    int status = result.http_status ? result.http_status :
+                 (result.ok ? 200 : 500);
+    if (body) {
+        send_response(fd, true, status, "application/json", body);
+        free(body);
+    } else {
+        send_json_error(fd, true, 500, "serialization_error",
+                        "failed to serialize native agent command result");
+    }
+    ds4_agent_command_result_free(&result);
+}
+
+static void send_legacy_native_agent_response(ds4_wrapper *w, int fd,
+                                              const char *command,
+                                              const char *legacy_name) {
+    ds4_agent_command_result result = {0};
+    execute_native_agent_command(w, command, &result);
+    int status = result.http_status ? result.http_status :
+                 (result.ok ? 200 : 500);
+
+    if (!result.ok) {
+        send_json_error(fd, true, status, "native_agent_error",
+                        result.message ? result.message : "command failed");
+    } else if (!strcmp(legacy_name, "list")) {
+        send_response(fd, true, 200, "application/json",
+                      result.data_json ? result.data_json : "[]");
+    } else if (!strcmp(legacy_name, "save") && result.data_json) {
+        size_t len = strlen(result.data_json);
+        char *body = NULL;
+        if (len >= 2 && result.data_json[0] == '{' &&
+            result.data_json[len - 1] == '}')
+        {
+            if (asprintf(&body, "{\"ok\":true,%.*s}\n",
+                         (int)(len - 2), result.data_json + 1) < 0)
+                body = NULL;
+        }
+        if (body) {
+            send_response(fd, true, 200, "application/json", body);
+            free(body);
+        } else {
+            send_response(fd, true, 200, "application/json",
+                          "{\"ok\":true}\n");
+        }
+    } else {
+        send_response(fd, true, 200, "application/json",
+                      "{\"ok\":true}\n");
+    }
+    ds4_agent_command_result_free(&result);
+}
+
 typedef struct {
     ds4_wrapper *w;
     int fd;
@@ -496,119 +645,49 @@ static void *client_thread_main(void *arg) {
             }
             ds4_wrapper_leave_request(w);
         }
-    } else if (!strcmp(hr.method, "POST") && !strcmp(hr.path, "/api/native-agent/save")) {
-        char err_buf[256] = {0};
-        int code = ds4_wrapper_enter_request(w, DS4_WRAP_MODE_AGENT, err_buf, sizeof(err_buf));
-        if (code != 0) {
-            send_json_error(fd, true, code, "error", err_buf);
-        } else if (ds4_wrapper_ensure_agent_rt(w, err_buf, sizeof(err_buf)) != 0) {
-            send_json_error(fd, true, 500, "agent_init_error", err_buf);
-            ds4_wrapper_leave_request(w);
+    } else if (!strcmp(hr.method, "POST") &&
+               !strcmp(hr.path, "/api/native-agent/command")) {
+        char *command = parse_json_string(hr.body, "command");
+        if (!command) {
+            send_json_error(fd, true, 400, "bad_request",
+                            "Missing 'command' in request body");
         } else {
-            char sha_out[41] = {0};
-            if (ds4_agent_runtime_save(w->agent_rt, sha_out, sizeof(sha_out)) == 0) {
-                char response[128];
-                snprintf(response, sizeof(response), "{\"ok\":true,\"sha\":\"%s\"}\n", sha_out);
-                send_response(fd, true, 200, "application/json", response);
-            } else {
-                send_json_error(fd, true, 500, "save_error", "Failed to save session");
-            }
-            ds4_wrapper_leave_request(w);
+            send_native_agent_command_response(w, fd, command);
+            free(command);
         }
-    } else if ((!strcmp(hr.method, "GET") || !strcmp(hr.method, "POST")) && !strcmp(hr.path, "/api/native-agent/list")) {
-        char err_buf[256] = {0};
-        int code = ds4_wrapper_enter_request(w, DS4_WRAP_MODE_AGENT, err_buf, sizeof(err_buf));
-        if (code != 0) {
-            send_json_error(fd, true, code, "error", err_buf);
-        } else if (ds4_wrapper_ensure_agent_rt(w, err_buf, sizeof(err_buf)) != 0) {
-            send_json_error(fd, true, 500, "agent_init_error", err_buf);
-            ds4_wrapper_leave_request(w);
+    } else if (!strcmp(hr.method, "POST") &&
+               !strcmp(hr.path, "/api/native-agent/save")) {
+        send_legacy_native_agent_response(w, fd, "/save", "save");
+    } else if ((!strcmp(hr.method, "GET") || !strcmp(hr.method, "POST")) &&
+               !strcmp(hr.path, "/api/native-agent/list")) {
+        send_legacy_native_agent_response(w, fd, "/list", "list");
+    } else if (!strcmp(hr.method, "POST") &&
+               (!strcmp(hr.path, "/api/native-agent/switch") ||
+                !strcmp(hr.path, "/api/native-agent/strip"))) {
+        char *sha = parse_json_string(hr.body, "sha");
+        if (!sha) {
+            send_json_error(fd, true, 400, "bad_request",
+                            "Missing 'sha' in request body");
         } else {
-            char *json_out = NULL;
-            if (ds4_agent_runtime_list(w->agent_rt, &json_out) == 0 && json_out) {
-                send_response(fd, true, 200, "application/json", json_out);
-                free(json_out);
+            const char *name = !strcmp(hr.path, "/api/native-agent/switch") ?
+                               "switch" : "strip";
+            char *command = NULL;
+            if (asprintf(&command, "/%s %s", name, sha) < 0) command = NULL;
+            if (command) {
+                send_legacy_native_agent_response(w, fd, command, name);
+                free(command);
             } else {
-                send_json_error(fd, true, 500, "list_error", "Failed to list sessions");
+                send_json_error(fd, true, 500, "allocation_error",
+                                "Failed to build native agent command");
             }
-            ds4_wrapper_leave_request(w);
+            free(sha);
         }
-    } else if (!strcmp(hr.method, "POST") && !strcmp(hr.path, "/api/native-agent/switch")) {
-        char err_buf[256] = {0};
-        int code = ds4_wrapper_enter_request(w, DS4_WRAP_MODE_AGENT, err_buf, sizeof(err_buf));
-        if (code != 0) {
-            send_json_error(fd, true, code, "error", err_buf);
-        } else if (ds4_wrapper_ensure_agent_rt(w, err_buf, sizeof(err_buf)) != 0) {
-            send_json_error(fd, true, 500, "agent_init_error", err_buf);
-            ds4_wrapper_leave_request(w);
-        } else {
-            char *sha = parse_json_string(hr.body, "sha");
-            if (!sha) {
-                send_json_error(fd, true, 400, "bad_request", "Missing 'sha' in request body");
-            } else {
-                if (ds4_agent_runtime_switch(w->agent_rt, sha, err_buf, sizeof(err_buf)) == 0) {
-                    send_response(fd, true, 200, "application/json", "{\"ok\":true}\n");
-                } else {
-                    send_json_error(fd, true, 500, "switch_error", err_buf[0] ? err_buf : "Failed to switch session");
-                }
-                free(sha);
-            }
-            ds4_wrapper_leave_request(w);
-        }
-    } else if (!strcmp(hr.method, "POST") && !strcmp(hr.path, "/api/native-agent/strip")) {
-        char err_buf[256] = {0};
-        int code = ds4_wrapper_enter_request(w, DS4_WRAP_MODE_AGENT, err_buf, sizeof(err_buf));
-        if (code != 0) {
-            send_json_error(fd, true, code, "error", err_buf);
-        } else if (ds4_wrapper_ensure_agent_rt(w, err_buf, sizeof(err_buf)) != 0) {
-            send_json_error(fd, true, 500, "agent_init_error", err_buf);
-            ds4_wrapper_leave_request(w);
-        } else {
-            char *sha = parse_json_string(hr.body, "sha");
-            if (!sha) {
-                send_json_error(fd, true, 400, "bad_request", "Missing 'sha' in request body");
-            } else {
-                if (ds4_agent_runtime_strip(w->agent_rt, sha, err_buf, sizeof(err_buf)) == 0) {
-                    send_response(fd, true, 200, "application/json", "{\"ok\":true}\n");
-                } else {
-                    send_json_error(fd, true, 500, "strip_error", err_buf[0] ? err_buf : "Failed to strip session");
-                }
-                free(sha);
-            }
-            ds4_wrapper_leave_request(w);
-        }
-    } else if (!strcmp(hr.method, "POST") && !strcmp(hr.path, "/api/native-agent/new")) {
-        char err_buf[256] = {0};
-        int code = ds4_wrapper_enter_request(w, DS4_WRAP_MODE_AGENT, err_buf, sizeof(err_buf));
-        if (code != 0) {
-            send_json_error(fd, true, code, "error", err_buf);
-        } else if (ds4_wrapper_ensure_agent_rt(w, err_buf, sizeof(err_buf)) != 0) {
-            send_json_error(fd, true, 500, "agent_init_error", err_buf);
-            ds4_wrapper_leave_request(w);
-        } else {
-            if (ds4_agent_runtime_new(w->agent_rt, err_buf, sizeof(err_buf)) == 0) {
-                send_response(fd, true, 200, "application/json", "{\"ok\":true}\n");
-            } else {
-                send_json_error(fd, true, 500, "new_error", err_buf[0] ? err_buf : "Failed to create new session");
-            }
-            ds4_wrapper_leave_request(w);
-        }
-    } else if (!strcmp(hr.method, "POST") && !strcmp(hr.path, "/api/native-agent/compact")) {
-        char err_buf[256] = {0};
-        int code = ds4_wrapper_enter_request(w, DS4_WRAP_MODE_AGENT, err_buf, sizeof(err_buf));
-        if (code != 0) {
-            send_json_error(fd, true, code, "error", err_buf);
-        } else if (ds4_wrapper_ensure_agent_rt(w, err_buf, sizeof(err_buf)) != 0) {
-            send_json_error(fd, true, 500, "agent_init_error", err_buf);
-            ds4_wrapper_leave_request(w);
-        } else {
-            if (ds4_agent_runtime_compact(w->agent_rt, err_buf, sizeof(err_buf)) == 0) {
-                send_response(fd, true, 200, "application/json", "{\"ok\":true}\n");
-            } else {
-                send_json_error(fd, true, 500, "compact_error", err_buf[0] ? err_buf : "Failed to compact session");
-            }
-            ds4_wrapper_leave_request(w);
-        }
+    } else if (!strcmp(hr.method, "POST") &&
+               !strcmp(hr.path, "/api/native-agent/new")) {
+        send_legacy_native_agent_response(w, fd, "/new", "new");
+    } else if (!strcmp(hr.method, "POST") &&
+               !strcmp(hr.path, "/api/native-agent/compact")) {
+        send_legacy_native_agent_response(w, fd, "/compact", "compact");
     } else {
         send_json_error(fd, true, 404, "not_found", "Endpoint not found");
     }

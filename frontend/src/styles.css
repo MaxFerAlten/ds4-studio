@@ -1384,3 +1384,104 @@ pre {
     min-height: 42px;
   }
 }
+
+/* Autocomplete Suggestion Overlay inside Composer */
+.composer {
+  position: relative;
+}
+
+.composer-suggestions {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50px;
+  right: 104px; /* Align perfectly with the textarea width */
+  max-height: 280px;
+  overflow-y: auto;
+  background: rgba(15, 22, 33, 0.94);
+  backdrop-filter: blur(14px) saturate(160%);
+  -webkit-backdrop-filter: blur(14px) saturate(160%);
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  border-radius: 10px;
+  box-shadow: 
+    0 16px 36px rgba(0, 0, 0, 0.6), 
+    0 0 0 1px rgba(59, 130, 246, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  z-index: 99;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  gap: 2px;
+  animation: suggestions-fade-in 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  transform-origin: bottom center;
+}
+
+@keyframes suggestions-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.suggestion-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.12s ease, transform 0.1s ease;
+  user-select: none;
+  gap: 16px;
+}
+
+.suggestion-item:hover,
+.suggestion-item.active {
+  background: rgba(59, 130, 246, 0.15);
+  transform: translateX(2px);
+}
+
+.suggestion-name {
+  color: #60a5fa;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  text-shadow: 0 0 8px rgba(96, 165, 250, 0.3);
+}
+
+.suggestion-desc {
+  color: #94a3b8;
+  font-size: 12px;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Custom sleek scrollbar for suggestions */
+.composer-suggestions::-webkit-scrollbar {
+  width: 6px;
+}
+.composer-suggestions::-webkit-scrollbar-track {
+  background: transparent;
+}
+.composer-suggestions::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 99px;
+}
+.composer-suggestions::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+@media (max-width: 560px) {
+  .composer-suggestions {
+    left: 8px;
+    right: 8px;
+    bottom: calc(100% + 4px);
+  }
+}
+
