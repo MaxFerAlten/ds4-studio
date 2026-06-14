@@ -50,6 +50,11 @@ import {
   nativeCommandEvents,
   proxyNativeAgentCommand
 } from "./nativeAgentCommands.mjs";
+import { ResearchRuntime } from "./research/researchRuntime.mjs";
+import { ResearchStateStore } from "./research/researchStateStore.mjs";
+import { ResearchModelClient } from "./research/researchModelClient.mjs";
+import { exportSession } from "./research/researchExport.mjs";
+import { CallDebugRecorder } from "./callDebug.mjs";
 
 const PROXY_TIMEOUT_MS = 60 * 60 * 1000;
 const HTTP_DRAIN_GRACE_MS = 2000;
@@ -57,6 +62,19 @@ const SHUTDOWN_TIMEOUT_MS = 10000;
 const UPLOAD_LIMIT_BYTES = 50 * 1024 * 1024;
 const FRONTEND_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PROJECT_ROOT = path.resolve(FRONTEND_ROOT, "..");
+
+// Load optional frontend/.env before any env reads so research provider API keys
+// (TAVILY_API_KEY, SERPAPI_KEY, …) can live in a file instead of the shell.
+// Already-exported vars win; a missing .env is fine.
+const ENV_FILE = path.join(FRONTEND_ROOT, ".env");
+if (typeof process.loadEnvFile === "function") {
+  try {
+    process.loadEnvFile(ENV_FILE);
+    console.log(`Loaded environment from ${ENV_FILE}`);
+  } catch (err) {
+    if (err?.code !== "ENOENT") console.warn(`Could not load ${ENV_FILE}: ${err.message}`);
+  }
+}
 
 let config = await loadConfig();
 if (process.env.DS4_UI_HOST) config.control.host = process.env.DS4_UI_HOST;
@@ -111,6 +129,20 @@ if (!initialValidation.ok) {
 function backendBase() {
   return `http://${config.server.host}:${config.server.port}`;
 }
+
+// Call Debug recorder — wraps globalThis.fetch once so every outbound call to the
+// ds4-server model and the Deep Research providers is logged for the Call Debug
+// tab. Must be set up before any outbound fetch runs.
+const callDebugDir = path.isAbsolute(config.callDebug.dir)
+  ? config.callDebug.dir
+  : path.join(PROJECT_ROOT, config.callDebug.dir);
+const callDebugRecorder = new CallDebugRecorder({
+  dir: callDebugDir,
+  maxEntries: config.callDebug.maxEntries,
+  maxBodyChars: config.callDebug.maxBodyChars,
+  maxFileBytes: config.callDebug.maxFileBytes
+});
+if (config.callDebug.enabled) callDebugRecorder.install({ modelBase: backendBase() });
 
 async function healthCheck() {
   // The wrapper gates server endpoints by mode (/v1/models -> 409 in agent mode),
@@ -634,6 +666,19 @@ app.get("/api/server/metrics", asyncHandler(async (_req, res) => {
 
 app.get("/api/server/config", (_req, res) => {
   res.json({ config, defaults: DEFAULT_CONFIG });
+});
+
+app.get("/api/call-debug", (req, res) => {
+  const limit = Number.parseInt(req.query.limit, 10);
+  res.json({
+    enabled: config.callDebug.enabled,
+    entries: callDebugRecorder.list({ limit: Number.isInteger(limit) ? limit : undefined })
+  });
+});
+
+app.delete("/api/call-debug", (_req, res) => {
+  callDebugRecorder.clear();
+  res.json({ cleared: true });
 });
 
 app.put("/api/server/config", asyncHandler(async (req, res) => {
@@ -1337,6 +1382,139 @@ app.all("/api/native-agent/:cmd", asyncHandler(async (req, res) => {
     return res.status(result.status).json({ ok: true, ...(result.payload.data || {}) });
   }
   res.status(result.status).json({ ok: true });
+}));
+
+// ---------------------------------------------------------------------------
+// Deep Research Endpoints
+// ---------------------------------------------------------------------------
+
+function researchConfig() {
+  return config.research;
+}
+
+// stateDir resolves once at boot; changing it requires a frontend-server restart
+const researchStateRootDir = path.isAbsolute(config.research.stateDir)
+  ? config.research.stateDir
+  : path.join(PROJECT_ROOT, config.research.stateDir);
+
+const researchRuntime = new ResearchRuntime({
+  store: new ResearchStateStore({ rootDir: researchStateRootDir }),
+  getConfig: researchConfig,
+  clientFactory: () =>
+    new ResearchModelClient({
+      baseUrl: backendBase(),
+      model: activeRequestDefaults.model,
+      modelConfig: researchConfig().model
+    })
+});
+
+function requireResearchEnabled(res) {
+  if (researchConfig().enabled) return true;
+  res.status(403).json({ error: "research mode is disabled (set research.enabled=true)" });
+  return false;
+}
+
+async function ensureServerModeForResearch(res) {
+  if (!wrapperEnabled()) return true;
+  const up = await fetch(`${backendBase()}/api/wrapper/switch-mode`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode: "server" }),
+    signal: AbortSignal.timeout(config.wrapper?.modeSwitchTimeoutMs || 120000)
+  });
+  if (!up.ok) {
+    const body = await up.json().catch(() => ({}));
+    res.status(502).json({ error: `wrapper switch to server mode failed: ${body.error || up.status}` });
+    return false;
+  }
+  return true;
+}
+
+// Create a draft session (so documents can be uploaded before launch).
+app.post("/api/research/session", asyncHandler(async (req, res) => {
+  if (!requireResearchEnabled(res)) return;
+  const { sessionId } = await researchRuntime.createSession(req.body?.query);
+  res.json({ sessionId });
+}));
+
+app.get("/api/research/sessions", asyncHandler(async (_req, res) => {
+  if (!requireResearchEnabled(res)) return;
+  res.json({ sessions: await researchRuntime.store.listSessions() });
+}));
+
+// Upload a document into a draft session's RAG corpus.
+app.post("/api/research/:sessionId/documents", upload.single("file"), asyncHandler(async (req, res) => {
+  if (!requireResearchEnabled(res)) return;
+  const ingested = await ingestUploadedFile(req.file);
+  const entry = await researchRuntime.addDocument(req.params.sessionId, {
+    name: ingested.name,
+    markdown: ingested.markdown
+  });
+  const documents = await researchRuntime.store.loadDocuments(req.params.sessionId);
+  res.json({ document: entry, documents });
+}));
+
+app.post("/api/research/start", asyncHandler(async (req, res) => {
+  if (!requireResearchEnabled(res)) return;
+  if (!(await ensureServerModeForResearch(res))) return;
+  // Launch an existing draft session if a sessionId is given, else create+launch.
+  const { sessionId } = req.body?.sessionId
+    ? await researchRuntime.launch(req.body.sessionId)
+    : await researchRuntime.start(req.body?.query);
+  res.json({ sessionId });
+}));
+
+app.get("/api/research/export/:sessionId", asyncHandler(async (req, res) => {
+  if (!requireResearchEnabled(res)) return;
+  if (!researchConfig().exportEnabled) {
+    return res.status(403).json({ error: "research export is disabled" });
+  }
+  const state = await researchRuntime.getState(req.params.sessionId);
+  const { contentType, ext, body } = exportSession(state, String(req.query.format || "md"));
+  res.setHeader("Content-Type", contentType);
+  res.setHeader("Content-Disposition", `attachment; filename="research-${req.params.sessionId}.${ext}"`);
+  res.send(body);
+}));
+
+app.get("/api/research/state/:sessionId", asyncHandler(async (req, res) => {
+  if (!requireResearchEnabled(res)) return;
+  res.json({ state: await researchRuntime.getState(req.params.sessionId) });
+}));
+
+app.get("/api/research/stream/:sessionId", asyncHandler(async (req, res) => {
+  if (!requireResearchEnabled(res)) return;
+  const sessionId = req.params.sessionId;
+  await researchRuntime.getState(sessionId); // 404 for unknown sessions
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no"
+  });
+  const lastSeqRaw = Number(req.query.lastSeq || 0);
+  const lastSeq = Number.isFinite(lastSeqRaw) ? lastSeqRaw : 0;
+  const send = (event) => writeSse(res, "research_event", event);
+  const unsubscribe = researchRuntime.subscribe(sessionId, send);
+  req.on("close", unsubscribe);
+  await researchRuntime.flush(sessionId);
+  for (const event of await researchRuntime.store.readEvents(sessionId)) {
+    if (event.seq > lastSeq) send(event);
+  }
+}));
+
+app.post("/api/research/feedback", asyncHandler(async (req, res) => {
+  if (!requireResearchEnabled(res)) return;
+  const state = await researchRuntime.feedback(req.body?.sessionId, {
+    action: req.body?.action,
+    plan: req.body?.plan
+  });
+  res.json({ status: state.status });
+}));
+
+app.post("/api/research/cancel", asyncHandler(async (req, res) => {
+  if (!requireResearchEnabled(res)) return;
+  const state = await researchRuntime.cancel(req.body?.sessionId);
+  res.json({ status: state?.status || "cancelled" });
 }));
 
 app.use((err, _req, res, next) => {

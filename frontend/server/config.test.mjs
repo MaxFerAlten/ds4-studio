@@ -368,3 +368,23 @@ test("validateConfig rejects an empty wrapper binary", () => {
   assert.equal(result.ok, false);
   assert.match(result.errors.wrapper.binary, /required/);
 });
+
+test("mergeConfig fills research defaults", () => {
+  const config = mergeConfig({});
+  assert.equal(config.research.enabled, false);
+  assert.equal(config.research.maxPlanIterations, 3);
+  assert.equal(config.research.model.max_tokens, 8192);
+});
+
+test("mergeConfig keeps research overrides", () => {
+  const config = mergeConfig({ research: { enabled: true } });
+  assert.equal(config.research.enabled, true);
+  assert.equal(config.research.autoAcceptPlan, false);
+});
+
+test("validateConfig rejects invalid research block", () => {
+  const config = mergeConfig({ research: { maxPlanIterations: 99 } });
+  const result = validateConfig(config);
+  assert.equal(result.ok, false);
+  assert.match(result.errors.research.maxPlanIterations, /between 1 and 10/);
+});

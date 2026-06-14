@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_CONFIG } from "./defaultConfig.mjs";
+import { mergeResearchConfig, validateResearchConfig } from "./research/researchConfig.mjs";
 
 export { buildDs4Args } from "./commandBuilder.mjs";
 
@@ -83,8 +84,32 @@ export function mergeConfig(input = {}) {
     wrapper: {
       ...DEFAULT_CONFIG.wrapper,
       ...wrapperInput
+    },
+    research: mergeResearchConfig(input.research),
+    callDebug: {
+      ...DEFAULT_CONFIG.callDebug,
+      ...(input.callDebug && typeof input.callDebug === "object" && !Array.isArray(input.callDebug)
+        ? input.callDebug
+        : {})
     }
   };
+}
+
+function validateCallDebug(callDebug = {}) {
+  const errors = {};
+  if (typeof callDebug.enabled !== "boolean") errors.enabled = "must be boolean";
+  if (typeof callDebug.dir !== "string" || !callDebug.dir.trim()) errors.dir = "is required";
+  for (const [key, min, max] of [
+    ["maxEntries", 1, 100000],
+    ["maxBodyChars", 0, 1000000],
+    ["maxFileBytes", 1000, 1000000000]
+  ]) {
+    const value = callDebug[key];
+    if (!Number.isInteger(value) || value < min || value > max) {
+      errors[key] = `must be an integer between ${min} and ${max}`;
+    }
+  }
+  return errors;
 }
 
 function isPositiveInt(value) {
@@ -161,7 +186,7 @@ function validateOptionalEnvTokens(env, key, label, min, max) {
 }
 
 export function validateConfig(config) {
-  const errors = { control: {}, history: {}, server: {}, wrapper: {} };
+  const errors = { control: {}, history: {}, server: {}, wrapper: {}, research: {}, callDebug: {} };
   if (!validatePort(config.control.port)) errors.control.port = "must be between 1 and 65535";
   if (!validatePort(config.server.port)) errors.server.port = "must be between 1 and 65535";
   if (!config.control.host) errors.control.host = "is required";
@@ -245,11 +270,15 @@ export function validateConfig(config) {
   if (typeof config.wrapper.agentEnabledAtStartup !== "boolean") errors.wrapper.agentEnabledAtStartup = "must be boolean";
   if (!isNonNegativeInt(config.wrapper.ramFreezeMaxMb)) errors.wrapper.ramFreezeMaxMb = "must be a non-negative integer";
   if (!isPositiveInt(config.wrapper.modeSwitchTimeoutMs)) errors.wrapper.modeSwitchTimeoutMs = "must be a positive integer";
+  errors.research = validateResearchConfig(config.research || {});
+  errors.callDebug = validateCallDebug(config.callDebug || {});
   const ok =
     Object.keys(errors.control).length === 0 &&
     Object.keys(errors.history).length === 0 &&
     Object.keys(errors.server).length === 0 &&
-    Object.keys(errors.wrapper).length === 0;
+    Object.keys(errors.wrapper).length === 0 &&
+    Object.keys(errors.research).length === 0 &&
+    Object.keys(errors.callDebug).length === 0;
   return { ok, errors };
 }
 

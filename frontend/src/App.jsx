@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Download, Plus, Play, Power, RefreshCw, Send, Square, Terminal } from "lucide-react";
 
 function readAgentSessionKey() {
@@ -29,9 +29,12 @@ import {
   writeStoredExportIncludeReasoning
 } from "./exportPreferences.mjs";
 import { MessageContent } from "./MessageContent.mjs";
+import { ResearchPanel } from "./research/ResearchPanel.jsx";
+import { listResearchSessions } from "./research/researchApi.mjs";
 import { createDeltaBatcher } from "./deltaBatcher.mjs";
 import { documentIsVisible } from "./polling.mjs";
 import { metricRows, metricsAvailable, metricsSummary } from "./serverMetrics.mjs";
+import { clearCallDebug, fetchCallDebug } from "./callDebug.mjs";
 import {
   createLiveStatsTracker,
   estimateTokenCount,
@@ -530,6 +533,11 @@ export default function App() {
   const [input, setInput] = useState("");
   const [tab, setTab] = useState("request");
   const [serverBusy, setServerBusy] = useState(false);
+  const [callDebugEntries, setCallDebugEntries] = useState([]);
+  const [callDebugEnabled, setCallDebugEnabled] = useState(true);
+  const [callDebugBusy, setCallDebugBusy] = useState(false);
+  const [callDebugNotice, setCallDebugNotice] = useState("");
+  const [callDebugOpen, setCallDebugOpen] = useState({});
   const [generationBusy, setGenerationBusy] = useState(false);
   const [uploadBusy, setUploadBusy] = useState(false);
   const [fileAccept, setFileAccept] = useState("");
@@ -541,6 +549,8 @@ export default function App() {
   const [metricsError, setMetricsError] = useState("");
   const [commandDraft, setCommandDraft] = useState(null);
   const [agentMode, setAgentMode] = useState(false);
+  const [researchMode, setResearchMode] = useState(false);
+  const [selectedResearchSessionId, setSelectedResearchSessionId] = useState(null);
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0);
   const [hideSuggestions, setHideSuggestions] = useState(false);
   const [agentStatus, setAgentStatus] = useState(null);
@@ -564,6 +574,8 @@ export default function App() {
   const [historySessions, setHistorySessions] = useState([]);
   const [historyListBusy, setHistoryListBusy] = useState(false);
   const [historyAutoLoaded, setHistoryAutoLoaded] = useState(false);
+  const [researchSessions, setResearchSessions] = useState([]);
+  const [researchHistoryBusy, setResearchHistoryBusy] = useState(false);
   const commandHydrated = useRef(false);
   const profileHydrated = useRef(false);
   const [profiles, setProfiles] = useState([]);
@@ -574,6 +586,23 @@ export default function App() {
   const fileInputRef = useRef(null);
   const messagesRef = useRef(null);
   const lastSavedHistorySignatureRef = useRef("");
+
+  const refreshResearchSessions = useCallback(async () => {
+    setResearchHistoryBusy(true);
+    try {
+      const sessions = await listResearchSessions();
+      setResearchSessions(sessions);
+      return sessions;
+    } finally {
+      setResearchHistoryBusy(false);
+    }
+  }, []);
+
+  const handleResearchHistoryChange = useCallback(() => {
+    refreshResearchSessions().catch((err) => {
+      setHistoryStatus(`Research history error: ${err.message}`);
+    });
+  }, [refreshResearchSessions]);
 
   async function refreshStatus({ syncConfig = false } = {}) {
     const data = await jsonFetch("/api/server/status");
@@ -605,6 +634,35 @@ export default function App() {
     setProfiles(data.profiles || []);
     return data;
   }
+
+  const refreshCallDebug = useCallback(async () => {
+    setCallDebugBusy(true);
+    setCallDebugNotice("");
+    try {
+      const { enabled, entries } = await fetchCallDebug({ limit: 200 });
+      setCallDebugEnabled(enabled);
+      setCallDebugEntries(entries);
+    } catch (err) {
+      setCallDebugNotice(err.message);
+    } finally {
+      setCallDebugBusy(false);
+    }
+  }, []);
+
+  async function handleClearCallDebug() {
+    setCallDebugNotice("");
+    try {
+      await clearCallDebug();
+      setCallDebugEntries([]);
+      setCallDebugOpen({});
+    } catch (err) {
+      setCallDebugNotice(err.message);
+    }
+  }
+
+  useEffect(() => {
+    if (tab === "call-debug") refreshCallDebug();
+  }, [tab, refreshCallDebug]);
 
   async function selectProfile(name) {
     setProfileBusy(true);
@@ -712,6 +770,14 @@ export default function App() {
       setHistoryStatus(`History load error: ${err.message}`);
     });
   }, [config?.history?.enabled, config?.history?.dir]);
+
+  useEffect(() => {
+    if (!config?.research?.enabled) {
+      setResearchSessions([]);
+      return;
+    }
+    handleResearchHistoryChange();
+  }, [config?.research?.enabled, handleResearchHistoryChange]);
 
   useEffect(() => {
     writeStoredSession({ fileName: currentSessionFileName, messages });
@@ -844,6 +910,11 @@ export default function App() {
     } finally {
       setHistoryListBusy(false);
     }
+  }
+
+  function loadResearchSession(sessionId) {
+    setSelectedResearchSessionId(sessionId);
+    setResearchMode(true);
   }
 
   async function deleteHistorySession(fileName) {
@@ -1795,7 +1866,7 @@ export default function App() {
         </section>
         </aside>
 
-        <section className="chat-panel panel">
+        <section className={`chat-panel panel${researchMode ? " research-active" : ""}`}>
         <div className="chat-header">
           <button
             type="button"
@@ -1807,6 +1878,17 @@ export default function App() {
             <Plus size={16} />
             New session
           </button>
+          {config?.research?.enabled ? (
+            <button
+              type="button"
+              className={`research-toggle ${researchMode ? "active" : ""}`}
+              onClick={() => setResearchMode((v) => !v)}
+              disabled={agentMode}
+              title="Toggle Deep Research mode"
+            >
+              Deep Research
+            </button>
+          ) : null}
           {agentMode && (
             <div className="agent-badge" title={`Agent Mode Active - Iteration ${agentStatus?.iteration || 0}`}>
               <div className="agent-indicator"></div>
@@ -1822,6 +1904,13 @@ export default function App() {
             </div>
           )}
         </div>
+        {researchMode ? (
+          <ResearchPanel
+            sessionId={selectedResearchSessionId}
+            onSessionChange={setSelectedResearchSessionId}
+            onHistoryChange={handleResearchHistoryChange}
+          />
+        ) : null}
         <div className="messages" ref={messagesRef}>
           {messages.map((message, index) => (
             <article className={`message ${message.role}`} key={index}>
@@ -2025,6 +2114,9 @@ export default function App() {
           <button type="button" className={tab === "metrics" ? "active" : ""} onClick={() => setTab("metrics")}>
             Metrics
           </button>
+          <button type="button" className={tab === "call-debug" ? "active" : ""} onClick={() => setTab("call-debug")}>
+            Call Debug
+          </button>
         </div>
         {tab === "request" ? (
           <div className="form-grid">
@@ -2177,6 +2269,47 @@ export default function App() {
         ) : null}
         {tab === "history" ? (
           <div className="history-panel">
+            {config?.research?.enabled ? (
+              <section className="research-history-section">
+                <div className="history-section-header">
+                  <strong>Deep Research</strong>
+                  <button
+                    type="button"
+                    onClick={handleResearchHistoryChange}
+                    disabled={researchHistoryBusy}
+                  >
+                    Refresh research
+                  </button>
+                </div>
+                <div className="history-session-list research-history-list">
+                  {researchHistoryBusy ? <div className="status-pill">Loading research...</div> : null}
+                  {!researchHistoryBusy && !researchSessions.length ? (
+                    <div className="status-pill warn">No Deep Research sessions</div>
+                  ) : null}
+                  {researchSessions.map((session) => (
+                    <div className="history-session-row" key={session.sessionId}>
+                      <button
+                        type="button"
+                        className={`history-session research-history-session${
+                          selectedResearchSessionId === session.sessionId ? " selected" : ""
+                        }`}
+                        onClick={() => loadResearchSession(session.sessionId)}
+                        title={session.sessionId}
+                      >
+                        <strong>{session.query || "Untitled research"}</strong>
+                        <span>{session.sessionId}</span>
+                        <small>
+                          {session.status} · {new Date(session.updatedAt).toLocaleString()}
+                        </small>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            ) : null}
+            <div className="history-section-header">
+              <strong>Chat sessions</strong>
+            </div>
             <label className="setting-row">
               <input
                 type="checkbox"
@@ -2280,6 +2413,75 @@ export default function App() {
                   <strong>{row.value}</strong>
                 </div>
               ))}
+            </div>
+          </div>
+        ) : null}
+        {tab === "call-debug" ? (
+          <div className="call-debug-panel">
+            <div className="call-debug-toolbar">
+              <button type="button" onClick={refreshCallDebug} disabled={callDebugBusy}>
+                <RefreshCw size={14} /> {callDebugBusy ? "Loading…" : "Refresh"}
+              </button>
+              <button type="button" onClick={handleClearCallDebug} disabled={callDebugBusy || !callDebugEntries.length}>
+                Clear
+              </button>
+              <span className="call-debug-count">{callDebugEntries.length} calls</span>
+            </div>
+            {!callDebugEnabled ? (
+              <div className="status-pill warn">Call Debug disabled in config (callDebug.enabled)</div>
+            ) : null}
+            {callDebugNotice ? <div className="status-pill bad">{callDebugNotice}</div> : null}
+            {callDebugEnabled && !callDebugEntries.length && !callDebugBusy ? (
+              <div className="status-pill">No calls recorded yet</div>
+            ) : null}
+            <div className="call-debug-list">
+              {callDebugEntries.map((entry) => {
+                const isOpen = Boolean(callDebugOpen[entry.id]);
+                const statusClass = entry.error ? "bad" : entry.ok ? "ok" : "warn";
+                return (
+                  <div key={entry.id} className={`call-debug-row ${statusClass}`}>
+                    <button
+                      type="button"
+                      className="call-debug-head"
+                      onClick={() => setCallDebugOpen((prev) => ({ ...prev, [entry.id]: !prev[entry.id] }))}
+                      aria-expanded={isOpen}
+                    >
+                      <span className="call-debug-caret">{isOpen ? "▾" : "▸"}</span>
+                      <span className={`call-debug-cat ${entry.category}`}>{entry.category}</span>
+                      <span className="call-debug-method">{entry.method}</span>
+                      <span className="call-debug-status">{entry.error ? "ERR" : entry.status}</span>
+                      <span className="call-debug-dur">{entry.durationMs}ms</span>
+                      <span className="call-debug-url" title={entry.url}>{entry.url}</span>
+                    </button>
+                    {isOpen ? (
+                      <div className="call-debug-detail">
+                        <div className="call-debug-meta">
+                          {new Date(entry.ts).toLocaleString()} · {entry.host}
+                          {entry.error ? ` · error: ${entry.error}` : ""}
+                        </div>
+                        {entry.reqHeaders && Object.keys(entry.reqHeaders).length ? (
+                          <>
+                            <div className="call-debug-label">request headers</div>
+                            <pre>{JSON.stringify(entry.reqHeaders, null, 2)}</pre>
+                          </>
+                        ) : null}
+                        {entry.reqBody ? (
+                          <>
+                            <div className="call-debug-label">request body</div>
+                            <pre>{entry.reqBody}</pre>
+                          </>
+                        ) : null}
+                        {entry.respBody ? (
+                          <>
+                            <div className="call-debug-label">response body</div>
+                            <pre>{entry.respBody}</pre>
+                          </>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
             </div>
           </div>
         ) : null}
