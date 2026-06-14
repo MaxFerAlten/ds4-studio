@@ -7,7 +7,7 @@ const RULES = [
   {
     agentType: "ACADEMIC_RESEARCH",
     terms: ["paper", "papers", "arxiv", "doi", "study", "studies", "studio", "studi", "ricerca scientifica", "peer-reviewed", "citation", "preprint"],
-    providers: ["openalex", "googlescholar", "tavily", "serpapi"]
+    providers: ["arxiv", "openalex", "cnr", "googlescholar", "tavily", "serpapi", "scrapingbee"]
   },
   {
     agentType: "ENCYCLOPEDIA",
@@ -17,7 +17,7 @@ const RULES = [
   {
     agentType: "DATA_ANALYSIS",
     terms: ["gdp", "pil", "population", "popolazione", "inflation", "inflazione", "world bank", "indicator", "indicatori", "statistics", "statistiche"],
-    providers: ["worldbank", "serpapi", "tavily"]
+    providers: ["worldbank", "serpapi", "scrapingbee", "tavily"]
   },
   {
     agentType: "LIFESTYLE_TRAVEL",
@@ -28,7 +28,7 @@ const RULES = [
 
 const GENERAL = {
   agentType: "GENERAL_RESEARCH",
-  providers: ["tavily", "serpapi", "wikipedia", "openalex", "aliyun", "baidu"]
+  providers: ["tavily", "serpapi", "scrapingbee", "wikipedia", "openalex", "aliyun", "baidu"]
 };
 
 function containsAny(text, terms) {

@@ -3,6 +3,7 @@
 // the session RAG index (ctx.rag) and the source layer.
 
 import { renderPrompt } from "./researchPrompts.mjs";
+import { RESEARCH_ROLE_OPTIONS } from "./researchModelClient.mjs";
 import { multiQuerySearch, searchChunks } from "./researchRag.mjs";
 import {
   attachEvidence,
@@ -95,7 +96,8 @@ export async function researcherNode(ctx, step) {
     systemPrompt,
     userPrompt: step.question || ctx.state.query,
     json: true,
-    signal: ctx.signal
+    signal: ctx.signal,
+    ...RESEARCH_ROLE_OPTIONS.researcher
   });
   const knownIds = relevant.map((s) => s.id);
   const finding = attachEvidence(
@@ -131,7 +133,8 @@ export async function researchTeamNode(ctx) {
     systemPrompt,
     userPrompt: ctx.state.query,
     json: true,
-    signal: ctx.signal
+    signal: ctx.signal,
+    ...RESEARCH_ROLE_OPTIONS.research_team
   });
   return out.json;
 }

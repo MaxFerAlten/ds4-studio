@@ -1,5 +1,19 @@
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 
+// Per-role completion options for Deep Research. Intermediate roles emit short
+// structured JSON: they skip the reasoning monologue (think:false) and cap output
+// tokens, which removes most of the decode cost. The reporter is intentionally
+// omitted so it keeps the server-default reasoning and the full max_tokens budget
+// for the long final report. Confined to Deep Research — normal chat/agent paths
+// build their payloads elsewhere (requestPayload.mjs) and are unaffected.
+export const RESEARCH_ROLE_OPTIONS = Object.freeze({
+  coordinator: Object.freeze({ think: false, maxTokens: 1024 }),
+  query_rewriter: Object.freeze({ think: false, maxTokens: 1024 }),
+  planner: Object.freeze({ think: false, maxTokens: 2048 }),
+  researcher: Object.freeze({ think: false, maxTokens: 1536 }),
+  research_team: Object.freeze({ think: false, maxTokens: 1024 })
+});
+
 export function extractJson(text) {
   if (typeof text !== "string" || !text.trim()) return null;
   let candidate = text.trim();
@@ -39,11 +53,11 @@ export class ResearchModelClient {
     this.timeoutMs = timeoutMs;
   }
 
-  buildPayload({ systemPrompt, userPrompt, maxTokens, temperature, stream }) {
+  buildPayload({ systemPrompt, userPrompt, maxTokens, temperature, stream, think, reasoningEffort }) {
     const messages = [];
     if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
     messages.push({ role: "user", content: userPrompt });
-    return {
+    const payload = {
       model: this.model,
       messages,
       max_tokens: maxTokens ?? this.modelConfig.max_tokens,
@@ -51,6 +65,12 @@ export class ResearchModelClient {
       top_p: this.modelConfig.top_p,
       stream: Boolean(stream)
     };
+    // ds4-server gates extended reasoning on `think`. Research intermediate roles
+    // emit short JSON and pass think:false to skip the reasoning monologue; the
+    // reporter leaves think unset so the server default (reasoning on) applies.
+    if (think !== undefined) payload.think = Boolean(think);
+    if (payload.think && reasoningEffort) payload.reasoning_effort = reasoningEffort;
+    return payload;
   }
 
   async completeRole({
@@ -60,11 +80,21 @@ export class ResearchModelClient {
     json = false,
     maxTokens,
     temperature,
+    think,
+    reasoningEffort,
     signal,
     onDelta
   }) {
     const stream = typeof onDelta === "function";
-    const payload = this.buildPayload({ systemPrompt, userPrompt, maxTokens, temperature, stream });
+    const payload = this.buildPayload({
+      systemPrompt,
+      userPrompt,
+      maxTokens,
+      temperature,
+      stream,
+      think,
+      reasoningEffort
+    });
     const first = await this.#complete(payload, { signal, onDelta });
     if (!json) return first;
     let parsed = extractJson(first.content);
@@ -76,6 +106,8 @@ export class ResearchModelClient {
         "Reply with ONLY a valid JSON object: no prose, no code fences.",
       maxTokens,
       temperature,
+      think,
+      reasoningEffort,
       stream: false
     });
     const second = await this.#complete(retryPayload, { signal });

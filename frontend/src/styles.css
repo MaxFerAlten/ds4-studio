@@ -1769,6 +1769,25 @@ pre {
   font-size: 0.85rem;
   opacity: 0.85;
 }
+.research-author-verified {
+  display: inline-block;
+  margin: 4px 0 0;
+  font-size: 0.75rem;
+  padding: 1px 7px;
+  border-radius: 999px;
+  text-decoration: none;
+}
+.research-author-verified.ok {
+  background: #1f3a2a;
+  color: #7fdca0;
+  border: 1px solid #2f5d42;
+}
+.research-author-verified.ok:hover { background: #244733; }
+.research-author-verified.none {
+  background: #2a2a2a;
+  color: #b0a070;
+  border: 1px solid #4d452a;
+}
 .research-export {
   display: flex;
   gap: 10px;

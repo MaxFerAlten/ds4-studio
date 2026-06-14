@@ -109,6 +109,12 @@ function validateCallDebug(callDebug = {}) {
       errors[key] = `must be an integer between ${min} and ${max}`;
     }
   }
+  if (
+    !Array.isArray(callDebug.excludePaths) ||
+    callDebug.excludePaths.some((p) => typeof p !== "string")
+  ) {
+    errors.excludePaths = "must be an array of strings";
+  }
   return errors;
 }
 

@@ -90,7 +90,10 @@ export const DEFAULT_CONFIG = Object.freeze({
     dir: "data/call-debug",
     maxEntries: 200,
     maxBodyChars: 4000,
-    maxFileBytes: 5000000
+    maxFileBytes: 5000000,
+    // Health/metrics polls fire every second and would evict real model/provider
+    // calls from the ring; skip recording them.
+    excludePaths: Object.freeze(["/api/wrapper/status", "/api/server/metrics"])
   })
 });
 

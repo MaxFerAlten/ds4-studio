@@ -72,6 +72,7 @@ export class CallDebugRecorder {
     maxEntries = 200,
     maxBodyChars = 4000,
     maxFileBytes = 5_000_000,
+    excludePaths = [],
     fs = nodeFs,
     clock = () => Date.now()
   } = {}) {
@@ -79,6 +80,9 @@ export class CallDebugRecorder {
     this.maxEntries = maxEntries;
     this.maxBodyChars = maxBodyChars;
     this.maxFileBytes = maxFileBytes;
+    // High-frequency health/metrics polls would otherwise flood the ring and
+    // evict the meaningful model/provider calls within minutes.
+    this.excludePaths = new Set(excludePaths);
     this.fs = fs;
     this.clock = clock;
     this.file = path.join(dir, "calls.ndjson");
@@ -164,6 +168,17 @@ export class CallDebugRecorder {
       const url = typeof input === "string" ? input : input?.url;
       if (typeof url !== "string" || !/^https?:/i.test(url)) {
         return originalFetch(input, init);
+      }
+      if (self.excludePaths.size) {
+        let pathname = null;
+        try {
+          pathname = new URL(url).pathname;
+        } catch {
+          pathname = null;
+        }
+        if (pathname && self.excludePaths.has(pathname)) {
+          return originalFetch(input, init);
+        }
       }
       const method = String(
         init.method || (typeof input === "object" && input?.method) || "GET"

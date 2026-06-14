@@ -109,6 +109,9 @@
         "googlescholar": {
           "enabled": true
         },
+        "scrapingbee": {
+          "enabled": true
+        },
         "opentripmap": {
           "enabled": false
         },

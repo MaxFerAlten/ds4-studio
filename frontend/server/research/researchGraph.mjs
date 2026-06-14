@@ -1,5 +1,7 @@
 import { renderPrompt } from "./researchPrompts.mjs";
+import { RESEARCH_ROLE_OPTIONS } from "./researchModelClient.mjs";
 import { formatCitations } from "./researchSources.mjs";
+import { verifyCitedAuthors } from "./authorVerification.mjs";
 import {
   backgroundInvestigatorNode,
   parallelExecutorNode,
@@ -23,7 +25,8 @@ export async function coordinatorNode(ctx) {
     systemPrompt,
     userPrompt: ctx.state.query,
     json: true,
-    signal: ctx.signal
+    signal: ctx.signal,
+    ...RESEARCH_ROLE_OPTIONS.coordinator
   });
   return out.json;
 }
@@ -35,7 +38,8 @@ export async function rewriteMultiQueryNode(ctx) {
     systemPrompt,
     userPrompt: ctx.state.query,
     json: true,
-    signal: ctx.signal
+    signal: ctx.signal,
+    ...RESEARCH_ROLE_OPTIONS.query_rewriter
   });
   const queries = Array.isArray(out.json.optimized_queries)
     ? out.json.optimized_queries.filter((q) => typeof q === "string" && q.trim())
@@ -55,7 +59,8 @@ export async function plannerNode(ctx) {
     systemPrompt,
     userPrompt: ctx.state.query,
     json: true,
-    signal: ctx.signal
+    signal: ctx.signal,
+    ...RESEARCH_ROLE_OPTIONS.planner
   });
   const plan = out.json?.plan;
   if (!plan || !Array.isArray(plan.steps) || !plan.steps.length) {
@@ -154,6 +159,22 @@ export async function runResearchGraph(ctx) {
       state.reflectionHint = reflection.issues.map((i) => i.required_fix).join("; ");
       state.finalReport = null;
       await runNode(ctx, "reporter", reporterNode);
+    }
+  }
+
+  // Author credibility: verify the primary author of each cited source in ORCID.
+  if (ctx.config.authorVerification?.enabled && ctx.orcid) {
+    try {
+      const summary = await verifyCitedAuthors(state, {
+        client: ctx.orcid,
+        maxAuthors: ctx.config.authorVerification.maxAuthors,
+        signal: ctx.signal
+      });
+      if (summary.checked) {
+        ctx.emit("authors_verified", { ...summary, sources: state.sources }, "reporter");
+      }
+    } catch {
+      // Verification is best-effort; never fail a completed report over it.
     }
   }
 
