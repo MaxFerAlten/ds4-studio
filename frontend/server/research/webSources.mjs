@@ -80,6 +80,7 @@ export function toWebSource(raw, { provider, query, platform } = {}) {
     title: raw.title || url || "untitled",
     url,
     canonicalUrl: canonicalUrl(url),
+    authors: Array.isArray(raw.authors) ? raw.authors : [],
     snippet,
     content: String(raw.content || raw.snippet || ""),
     sourceType,

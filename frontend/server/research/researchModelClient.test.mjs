@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ResearchModelClient, extractJson } from "./researchModelClient.mjs";
+import { RESEARCH_ROLE_OPTIONS, ResearchModelClient, extractJson } from "./researchModelClient.mjs";
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -58,6 +58,46 @@ test("completeRole posts to /v1/chat/completions and parses json", async () => {
   assert.equal(calls[0].body.stream, false);
   assert.deepEqual(calls[0].body.messages[0], { role: "system", content: "sys" });
   assert.deepEqual(calls[0].body.messages[1], { role: "user", content: "user" });
+});
+
+test("completeRole forwards think:false and a per-role max_tokens", async () => {
+  let body = null;
+  const client = new ResearchModelClient({
+    baseUrl: "http://test",
+    modelConfig: { max_tokens: 8192 },
+    fetchImpl: async (_url, options) => {
+      body = JSON.parse(options.body);
+      return jsonResponse({ choices: [{ message: { content: '{"ok":true}' } }] });
+    }
+  });
+  await client.completeRole({
+    roleName: "coordinator",
+    userPrompt: "u",
+    json: true,
+    ...RESEARCH_ROLE_OPTIONS.coordinator
+  });
+  assert.equal(body.think, false);
+  assert.equal(body.max_tokens, 1024);
+  assert.equal(body.reasoning_effort, undefined);
+});
+
+test("completeRole omits think when unset (reporter keeps server default)", async () => {
+  let body = null;
+  const client = new ResearchModelClient({
+    baseUrl: "http://test",
+    modelConfig: { max_tokens: 8192 },
+    fetchImpl: async (_url, options) => {
+      body = JSON.parse(options.body);
+      return jsonResponse({ choices: [{ message: { content: "report" } }] });
+    }
+  });
+  await client.completeRole({ roleName: "reporter", userPrompt: "u" });
+  assert.equal("think" in body, false);
+  assert.equal(body.max_tokens, 8192);
+});
+
+test("reporter is not assigned a reduced role option", () => {
+  assert.equal(RESEARCH_ROLE_OPTIONS.reporter, undefined);
 });
 
 test("completeRole retries once when json is invalid", async () => {

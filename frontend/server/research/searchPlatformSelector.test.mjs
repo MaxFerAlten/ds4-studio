@@ -2,9 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { classifyQuery, selectPlatform } from "./searchPlatformSelector.mjs";
 
-test("classifyQuery routes academic queries to openalex", () => {
+test("classifyQuery routes academic queries to arxiv first", () => {
   assert.equal(classifyQuery("trova studi su quantum decoding").agentType, "ACADEMIC_RESEARCH");
-  assert.equal(classifyQuery("papers about transformers arxiv").providerPreference[0], "openalex");
+  assert.equal(classifyQuery("papers about transformers arxiv").providerPreference[0], "arxiv");
 });
 
 test("classifyQuery routes encyclopedic queries to wikipedia", () => {

@@ -17,6 +17,7 @@ test("mergeResearchConfig fills defaults for empty input", () => {
     maxContextChars: 120000,
     exportEnabled: true,
     reflection: { enabled: true, maxAttempts: 2 },
+    authorVerification: { enabled: true, maxAuthors: 10 },
     search: {
       enabled: false,
       maxResultsPerQuery: 8,
@@ -30,11 +31,14 @@ test("mergeResearchConfig fills defaults for empty input", () => {
       enableDirectFetchFallback: true,
       providers: {
         wikipedia: { enabled: true },
+        arxiv: { enabled: true },
+        cnr: { enabled: true },
         openalex: { enabled: true },
         worldbank: { enabled: true },
         tavily: { enabled: false, apiKeyEnv: "TAVILY_API_KEY" },
         serpapi: { enabled: false, apiKeyEnv: "SERPAPI_KEY", engine: "google" },
         googlescholar: { enabled: false, apiKeyEnv: "SERPAPI_KEY" },
+        scrapingbee: { enabled: false, apiKeyEnv: "SCRAPINGBEE_API_KEY" },
         opentripmap: { enabled: false, apiKeyEnv: "OPENTRIPMAP_API_KEY" },
         tripadvisor: { enabled: false, apiKeyEnv: "TRIPADVISOR_API_KEY", endpoint: "" },
         aliyun: { enabled: false, apiKeyEnv: "ALIYUN_AI_SEARCH_API_KEY", endpoint: "" },

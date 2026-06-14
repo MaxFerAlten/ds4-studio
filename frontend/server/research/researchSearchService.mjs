@@ -11,6 +11,9 @@ import { OpenAlexProvider } from "./providers/openAlexProvider.mjs";
 import { TavilyProvider } from "./providers/tavilyProvider.mjs";
 import { JinaReaderProvider } from "./providers/jinaReaderProvider.mjs";
 import { SerpApiProvider } from "./providers/serpApiProvider.mjs";
+import { ScrapingBeeProvider } from "./providers/scrapingBeeProvider.mjs";
+import { ArxivProvider } from "./providers/arxivProvider.mjs";
+import { CnrProvider } from "./providers/cnrProvider.mjs";
 import { WorldBankProvider } from "./providers/worldBankProvider.mjs";
 import { OpenTripMapProvider } from "./providers/openTripMapProvider.mjs";
 import { TripAdvisorProvider } from "./providers/tripAdvisorProvider.mjs";
@@ -181,6 +184,10 @@ export function buildSearchService(searchConfig, { fetchImpl = fetch, env = proc
   const factories = {
     wikipedia: (cfg, apiKey) =>
       new WikipediaProvider({ config: cfg, fetchImpl, apiKey }),
+    arxiv: (cfg, apiKey) =>
+      new ArxivProvider({ config: cfg, fetchImpl, apiKey }),
+    cnr: (cfg, apiKey) =>
+      new CnrProvider({ config: cfg, fetchImpl, apiKey }),
     openalex: (cfg, apiKey) =>
       new OpenAlexProvider({ config: cfg, fetchImpl, apiKey }),
     worldbank: (cfg, apiKey) =>
@@ -201,6 +208,8 @@ export function buildSearchService(searchConfig, { fetchImpl = fetch, env = proc
         apiKey,
         name: "googlescholar"
       }),
+    scrapingbee: (cfg, apiKey) =>
+      new ScrapingBeeProvider({ config: cfg, fetchImpl, apiKey }),
     opentripmap: (cfg, apiKey) =>
       new OpenTripMapProvider({ config: cfg, fetchImpl, apiKey }),
     tripadvisor: (cfg, apiKey) =>

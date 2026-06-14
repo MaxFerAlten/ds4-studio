@@ -1,5 +1,6 @@
 import { makeEvent } from "./researchEvents.mjs";
 import { runResearchGraph } from "./researchGraph.mjs";
+import { OrcidClient } from "./orcidClient.mjs";
 import { buildSearchService } from "./researchSearchService.mjs";
 
 export class ResearchRuntime {
@@ -110,6 +111,7 @@ export class ResearchRuntime {
       state,
       config: this.getConfig(),
       client: this.clientFactory(),
+      orcid: new OrcidClient(),
       signal: job.controller.signal,
       rag: null,
       save: () => this.store.saveState(state),

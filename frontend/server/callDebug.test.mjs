@@ -170,6 +170,23 @@ test("wrapped fetch records network errors", async () => {
   assert.match(entry.error, /ECONNREFUSED/);
 });
 
+test("wrapped fetch skips recording excluded paths (health polls)", async () => {
+  const fs = fakeFs();
+  const rec = new CallDebugRecorder({
+    dir: "/d",
+    maxEntries: 10,
+    excludePaths: ["/api/wrapper/status", "/api/server/metrics"],
+    fs,
+    clock: () => 0
+  });
+  const wrapped = rec.wrap(async () => makeRes("{}"), "http://127.0.0.1:8002");
+  await wrapped("http://127.0.0.1:8002/api/wrapper/status", {});
+  await wrapped("http://127.0.0.1:8002/api/server/metrics", {});
+  assert.equal(rec.list({}).length, 0, "polls not recorded");
+  await wrapped("http://127.0.0.1:8002/v1/chat/completions", { method: "POST", body: "{}" });
+  assert.equal(rec.list({}).length, 1, "real call still recorded");
+});
+
 test("non-http urls are passed through without recording", async () => {
   const fs = fakeFs();
   const rec = new CallDebugRecorder({ dir: "/d", maxEntries: 10, fs, clock: () => 0 });

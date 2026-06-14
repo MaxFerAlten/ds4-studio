@@ -109,6 +109,9 @@ export function applyResearchEvent(view, event) {
       // streamed body).
       if (typeof event.content?.report === "string") next.report = event.content.report;
       break;
+    case "authors_verified":
+      if (Array.isArray(event.content?.sources)) next.sources = event.content.sources;
+      break;
     case "research_completed":
       next.status = "completed";
       break;

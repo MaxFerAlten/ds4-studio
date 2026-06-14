@@ -140,7 +140,8 @@ const callDebugRecorder = new CallDebugRecorder({
   dir: callDebugDir,
   maxEntries: config.callDebug.maxEntries,
   maxBodyChars: config.callDebug.maxBodyChars,
-  maxFileBytes: config.callDebug.maxFileBytes
+  maxFileBytes: config.callDebug.maxFileBytes,
+  excludePaths: config.callDebug.excludePaths
 });
 if (config.callDebug.enabled) callDebugRecorder.install({ modelBase: backendBase() });
 

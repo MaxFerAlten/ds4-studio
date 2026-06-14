@@ -15,6 +15,10 @@ export const RESEARCH_DEFAULTS = Object.freeze({
     enabled: true,
     maxAttempts: 2
   }),
+  authorVerification: Object.freeze({
+    enabled: true,
+    maxAuthors: 10
+  }),
   search: Object.freeze({
     enabled: false,
     maxResultsPerQuery: 8,
@@ -29,11 +33,14 @@ export const RESEARCH_DEFAULTS = Object.freeze({
     providers: Object.freeze({
       // Public, key-less providers default ON; keyed providers default OFF.
       wikipedia: Object.freeze({ enabled: true }),
+      arxiv: Object.freeze({ enabled: true }),
+      cnr: Object.freeze({ enabled: true }),
       openalex: Object.freeze({ enabled: true }),
       worldbank: Object.freeze({ enabled: true }),
       tavily: Object.freeze({ enabled: false, apiKeyEnv: "TAVILY_API_KEY" }),
       serpapi: Object.freeze({ enabled: false, apiKeyEnv: "SERPAPI_KEY", engine: "google" }),
       googlescholar: Object.freeze({ enabled: false, apiKeyEnv: "SERPAPI_KEY" }),
+      scrapingbee: Object.freeze({ enabled: false, apiKeyEnv: "SCRAPINGBEE_API_KEY" }),
       opentripmap: Object.freeze({ enabled: false, apiKeyEnv: "OPENTRIPMAP_API_KEY" }),
       tripadvisor: Object.freeze({ enabled: false, apiKeyEnv: "TRIPADVISOR_API_KEY", endpoint: "" }),
       aliyun: Object.freeze({ enabled: false, apiKeyEnv: "ALIYUN_AI_SEARCH_API_KEY", endpoint: "" }),
@@ -87,6 +94,10 @@ export function mergeResearchConfig(input = {}) {
     ...RESEARCH_DEFAULTS,
     ...src,
     reflection: { ...RESEARCH_DEFAULTS.reflection, ...plainObject(src.reflection) },
+    authorVerification: {
+      ...RESEARCH_DEFAULTS.authorVerification,
+      ...plainObject(src.authorVerification)
+    },
     search: mergeSearch(src.search),
     model: { ...RESEARCH_DEFAULTS.model, ...plainObject(src.model) }
   };
