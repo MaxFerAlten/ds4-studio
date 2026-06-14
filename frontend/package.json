@@ -6,8 +6,8 @@
     "dev": "node server/index.mjs",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "test": "node --test server/*.test.mjs",
-    "test:frontend": "node --test src/*.test.mjs"
+    "test": "node --test server/*.test.mjs server/research/*.test.mjs server/research/providers/*.test.mjs",
+    "test:frontend": "node --test src/*.test.mjs src/research/*.test.mjs"
   },
   "engines": {
     "node": "^20.19.0 || >=22.12.0"

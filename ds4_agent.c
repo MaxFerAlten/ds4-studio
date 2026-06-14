@@ -29,6 +29,12 @@
 #include <time.h>
 #include <unistd.h>
 
+#if defined(__GNUC__) || defined(__clang__)
+#define DS4_MAYBE_UNUSED __attribute__((unused))
+#else
+#define DS4_MAYBE_UNUSED
+#endif
+
 /* This is intentionally not in linenoise.h, but it is part of the existing
  * multiplexed editor implementation.  The agent uses it only to restore text
  * after Enter is pressed while the model is still busy. */
@@ -483,7 +489,7 @@ static bool agent_parse_command_number(const char *arg, int min, int max,
     return true;
 }
 
-static bool agent_parse_slash_command(const char *input,
+static DS4_MAYBE_UNUSED bool agent_parse_slash_command(const char *input,
                                       agent_slash_command *out) {
     if (!input || !out) return false;
     memset(out, 0, sizeof(*out));

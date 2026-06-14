@@ -85,5 +85,46 @@
     "agentEnabledAtStartup": false,
     "ramFreezeMaxMb": 4096,
     "modeSwitchTimeoutMs": 120000
+  },
+  "research": {
+    "enabled": true,
+    "search": {
+      "enabled": true,
+      "providers": {
+        "wikipedia": {
+          "enabled": true
+        },
+        "openalex": {
+          "enabled": true
+        },
+        "worldbank": {
+          "enabled": true
+        },
+        "tavily": {
+          "enabled": true
+        },
+        "serpapi": {
+          "enabled": true
+        },
+        "googlescholar": {
+          "enabled": true
+        },
+        "opentripmap": {
+          "enabled": false
+        },
+        "tripadvisor": {
+          "enabled": false
+        },
+        "aliyun": {
+          "enabled": false
+        },
+        "baidu": {
+          "enabled": false
+        },
+        "jina": {
+          "enabled": true
+        }
+      }
+    }
   }
 }

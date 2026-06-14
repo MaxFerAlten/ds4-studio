@@ -1,3 +1,5 @@
+import { RESEARCH_DEFAULTS } from "./research/researchConfig.mjs";
+
 export const DEFAULT_CONFIG = Object.freeze({
   selectedProfile: "",
   control: Object.freeze({
@@ -81,6 +83,14 @@ export const DEFAULT_CONFIG = Object.freeze({
     agentEnabledAtStartup: false,
     ramFreezeMaxMb: 4096,
     modeSwitchTimeoutMs: 120000
+  }),
+  research: RESEARCH_DEFAULTS,
+  callDebug: Object.freeze({
+    enabled: true,
+    dir: "data/call-debug",
+    maxEntries: 200,
+    maxBodyChars: 4000,
+    maxFileBytes: 5000000
   })
 });
 
