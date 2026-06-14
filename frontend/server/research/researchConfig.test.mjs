@@ -18,6 +18,16 @@ test("mergeResearchConfig fills defaults for empty input", () => {
     exportEnabled: true,
     reflection: { enabled: true, maxAttempts: 2 },
     authorVerification: { enabled: true, maxAuthors: 10 },
+    engine: "local",
+    gemini: {
+      model: "deep-research-preview-04-2026",
+      apiKeyEnv: "GEMINI_API_KEY",
+      baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+      tools: ["google_search", "url_context", "code_execution"],
+      collaborativePlanning: true,
+      thinkingSummaries: true,
+      timeoutMs: 3600000
+    },
     search: {
       enabled: false,
       maxResultsPerQuery: 8,
@@ -162,4 +172,25 @@ test("validateResearchConfig rejects bad model params", () => {
     validateResearchConfig({ ...base, model: { ...base.model, temperature: 9 } }).model,
     /temperature/
   );
+});
+
+test("research config defaults include engine=local and a gemini block", () => {
+  const m = mergeResearchConfig({});
+  assert.equal(m.engine, "local");
+  assert.equal(m.gemini.model, "deep-research-preview-04-2026");
+  assert.equal(m.gemini.apiKeyEnv, "GEMINI_API_KEY");
+  assert.deepEqual(m.gemini.tools, ["google_search", "url_context", "code_execution"]);
+  assert.equal(m.gemini.collaborativePlanning, true);
+});
+
+test("mergeResearchConfig deep-merges gemini and keeps defaults", () => {
+  const m = mergeResearchConfig({ engine: "gemini", gemini: { model: "deep-research-max-preview-04-2026" } });
+  assert.equal(m.engine, "gemini");
+  assert.equal(m.gemini.model, "deep-research-max-preview-04-2026");
+  assert.equal(m.gemini.apiKeyEnv, "GEMINI_API_KEY");
+});
+
+test("validateResearchConfig rejects an unknown engine", () => {
+  const base = mergeResearchConfig({});
+  assert.match(validateResearchConfig({ ...base, engine: "bogus" }).engine, /must be/);
 });

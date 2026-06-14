@@ -19,6 +19,16 @@ export const RESEARCH_DEFAULTS = Object.freeze({
     enabled: true,
     maxAuthors: 10
   }),
+  engine: "local",
+  gemini: Object.freeze({
+    model: "deep-research-preview-04-2026",
+    apiKeyEnv: "GEMINI_API_KEY",
+    baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+    tools: Object.freeze(["google_search", "url_context", "code_execution"]),
+    collaborativePlanning: true,
+    thinkingSummaries: true,
+    timeoutMs: 3600000
+  }),
   search: Object.freeze({
     enabled: false,
     maxResultsPerQuery: 8,
@@ -97,6 +107,12 @@ export function mergeResearchConfig(input = {}) {
     authorVerification: {
       ...RESEARCH_DEFAULTS.authorVerification,
       ...plainObject(src.authorVerification)
+    },
+    engine: typeof src.engine === "string" ? src.engine : RESEARCH_DEFAULTS.engine,
+    gemini: {
+      ...RESEARCH_DEFAULTS.gemini,
+      ...plainObject(src.gemini),
+      tools: Array.isArray(src.gemini?.tools) ? src.gemini.tools : RESEARCH_DEFAULTS.gemini.tools
     },
     search: mergeSearch(src.search),
     model: { ...RESEARCH_DEFAULTS.model, ...plainObject(src.model) }
@@ -185,6 +201,16 @@ export function validateResearchConfig(research = {}) {
     errors.model = "top_p must be a number in (0, 1]";
   } else if (!intInRange(model.max_tokens, 256, 131072)) {
     errors.model = "max_tokens must be an integer between 256 and 131072";
+  }
+  if (research.engine !== "local" && research.engine !== "gemini") {
+    errors.engine = "must be 'local' or 'gemini'";
+  }
+  if (research.gemini) {
+    if (typeof research.gemini.model !== "string" || !research.gemini.model.trim()) {
+      errors.gemini = "model is required";
+    } else if (!Array.isArray(research.gemini.tools)) {
+      errors.gemini = "tools must be an array";
+    }
   }
   return errors;
 }
