@@ -171,3 +171,15 @@ test("openResearchStream parses research_event payloads and skips garbage", () =
   assert.equal(seen[0].type, "research_started");
   assert.equal(es, FakeEventSource.last);
 });
+
+test("createResearchSession and startResearch send the selected engine", async () => {
+  const bodies = [];
+  const fetchImpl = async (_url, opt) => {
+    bodies.push(JSON.parse(opt.body));
+    return { ok: true, json: async () => ({ sessionId: "rs_1" }) };
+  };
+  await createResearchSession("q", { engine: "gemini", fetchImpl });
+  await startResearch("q", { engine: "local", fetchImpl });
+  assert.equal(bodies[0].engine, "gemini");
+  assert.equal(bodies[1].engine, "local");
+});

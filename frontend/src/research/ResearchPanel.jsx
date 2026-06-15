@@ -40,6 +40,7 @@ export function ResearchPanel({
   const [pendingDocs, setPendingDocs] = useState([]); // { name } uploaded to the draft
   const [draftSessionId, setDraftSessionId] = useState(null);
   const [uploading, setUploading] = useState(false);
+  const [engine, setEngine] = useState("local");
   const streamRef = useRef(null);
 
   const onEvent = useCallback((event) => {
@@ -87,7 +88,7 @@ export function ResearchPanel({
   // Ensure a draft session exists so a document can be attached before launch.
   async function ensureDraft() {
     if (draftSessionId) return draftSessionId;
-    const { sessionId } = await createResearchSession(query.trim() || "(untitled research)");
+    const { sessionId } = await createResearchSession(query.trim() || "(untitled research)", { engine });
     setDraftSessionId(sessionId);
     return sessionId;
   }
@@ -117,7 +118,7 @@ export function ResearchPanel({
       streamRef.current?.close();
       const { sessionId } = draftSessionId
         ? await launchResearch(draftSessionId)
-        : await startResearch(query.trim());
+        : await startResearch(query.trim(), { engine });
       setView({ ...initialResearchView(), sessionId, status: "running" });
       setDraftSessionId(null);
       setPendingDocs([]);
@@ -153,6 +154,27 @@ export function ResearchPanel({
       <div className="research-header">
         <h2 className="research-title">Deep Research</h2>
         <span className={`research-status ${view.status}`}>{view.status}</span>
+      </div>
+      <div className="research-engine-toggle">
+        <span className="research-engine-label">Engine</span>
+        <button
+          type="button"
+          className={engine === "local" ? "active" : ""}
+          disabled={busy}
+          onClick={() => setEngine("local")}
+          title="Self-hosted ds4-server + your providers + ORCID"
+        >
+          Local
+        </button>
+        <button
+          type="button"
+          className={engine === "gemini" ? "active" : ""}
+          disabled={busy}
+          onClick={() => setEngine("gemini")}
+          title="Google Gemini Deep Research — paid cloud (~$1–7/task), data leaves this host"
+        >
+          Gemini
+        </button>
       </div>
       <form className="research-form" onSubmit={handleStart}>
         <textarea
