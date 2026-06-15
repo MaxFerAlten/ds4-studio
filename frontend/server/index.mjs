@@ -1434,7 +1434,7 @@ async function ensureServerModeForResearch(res) {
 // Create a draft session (so documents can be uploaded before launch).
 app.post("/api/research/session", asyncHandler(async (req, res) => {
   if (!requireResearchEnabled(res)) return;
-  const { sessionId } = await researchRuntime.createSession(req.body?.query);
+  const { sessionId } = await researchRuntime.createSession(req.body?.query, { engine: req.body?.engine });
   res.json({ sessionId });
 }));
 
@@ -1461,7 +1461,7 @@ app.post("/api/research/start", asyncHandler(async (req, res) => {
   // Launch an existing draft session if a sessionId is given, else create+launch.
   const { sessionId } = req.body?.sessionId
     ? await researchRuntime.launch(req.body.sessionId)
-    : await researchRuntime.start(req.body?.query);
+    : await researchRuntime.start(req.body?.query, { engine: req.body?.engine });
   res.json({ sessionId });
 }));
 
