@@ -4,7 +4,7 @@
 
 import { renderPrompt } from "./researchPrompts.mjs";
 import { RESEARCH_ROLE_OPTIONS } from "./researchModelClient.mjs";
-import { multiQuerySearch, searchChunks } from "./researchRag.mjs";
+import { buildIndex, chunkDocument, multiQuerySearch, searchChunks } from "./researchRag.mjs";
 import {
   attachEvidence,
   citedSourceIds,
@@ -14,12 +14,15 @@ import {
 } from "./researchSources.mjs";
 
 const SNIPPET_CHARS = 1200;
+// A retrieved passage is richer than a snippet; allow more chars for it.
+const RELEVANT_CHARS = 1600;
 
 function sourcesForPrompt(sources) {
   return sources.map((s) => ({
     id: s.id,
     title: s.title,
-    snippet: s.snippet.slice(0, SNIPPET_CHARS)
+    // Prefer the retrieved passage (real page text) over the short snippet.
+    snippet: String(s.relevantText || s.snippet || "").slice(0, s.relevantText ? RELEVANT_CHARS : SNIPPET_CHARS)
   }));
 }
 
@@ -68,20 +71,48 @@ export async function backgroundInvestigatorNode(ctx) {
   return { sourceCount: ctx.state.sources.length, webEnabled };
 }
 
-// Pick the sources most relevant to one plan step. Uses the RAG index when
-// present to map the step question to chunk ids, then back to sources; falls
-// back to BM25 ranking over source snippets.
+// Lazily build (and cache on ctx) a BM25 index over every source's full content,
+// so retrieval returns the passages that actually match a step — not just the
+// short provider snippet. Rebuilt on demand so the feedback-resume path (where
+// the gathering node does not re-run) still has an index.
+function ensureSourceIndex(ctx) {
+  if (ctx.sourceIndex !== undefined) return ctx.sourceIndex;
+  const chunks = [];
+  for (const s of ctx.state.sources || []) {
+    if (s.content) for (const c of chunkDocument(s.content, { docId: s.id })) chunks.push(c);
+  }
+  ctx.sourceIndex = chunks.length ? buildIndex(chunks) : null;
+  return ctx.sourceIndex;
+}
+
+// Pick the sources most relevant to one plan step. Retrieves the best-matching
+// passages from the per-run source index and attaches `relevantText` (the real
+// page text) to each returned source; falls back to BM25 over snippets.
 export function relevantSourcesFor(ctx, step) {
   const sources = ctx.state.sources || [];
   if (!sources.length) return [];
   const limit = ctx.config.maxSourcesPerQuery;
-  if (ctx.rag && ctx.rag.index) {
-    const hits = searchChunks(ctx.rag.index, step.question || "", { topK: limit });
-    const chunkIds = new Set(hits.map((h) => h.id));
-    const matched = sources.filter((s) => (s.chunks || []).some((c) => chunkIds.has(c.id)));
-    if (matched.length) return matched.slice(0, limit);
+  const query = step.question || ctx.state.query;
+  const index = ensureSourceIndex(ctx);
+  if (index && index.docCount) {
+    const hits = searchChunks(index, query, { topK: limit * 3 });
+    const byId = new Map(sources.map((s) => [s.id, s]));
+    const picked = new Map(); // sourceId -> { ...source, relevantText }
+    for (const hit of hits) {
+      const src = byId.get(hit.chunk.docId);
+      if (!src) continue;
+      if (picked.has(src.id)) {
+        const cur = picked.get(src.id);
+        if (cur.relevantText.length < RELEVANT_CHARS) cur.relevantText += `\n${hit.chunk.text}`;
+      } else if (picked.size < limit) {
+        picked.set(src.id, { ...src, relevantText: hit.chunk.text });
+      }
+    }
+    if (picked.size) {
+      return [...picked.values()].map((s) => ({ ...s, relevantText: s.relevantText.slice(0, RELEVANT_CHARS) }));
+    }
   }
-  return rankSources(step.question || ctx.state.query, sources).slice(0, limit);
+  return rankSources(query, sources).slice(0, limit);
 }
 
 // Run one researcher over a single step against its relevant sources.
