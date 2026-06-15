@@ -63,11 +63,11 @@ export class ResearchRuntime {
 
   // Create a session without launching it, so documents can be uploaded into
   // its RAG corpus before the graph runs. Status is "draft" until launched.
-  async createSession(query) {
+  async createSession(query, { engine } = {}) {
     if (typeof query !== "string" || !query.trim()) {
       throw Object.assign(new Error("query is required"), { status: 400 });
     }
-    const state = await this.store.createSession(query.trim());
+    const state = await this.store.createSession(query.trim(), { engine });
     state.status = "draft";
     await this.store.saveState(state);
     return { sessionId: state.sessionId };
@@ -90,8 +90,8 @@ export class ResearchRuntime {
     return { sessionId };
   }
 
-  async start(query) {
-    const { sessionId } = await this.createSession(query);
+  async start(query, { engine } = {}) {
+    const { sessionId } = await this.createSession(query, { engine });
     return this.launch(sessionId);
   }
 
