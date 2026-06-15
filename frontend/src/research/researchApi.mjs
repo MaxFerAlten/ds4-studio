@@ -9,12 +9,12 @@ async function postJson(url, body, fetchImpl) {
   return data;
 }
 
-export async function startResearch(query, { fetchImpl = fetch } = {}) {
-  return postJson("/api/research/start", { query }, fetchImpl);
+export async function startResearch(query, { engine, fetchImpl = fetch } = {}) {
+  return postJson("/api/research/start", { query, engine }, fetchImpl);
 }
 
-export async function createResearchSession(query, { fetchImpl = fetch } = {}) {
-  return postJson("/api/research/session", { query }, fetchImpl);
+export async function createResearchSession(query, { engine, fetchImpl = fetch } = {}) {
+  return postJson("/api/research/session", { query, engine }, fetchImpl);
 }
 
 export async function launchResearch(sessionId, { fetchImpl = fetch } = {}) {

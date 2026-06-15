@@ -2297,7 +2297,12 @@ export default function App() {
                         title={session.sessionId}
                       >
                         <strong>{session.query || "Untitled research"}</strong>
-                        <span>{session.sessionId}</span>
+                        <span>
+                          {session.sessionId}
+                          <span className={`research-engine-badge ${session.engine || "local"}`}>
+                            {session.engine || "local"}
+                          </span>
+                        </span>
                         <small>
                           {session.status} · {new Date(session.updatedAt).toLocaleString()}
                         </small>

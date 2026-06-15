@@ -1788,6 +1788,49 @@ pre {
   color: #b0a070;
   border: 1px solid #4d452a;
 }
+.research-engine-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.research-engine-label {
+  font-size: 0.75rem;
+  opacity: 0.7;
+  margin-right: 2px;
+}
+.research-engine-toggle button {
+  font-size: 0.78rem;
+  padding: 2px 12px;
+  border-radius: 999px;
+  border: 1px solid #303845;
+  background: #181d25;
+  color: #aeb9c6;
+  cursor: pointer;
+}
+.research-engine-toggle button.active {
+  background: #243a4d;
+  color: #cfe6f5;
+  border-color: #356088;
+}
+.research-engine-toggle button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.research-engine-badge {
+  margin-left: 6px;
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #2a3340;
+  color: #9fb0c4;
+}
+.research-engine-badge.gemini {
+  background: #3a2f4d;
+  color: #c6a8e6;
+}
 .research-export {
   display: flex;
   gap: 10px;
