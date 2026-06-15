@@ -17,6 +17,15 @@ test("normalizeSource assigns a stable id and infers kind", () => {
   assert.equal(normalizeSource({ text: "x" }, 4).kind, "manual");
 });
 
+test("normalizeSource preserves full content for retrieval", () => {
+  const long = "The ladder operators raise and lower energy eigenstates. ".repeat(40);
+  const s = normalizeSource({ url: "https://x", title: "T", snippet: "short", content: long }, 1);
+  assert.match(s.content, /ladder operators/);
+  assert.ok(s.content.length > s.snippet.length, "content richer than snippet");
+  // falls back to text when no content given
+  assert.equal(normalizeSource({ text: "body text" }, 2).content, "body text");
+});
+
 test("normalizeSources numbers in order and preserves explicit ids", () => {
   const out = normalizeSources([{ text: "a" }, { id: "src_keep", text: "b" }, { text: "c" }]);
   assert.deepEqual(out.map((s) => s.id), ["src_001", "src_keep", "src_003"]);

@@ -84,6 +84,32 @@ test("relevantSourcesFor maps a step to its matching source", async () => {
   assert.match(relevant[0].snippet, /sentinel/);
 });
 
+test("relevantSourcesFor retrieves real page passages (relevantText), not just the snippet", async () => {
+  const ctx = makeCtx({ rag: null });
+  ctx.searchService = {
+    enabled: () => true,
+    gather: async () => [
+      {
+        title: "QHO",
+        url: "https://x",
+        snippet: "short snippet",
+        content:
+          "Intro about unrelated cats and dogs.\n\nThe ladder operators a and a-dagger raise and lower the energy eigenstates of the quantum harmonic oscillator by one quantum of hbar omega.\n\nUnrelated footer text.",
+        provider: "tavily",
+        sourceType: "web",
+        score: 0.9
+      }
+    ]
+  };
+  await backgroundInvestigatorNode(ctx);
+  const rel = relevantSourcesFor(ctx, { id: "s1", question: "ladder operators energy eigenstates" });
+  assert.ok(rel.length >= 1);
+  assert.ok(rel[0].relevantText, "attaches relevantText");
+  assert.match(rel[0].relevantText, /ladder operators/);
+  // the retrieved passage is richer than the 13-char provider snippet
+  assert.ok(rel[0].relevantText.length > "short snippet".length);
+});
+
 test("researcherNode returns a finding with evidence restricted to known sources", async () => {
   const rag = ragFor("# A\n\nredis sentinel failover quorum monitoring");
   const ctx = makeCtx({

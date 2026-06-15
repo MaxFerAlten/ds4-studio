@@ -28,6 +28,9 @@ export function normalizeSource(raw = {}, seq = 1) {
     retrievedAt: raw.retrievedAt || new Date().toISOString(),
     textHash: raw.textHash || textHash(raw.text || snippet),
     snippet,
+    // Full page/abstract text (page-reader enriched), kept so researchers can
+    // retrieve real passages — not just the short provider snippet.
+    content: String(raw.content || raw.text || snippet || "").slice(0, 12000),
     authors: Array.isArray(raw.authors) ? raw.authors : [],
     chunks: Array.isArray(raw.chunks) ? raw.chunks : []
   };
