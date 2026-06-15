@@ -2,62 +2,65 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { GeminiResearchEngine } from "./geminiResearchEngine.mjs";
 
-function fakeCtx(events) {
+function fakeCtx(gemini) {
   const emitted = [];
   return {
-    state: { sessionId: "rs_x", status: "running", sources: [], finalReport: null, nodes: {}, seq: 0 },
-    config: { gemini: { model: "deep-research-preview-04-2026", tools: ["google_search"], collaborativePlanning: false } },
+    state: { sessionId: "rs_x", status: "running", query: "q", sources: [], finalReport: null, nodes: {}, seq: 0, interactionId: null },
+    config: { gemini: { model: "deep-research-preview-04-2026", tools: ["google_search"] } },
     signal: undefined,
     save: async () => {},
     emit: (type, content, nodeName) => emitted.push({ type, content, nodeName }),
-    gemini: { async *createInteraction() { for (const e of events) yield e; }, async getInteraction() { return {}; } },
+    gemini,
     emitted
   };
 }
 
-test("maps a non-plan run to deltas, sources, and completion", async () => {
-  const ctx = fakeCtx([
-    { type: "created", interactionId: "ix_1" },
-    { type: "delta", deltaType: "thought", text: "thinking" },
-    { type: "delta", deltaType: "text", text: "Hello " },
-    { type: "delta", deltaType: "text", text: "world" },
-    { type: "completed", outputText: "Hello world", citations: [{ title: "T", url: "https://x", snippet: "s" }] }
-  ]);
-  const engine = new GeminiResearchEngine();
+test("creates an interaction, polls to completion, maps report + citations", async () => {
+  let getCalls = 0;
+  const gemini = {
+    async createInteraction() { return "v1_1"; },
+    async getInteraction() {
+      getCalls += 1;
+      if (getCalls < 2) return { status: "in_progress", outputText: "", citations: [] };
+      return { status: "completed", outputText: "Final report", citations: [{ url: "https://a", title: "A" }] };
+    }
+  };
+  const ctx = fakeCtx(gemini);
+  const engine = new GeminiResearchEngine({ pollIntervalMs: 1 });
   await engine.run(ctx);
-  assert.equal(ctx.state.interactionId, "ix_1");
-  assert.equal(ctx.state.finalReport, "Hello world");
+  assert.equal(ctx.state.interactionId, "v1_1");
+  assert.equal(ctx.state.finalReport, "Final report");
   assert.equal(ctx.state.sources.length, 1);
-  assert.equal(ctx.state.sources[0].url, "https://x");
+  assert.equal(ctx.state.sources[0].url, "https://a");
   assert.equal(ctx.state.status, "completed");
   const types = ctx.emitted.map((e) => e.type);
   assert.ok(types.includes("research_started"));
-  assert.ok(types.includes("report_delta"));
   assert.ok(types.includes("source_found"));
+  assert.ok(types.includes("report_completed"));
   assert.ok(types.includes("research_completed"));
 });
 
-test("a plan event pauses at the feedback gate", async () => {
-  const ctx = fakeCtx([
-    { type: "created", interactionId: "ix_2" },
-    { type: "plan", plan: { steps: [{ question: "q1" }] } }
-  ]);
-  ctx.config.gemini.collaborativePlanning = true;
-  const engine = new GeminiResearchEngine();
-  await engine.run(ctx);
-  assert.equal(ctx.state.status, "waiting_feedback");
-  assert.equal(ctx.state.currentPlan.steps.length, 1);
-  assert.ok(ctx.emitted.some((e) => e.type === "feedback_required"));
-});
-
-test("an error event maps to research_error", async () => {
-  const ctx = fakeCtx([
-    { type: "created", interactionId: "ix_3" },
-    { type: "error", error: "boom" }
-  ]);
-  const engine = new GeminiResearchEngine();
+test("a failed interaction maps to research_error", async () => {
+  const gemini = {
+    async createInteraction() { return "v1_2"; },
+    async getInteraction() { return { status: "failed", outputText: "", citations: [] }; }
+  };
+  const ctx = fakeCtx(gemini);
+  const engine = new GeminiResearchEngine({ pollIntervalMs: 1 });
   await engine.run(ctx);
   assert.equal(ctx.state.status, "failed");
-  assert.match(ctx.state.error, /boom/);
+  assert.match(ctx.state.error, /failed/);
   assert.ok(ctx.emitted.some((e) => e.type === "research_error"));
+});
+
+test("a create error maps to research_error", async () => {
+  const gemini = {
+    async createInteraction() { throw new Error("HTTP 400: bad key"); },
+    async getInteraction() { throw new Error("should not be called"); }
+  };
+  const ctx = fakeCtx(gemini);
+  const engine = new GeminiResearchEngine({ pollIntervalMs: 1 });
+  await engine.run(ctx);
+  assert.equal(ctx.state.status, "failed");
+  assert.match(ctx.state.error, /bad key/);
 });
