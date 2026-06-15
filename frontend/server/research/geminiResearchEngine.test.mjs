@@ -40,6 +40,35 @@ test("creates an interaction, polls to completion, maps report + citations", asy
   assert.ok(types.includes("research_completed"));
 });
 
+test("tolerates a transient poll error then completes", async () => {
+  let getCalls = 0;
+  const gemini = {
+    async createInteraction() { return "v1_t"; },
+    async getInteraction() {
+      getCalls += 1;
+      if (getCalls === 1) throw new Error("HTTP 429: rate limited");
+      return { status: "completed", outputText: "ok", citations: [] };
+    }
+  };
+  const ctx = fakeCtx(gemini);
+  const engine = new GeminiResearchEngine({ pollIntervalMs: 1, maxPollErrors: 5 });
+  await engine.run(ctx);
+  assert.equal(ctx.state.status, "completed");
+  assert.equal(ctx.state.finalReport, "ok");
+});
+
+test("gives up after maxPollErrors consecutive poll failures", async () => {
+  const gemini = {
+    async createInteraction() { return "v1_e"; },
+    async getInteraction() { throw new Error("HTTP 500"); }
+  };
+  const ctx = fakeCtx(gemini);
+  const engine = new GeminiResearchEngine({ pollIntervalMs: 1, maxPollErrors: 3 });
+  await engine.run(ctx);
+  assert.equal(ctx.state.status, "failed");
+  assert.match(ctx.state.error, /HTTP 500/);
+});
+
 test("a failed interaction maps to research_error", async () => {
   const gemini = {
     async createInteraction() { return "v1_2"; },

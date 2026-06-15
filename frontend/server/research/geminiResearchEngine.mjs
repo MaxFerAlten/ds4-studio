@@ -11,8 +11,9 @@ const NODE = "researcher";
 const DEFAULT_POLL_MS = 8000;
 
 export class GeminiResearchEngine {
-  constructor({ pollIntervalMs = DEFAULT_POLL_MS } = {}) {
+  constructor({ pollIntervalMs = DEFAULT_POLL_MS, maxPollErrors = 5 } = {}) {
     this.pollIntervalMs = pollIntervalMs;
+    this.maxPollErrors = maxPollErrors;
   }
 
   async run(ctx) {
@@ -34,14 +35,22 @@ export class GeminiResearchEngine {
     ctx.emit("node_started", {}, NODE);
     await ctx.save();
 
+    // A deep-research run lasts minutes; a single failed poll (transient 429/5xx,
+    // or the interaction not yet queryable right after create) must not kill it.
+    // Only give up after maxPollErrors consecutive failures.
+    let pollErrors = 0;
     while (true) {
       if (ctx.signal?.aborted) return this.cancel(ctx);
       let result;
       try {
         result = await ctx.gemini.getInteraction(id, { signal: ctx.signal });
+        pollErrors = 0;
       } catch (err) {
         if (ctx.signal?.aborted) return this.cancel(ctx);
-        return this.#fail(ctx, err);
+        pollErrors += 1;
+        if (pollErrors >= this.maxPollErrors) return this.#fail(ctx, err);
+        await this.#sleep(ctx);
+        continue;
       }
       if (result.status === "completed") return this.#complete(ctx, result);
       if (result.status === "failed" || result.status === "cancelled") {
