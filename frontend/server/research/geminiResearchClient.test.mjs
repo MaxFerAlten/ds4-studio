@@ -1,58 +1,90 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { GeminiResearchClient, parseInteractionEvent } from "./geminiResearchClient.mjs";
+import { GeminiResearchClient, parseCompletedInteraction } from "./geminiResearchClient.mjs";
 
-function sse(chunks) {
-  const stream = new ReadableStream({
-    start(c) { for (const x of chunks) c.enqueue(new TextEncoder().encode(x)); c.close(); }
-  });
-  return new Response(stream, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+function jsonRes(body, status = 200) {
+  return { ok: status >= 200 && status < 300, status, json: async () => body, text: async () => JSON.stringify(body) };
 }
 
-test("parseInteractionEvent normalizes created/delta/completed/error", () => {
-  assert.deepEqual(parseInteractionEvent({ type: "interaction.created", interaction: { id: "ix_1" } }),
-    { type: "created", interactionId: "ix_1" });
-  assert.deepEqual(parseInteractionEvent({ type: "step.delta", delta: { type: "text", text: "Hi" } }),
-    { type: "delta", deltaType: "text", text: "Hi" });
-  assert.deepEqual(parseInteractionEvent({ type: "step.delta", delta: { type: "thought", text: "thinking" } }),
-    { type: "delta", deltaType: "thought", text: "thinking" });
-  assert.equal(parseInteractionEvent({ type: "interaction.completed", interaction: { output_text: "R", citations: [] } }).type, "completed");
-  assert.equal(parseInteractionEvent({ type: "interaction.error", error: { message: "boom" } }).type, "error");
-  assert.equal(parseInteractionEvent({ type: "unknown.thing" }), null);
+// Mirrors the real completed-interaction shape captured live.
+const COMPLETED = {
+  id: "v1_abc",
+  status: "completed",
+  usage: { total_tokens: 100 },
+  steps: [
+    { type: "user_input", content: [{ type: "text", text: "q" }] },
+    {
+      type: "model_output",
+      content: [
+        {
+          type: "text",
+          text: "# Report\nPart one.",
+          annotations: [
+            { type: "url_citation", url: "https://a", start_index: 0, end_index: 4 },
+            { type: "url_citation", url: "https://a", start_index: 5, end_index: 9 } // dup
+          ]
+        }
+      ]
+    },
+    {
+      type: "model_output",
+      content: [
+        { type: "image/png", mime_type: "image/png", data: "iVBOR" }, // skipped
+        { type: "text", text: " Part two.", annotations: [{ type: "url_citation", url: "https://b" }] }
+      ]
+    }
+  ]
+};
+
+test("parseCompletedInteraction concatenates model_output text and dedupes url citations", () => {
+  const out = parseCompletedInteraction(COMPLETED);
+  assert.equal(out.status, "completed");
+  assert.equal(out.outputText, "# Report\nPart one. Part two.");
+  assert.deepEqual(out.citations.map((c) => c.url), ["https://a", "https://b"]);
+  assert.equal(out.usage.total_tokens, 100);
 });
 
-test("createInteraction posts the documented request shape", async () => {
+test("parseCompletedInteraction tolerates missing steps", () => {
+  const out = parseCompletedInteraction({ status: "in_progress" });
+  assert.equal(out.status, "in_progress");
+  assert.equal(out.outputText, "");
+  assert.deepEqual(out.citations, []);
+});
+
+test("createInteraction posts the verified request shape and returns the id", async () => {
   let captured = null;
   const client = new GeminiResearchClient({
     apiKey: "KEY",
-    fetchImpl: async (url, opt) => { captured = { url, opt }; return sse(['data: {"type":"interaction.created","interaction":{"id":"ix_9"}}\n\n']); }
+    fetchImpl: async (url, opt) => {
+      captured = { url, opt };
+      return jsonRes({ id: "v1_9", status: "in_progress", object: "interaction" });
+    }
   });
-  const events = [];
-  for await (const ev of client.createInteraction({ input: "q", agent: "deep-research-preview-04-2026", tools: ["google_search"], agentConfig: { collaborative_planning: true } })) {
-    events.push(ev);
-  }
-  assert.match(captured.url, /\/v1beta\/interactions/);
+  const id = await client.createInteraction({ input: "q", agent: "deep-research-preview-04-2026", tools: ["google_search"] });
+  assert.equal(id, "v1_9");
+  assert.match(captured.url, /\/v1beta\/interactions$/);
   assert.equal(captured.opt.headers["x-goog-api-key"], "KEY");
   const body = JSON.parse(captured.opt.body);
   assert.equal(body.agent, "deep-research-preview-04-2026");
-  assert.equal(body.input, "q");
+  assert.deepEqual(body.input, [{ type: "text", text: "q" }]);
   assert.equal(body.background, true);
-  assert.equal(body.stream, true);
   assert.equal(body.store, true);
   assert.deepEqual(body.tools, [{ type: "google_search" }]);
-  assert.equal(body.agent_config.collaborative_planning, true);
-  assert.deepEqual(events[0], { type: "created", interactionId: "ix_9" });
 });
 
-test("getInteraction polls status and returns normalized output", async () => {
-  const client = new GeminiResearchClient({
-    apiKey: "KEY",
-    fetchImpl: async () => new Response(JSON.stringify({ id: "ix_1", status: "completed", output_text: "Report", citations: [{ title: "T", url: "https://x" }] }), { status: 200, headers: { "Content-Type": "application/json" } })
-  });
-  const out = await client.getInteraction("ix_1");
+test("getInteraction polls and returns parsed output", async () => {
+  const client = new GeminiResearchClient({ apiKey: "KEY", fetchImpl: async () => jsonRes(COMPLETED) });
+  const out = await client.getInteraction("v1_abc");
   assert.equal(out.status, "completed");
-  assert.equal(out.outputText, "Report");
-  assert.equal(out.citations[0].url, "https://x");
+  assert.match(out.outputText, /# Report/);
+  assert.equal(out.citations.length, 2);
+});
+
+test("createInteraction throws on a missing id and on HTTP error", async () => {
+  const noId = new GeminiResearchClient({ apiKey: "K", fetchImpl: async () => jsonRes({ status: "x" }) });
+  await assert.rejects(() => noId.createInteraction({ input: "q", agent: "a" }), /no interaction id/);
+  const bad = new GeminiResearchClient({ apiKey: "K", fetchImpl: async () => jsonRes({ error: "x" }, 400) });
+  await assert.rejects(() => bad.createInteraction({ input: "q", agent: "a" }), /HTTP 400/);
 });
 
 test("isConfigured reflects api key presence", () => {
