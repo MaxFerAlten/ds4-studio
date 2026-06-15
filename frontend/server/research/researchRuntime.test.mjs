@@ -261,3 +261,27 @@ test("subscribe receives live events", async (t) => {
   assert.ok(seen.includes("feedback_required"));
   unsubscribe();
 });
+
+test("routes a gemini session to the gemini engine, local by default", async (t) => {
+  const { runtime, store } = await makeRuntime(t, {
+    responses: { coordinator: { enable_deepresearch: false }, reporter: "x" }
+  });
+  const calls = [];
+  const spy = (name) => ({
+    run: async (ctx) => {
+      calls.push(name);
+      ctx.state.status = "completed";
+      ctx.state.finalReport = name;
+      await ctx.save();
+      return ctx.state;
+    }
+  });
+  runtime.engines = { local: spy("local"), gemini: spy("gemini") };
+  const { sessionId } = await runtime.createSession("q");
+  const state = await store.loadState(sessionId);
+  state.engine = "gemini";
+  await store.saveState(state);
+  await runtime.launch(sessionId);
+  await waitForStatus(store, sessionId, "completed");
+  assert.deepEqual(calls, ["gemini"]);
+});

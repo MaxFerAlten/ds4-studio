@@ -1,7 +1,9 @@
 import { makeEvent } from "./researchEvents.mjs";
-import { runResearchGraph } from "./researchGraph.mjs";
 import { OrcidClient } from "./orcidClient.mjs";
 import { buildSearchService } from "./researchSearchService.mjs";
+import { LocalGraphEngine } from "./localGraphEngine.mjs";
+import { GeminiResearchEngine } from "./geminiResearchEngine.mjs";
+import { GeminiResearchClient } from "./geminiResearchClient.mjs";
 
 export class ResearchRuntime {
   constructor({ store, clientFactory, getConfig, logger = console, searchServiceFactory }) {
@@ -13,6 +15,8 @@ export class ResearchRuntime {
     // providers from config (disabled providers/keys are skipped).
     this.searchServiceFactory =
       searchServiceFactory || ((config) => buildSearchService(config.search || {}, { logger }));
+    // Research engines, selected per session by state.engine. Overridable in tests.
+    this.engines = { local: new LocalGraphEngine(), gemini: new GeminiResearchEngine() };
     this.jobs = new Map();
   }
 
@@ -129,7 +133,20 @@ export class ResearchRuntime {
         this.logger?.warn?.(`research: search service unavailable: ${err.message}`);
         ctx.searchService = null;
       }
-      return runResearchGraph(ctx);
+      const engineName = state.engine === "gemini" ? "gemini" : "local";
+      const engine = this.engines[engineName];
+      if (engineName === "gemini") {
+        ctx.gemini = new GeminiResearchClient({
+          apiKey: process.env[ctx.config.gemini?.apiKeyEnv] || null,
+          baseUrl: ctx.config.gemini?.baseUrl
+        });
+        // A feedback-resume launch carries an accepted plan + an interaction id;
+        // Gemini resumes the stored interaction instead of starting fresh.
+        if (state.feedback?.accepted && state.interactionId) {
+          return engine.submitFeedback(ctx, state.feedback.action);
+        }
+      }
+      return engine.run(ctx);
     })()
       .catch(async (err) => {
         if (job.controller.signal.aborted || err?.name === "AbortError") {
