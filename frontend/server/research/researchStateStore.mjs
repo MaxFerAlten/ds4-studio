@@ -10,11 +10,13 @@ export function newSessionId() {
   return `rs_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
 }
 
-export function initialState(query, { sessionId = newSessionId(), now = new Date() } = {}) {
+export function initialState(query, { sessionId = newSessionId(), now = new Date(), engine = "local" } = {}) {
   const ts = now.toISOString();
   return {
     sessionId,
     threadId: sessionId,
+    engine: engine === "gemini" ? "gemini" : "local",
+    interactionId: null,
     status: "running",
     query,
     createdAt: ts,
@@ -119,6 +121,7 @@ export class ResearchStateStore {
             sessionId,
             query: state.query,
             status: state.status,
+            engine: state.engine === "gemini" ? "gemini" : "local",
             createdAt: state.createdAt,
             updatedAt: state.updatedAt
           };

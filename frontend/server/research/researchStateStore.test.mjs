@@ -108,9 +108,24 @@ test("listSessions returns newest persisted summaries and skips corrupt entries"
   assert.deepEqual(sessions.map((item) => item.sessionId), [newestId, oldestId]);
   assert.deepEqual(Object.keys(sessions[0]).sort(), [
     "createdAt",
+    "engine",
     "query",
     "sessionId",
     "status",
     "updatedAt"
   ]);
+});
+
+test("initialState records the engine (default local) and a null interactionId", () => {
+  assert.equal(initialState("q").engine, "local");
+  assert.equal(initialState("q").interactionId, null);
+  assert.equal(initialState("q", { engine: "gemini" }).engine, "gemini");
+});
+
+test("listSessions summaries include the engine", async (t) => {
+  const store = await tmpStore(t);
+  const s = await store.createSession("q", { engine: "gemini" });
+  const list = await store.listSessions();
+  const found = list.find((x) => x.sessionId === s.sessionId);
+  assert.equal(found.engine, "gemini");
 });
