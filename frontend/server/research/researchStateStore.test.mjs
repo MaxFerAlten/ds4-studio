@@ -120,12 +120,14 @@ test("initialState records the engine (default local) and a null interactionId",
   assert.equal(initialState("q").engine, "local");
   assert.equal(initialState("q").interactionId, null);
   assert.equal(initialState("q", { engine: "gemini" }).engine, "gemini");
+  assert.equal(initialState("q", { engine: "prism" }).engine, "prism");
+  assert.equal(initialState("q", { engine: "unknown" }).engine, "local");
 });
 
 test("listSessions summaries include the engine", async (t) => {
   const store = await tmpStore(t);
-  const s = await store.createSession("q", { engine: "gemini" });
+  const s = await store.createSession("q", { engine: "prism" });
   const list = await store.listSessions();
   const found = list.find((x) => x.sessionId === s.sessionId);
-  assert.equal(found.engine, "gemini");
+  assert.equal(found.engine, "prism");
 });

@@ -66,3 +66,19 @@ test("rankWebSources favors high trust + gov boost and caps total", () => {
   assert.equal(ranked[0].title, "G", "official .gov outranks blog");
   assert.ok(typeof ranked[0].score === "number");
 });
+
+test("rankWebSources keeps unsuitable links out of scientific web candidates", () => {
+  const paper = toWebSource(
+    { title: "Paper", url: "https://doi.org/10.1234/example", content: "long content ".repeat(10), sourceType: "paper" },
+    { provider: "tavily" }
+  );
+  const reddit = toWebSource(
+    { title: "Thread", url: "https://reddit.com/r/science/comments/1", content: "long content ".repeat(10), sourceType: "forum" },
+    { provider: "tavily" }
+  );
+  const ranked = rankWebSources(dedupeWebSources([reddit, paper]), { maxSourcesTotal: 10 });
+
+  assert.deepEqual(ranked.map((s) => s.title), ["Paper"]);
+  assert.equal(ranked[0].citable, true);
+  assert.equal(ranked[0].qualityTier, 1);
+});

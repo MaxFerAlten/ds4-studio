@@ -156,8 +156,8 @@ test("CERT 4: reflection re-runs the reporter when sources are ignored, then pas
 test("CERT 5: export produces Markdown and HTML carrying the report and sources", async (t) => {
   const h = await makeHarness(t);
   const state = await runWithDoc(h.runtime, h.store);
-  const md = exportSession(state, "md");
-  const html = exportSession(state, "html");
+  const md = await exportSession(state, "md");
+  const html = await exportSession(state, "html");
   assert.match(md.body, /src_001/);
   assert.match(md.body, /## Fonti/);
   assert.match(html.body, /^<!doctype html>/);

@@ -4,6 +4,19 @@ import { buildSearchService } from "./researchSearchService.mjs";
 import { LocalGraphEngine } from "./localGraphEngine.mjs";
 import { GeminiResearchEngine } from "./geminiResearchEngine.mjs";
 import { GeminiResearchClient } from "./geminiResearchClient.mjs";
+import { PrismResearchEngine } from "./prismResearchEngine.mjs";
+import { PrintingPressPrismResearchClient } from "./prismResearchClient.mjs";
+
+function resolveApiKey(config = {}, env = process.env) {
+  if (typeof config.apiKey === "string" && config.apiKey.trim()) return config.apiKey.trim();
+  return config.apiKeyEnv ? env[config.apiKeyEnv] || null : null;
+}
+
+function resolveEnvBackedValue(config = {}, key, env = process.env) {
+  if (typeof config[key] === "string" && config[key].trim()) return config[key].trim();
+  const envKey = config[`${key}Env`];
+  return envKey ? env[envKey] || "" : "";
+}
 
 export class ResearchRuntime {
   constructor({ store, clientFactory, getConfig, logger = console, searchServiceFactory }) {
@@ -16,7 +29,11 @@ export class ResearchRuntime {
     this.searchServiceFactory =
       searchServiceFactory || ((config) => buildSearchService(config.search || {}, { logger }));
     // Research engines, selected per session by state.engine. Overridable in tests.
-    this.engines = { local: new LocalGraphEngine(), gemini: new GeminiResearchEngine() };
+    this.engines = {
+      local: new LocalGraphEngine(),
+      gemini: new GeminiResearchEngine(),
+      prism: new PrismResearchEngine()
+    };
     this.jobs = new Map();
   }
 
@@ -133,18 +150,31 @@ export class ResearchRuntime {
         this.logger?.warn?.(`research: search service unavailable: ${err.message}`);
         ctx.searchService = null;
       }
-      const engineName = state.engine === "gemini" ? "gemini" : "local";
+      const engineName = this.engines[state.engine] ? state.engine : "local";
       const engine = this.engines[engineName];
       if (engineName === "gemini") {
+        const geminiConfig = ctx.config.gemini || {};
         ctx.gemini = new GeminiResearchClient({
-          apiKey: process.env[ctx.config.gemini?.apiKeyEnv] || null,
-          baseUrl: ctx.config.gemini?.baseUrl
+          apiKey: resolveApiKey(geminiConfig),
+          baseUrl: geminiConfig.baseUrl,
+          timeoutMs: geminiConfig.timeoutMs
         });
         // A feedback-resume launch carries an accepted plan + an interaction id;
         // Gemini resumes the stored interaction instead of starting fresh.
         if (state.feedback?.accepted && state.interactionId) {
           return engine.submitFeedback(ctx, state.feedback.action);
         }
+      } else if (engineName === "prism") {
+        const prismConfig = ctx.config.prism || {};
+        ctx.prism = new PrintingPressPrismResearchClient({
+          cliPath: resolveEnvBackedValue(prismConfig, "cliPath") || "prism-pp-cli",
+          cookiesEnv: prismConfig.cookiesEnv,
+          timeoutMs: prismConfig.timeoutMs,
+          pollIntervalMs: prismConfig.pollIntervalMs,
+          reasoningEffort: prismConfig.reasoningEffort,
+          projectId: prismConfig.projectId,
+          userId: prismConfig.userId
+        });
       }
       return engine.run(ctx);
     })()

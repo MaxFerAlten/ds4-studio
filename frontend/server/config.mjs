@@ -7,9 +7,13 @@ import { mergeResearchConfig, validateResearchConfig } from "./research/research
 export { buildDs4Args } from "./commandBuilder.mjs";
 
 const FRONTEND_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const PROJECT_ROOT = path.resolve(FRONTEND_ROOT, "..");
 
 export const CONFIG_PATH = path.resolve(
   process.env.DS4_UI_CONFIG || path.join(FRONTEND_ROOT, "ds4-ui.config.json")
+);
+export const DEEP_RESEARCH_CONFIG_PATH = path.resolve(
+  process.env.DS4_DEEP_RESEARCH_CONFIG || path.join(PROJECT_ROOT, "config-deepresearch.json")
 );
 
 const BACKENDS = new Set(["auto", "metal", "cuda", "cpu"]);
@@ -53,6 +57,39 @@ const CUDA_PRESENCE_FLAGS = new Set([
   "DS4_CUDA_MOE_NO_DOWN_ROW64",
   "DS4_CUDA_MOE_NO_DIRECT_DOWN_SUM6"
 ]);
+
+function isPlainObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value);
+}
+
+function deepMergeObjects(...objects) {
+  const out = {};
+  for (const obj of objects) {
+    if (!isPlainObject(obj)) continue;
+    for (const [key, value] of Object.entries(obj)) {
+      out[key] =
+        isPlainObject(value) && isPlainObject(out[key])
+          ? deepMergeObjects(out[key], value)
+          : value;
+    }
+  }
+  return out;
+}
+
+function normalizeDeepResearchConfig(input) {
+  if (!isPlainObject(input)) return {};
+  return isPlainObject(input.research) ? input.research : input;
+}
+
+async function readJsonIfExists(configPath) {
+  try {
+    const raw = await fs.readFile(configPath, "utf8");
+    return JSON.parse(raw);
+  } catch (err) {
+    if (err.code === "ENOENT") return null;
+    throw err;
+  }
+}
 
 export function mergeConfig(input = {}) {
   const serverInput = input.server || {};
@@ -288,14 +325,35 @@ export function validateConfig(config) {
   return { ok, errors };
 }
 
-export async function loadConfig(configPath = CONFIG_PATH) {
-  try {
-    const raw = await fs.readFile(configPath, "utf8");
-    return mergeConfig(JSON.parse(raw));
-  } catch (err) {
-    if (err.code === "ENOENT") return mergeConfig();
-    throw err;
+export function redactConfigSecrets(config = {}) {
+  const copy = JSON.parse(JSON.stringify(config || {}));
+  if (typeof copy.research?.gemini?.apiKey === "string" && copy.research.gemini.apiKey) {
+    copy.research.gemini.apiKey = "";
   }
+  const providers = copy.research?.search?.providers;
+  if (providers && typeof providers === "object" && !Array.isArray(providers)) {
+    for (const provider of Object.values(providers)) {
+      if (typeof provider?.apiKey === "string" && provider.apiKey) provider.apiKey = "";
+    }
+  }
+  return copy;
+}
+
+export async function loadDeepResearchConfig(configPath = DEEP_RESEARCH_CONFIG_PATH) {
+  const raw = await readJsonIfExists(configPath);
+  return normalizeDeepResearchConfig(raw || {});
+}
+
+export async function loadConfig(configPath = CONFIG_PATH, deepResearchConfigPath = DEEP_RESEARCH_CONFIG_PATH) {
+  const input = (await readJsonIfExists(configPath)) || {};
+  const deepResearch = deepResearchConfigPath
+    ? await loadDeepResearchConfig(deepResearchConfigPath)
+    : {};
+  const uiResearch = isPlainObject(input.research) ? input.research : {};
+  return mergeConfig({
+    ...input,
+    research: deepMergeObjects(deepResearch, uiResearch)
+  });
 }
 
 export async function saveConfig(config, configPath = CONFIG_PATH) {

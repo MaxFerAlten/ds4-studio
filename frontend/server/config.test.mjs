@@ -5,11 +5,25 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_CONFIG } from "./defaultConfig.mjs";
-import { CONFIG_PATH, buildDs4Args, loadConfig, mergeConfig, saveConfig, validateConfig } from "./config.mjs";
+import {
+  CONFIG_PATH,
+  DEEP_RESEARCH_CONFIG_PATH,
+  buildDs4Args,
+  loadConfig,
+  mergeConfig,
+  redactConfigSecrets,
+  saveConfig,
+  validateConfig
+} from "./config.mjs";
 
 test("default config path is anchored at the frontend package root", () => {
   const frontendRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   assert.equal(CONFIG_PATH, path.join(frontendRoot, "ds4-ui.config.json"));
+});
+
+test("default deep research config path is anchored at the project root", () => {
+  const frontendRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  assert.equal(DEEP_RESEARCH_CONFIG_PATH, path.resolve(frontendRoot, "..", "config-deepresearch.json"));
 });
 
 test("mergeConfig keeps defaults for missing fields", () => {
@@ -252,7 +266,7 @@ test("saveConfig and loadConfig round trip merged config and report validation e
     const expected = mergeConfig(input);
     const saved = await saveConfig(input, configPath);
     const raw = await fs.readFile(configPath, "utf8");
-    const loaded = await loadConfig(configPath);
+    const loaded = await loadConfig(configPath, path.join(tmpDir, "missing-deep-research.json"));
 
     assert.deepEqual(saved, expected);
     assert.equal(raw, `${JSON.stringify(expected, null, 2)}\n`);
@@ -269,6 +283,112 @@ test("saveConfig and loadConfig round trip merged config and report validation e
   } finally {
     await fs.rm(tmpDir, { recursive: true, force: true });
   }
+});
+
+test("loadConfig merges external deep research config before UI research overrides", async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "ds4-deep-config-test-"));
+  const configPath = path.join(tmpDir, "ds4-ui.config.json");
+  const deepResearchPath = path.join(tmpDir, "config-deepresearch.json");
+  try {
+    await fs.writeFile(
+      deepResearchPath,
+      `${JSON.stringify({
+        search: {
+          enabled: true,
+          maxSourcesTotal: 44,
+          providers: {
+            tavily: {
+              enabled: true,
+              endpoint: "https://api.tavily.test/search",
+              apiKey: "TAVILY_FROM_FILE",
+              apiKeyEnv: "TAVILY_API_KEY"
+            }
+          }
+        }
+      }, null, 2)}\n`
+    );
+    await fs.writeFile(
+      configPath,
+      `${JSON.stringify({
+        research: {
+          search: {
+            maxSourcesTotal: 12
+          }
+        }
+      }, null, 2)}\n`
+    );
+
+    const loaded = await loadConfig(configPath, deepResearchPath);
+    assert.equal(loaded.research.search.enabled, true);
+    assert.equal(loaded.research.search.maxSourcesTotal, 12);
+    assert.equal(loaded.research.search.providers.tavily.apiKey, "TAVILY_FROM_FILE");
+    assert.equal(loaded.research.search.providers.tavily.endpoint, "https://api.tavily.test/search");
+    assert.equal(loaded.research.search.providers.arxiv.enabled, true);
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("loadConfig accepts a deep research config wrapped in a research object", async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "ds4-deep-config-test-"));
+  const configPath = path.join(tmpDir, "ds4-ui.config.json");
+  const deepResearchPath = path.join(tmpDir, "config-deepresearch.json");
+  try {
+    await fs.writeFile(
+      deepResearchPath,
+      `${JSON.stringify({
+        research: {
+          enabled: true,
+          gemini: {
+            apiKey: "GEMINI_FROM_FILE"
+          },
+          prism: {
+            cliPath: "/opt/prism/prism-pp-cli",
+            cookiesEnv: "DS4_PRISM_COOKIES"
+          }
+        }
+      }, null, 2)}\n`
+    );
+
+    const loaded = await loadConfig(configPath, deepResearchPath);
+    assert.equal(loaded.research.enabled, true);
+    assert.equal(loaded.research.gemini.apiKey, "GEMINI_FROM_FILE");
+    assert.equal(loaded.research.gemini.apiKeyEnv, "GEMINI_API_KEY");
+    assert.equal(loaded.research.prism.cliPath, "/opt/prism/prism-pp-cli");
+    assert.equal(loaded.research.prism.cliPathEnv, "PRISM_CLI_PATH");
+    assert.equal(loaded.research.prism.cookiesEnv, "DS4_PRISM_COOKIES");
+    assert.equal(Object.hasOwn(loaded.research.prism, "apiKey"), false);
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("redactConfigSecrets removes direct API keys from public config payloads", () => {
+  const config = mergeConfig({
+    research: {
+      gemini: { apiKey: "GEMINI_SECRET" },
+      search: {
+        providers: {
+          tavily: {
+            enabled: true,
+            apiKey: "TAVILY_SECRET",
+            apiKeyEnv: "TAVILY_API_KEY",
+            endpoint: "https://api.tavily.test/search"
+          }
+        }
+      }
+    }
+  });
+
+  const publicConfig = redactConfigSecrets(config);
+  assert.equal(publicConfig.research.gemini.apiKey, "");
+  assert.equal(Object.hasOwn(publicConfig.research.prism, "apiKey"), false);
+  assert.equal(publicConfig.research.search.providers.tavily.apiKey, "");
+  assert.equal(publicConfig.research.search.providers.tavily.apiKeyEnv, "TAVILY_API_KEY");
+  assert.equal(publicConfig.research.search.providers.tavily.endpoint, "https://api.tavily.test/search");
+  assert.equal(config.research.gemini.apiKey, "GEMINI_SECRET");
+  assert.equal(Object.hasOwn(config.research.prism, "apiKey"), false);
+  assert.equal(config.research.search.providers.tavily.apiKey, "TAVILY_SECRET");
 });
 
 test("buildDs4Args emits every enabled startup flag without shell quoting", () => {

@@ -26,6 +26,11 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+function resolveApiKey(config = {}, env = process.env) {
+  if (typeof config.apiKey === "string" && config.apiKey.trim()) return config.apiKey.trim();
+  return config.apiKeyEnv ? env[config.apiKeyEnv] || null : null;
+}
+
 export class ResearchSearchService {
   constructor({
     config,
@@ -178,8 +183,8 @@ export class ResearchSearchService {
 }
 
 // Build a service from a research.search config block, wiring real providers
-// and reading API keys from the environment. Disabled/unconfigured providers
-// are skipped with a warning.
+// and reading API keys from direct config values first, then the environment.
+// Disabled/unconfigured providers are skipped with a warning.
 export function buildSearchService(searchConfig, { fetchImpl = fetch, env = process.env, logger = console } = {}) {
   const factories = {
     wikipedia: (cfg, apiKey) =>
@@ -223,7 +228,7 @@ export function buildSearchService(searchConfig, { fetchImpl = fetch, env = proc
   for (const [name, make] of Object.entries(factories)) {
     const pcfg = searchConfig.providers?.[name];
     if (!pcfg?.enabled) continue;
-    const apiKey = pcfg.apiKeyEnv ? env[pcfg.apiKeyEnv] || null : null;
+    const apiKey = resolveApiKey(pcfg, env);
     const inst = make(pcfg, apiKey);
     if (inst.isConfigured()) providers[name] = inst;
     else {
@@ -235,7 +240,7 @@ export function buildSearchService(searchConfig, { fetchImpl = fetch, env = proc
   let jinaReader = null;
   const jcfg = searchConfig.providers?.jina;
   if (jcfg?.enabled) {
-    const apiKey = jcfg.apiKeyEnv ? env[jcfg.apiKeyEnv] || null : null;
+    const apiKey = resolveApiKey(jcfg, env);
     jinaReader = new JinaReaderProvider({ config: jcfg, fetchImpl, apiKey });
   }
   const cache = new SourceCache({

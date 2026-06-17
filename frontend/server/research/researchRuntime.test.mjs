@@ -262,7 +262,7 @@ test("subscribe receives live events", async (t) => {
   unsubscribe();
 });
 
-test("routes a gemini session to the gemini engine, local by default", async (t) => {
+test("routes cloud sessions to the selected engine, local by default", async (t) => {
   const { runtime, store } = await makeRuntime(t, {
     responses: { coordinator: { enable_deepresearch: false }, reporter: "x" }
   });
@@ -276,12 +276,97 @@ test("routes a gemini session to the gemini engine, local by default", async (t)
       return ctx.state;
     }
   });
-  runtime.engines = { local: spy("local"), gemini: spy("gemini") };
+  runtime.engines = { local: spy("local"), gemini: spy("gemini"), prism: spy("prism") };
   const { sessionId } = await runtime.createSession("q");
   const state = await store.loadState(sessionId);
-  state.engine = "gemini";
+  state.engine = "prism";
   await store.saveState(state);
   await runtime.launch(sessionId);
   await waitForStatus(store, sessionId, "completed");
-  assert.deepEqual(calls, ["gemini"]);
+  assert.deepEqual(calls, ["prism"]);
+});
+
+test("gemini engine uses direct apiKey from config before environment", async (t) => {
+  const { runtime, store } = await makeRuntime(t, {
+    config: {
+      gemini: {
+        ...RESEARCH_DEFAULTS.gemini,
+        apiKey: "DIRECT_GEMINI_KEY",
+        apiKeyEnv: "DS4_TEST_EMPTY_GEMINI_KEY"
+      }
+    },
+    responses: { coordinator: { enable_deepresearch: false }, reporter: "x" }
+  });
+  delete process.env.DS4_TEST_EMPTY_GEMINI_KEY;
+  runtime.engines.gemini = {
+    run: async (ctx) => {
+      assert.equal(ctx.gemini.apiKey, "DIRECT_GEMINI_KEY");
+      ctx.state.status = "completed";
+      await ctx.save();
+      return ctx.state;
+    }
+  };
+  const { sessionId } = await runtime.createSession("q", { engine: "gemini" });
+  await runtime.launch(sessionId);
+  await waitForStatus(store, sessionId, "completed");
+});
+
+test("prism engine uses direct CLI path from config before environment", async (t) => {
+  const { runtime, store } = await makeRuntime(t, {
+    config: {
+      prism: {
+        ...RESEARCH_DEFAULTS.prism,
+        cliPath: "/direct/prism-pp-cli",
+        cliPathEnv: "DS4_TEST_PRISM_CLI_PATH",
+        cookiesEnv: "DS4_TEST_PRISM_COOKIES",
+        reasoningEffort: "high",
+        projectId: "project-1",
+        userId: "user-1"
+      }
+    },
+    responses: { coordinator: { enable_deepresearch: false }, reporter: "x" }
+  });
+  process.env.DS4_TEST_PRISM_CLI_PATH = "/env/prism-pp-cli";
+  t.after(() => delete process.env.DS4_TEST_PRISM_CLI_PATH);
+  runtime.engines.prism = {
+    run: async (ctx) => {
+      assert.equal(ctx.prism.cliPath, "/direct/prism-pp-cli");
+      assert.equal(ctx.prism.cookiesEnv, "DS4_TEST_PRISM_COOKIES");
+      assert.equal(ctx.prism.reasoningEffort, "high");
+      assert.equal(ctx.prism.projectId, "project-1");
+      assert.equal(ctx.prism.userId, "user-1");
+      ctx.state.status = "completed";
+      await ctx.save();
+      return ctx.state;
+    }
+  };
+  const { sessionId } = await runtime.createSession("q", { engine: "prism" });
+  await runtime.launch(sessionId);
+  await waitForStatus(store, sessionId, "completed");
+});
+
+test("prism engine uses PRISM_CLI_PATH-style env when cliPath is blank", async (t) => {
+  const { runtime, store } = await makeRuntime(t, {
+    config: {
+      prism: {
+        ...RESEARCH_DEFAULTS.prism,
+        cliPath: "",
+        cliPathEnv: "DS4_TEST_PRISM_CLI_PATH"
+      }
+    },
+    responses: { coordinator: { enable_deepresearch: false }, reporter: "x" }
+  });
+  process.env.DS4_TEST_PRISM_CLI_PATH = "/env/prism-pp-cli";
+  t.after(() => delete process.env.DS4_TEST_PRISM_CLI_PATH);
+  runtime.engines.prism = {
+    run: async (ctx) => {
+      assert.equal(ctx.prism.cliPath, "/env/prism-pp-cli");
+      ctx.state.status = "completed";
+      await ctx.save();
+      return ctx.state;
+    }
+  };
+  const { sessionId } = await runtime.createSession("q", { engine: "prism" });
+  await runtime.launch(sessionId);
+  await waitForStatus(store, sessionId, "completed");
 });

@@ -18,20 +18,11 @@ export function initialResearchView() {
     planIterations: 0,
     sources: [],
     report: "",
-    error: null
+    error: null,
+    artifacts: [],
+    artDownloadUrl: "",
+    ...{}
   };
-}
-
-// Render a node's persisted result for the expandable thought-chain section.
-// Strings pass through; objects/arrays are pretty-printed JSON. Returns "" when
-// there is nothing worth showing (null, or an empty object).
-export function formatNodeResult(result) {
-  if (result === null || result === undefined) return "";
-  if (typeof result === "string") return result;
-  if (typeof result !== "object") return String(result);
-  if (!Array.isArray(result) && Object.keys(result).length === 0) return "";
-  if (Array.isArray(result) && result.length === 0) return "";
-  return JSON.stringify(result, null, 2);
 }
 
 export function researchViewFromState(state) {
@@ -42,8 +33,9 @@ export function researchViewFromState(state) {
     status: "done",
     result
   }));
+  const artifacts = Array.isArray(state?.artifacts) ? state.artifacts : [];
+  const primaryArtifact = artifacts.find((artifact) => /\.tex$/i.test(artifact?.filePath)) || artifacts[0];
   return {
-    ...base,
     sessionId: state?.sessionId || null,
     status: typeof state?.status === "string" ? state.status : base.status,
     lastSeq: Number.isFinite(state?.seq) ? state.seq : 0,
@@ -52,7 +44,9 @@ export function researchViewFromState(state) {
     planIterations: Number.isFinite(state?.planIterations) ? state.planIterations : 0,
     sources: Array.isArray(state?.sources) ? state.sources : [],
     report: typeof state?.finalReport === "string" ? state.finalReport : "",
-    error: state?.error || null
+    error: state?.error || null,
+    artifacts,
+    artDownloadUrl: typeof primaryArtifact?.filePath === "string" ? primaryArtifact.filePath : ""
   };
 }
 
@@ -105,8 +99,6 @@ export function applyResearchEvent(view, event) {
       next.report = view.report + (event.content?.content || "");
       break;
     case "report_completed":
-      // Authoritative full report (handles reflection re-runs that replace the
-      // streamed body).
       if (typeof event.content?.report === "string") next.report = event.content.report;
       break;
     case "authors_verified":
@@ -126,4 +118,12 @@ export function applyResearchEvent(view, event) {
       break;
   }
   return next;
+}
+
+export function formatNodeResult(value) {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "object" && Object.keys(value).length === 0) return "";
+  if (Array.isArray(value) && value.length === 0) return "";
+  return JSON.stringify(value, null, 2);
 }

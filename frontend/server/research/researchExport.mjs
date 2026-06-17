@@ -1,8 +1,13 @@
-// Export a completed research session to Markdown or a self-contained HTML
-// document. PDF is deferred to Phase 2b. The markdown is the report the
-// reporter produced (citations already appended by formatCitations); export
-// only frames it with a small header and, for HTML, a minimal renderer.
+// Export a completed research session to Markdown, HTML, or PDF.
+// The markdown is the report the reporter produced (citations already
+// appended by formatCitations); export only frames it with a small
+// header and, for HTML/PDF, a minimal renderer.
 
+import { spawn } from "node:child_process";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import os from "node:os";
 import { normalizeObsidianMath } from "../../src/obsidianMath.mjs";
 
 function escapeHtml(text) {
@@ -132,12 +137,56 @@ ${bodyHtml}
 `;
 }
 
-export function exportSession(state, format = "md") {
+const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const TMP_DIR = path.join(PROJECT_ROOT, "data", "tmp");
+
+async function ensureTmpDir() {
+  await fs.mkdir(TMP_DIR, { recursive: true });
+}
+
+export async function exportPdf(state, { wkhtmltopdfPath = "wkhtmltopdf" } = {}) {
+  await ensureTmpDir();
+  const html = exportHtml(state);
+  const tmpHtml = path.join(TMP_DIR, `pdf-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.html`);
+  const tmpPdf = tmpHtml.replace(/\.html$/, ".pdf");
+  try {
+    await fs.writeFile(tmpHtml, html, "utf-8");
+    await new Promise((resolve, reject) => {
+      const child = spawn(wkhtmltopdfPath, [
+        "--encoding", "UTF-8",
+        "--no-outline",
+        "--margin-top", "15mm",
+        "--margin-bottom", "15mm",
+        "--margin-left", "18mm",
+        "--margin-right", "18mm",
+        tmpHtml,
+        tmpPdf
+      ]);
+      let stderr = "";
+      child.stderr.on("data", (chunk) => { stderr += chunk; });
+      child.on("error", (err) => reject(err));
+      child.on("close", (code) => {
+        if (code === 0) resolve();
+        else reject(new Error(`wkhtmltopdf exited ${code}: ${stderr.trim().slice(0, 500)}`));
+      });
+    });
+    return fs.readFile(tmpPdf);
+  } finally {
+    await fs.rm(tmpHtml, { force: true });
+    await fs.rm(tmpPdf, { force: true });
+  }
+}
+
+export async function exportSession(state, format = "md") {
   if (format === "md" || format === "markdown") {
     return { contentType: "text/markdown; charset=utf-8", ext: "md", body: exportMarkdown(state) };
   }
   if (format === "html") {
     return { contentType: "text/html; charset=utf-8", ext: "html", body: exportHtml(state) };
+  }
+  if (format === "pdf") {
+    const body = await exportPdf(state);
+    return { contentType: "application/pdf", ext: "pdf", body };
   }
   throw Object.assign(new Error(`unsupported export format: ${format}`), { status: 400 });
 }

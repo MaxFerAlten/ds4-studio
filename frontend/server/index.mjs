@@ -2,7 +2,7 @@ import express from "express";
 import multer from "multer";
 import { createServer as createViteServer } from "vite";
 import { parseCommandLine, buildDs4WrapperArgs } from "./commandBuilder.mjs";
-import { buildDs4Args, loadConfig, saveConfig, validateConfig } from "./config.mjs";
+import { buildDs4Args, loadConfig, redactConfigSecrets, saveConfig, validateConfig } from "./config.mjs";
 import { DEFAULT_CONFIG, REQUEST_DEFAULTS } from "./defaultConfig.mjs";
 import {
   deleteAllConversationHistory,
@@ -175,6 +175,10 @@ function mergeRequestConfig(body = {}) {
     history: { ...config.history, ...(body.history || {}) },
     wrapper: { ...config.wrapper, ...(body.wrapper || {}) }
   };
+}
+
+function publicConfig() {
+  return redactConfigSecrets(config);
 }
 
 function asyncHandler(handler) {
@@ -643,7 +647,7 @@ app.post("/api/profiles/select", asyncHandler(async (req, res) => {
 app.get("/api/server/status", asyncHandler(async (_req, res) => {
   await manager.refreshHealth();
   res.json({
-    config,
+    config: publicConfig(),
     defaults: DEFAULT_CONFIG,
     backendBase: backendBase(),
     overrideCommand: manager.overrideCommand,
@@ -666,7 +670,7 @@ app.get("/api/server/metrics", asyncHandler(async (_req, res) => {
 }));
 
 app.get("/api/server/config", (_req, res) => {
-  res.json({ config, defaults: DEFAULT_CONFIG });
+  res.json({ config: publicConfig(), defaults: DEFAULT_CONFIG });
 });
 
 app.get("/api/call-debug", (req, res) => {
@@ -687,7 +691,7 @@ app.put("/api/server/config", asyncHandler(async (req, res) => {
   const validation = validateConfig(next);
   if (!validation.ok) return res.status(400).json(validation);
   config = await saveConfig(next);
-  res.json({ config });
+  res.json({ config: publicConfig() });
 }));
 
 app.put("/api/history/settings", asyncHandler(async (req, res) => {
@@ -695,7 +699,7 @@ app.put("/api/history/settings", asyncHandler(async (req, res) => {
   const validation = validateConfig(next);
   if (!validation.ok) return res.status(400).json(validation);
   config = await saveConfig(next);
-  res.json({ history: config.history, config });
+  res.json({ history: config.history, config: publicConfig() });
 }));
 
 app.post("/api/history/conversation", asyncHandler(async (req, res) => {
@@ -1471,7 +1475,7 @@ app.get("/api/research/export/:sessionId", asyncHandler(async (req, res) => {
     return res.status(403).json({ error: "research export is disabled" });
   }
   const state = await researchRuntime.getState(req.params.sessionId);
-  const { contentType, ext, body } = exportSession(state, String(req.query.format || "md"));
+  const { contentType, ext, body } = await exportSession(state, String(req.query.format || "md"));
   res.setHeader("Content-Type", contentType);
   res.setHeader("Content-Disposition", `attachment; filename="research-${req.params.sessionId}.${ext}"`);
   res.send(body);
@@ -1510,6 +1514,24 @@ app.post("/api/research/feedback", asyncHandler(async (req, res) => {
     plan: req.body?.plan
   });
   res.json({ status: state.status });
+}));
+
+app.post("/api/research/prism/reauth", asyncHandler(async (req, res) => {
+  if (!requireResearchEnabled(res)) return;
+  const prismConfig = researchConfig().prism || {};
+  const { PrintingPressPrismResearchClient } = await import("./research/prismResearchClient.mjs");
+  const client = new PrintingPressPrismResearchClient({
+    cliPath: (typeof prismConfig.cliPath === "string" && prismConfig.cliPath.trim()
+      ? prismConfig.cliPath
+      : process.env.PRISM_CLI_PATH) || "prism-pp-cli",
+    cookiesEnv: prismConfig.cookiesEnv
+  });
+  try {
+    await client.refreshAuth();
+    res.json({ ok: true, message: "prism auth refreshed" });
+  } catch (err) {
+    res.status(502).json({ error: `prism auth refresh failed: ${err.message}` });
+  }
 }));
 
 app.post("/api/research/cancel", asyncHandler(async (req, res) => {
