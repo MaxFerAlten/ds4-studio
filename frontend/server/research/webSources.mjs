@@ -4,6 +4,7 @@
 // (which assigns the citation ids).
 
 import { createHash } from "node:crypto";
+import { classifySource } from "./sourceQuality.mjs";
 
 const TRACKING_PARAMS = new Set([
   "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
@@ -71,7 +72,7 @@ export function toWebSource(raw, { provider, query, platform } = {}) {
   const url = raw.url || "";
   const sourceType = raw.sourceType || "unknown";
   const snippet = String(raw.snippet || raw.content || "").slice(0, 2000);
-  return {
+  const source = {
     kind: "web",
     provider: raw.provider || provider || "unknown",
     platform: raw.platform || platform || null,
@@ -91,6 +92,8 @@ export function toWebSource(raw, { provider, query, platform } = {}) {
     retrievedAt: new Date().toISOString(),
     raw: raw.raw || null
   };
+  const quality = classifySource(source);
+  return { ...source, qualityTier: quality.tier, citable: quality.citable };
 }
 
 // Dedup web sources by canonical URL (then by hash). First occurrence wins but
@@ -113,12 +116,26 @@ function rankScore(s) {
   const providerRankScore = s.providerRank ? 1 / s.providerRank : s.providerScore || 0.3;
   const multiProvider = (s.providers?.length || 1) > 1 ? 0.1 : 0;
   const emptyPenalty = s.content && s.content.length > 80 ? 0 : -0.15;
-  return providerRankScore * 0.35 + s.trustWeight * 0.4 + domainBoost(s.url) + multiProvider + emptyPenalty;
+  const quality = typeof s.qualityTier === "number" ? s : { ...s, ...qualityFields(s) };
+  return providerRankScore * 0.35 + s.trustWeight * 0.4 + domainBoost(s.url) + qualityBoost(quality) + multiProvider + emptyPenalty;
+}
+
+function qualityFields(source) {
+  const quality = classifySource(source);
+  return { qualityTier: quality.tier, citable: quality.citable };
+}
+
+function qualityBoost(source) {
+  if (source.qualityTier === 1) return 0.12;
+  if (source.qualityTier === 2) return -0.05;
+  return -0.5;
 }
 
 // Rank deduped web sources, attach the computed score, and cap the total.
 export function rankWebSources(sources = [], { maxSourcesTotal = 30 } = {}) {
   return sources
+    .map((s) => ({ ...s, ...qualityFields(s) }))
+    .filter((s) => s.qualityTier !== 3)
     .map((s) => ({ ...s, score: Number(rankScore(s).toFixed(4)) }))
     .sort((a, b) => b.score - a.score || (a.hash < b.hash ? -1 : 1))
     .slice(0, maxSourcesTotal);

@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Play, Square, Upload, Download } from "lucide-react";
+import { Play, Square, Upload, Download, RefreshCw } from "lucide-react";
 import {
   cancelResearch,
   createResearchSession,
   fetchResearchState,
   launchResearch,
   openResearchStream,
+  prismReauth,
   researchExportUrl,
   sendFeedback,
   startResearch,
@@ -140,6 +141,16 @@ export function ResearchPanel({
     }
   }
 
+  async function handlePrismReauth() {
+    setNotice(null);
+    try {
+      const { message } = await prismReauth();
+      setNotice(message);
+    } catch (err) {
+      setNotice(err.message);
+    }
+  }
+
   async function handleFeedback(action) {
     try {
       await sendFeedback(view.sessionId, action);
@@ -175,6 +186,25 @@ export function ResearchPanel({
         >
           Gemini
         </button>
+        <button
+          type="button"
+          className={engine === "prism" ? "active" : ""}
+          disabled={busy}
+          onClick={() => setEngine("prism")}
+          title="Prism web runtime via prism-pp-cli and PRISM_COOKIES"
+        >
+          Prism
+        </button>
+        {engine === "prism" ? (
+          <button
+            type="button"
+            className="research-reauth"
+            onClick={handlePrismReauth}
+            title="Refresh Prism authentication cookies"
+          >
+            <RefreshCw size={14} /> Reauth
+          </button>
+        ) : null}
       </div>
       <form className="research-form" onSubmit={handleStart}>
         <textarea
@@ -222,6 +252,9 @@ export function ResearchPanel({
             </a>
             <a href={researchExportUrl(view.sessionId, "html")} download>
               <Download size={14} /> HTML
+            </a>
+            <a href={researchExportUrl(view.sessionId, "pdf")} download>
+              <Download size={14} /> PDF
             </a>
           </div>
           <MessageContent content={view.report} />

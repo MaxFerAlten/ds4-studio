@@ -28,6 +28,16 @@ test("mergeResearchConfig fills defaults for empty input", () => {
       thinkingSummaries: true,
       timeoutMs: 3600000
     },
+    prism: {
+      cliPath: "",
+      cliPathEnv: "PRISM_CLI_PATH",
+      cookiesEnv: "PRISM_COOKIES",
+      reasoningEffort: "medium",
+      projectId: "",
+      userId: "",
+      timeoutMs: 3600000,
+      pollIntervalMs: 3000
+    },
     search: {
       enabled: false,
       maxResultsPerQuery: 8,
@@ -174,13 +184,17 @@ test("validateResearchConfig rejects bad model params", () => {
   );
 });
 
-test("research config defaults include engine=local and a gemini block", () => {
+test("research config defaults include engine=local and cloud engine blocks", () => {
   const m = mergeResearchConfig({});
   assert.equal(m.engine, "local");
   assert.equal(m.gemini.model, "deep-research-preview-04-2026");
   assert.equal(m.gemini.apiKeyEnv, "GEMINI_API_KEY");
   assert.deepEqual(m.gemini.tools, ["google_search", "url_context", "code_execution"]);
   assert.equal(m.gemini.collaborativePlanning, true);
+  assert.equal(m.prism.cliPath, "");
+  assert.equal(m.prism.cliPathEnv, "PRISM_CLI_PATH");
+  assert.equal(m.prism.cookiesEnv, "PRISM_COOKIES");
+  assert.equal(m.prism.reasoningEffort, "medium");
 });
 
 test("mergeResearchConfig deep-merges gemini and keeps defaults", () => {
@@ -190,7 +204,49 @@ test("mergeResearchConfig deep-merges gemini and keeps defaults", () => {
   assert.equal(m.gemini.apiKeyEnv, "GEMINI_API_KEY");
 });
 
+test("mergeResearchConfig deep-merges prism CLI settings", () => {
+  const m = mergeResearchConfig({
+    engine: "prism",
+    prism: { cliPath: "/opt/prism/prism-pp-cli", pollIntervalMs: 1000 }
+  });
+  assert.equal(m.engine, "prism");
+  assert.equal(m.prism.cliPath, "/opt/prism/prism-pp-cli");
+  assert.equal(m.prism.cliPathEnv, "PRISM_CLI_PATH");
+  assert.equal(m.prism.cookiesEnv, "PRISM_COOKIES");
+  assert.equal(m.prism.pollIntervalMs, 1000);
+});
+
+test("mergeResearchConfig drops legacy Prism OpenAI settings", () => {
+  const m = mergeResearchConfig({
+    prism: {
+      model: "legacy-prism-model",
+      apiKey: "LEGACY_SECRET",
+      apiKeyEnv: "LEGACY_PRISM_KEY",
+      baseUrl: "https://legacy-prism.example/v1",
+      cliPath: "prism-pp-cli"
+    }
+  });
+  assert.equal(m.prism.cliPath, "prism-pp-cli");
+  assert.equal(Object.hasOwn(m.prism, "model"), false);
+  assert.equal(Object.hasOwn(m.prism, "apiKey"), false);
+  assert.equal(Object.hasOwn(m.prism, "apiKeyEnv"), false);
+  assert.equal(Object.hasOwn(m.prism, "baseUrl"), false);
+});
+
 test("validateResearchConfig rejects an unknown engine", () => {
   const base = mergeResearchConfig({});
   assert.match(validateResearchConfig({ ...base, engine: "bogus" }).engine, /must be/);
+});
+
+test("validateResearchConfig accepts prism and rejects a bad prism block", () => {
+  const base = mergeResearchConfig({ engine: "prism" });
+  assert.deepEqual(validateResearchConfig(base), {});
+  assert.match(
+    validateResearchConfig({ ...base, prism: { ...base.prism, cliPath: "", cliPathEnv: "" } }).prism,
+    /cliPath/
+  );
+  assert.match(
+    validateResearchConfig({ ...base, prism: { ...base.prism, cookiesEnv: "" } }).prism,
+    /cookiesEnv/
+  );
 });

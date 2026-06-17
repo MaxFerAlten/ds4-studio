@@ -59,6 +59,10 @@ export async function listResearchSessions({ fetchImpl = fetch } = {}) {
   return data.sessions || [];
 }
 
+export async function prismReauth({ fetchImpl = fetch } = {}) {
+  return postJson("/api/research/prism/reauth", {}, fetchImpl);
+}
+
 export function openResearchStream(sessionId, onEvent, { EventSourceImpl = EventSource, lastSeq = 0 } = {}) {
   const es = new EventSourceImpl(`/api/research/stream/${sessionId}?lastSeq=${lastSeq}`);
   es.addEventListener("research_event", (msg) => {

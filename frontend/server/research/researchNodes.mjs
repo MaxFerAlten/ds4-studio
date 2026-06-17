@@ -9,6 +9,7 @@ import {
   attachEvidence,
   citedSourceIds,
   dedupeSources,
+  isCitableSource,
   normalizeSources,
   rankSources
 } from "./researchSources.mjs";
@@ -173,7 +174,7 @@ export async function researchTeamNode(ctx) {
 // Local, LLM-free reflection: the report must cite sources when sources exist.
 export function reflectionNode(ctx) {
   if (!ctx.config.reflection?.enabled) return { pass: true, issues: [] };
-  const sources = ctx.state.sources || [];
+  const sources = (ctx.state.sources || []).filter(isCitableSource);
   const cited = citedSourceIds(ctx.state.finalReport || "");
   const issues = [];
   if (sources.length > 0 && cited.length === 0) {

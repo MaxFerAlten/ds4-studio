@@ -83,3 +83,17 @@ test("formatCitations flags cited ids with no matching source", () => {
   assert.deepEqual(out.citedIds, []);
   assert.ok(!out.markdown.includes("## Fonti"), "no section when nothing valid is cited");
 });
+
+test("formatCitations excludes non-citable sources from scientific references", () => {
+  const sources = normalizeSources([
+    { url: "https://arxiv.org/abs/1234.5678", title: "Paper", snippet: "x" },
+    { url: "https://reddit.com/r/science/comments/1", title: "Thread", snippet: "x" }
+  ]);
+  const out = formatCitations("Compare [src_001] with [src_002].", sources);
+
+  assert.match(out.markdown, /\[src_001\] Paper — https:\/\/arxiv\.org\/abs\/1234\.5678/);
+  assert.doesNotMatch(out.markdown, /\[src_002\] Thread/);
+  assert.deepEqual(out.citedIds, ["src_001"]);
+  assert.deepEqual(out.nonCitableIds, ["src_002"]);
+  assert.deepEqual(out.missingIds, []);
+});

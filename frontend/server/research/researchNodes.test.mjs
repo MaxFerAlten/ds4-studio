@@ -185,6 +185,15 @@ test("reflectionNode passes when the report cites a source", () => {
   assert.equal(reflectionNode(ctx).pass, true);
 });
 
+test("reflectionNode ignores sources that are not citable references", () => {
+  const ctx = makeCtx({});
+  ctx.state.sources = [
+    { id: "src_001", title: "Thread", url: "https://reddit.com/r/science/comments/1", citable: false }
+  ];
+  ctx.state.finalReport = "# Report\n\nbackground only.";
+  assert.deepEqual(reflectionNode(ctx), { pass: true, issues: [] });
+});
+
 test("reflectionNode is a no-op when disabled", () => {
   const ctx = makeCtx({ config: { reflection: { enabled: false, maxAttempts: 0 } } });
   ctx.state.sources = [{ id: "src_001" }];

@@ -4,6 +4,7 @@
 
 import { createHash } from "node:crypto";
 import { buildIndex, searchChunks } from "./researchRag.mjs";
+import { classifySource } from "./sourceQuality.mjs";
 
 function sourceId(seq) {
   return `src_${String(seq).padStart(3, "0")}`;
@@ -16,13 +17,14 @@ function textHash(text) {
 // Normalize one raw source into the canonical shape with a stable id.
 export function normalizeSource(raw = {}, seq = 1) {
   const snippet = String(raw.snippet || raw.text || "").slice(0, 2000);
-  return {
+  const source = {
     id: raw.id || sourceId(seq),
     kind: raw.kind || (raw.url ? "web" : raw.filename ? "file" : "manual"),
     title: raw.title || raw.filename || raw.url || `source ${seq}`,
     url: raw.url || null,
     filename: raw.filename || null,
     provider: raw.provider || null,
+    providers: Array.isArray(raw.providers) ? raw.providers : [],
     sourceType: raw.sourceType || null,
     score: typeof raw.score === "number" ? raw.score : null,
     retrievedAt: raw.retrievedAt || new Date().toISOString(),
@@ -33,6 +35,12 @@ export function normalizeSource(raw = {}, seq = 1) {
     content: String(raw.content || raw.text || snippet || "").slice(0, 12000),
     authors: Array.isArray(raw.authors) ? raw.authors : [],
     chunks: Array.isArray(raw.chunks) ? raw.chunks : []
+  };
+  const quality = classifySource(source);
+  return {
+    ...source,
+    qualityTier: typeof raw.qualityTier === "number" ? raw.qualityTier : quality.tier,
+    citable: typeof raw.citable === "boolean" ? raw.citable : quality.citable
   };
 }
 
@@ -93,13 +101,21 @@ export function citedSourceIds(markdown) {
   return [...ids];
 }
 
+export function isCitableSource(source = {}) {
+  if (typeof source.citable === "boolean") return source.citable;
+  if (!source.url && !source.filename && !source.provider && !source.sourceType && !source.kind) return true;
+  return classifySource(source).citable;
+}
+
 // Append a "## Fonti" section listing the cited sources, and report any cited
 // id that does not correspond to a known source (spec §14 anti-hallucination).
 export function formatCitations(markdown, sources = [], { heading = "Fonti" } = {}) {
   const byId = new Map(sources.map((s) => [s.id, s]));
   const cited = citedSourceIds(markdown);
   const missingIds = cited.filter((id) => !byId.has(id));
-  const presentIds = cited.filter((id) => byId.has(id));
+  const knownIds = cited.filter((id) => byId.has(id));
+  const presentIds = knownIds.filter((id) => isCitableSource(byId.get(id)));
+  const nonCitableIds = knownIds.filter((id) => !isCitableSource(byId.get(id)));
 
   let out = markdown;
   if (presentIds.length) {
@@ -110,5 +126,5 @@ export function formatCitations(markdown, sources = [], { heading = "Fonti" } = 
     });
     out = `${markdown.trimEnd()}\n\n## ${heading}\n\n${lines.join("\n")}\n`;
   }
-  return { markdown: out, citedIds: presentIds, missingIds };
+  return { markdown: out, citedIds: presentIds, missingIds, nonCitableIds };
 }

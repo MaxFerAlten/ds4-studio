@@ -5,9 +5,14 @@ import { parseEventLines, serializeEvent } from "./researchEvents.mjs";
 import { buildIndex, chunkDocument } from "./researchRag.mjs";
 
 const SESSION_ID_PATTERN = /^rs_[a-f0-9]{12}$/;
+const ENGINES = new Set(["local", "gemini", "prism"]);
 
 export function newSessionId() {
   return `rs_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+}
+
+export function normalizeResearchEngine(engine) {
+  return ENGINES.has(engine) ? engine : "local";
 }
 
 export function initialState(query, { sessionId = newSessionId(), now = new Date(), engine = "local" } = {}) {
@@ -15,7 +20,7 @@ export function initialState(query, { sessionId = newSessionId(), now = new Date
   return {
     sessionId,
     threadId: sessionId,
-    engine: engine === "gemini" ? "gemini" : "local",
+    engine: normalizeResearchEngine(engine),
     interactionId: null,
     status: "running",
     query,
@@ -121,7 +126,7 @@ export class ResearchStateStore {
             sessionId,
             query: state.query,
             status: state.status,
-            engine: state.engine === "gemini" ? "gemini" : "local",
+            engine: normalizeResearchEngine(state.engine),
             createdAt: state.createdAt,
             updatedAt: state.updatedAt
           };

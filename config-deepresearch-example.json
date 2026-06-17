@@ -1,0 +1,155 @@
+{
+  "enabled": false,
+  "maxPlanIterations": 3,
+  "autoAcceptPlan": false,
+  "stateDir": "data/research",
+  "ragEnabled": true,
+  "searchEnabled": false,
+  "webFetchEnabled": false,
+  "researcherCount": 3,
+  "maxSteps": 12,
+  "maxSourcesPerQuery": 8,
+  "maxContextChars": 120000,
+  "exportEnabled": true,
+  "reflection": {
+    "enabled": true,
+    "maxAttempts": 2
+  },
+  "authorVerification": {
+    "enabled": true,
+    "maxAuthors": 10
+  },
+  "engine": "local",
+  "gemini": {
+    "model": "deep-research-preview-04-2026",
+    "apiKey": "",
+    "apiKeyEnv": "GEMINI_API_KEY",
+    "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
+    "tools": [
+      "google_search",
+      "url_context",
+      "code_execution"
+    ],
+    "collaborativePlanning": true,
+    "thinkingSummaries": true,
+    "timeoutMs": 3600000
+  },
+  "prism": {
+    "cliPath": "",
+    "cliPathEnv": "PRISM_CLI_PATH",
+    "cookiesEnv": "PRISM_COOKIES",
+    "reasoningEffort": "medium",
+    "projectId": "",
+    "userId": "",
+    "timeoutMs": 3600000,
+    "pollIntervalMs": 3000
+  },
+  "search": {
+    "enabled": false,
+    "maxResultsPerQuery": 8,
+    "maxSourcesTotal": 30,
+    "maxFetchedPages": 8,
+    "maxCharsPerPage": 12000,
+    "timeoutMs": 12000,
+    "retryCount": 2,
+    "retryDelayMs": 500,
+    "enablePageReader": true,
+    "enableDirectFetchFallback": true,
+    "providers": {
+      "wikipedia": {
+        "enabled": true,
+        "endpoint": "https://en.wikipedia.org/w/api.php",
+        "restEndpoint": "https://en.wikipedia.org/api/rest_v1/page/summary"
+      },
+      "arxiv": {
+        "enabled": true,
+        "endpoint": "https://export.arxiv.org/api/query"
+      },
+      "cnr": {
+        "enabled": true,
+        "endpoint": "https://publications.cnr.it/api/v1/search"
+      },
+      "openalex": {
+        "enabled": true,
+        "endpoint": "https://api.openalex.org"
+      },
+      "worldbank": {
+        "enabled": true,
+        "endpoint": "https://api.worldbank.org/v2"
+      },
+      "tavily": {
+        "enabled": false,
+        "endpoint": "https://api.tavily.com/search",
+        "apiKey": "",
+        "apiKeyEnv": "TAVILY_API_KEY"
+      },
+      "serpapi": {
+        "enabled": false,
+        "endpoint": "https://serpapi.com/search.json",
+        "engine": "google",
+        "apiKey": "",
+        "apiKeyEnv": "SERPAPI_KEY"
+      },
+      "googlescholar": {
+        "enabled": false,
+        "endpoint": "https://serpapi.com/search.json",
+        "engine": "google_scholar",
+        "apiKey": "",
+        "apiKeyEnv": "SERPAPI_KEY"
+      },
+      "scrapingbee": {
+        "enabled": false,
+        "endpoint": "https://app.scrapingbee.com/api/v1/store/google",
+        "apiKey": "",
+        "apiKeyEnv": "SCRAPINGBEE_API_KEY"
+      },
+      "opentripmap": {
+        "enabled": false,
+        "endpoint": "https://api.opentripmap.com/0.1/en/places",
+        "apiKey": "",
+        "apiKeyEnv": "OPENTRIPMAP_API_KEY"
+      },
+      "tripadvisor": {
+        "enabled": false,
+        "endpoint": "https://api.content.tripadvisor.com/api/v1/location/search",
+        "apiKey": "",
+        "apiKeyEnv": "TRIPADVISOR_API_KEY"
+      },
+      "aliyun": {
+        "enabled": false,
+        "endpoint": "",
+        "apiKey": "",
+        "apiKeyEnv": "ALIYUN_AI_SEARCH_API_KEY"
+      },
+      "baidu": {
+        "enabled": false,
+        "endpoint": "",
+        "apiKey": "",
+        "apiKeyEnv": "BAIDU_SEARCH_API_KEY"
+      },
+      "jina": {
+        "enabled": false,
+        "endpoint": "https://r.jina.ai/",
+        "apiKey": "",
+        "apiKeyEnv": "JINA_API_KEY"
+      }
+    },
+    "cache": {
+      "enabled": true,
+      "dir": "data/research/cache",
+      "defaultTtlMs": 86400000,
+      "freshQueryTtlMs": 900000
+    },
+    "rateLimits": {
+      "default": {
+        "perMinute": 30,
+        "concurrent": 2
+      }
+    }
+  },
+  "model": {
+    "temperature": 0,
+    "top_p": 1,
+    "max_tokens": 8192
+  }
+}

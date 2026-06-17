@@ -134,6 +134,25 @@ test("buildSearchService enables tavily when key present", () => {
   assert.ok(svc.availableProviders().includes("tavily"));
 });
 
+test("buildSearchService enables keyed providers from direct config apiKey", () => {
+  const svc = buildSearchService(
+    {
+      ...RESEARCH_DEFAULTS.search,
+      enabled: true,
+      providers: {
+        ...RESEARCH_DEFAULTS.search.providers,
+        tavily: {
+          enabled: true,
+          apiKey: "direct-key",
+          apiKeyEnv: "TAVILY_API_KEY"
+        }
+      }
+    },
+    { fetchImpl: async () => new Response("{}"), env: {} }
+  );
+  assert.ok(svc.availableProviders().includes("tavily"));
+});
+
 test("a cache hit skips the provider call", async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "ds4-svc-cache-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));

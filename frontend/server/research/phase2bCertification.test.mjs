@@ -125,12 +125,13 @@ test("CERT 1: web search yields sources merged into the unified source list", as
   assert.ok(web.id.startsWith("src_"), "web source got a citation id");
 });
 
-test("CERT 2: the report cites a web source", async (t) => {
+test("CERT 2: non-citable web sources stay out of formal references", async (t) => {
   const h = await makeHarness(t);
   const { sessionId } = await h.runtime.start("redis sentinel failover");
   const state = await waitForStatus(h.store, sessionId, "completed");
   assert.match(state.finalReport, /\[src_001\]/);
-  assert.match(state.finalReport, /## Fonti/);
+  assert.doesNotMatch(state.finalReport, /## Fonti/);
+  assert.deepEqual(state.nodes.reporter.nonCitableIds, ["src_001"]);
 });
 
 test("CERT 3: page enrichment replaces thin snippets with fetched text", async (t) => {

@@ -1,6 +1,6 @@
 import { renderPrompt } from "./researchPrompts.mjs";
 import { RESEARCH_ROLE_OPTIONS } from "./researchModelClient.mjs";
-import { formatCitations } from "./researchSources.mjs";
+import { formatCitations, isCitableSource } from "./researchSources.mjs";
 import { verifyCitedAuthors } from "./authorVerification.mjs";
 import {
   backgroundInvestigatorNode,
@@ -76,13 +76,14 @@ export async function reporterNode(ctx) {
   const coordinator = ctx.state.nodes.coordinator || {};
   const simple = coordinator.enable_deepresearch === false;
   const sources = ctx.state.sources || [];
+  const citableSources = sources.filter(isCitableSource);
   const systemPrompt = await renderPrompt("reporter", {
     query: ctx.state.query,
     plan_json: JSON.stringify(ctx.state.currentPlan),
     observations_json: JSON.stringify(ctx.state.observations || []),
     team_json: JSON.stringify(ctx.state.nodes.research_team || {}),
     sources_json: JSON.stringify(
-      sources.map((s) => ({ id: s.id, title: s.title, snippet: s.snippet.slice(0, 800) }))
+      citableSources.map((s) => ({ id: s.id, title: s.title, snippet: s.snippet.slice(0, 800) }))
     ),
     simple: simple ? "true" : "false",
     reflection_hint: ctx.state.reflectionHint || ""
@@ -98,10 +99,20 @@ export async function reporterNode(ctx) {
   ctx.state.finalReport = formatted.markdown;
   ctx.emit(
     "report_completed",
-    { report: formatted.markdown, citedIds: formatted.citedIds, missingIds: formatted.missingIds },
+    {
+      report: formatted.markdown,
+      citedIds: formatted.citedIds,
+      missingIds: formatted.missingIds,
+      nonCitableIds: formatted.nonCitableIds
+    },
     "reporter"
   );
-  return { length: formatted.markdown.length, citedIds: formatted.citedIds, missingIds: formatted.missingIds };
+  return {
+    length: formatted.markdown.length,
+    citedIds: formatted.citedIds,
+    missingIds: formatted.missingIds,
+    nonCitableIds: formatted.nonCitableIds
+  };
 }
 
 export function planNeedsFeedback(ctx) {

@@ -7,6 +7,7 @@ import {
   launchResearch,
   listResearchSessions,
   openResearchStream,
+  prismReauth,
   researchExportUrl,
   sendFeedback,
   startResearch,
@@ -172,6 +173,28 @@ test("openResearchStream parses research_event payloads and skips garbage", () =
   assert.equal(es, FakeEventSource.last);
 });
 
+test("prismReauth posts to /api/research/prism/reauth", async () => {
+  let captured;
+  await prismReauth({
+    fetchImpl: async (url, options) => {
+      captured = { url, method: options.method };
+      return jsonResponse({ ok: true, message: "refreshed" });
+    }
+  });
+  assert.equal(captured.url, "/api/research/prism/reauth");
+  assert.equal(captured.method, "POST");
+});
+
+test("prismReauth surfaces server errors", async () => {
+  await assert.rejects(
+    () =>
+      prismReauth({
+        fetchImpl: async () => jsonResponse({ error: "refresh failed: cookie tool missing" }, 502)
+      }),
+    /cookie tool missing/
+  );
+});
+
 test("createResearchSession and startResearch send the selected engine", async () => {
   const bodies = [];
   const fetchImpl = async (_url, opt) => {
@@ -179,7 +202,7 @@ test("createResearchSession and startResearch send the selected engine", async (
     return { ok: true, json: async () => ({ sessionId: "rs_1" }) };
   };
   await createResearchSession("q", { engine: "gemini", fetchImpl });
-  await startResearch("q", { engine: "local", fetchImpl });
+  await startResearch("q", { engine: "prism", fetchImpl });
   assert.equal(bodies[0].engine, "gemini");
-  assert.equal(bodies[1].engine, "local");
+  assert.equal(bodies[1].engine, "prism");
 });

@@ -29,6 +29,16 @@ export const RESEARCH_DEFAULTS = Object.freeze({
     thinkingSummaries: true,
     timeoutMs: 3600000
   }),
+  prism: Object.freeze({
+    cliPath: "",
+    cliPathEnv: "PRISM_CLI_PATH",
+    cookiesEnv: "PRISM_COOKIES",
+    reasoningEffort: "medium",
+    projectId: "",
+    userId: "",
+    timeoutMs: 3600000,
+    pollIntervalMs: 3000
+  }),
   search: Object.freeze({
     enabled: false,
     maxResultsPerQuery: 8,
@@ -98,6 +108,24 @@ function mergeSearch(input) {
   };
 }
 
+function mergePrism(input) {
+  const src = plainObject(input);
+  const out = { ...RESEARCH_DEFAULTS.prism };
+  for (const key of [
+    "cliPath",
+    "cliPathEnv",
+    "cookiesEnv",
+    "reasoningEffort",
+    "projectId",
+    "userId",
+    "timeoutMs",
+    "pollIntervalMs"
+  ]) {
+    if (Object.hasOwn(src, key)) out[key] = src[key];
+  }
+  return out;
+}
+
 export function mergeResearchConfig(input = {}) {
   const src = plainObject(input);
   return {
@@ -114,6 +142,7 @@ export function mergeResearchConfig(input = {}) {
       ...plainObject(src.gemini),
       tools: Array.isArray(src.gemini?.tools) ? src.gemini.tools : RESEARCH_DEFAULTS.gemini.tools
     },
+    prism: mergePrism(src.prism),
     search: mergeSearch(src.search),
     model: { ...RESEARCH_DEFAULTS.model, ...plainObject(src.model) }
   };
@@ -202,14 +231,29 @@ export function validateResearchConfig(research = {}) {
   } else if (!intInRange(model.max_tokens, 256, 131072)) {
     errors.model = "max_tokens must be an integer between 256 and 131072";
   }
-  if (research.engine !== "local" && research.engine !== "gemini") {
-    errors.engine = "must be 'local' or 'gemini'";
+  if (research.engine !== "local" && research.engine !== "gemini" && research.engine !== "prism") {
+    errors.engine = "must be 'local', 'gemini', or 'prism'";
   }
   if (research.gemini) {
     if (typeof research.gemini.model !== "string" || !research.gemini.model.trim()) {
       errors.gemini = "model is required";
     } else if (!Array.isArray(research.gemini.tools)) {
       errors.gemini = "tools must be an array";
+    }
+  }
+  if (research.prism) {
+    const hasCliPath = typeof research.prism.cliPath === "string" && research.prism.cliPath.trim();
+    const hasCliPathEnv = typeof research.prism.cliPathEnv === "string" && research.prism.cliPathEnv.trim();
+    if (!hasCliPath && !hasCliPathEnv) {
+      errors.prism = "cliPath or cliPathEnv is required";
+    } else if (typeof research.prism.cookiesEnv !== "string" || !research.prism.cookiesEnv.trim()) {
+      errors.prism = "cookiesEnv is required";
+    } else if (typeof research.prism.reasoningEffort !== "string" || !research.prism.reasoningEffort.trim()) {
+      errors.prism = "reasoningEffort is required";
+    } else if (!intInRange(research.prism.timeoutMs, 1000, 7200000)) {
+      errors.prism = "timeoutMs must be an integer between 1000 and 7200000";
+    } else if (!intInRange(research.prism.pollIntervalMs, 250, 60000)) {
+      errors.prism = "pollIntervalMs must be an integer between 250 and 60000";
     }
   }
   return errors;

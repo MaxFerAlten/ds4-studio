@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { exportHtml, exportMarkdown, exportSession, markdownToHtml } from "./researchExport.mjs";
+import { exportHtml, exportMarkdown, exportPdf, exportSession, markdownToHtml } from "./researchExport.mjs";
 
 const STATE = {
   query: "Redis Cluster vs Sentinel",
@@ -68,8 +68,24 @@ test("exportHtml produces a self-contained document carrying the report", () => 
   assert.match(html, /src_001/);
 });
 
-test("exportSession dispatches by format and rejects unknown", () => {
-  assert.equal(exportSession(STATE, "md").ext, "md");
-  assert.equal(exportSession(STATE, "html").contentType, "text/html; charset=utf-8");
-  assert.throws(() => exportSession(STATE, "pdf"), /unsupported export format/);
+test("exportSession dispatches by format and rejects unknown", async () => {
+  assert.equal((await exportSession(STATE, "md")).ext, "md");
+  assert.equal((await exportSession(STATE, "html")).contentType, "text/html; charset=utf-8");
+  await assert.rejects(() => exportSession(STATE, "docx"), /unsupported export format/);
+});
+
+test("exportPdf generates a valid PDF via wkhtmltopdf", async () => {
+  const pdf = await exportPdf(STATE);
+  assert.ok(Buffer.isBuffer(pdf));
+  assert.ok(pdf.length > 0);
+  assert.equal(pdf.subarray(0, 5).toString(), "%PDF-");
+});
+
+test("exportSession returns a PDF with correct content type", async () => {
+  const result = await exportSession(STATE, "pdf");
+  assert.equal(result.contentType, "application/pdf");
+  assert.equal(result.ext, "pdf");
+  assert.ok(Buffer.isBuffer(result.body));
+  assert.ok(result.body.length > 0);
+  assert.equal(result.body.subarray(0, 5).toString(), "%PDF-");
 });

@@ -1,7 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { runResearchGraph } from "./researchGraph.mjs";
+import { reporterNode, runResearchGraph } from "./researchGraph.mjs";
 import { initialState } from "./researchStateStore.mjs";
+import { normalizeSources } from "./researchSources.mjs";
 
 const COORD_DEEP = {
   enable_deepresearch: true,
@@ -33,8 +34,10 @@ function makePlan() {
 function fakeClient(responses) {
   return {
     calls: [],
-    async completeRole({ roleName, onDelta }) {
+    requests: [],
+    async completeRole({ roleName, systemPrompt, onDelta }) {
       this.calls.push(roleName);
+      this.requests.push({ roleName, systemPrompt });
       const r = responses[roleName];
       const item = Array.isArray(r) ? r.shift() : r;
       if (item === undefined) throw new Error(`no fake response for ${roleName}`);
@@ -159,4 +162,21 @@ test("reflection retries the reporter once when sources are ignored", async () =
   assert.equal(reporterCalls, 2, "reporter re-runs once after reflection");
   assert.equal(ctx.state.reflectionAttempts, 1);
   assert.match(ctx.state.finalReport, /src_001/);
+});
+
+test("reporter prompt exposes only citable sources as available references", async () => {
+  const ctx = makeCtx({ responses: { reporter: "Grounded in [src_001]." } });
+  ctx.state.currentPlan = makePlan().plan;
+  ctx.state.sources = normalizeSources([
+    { url: "https://arxiv.org/abs/1234.5678", title: "Paper", snippet: "paper text" },
+    { url: "https://reddit.com/r/science/comments/1", title: "Thread", snippet: "thread text" }
+  ]);
+
+  await reporterNode(ctx);
+
+  const prompt = ctx.client.requests.find((r) => r.roleName === "reporter").systemPrompt;
+  assert.match(prompt, /src_001/);
+  assert.match(prompt, /Paper/);
+  assert.doesNotMatch(prompt, /src_002/);
+  assert.doesNotMatch(prompt, /Thread/);
 });

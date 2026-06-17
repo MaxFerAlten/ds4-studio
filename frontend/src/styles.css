@@ -1817,6 +1817,23 @@ pre {
   opacity: 0.5;
   cursor: default;
 }
+.research-reauth {
+  font-size: 0.72rem;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid #554433;
+  background: #1a1a1a;
+  color: #ccbb99;
+  cursor: pointer;
+  margin-left: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.research-reauth:hover {
+  background: #332211;
+  border-color: #887744;
+}
 .research-engine-badge {
   margin-left: 6px;
   font-size: 0.62rem;
@@ -1830,6 +1847,10 @@ pre {
 .research-engine-badge.gemini {
   background: #3a2f4d;
   color: #c6a8e6;
+}
+.research-engine-badge.prism {
+  background: #1e3b35;
+  color: #8be0c6;
 }
 .research-export {
   display: flex;
