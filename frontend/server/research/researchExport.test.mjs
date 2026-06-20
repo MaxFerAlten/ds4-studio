@@ -42,6 +42,44 @@ test("exportMarkdown normalizes Obsidian math without changing ordinary code fen
   assert.doesNotMatch(md, /Inline \\\(/);
 });
 
+test("exportMarkdown re-derives the report from a stored .tex artifact", () => {
+  const state = {
+    query: "Paper",
+    finalReport: "OLD BROKEN “` x `“",
+    artifacts: [
+      {
+        filePath: "main.tex",
+        content: [
+          "\\begin{document}",
+          "\\begin{equation}",
+          "E=mc^2",
+          "\\end{equation}",
+          "Codice in \\path{s.py}.",
+          "\\begin{lstlisting}[style=pythonstyle]",
+          "import torch",
+          "    main()",
+          "\\end{lstlisting}",
+          "\\end{document}"
+        ].join("\n")
+      },
+      { filePath: "s.py", content: "import torch\n\ndef main():\n    return 42\n" }
+    ]
+  };
+
+  const md = exportMarkdown(state);
+
+  assert.match(md, /\$\$/);
+  assert.match(md, /E=mc\^2/);
+  assert.match(md, /def main\(\):/);
+  assert.doesNotMatch(md, /OLD BROKEN/);
+});
+
+test("exportMarkdown falls back to finalReport without a .tex artifact", () => {
+  const md = exportMarkdown({ query: "q", finalReport: "# Hello\n\nbody", artifacts: [] });
+  assert.match(md, /# Hello/);
+  assert.match(md, /body/);
+});
+
 test("markdownToHtml renders headings, paragraphs and lists", () => {
   const html = markdownToHtml("# H1\n\ntext **bold**\n\n- a\n- b");
   assert.match(html, /<h1>H1<\/h1>/);

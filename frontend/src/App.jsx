@@ -1446,6 +1446,34 @@ export default function App() {
     }
   }
 
+  async function callSageControl(action) {
+    try {
+      const res = await fetch("/api/sage/" + action, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...AGENT_HEADERS }
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: data.message || `SageMath ${action}ed.`,
+          agentNotice: true
+        }
+      ]);
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: `Failed /sage ${action}: ${err.message}`,
+          agentNotice: true
+        }
+      ]);
+    }
+  }
+
   async function sendAgentMessage(text) {
     handleInputChange("");
     setError("");
@@ -1660,6 +1688,9 @@ export default function App() {
         if (agentInput.action === "start") return toggleAgentMode(true);
         if (agentInput.action === "stop") return toggleAgentMode(false);
         return callAgentStatus();
+      }
+      if (agentInput.type === "sageControl") {
+        return callSageControl(agentInput.action);
       }
       return callNativeAgentCommand(agentInput.command);
     }

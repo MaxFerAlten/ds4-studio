@@ -66,7 +66,10 @@ Other rules:
 - After tools run, summarize the result briefly for the user.
 - Write code that is reliable and works well.
 - Preserve the current system configuration integrity, unless explicitly asked otherwise by the user.
-- If a tool returns an error, explain the issue and suggest a fix.`;
+- If a tool returns an error, explain the issue and suggest a fix.
+- **IMPORTANT — SageMath tool**: When the user asks for mathematical computation and SageMath is enabled (via /sage start), you MUST use the dedicated 'sage' tool. Do NOT use bash to call sage manually — the sage tool is faster, returns LaTeX automatically, and logs to Call Debug. The sage tool accepts a 'code' parameter with Sage syntax. Sage variables must be declared with var(). Always wrap Sage results in $$...$$ for KaTeX rendering.
+- **NEVER** use bash to invoke sage, python with sympy, or any other math software manually. The bash guard will block sage/bash calls. Use the 'sage' tool instead.
+`;
 
 /** OpenAI function-calling tool schemas, matching ds4_agent.c capabilities. */
 const AGENT_TOOLS = [
@@ -164,6 +167,21 @@ const AGENT_TOOLS = [
           path: { type: "string", description: "Directory path." }
         },
         required: ["path"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "sage",
+      description: "**PREFERRED tool for ALL mathematical computations.** Execute SageMath and return LaTeX + plain text. Use for: calculus (derivatives, integrals, limits), algebra (factor, solve, expand), number theory, linear algebra (matrices, eigenvalues), symbolic computation, plotting. Returns LaTeX ready for KaTeX rendering. MUCH BETTER than using bash to call sage manually.", 
+      parameters: {
+        type: "object",
+        properties: {
+          code: { type: "string", description: "SageMath code to execute. Use Sage syntax (not plain Python). Sage's latex() function is available. Examples: integral(exp(x)*sin(x), x), factor(x^2 - 5*x + 6), solve(x^2 - 3*x + 2 == 0, x), latex(matrix([[1,2],[3,4]]).det()), is_prime(7919), plot(sin(x), x, -pi, pi)." },
+          timeout_sec: { type: "number", description: "Timeout in seconds. Default 60. Increase for large computations." }
+        },
+        required: ["code"]
       }
     }
   }

@@ -168,6 +168,30 @@ test("renders complete LaTeX documents as Markdown and KaTeX", () => {
   assert.doesNotMatch(html, /\\documentclass|\\usepackage|\\begin\{document\}|\\maketitle/);
 });
 
+test("converts LaTeX lstlisting environments to fenced code in document previews", () => {
+  const html = renderToStaticMarkup(
+    createElement(MessageContent, {
+      content: [
+        "\\documentclass{article}",
+        "\\usepackage{listings}",
+        "\\begin{document}",
+        "\\section{Codice}",
+        "Il codice segue.",
+        "\\begin{lstlisting}[style=pythonstyle]",
+        "import torch",
+        "print(torch.__version__)",
+        "\\end{lstlisting}",
+        "\\end{document}"
+      ].join("\n")
+    })
+  );
+
+  assert.match(html, /<h2>Codice<\/h2>/);
+  assert.match(html, /<pre><code class="language-python">import torch/);
+  assert.match(html, /print\(torch\.__version__\)/);
+  assert.doesNotMatch(html, /style=pythonstyle|lstlisting/);
+});
+
 test("keeps complete LaTeX documents inside ordinary code fences", () => {
   const html = renderToStaticMarkup(
     createElement(MessageContent, {

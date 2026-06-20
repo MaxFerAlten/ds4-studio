@@ -69,6 +69,52 @@ test("buildProfileCandidate leaves active state unchanged when validation fails"
   assert.equal(baseRequestDefaults.max_tokens, 1234);
 });
 
+test("buildProfileCandidate default applies profile server config over base", () => {
+  const baseConfig = {
+    ...DEFAULT_CONFIG,
+    selectedProfile: "old",
+    server: { ...DEFAULT_CONFIG.server, ctx: 550072 }
+  };
+  const entry = {
+    name: "p1",
+    profile: {
+      server: { runtime: { context: 65536 } },
+      request_defaults: { max_tokens: 7777 }
+    }
+  };
+
+  const candidate = buildProfileCandidate(entry, baseConfig, REQUEST_DEFAULTS, "p1");
+
+  assert.equal(candidate.config.server.ctx, 65536);
+  assert.equal(candidate.config.selectedProfile, "p1");
+  assert.equal(candidate.requestDefaults.max_tokens, 7777);
+});
+
+test("buildProfileCandidate with applyServerConfig:false keeps base server config", () => {
+  const baseConfig = {
+    ...DEFAULT_CONFIG,
+    selectedProfile: "old",
+    server: { ...DEFAULT_CONFIG.server, ctx: 550072 }
+  };
+  const entry = {
+    name: "p1",
+    profile: {
+      server: { runtime: { context: 65536 } },
+      request_defaults: { max_tokens: 7777 }
+    }
+  };
+
+  const candidate = buildProfileCandidate(entry, baseConfig, REQUEST_DEFAULTS, "p1", {
+    applyServerConfig: false
+  });
+
+  // boot must not let the profile clobber the user's launch config
+  assert.equal(candidate.config.server.ctx, 550072);
+  // selection + request defaults still come from the profile (for display/use)
+  assert.equal(candidate.config.selectedProfile, "p1");
+  assert.equal(candidate.requestDefaults.max_tokens, 7777);
+});
+
 test("mapProfileToServerConfig maps DS4 CUDA env from profile", () => {
   const mapped = mapProfileToServerConfig({
     server: {
