@@ -190,6 +190,8 @@ export async function executeTool(name, args = {}, options = {}) {
         return await toolSearch(args, options);
       case "list":
         return await toolList(args, options);
+      case "sage":
+        return await toolSage(args, options);
       default:
         return { content: `Unknown tool: ${name}`, isError: true };
     }
@@ -868,6 +870,13 @@ export function bashFileReadFallbackReason(input) {
     ? input.command
     : undefined;
   if (typeof command !== "string" || command.trim().length === 0) return undefined;
+
+  // Detect when bash is used to call sage manually — redirect to sage tool
+  const sagePattern = /^\s*(sage|Sage)\b/m;
+  if (sagePattern.test(command.trim())) {
+    return "bash command invokes sage manually. Use the 'sage' tool instead — it returns LaTeX automatically and logs to Call Debug.";
+  }
+
   const findReason = findExecDumpReason(command);
   if (findReason) return findReason;
   const xargsReason = xargsDumpReason(command);
@@ -899,6 +908,124 @@ export function bashFileReadFallbackReason(input) {
  * @param {boolean} [afterReadGuardBlock] – true when the read guard already
  *        blocked something this turn; produces a stronger refusal message.
  */
+// ---------------------------------------------------------------------------
+// sage
+// ---------------------------------------------------------------------------
+
+/**
+ * Execute a SageMath computation and return the result.
+ * Uses `sage -c "code"` which runs Sage and prints output.
+ * Falls back to `sage -c "print(\"LaTeX:\"); print(latex(\"code\"))"` for
+ * LaTeX-formatted math when possible.
+ */
+async function toolSage(args, options) {
+  const code = args.code;
+  if (!code || typeof code !== "string") {
+    return { content: "sage: code is required", isError: true };
+  }
+
+  const timeoutSec = Number(args.timeout_sec) || 60;
+  const cwd = workspaceRoot(options);
+  const sageCallLog = options.sageCallLog;
+
+  // Wrap the user code so Sage prints both the plain result and LaTeX
+  const wrapper = `
+__result__ = ${code.trim()}
+if __result__ is not None:
+    try:
+        import json
+        # Try latex() for symbolic results
+        from sage.all import latex
+        print("LaTeX:", latex(__result__))
+    except:
+        pass
+    print("Result:", __result__)
+`;
+
+  return new Promise((resolve) => {
+    const stdoutBuf = new HeadTailBuffer(64 * 1024, 0);
+    const stderrBuf = new HeadTailBuffer(8 * 1024, 0);
+    let killed = false;
+    const startTime = Date.now();
+
+    const child = spawn("sage", ["-c", wrapper], {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+
+    child.stdout.on("data", (chunk) => stdoutBuf.push(chunk));
+    child.stderr.on("data", (chunk) => stderrBuf.push(chunk));
+
+    const timer = setTimeout(() => {
+      killed = true;
+      child.kill("SIGKILL");
+    }, timeoutSec * 1000);
+
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      const durationMs = Date.now() - startTime;
+      if (sageCallLog) {
+        sageCallLog.record({
+          type: "sage_call",
+          code: code.slice(0, 200),
+          status: "error",
+          error: err.message,
+          durationMs
+        });
+      }
+      resolve({ content: `sage error: ${err.message}`, isError: true });
+    });
+
+    child.on("exit", (exitCode, signalName) => {
+      clearTimeout(timer);
+      const stdout = stdoutBuf.toString().trim();
+      const stderr = stderrBuf.toString().trim();
+      const durationMs = Date.now() - startTime;
+      const parts = [];
+
+      if (stdout) parts.push(stdout);
+      if (stderr) parts.push(`stderr: ${stderr}`);
+      if (killed) parts.push("(killed: timeout exceeded)");
+      else if (exitCode !== 0 && !stdout) parts.push(`sage exit code: ${exitCode}`);
+
+      // Extract LaTeX for frontend rendering hint
+      let latexOutput = null;
+      const latexMatch = stdout.match(/^LaTeX:\s*(.+)$/m);
+      if (latexMatch) {
+        latexOutput = latexMatch[1].trim();
+      }
+
+      // Log to sage call debug
+      const sageCode = args.code; // original code string (not shadowed by exit code)
+      if (sageCallLog) {
+        sageCallLog.record({
+          type: "sage_call",
+          code: typeof sageCode === "string" ? sageCode.slice(0, 200) : String(sageCode),
+          status: killed ? "timeout" : exitCode === 0 ? "success" : "error",
+          exitCode,
+          stdoutBytes: stdoutBuf.total,
+          stderrBytes: stderrBuf.total,
+          durationMs,
+          latexOutput
+        });
+      }
+
+      const content = parts.join("\n\n");
+      resolve({
+        content,
+        isError: (exitCode !== 0 && !stdout) || killed,
+        raw: {
+          exit_code: exitCode,
+          signal: signalName,
+          killed,
+          stdout_bytes: stdoutBuf.total,
+          stderr_bytes: stderrBuf.total
+        }
+      });
+    });
+  });
+}
+
 export function checkBashFileReadFallback(input, afterReadGuardBlock = false) {
   const reason = bashFileReadFallbackReason(input);
   if (!reason) return undefined;

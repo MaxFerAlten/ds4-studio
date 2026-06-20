@@ -55,6 +55,7 @@ import { ResearchStateStore } from "./research/researchStateStore.mjs";
 import { ResearchModelClient } from "./research/researchModelClient.mjs";
 import { exportSession } from "./research/researchExport.mjs";
 import { CallDebugRecorder } from "./callDebug.mjs";
+import { sageState, SageCallLog, sageBinaryExists, sageResponds } from "./sageState.mjs";
 
 const PROXY_TIMEOUT_MS = 60 * 60 * 1000;
 const HTTP_DRAIN_GRACE_MS = 2000;
@@ -103,14 +104,16 @@ async function ensureBackendDirs() {
   }
 }
 
-async function applyProfileByName(name) {
+async function applyProfileByName(name, { applyServerConfig = true } = {}) {
   const entry = await loadProfileOrDefault(name);
   if (!entry) {
     activeProfile = null;
     activeRequestDefaults = { ...REQUEST_DEFAULTS };
     return null;
   }
-  const candidate = buildProfileCandidate(entry, config, REQUEST_DEFAULTS, entry.name);
+  const candidate = buildProfileCandidate(entry, config, REQUEST_DEFAULTS, entry.name, {
+    applyServerConfig
+  });
   config = candidate.config;
   activeRequestDefaults = candidate.requestDefaults;
   activeProfile = entry;
@@ -118,8 +121,12 @@ async function applyProfileByName(name) {
   return entry;
 }
 
+// On boot the saved config.json is the single source of truth for launch
+// settings. Load the selected profile only for its request defaults / active
+// selection; do NOT let it overwrite the user's tuned server config (ctx, etc).
+// Switching a profile via /api/profiles/select still applies + persists it.
 const bootProfileName = config.selectedProfile || DEFAULT_PROFILE_NAME;
-await applyProfileByName(bootProfileName);
+await applyProfileByName(bootProfileName, { applyServerConfig: false });
 
 const initialValidation = validateConfig(config);
 if (!initialValidation.ok) {
@@ -144,6 +151,12 @@ const callDebugRecorder = new CallDebugRecorder({
   excludePaths: config.callDebug.excludePaths
 });
 if (config.callDebug.enabled) callDebugRecorder.install({ modelBase: backendBase() });
+
+// SageMath call debug log — dedicated ring for every Sage invocation
+const sageCallLogDir = path.isAbsolute(config.callDebug.dir)
+  ? path.join(config.callDebug.dir, "..", "sage")
+  : path.join(PROJECT_ROOT, config.callDebug.dir, "..", "sage");
+const sageCallLog = new SageCallLog({ dir: sageCallLogDir, maxEntries: 100 });
 
 async function healthCheck() {
   // The wrapper gates server endpoints by mode (/v1/models -> 409 in agent mode),
@@ -675,14 +688,36 @@ app.get("/api/server/config", (_req, res) => {
 
 app.get("/api/call-debug", (req, res) => {
   const limit = Number.parseInt(req.query.limit, 10);
+  const n = Number.isInteger(limit) ? limit : undefined;
+  const modelEntries = callDebugRecorder.list({ limit: n });
+  const sageEntries = sageCallLog.list({ limit: n }).map((e) => ({
+    id: e.id,
+    ts: e.ts,
+    category: "sage",
+    method: "SAGE",
+    status: e.exitCode != null ? e.exitCode : e.status === "success" ? 0 : -1,
+    ok: e.status === "success",
+    durationMs: e.durationMs,
+    url: e.code || "",
+    host: "localhost",
+    error: e.error || null,
+    reqBody: e.code || null,
+    respBody: e.latexOutput || null,
+    sageRaw: e
+  }));
+  // Merge and sort by timestamp descending
+  const merged = [...modelEntries, ...sageEntries].sort(
+    (a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime()
+  );
   res.json({
     enabled: config.callDebug.enabled,
-    entries: callDebugRecorder.list({ limit: Number.isInteger(limit) ? limit : undefined })
+    entries: n ? merged.slice(0, n) : merged
   });
 });
 
 app.delete("/api/call-debug", (_req, res) => {
   callDebugRecorder.clear();
+  sageCallLog.clear();
   res.json({ cleared: true });
 });
 
@@ -930,6 +965,55 @@ app.get("/api/agent/status", async (req, res) => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// SageMath control endpoints
+// ---------------------------------------------------------------------------
+
+app.post("/api/sage/start", asyncHandler(async (req, res) => {
+  // Check if sage binary exists
+  if (!sageBinaryExists()) {
+    sageState.enabled = false;
+    return res.status(404).json({
+      active: false,
+      error: "SageMath non è installato su questa macchina. Installa SageMath per usare questo comando."
+    });
+  }
+
+  // Check if sage responds
+  const health = await sageResponds();
+  if (!health.ok) {
+    sageState.enabled = false;
+    return res.status(503).json({
+      active: false,
+      error: `SageMath è installato ma non risponde: ${health.error || "errore sconosciuto"}. Verifica che sage sia avviabile con 'sage -c "print(pi)"'.`
+    });
+  }
+
+  sageState.enabled = true;
+  sageState.version = health.version;
+  sageState.lastCheck = new Date().toISOString();
+  res.json({
+    active: true,
+    message: `SageMath attivato (${health.version || "versione sconosciuta"}). Usa tool sage nelle richieste agentiche.`
+  });
+}));
+
+app.post("/api/sage/stop", asyncHandler(async (req, res) => {
+  sageState.enabled = false;
+  res.json({ active: false, message: "SageMath disattivato. Il tool sage non sarà più disponibile." });
+}));
+
+app.get("/api/sage/status", asyncHandler(async (req, res) => {
+  res.json({
+    enabled: sageState.enabled,
+    version: sageState.version,
+    lastCheck: sageState.lastCheck,
+    binaryExists: sageBinaryExists()
+  });
+}));
+
+// ---------------------------------------------------------------------------
+
 /**
  * Agent chat endpoint with auto-loop tool execution.
  * Streams SSE events: agent_status, agent_text, agent_reasoning,
@@ -1055,7 +1139,10 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
       iteration++;
 
       const basePayload = buildChatPayload({ ...reqParams, stream: true }, fullMessages);
-      basePayload.tools = AGENT_TOOLS;
+      // Filter out sage tool if SageMath is not enabled
+      basePayload.tools = sageState.enabled
+        ? AGENT_TOOLS
+        : AGENT_TOOLS.filter((t) => t.function?.name !== "sage");
       basePayload.stream = true;
       basePayload.stream_options = { include_usage: true };
 
@@ -1282,7 +1369,8 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
           signal: controller.signal,
           onProgress: tc.name === "bash"
             ? (chunk) => writeAgentSse("agent_tool_progress", { id: tc.id, name: tc.name, chunk })
-            : undefined
+            : undefined,
+          sageCallLog: tc.name === "sage" ? sageCallLog : undefined
         };
         const result = await executeTool(tc.name, tc.arguments, opts);
 

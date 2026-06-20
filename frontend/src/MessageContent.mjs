@@ -307,6 +307,27 @@ function normalizeLatexLists(content) {
   return content;
 }
 
+function fencedCodeBlock(content, language = "") {
+  const raw = String(content || "").replace(/\n+$/g, "");
+  const longest = Math.max(3, ...Array.from(raw.matchAll(/`+/g), (match) => match[0].length + 1));
+  const fence = "`".repeat(longest);
+  return `${fence}${language}\n${raw}\n${fence}`;
+}
+
+function latexListingLanguage(environment, options = "") {
+  if (environment !== "lstlisting") return "";
+  if (/python/i.test(options)) return "python";
+  return "";
+}
+
+function normalizeLatexCodeListings(content) {
+  return content.replace(
+    /\\begin\s*\{(verbatim|lstlisting)\}(\s*\[[^\]]*\])?([\s\S]*?)\\end\s*\{\1\}/g,
+    (_match, environment, options, body) =>
+      `\n\n${fencedCodeBlock(body.replace(/^\n/, ""), latexListingLanguage(environment, options))}\n\n`
+  );
+}
+
 function readableReference(label) {
   const value = label.includes(":") ? label.slice(label.indexOf(":") + 1) : label;
   return value.replace(/[-_]+/g, " ");
@@ -353,6 +374,7 @@ function normalizeLatexDocument(content) {
     }
   );
 
+  body = normalizeLatexCodeListings(body);
   body = [body, suffix].filter(Boolean).join("\n\n");
   body = normalizeLatexLists(body)
     .replace(/\\subsubsection\*?\s*\{([^{}]*)\}/g, "\n\n#### $1\n\n")

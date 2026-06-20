@@ -8,6 +8,12 @@ export function parseAgentInput(text, agentMode) {
     return { type: "control", action: control[1].toLowerCase() };
   }
 
+  // SageMath control commands — work only when agent mode is active
+  const sageControl = trimmed.match(/^\/sage\s+(start|stop|status)\s*$/i);
+  if (sageControl) {
+    return { type: "sageControl", action: sageControl[1].toLowerCase() };
+  }
+
   const alias = trimmed.match(/^\/agent\s+(\S+)(?:\s+([\s\S]*))?$/i);
   if (alias) {
     const name = alias[1].toLowerCase();

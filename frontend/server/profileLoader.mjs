@@ -78,8 +78,17 @@ export function mapProfileToRequestDefaults(profile) {
   };
 }
 
-export function buildProfileCandidate(entry, baseConfig, baseRequestDefaults, selectedProfile = entry?.name || "") {
-  const serverPatch = mapProfileToServerConfig(entry.profile);
+export function buildProfileCandidate(
+  entry,
+  baseConfig,
+  baseRequestDefaults,
+  selectedProfile = entry?.name || "",
+  { applyServerConfig = true } = {}
+) {
+  // When applyServerConfig is false the profile only contributes the active
+  // selection and request defaults; baseConfig.server is left untouched so the
+  // user's saved launch config (e.g. ctx) stays the single source of truth.
+  const serverPatch = applyServerConfig ? mapProfileToServerConfig(entry.profile) : {};
   return {
     entry,
     config: {

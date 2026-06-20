@@ -516,6 +516,7 @@ pre {
 }
 .call-debug-cat.model { background: #243a4d; color: #8fc6e6; }
 .call-debug-cat.provider { background: #3a2f4d; color: #c6a8e6; }
+.call-debug-cat.sage { background: #1d3d2f; color: #8ed6b6; }
 .call-debug-method { flex: none; font-size: 11px; font-weight: 600; color: #cdd6e0; width: 3.2em; }
 .call-debug-status { flex: none; font-size: 11px; color: #9fb0c4; width: 3em; }
 .call-debug-dur { flex: none; font-size: 11px; color: #9fb0c4; width: 4.5em; text-align: right; }

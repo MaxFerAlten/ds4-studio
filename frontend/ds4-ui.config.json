@@ -14,7 +14,7 @@
     "mtp": "",
     "mtpDraft": 1,
     "mtpMargin": 3,
-    "ctx": 65536,
+    "ctx": 550072,
     "tokens": 8192,
     "threads": 0,
     "backend": "auto",
