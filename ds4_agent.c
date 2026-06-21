@@ -3,6 +3,8 @@
 #include "ds4_help.h"
 #include "ds4_kvstore.h"
 #include "ds4_web.h"
+#include "ds4_context_blob.h"
+#include "ds4_tool_compress.h"
 #include "linenoise.h"
 
 #include <errno.h>
@@ -114,6 +116,7 @@ typedef struct {
     ds4_tokens transcript;
     char *cache_dir;
     char *sysprompt_path;
+    char *context_blob_dir;
     char session_sha[41];
     char *session_title;
     uint64_t session_created_at;
@@ -158,6 +161,13 @@ typedef struct {
     agent_bash_job *bash_jobs;
     int next_bash_job_id;
     bool raw_mode_needs_restore;
+    uint64_t compression_events;
+    uint64_t compression_original_bytes;
+    uint64_t compression_compressed_bytes;
+    uint64_t compression_blob_count;
+    uint64_t compression_retrieve_count;
+    char last_compression_strategy[64];
+    char last_compression_blob_id[80];
 
     /* Wrapper embedding hook: when set, agent_publish() forwards published
      * bytes to this callback on the worker thread (before locking w->mu) so the
@@ -989,6 +999,22 @@ static const char agent_tools_prompt_after_edit[] =
     "{\n"
     "  \"type\": \"function\",\n"
     "  \"function\": {\n"
+    "    \"name\": \"retrieve_context_blob\",\n"
+    "    \"description\": \"Retrieve an exact byte range from a previously compressed local tool output blob.\",\n"
+    "    \"parameters\": {\n"
+    "      \"type\": \"object\",\n"
+    "      \"properties\": {\n"
+    "        \"id\": {\"type\": \"string\"},\n"
+    "        \"offset\": {\"type\": \"number\"},\n"
+    "        \"length\": {\"type\": \"number\", \"maximum\": 200000}\n"
+    "      },\n"
+    "      \"required\": [\"id\"]\n"
+    "    }\n"
+    "  }\n"
+    "}\n\n"
+    "{\n"
+    "  \"type\": \"function\",\n"
+    "  \"function\": {\n"
     "    \"name\": \"write\",\n"
     "    \"description\": \"Create or overwrite a text file.\",\n"
     "    \"parameters\": {\n"
@@ -1089,12 +1115,27 @@ static char *agent_build_system_prompt_reminder(void) {
     char *tools = agent_build_tools_prompt();
     const char *start = "\n\n[System prompt reminder follows.]\n";
     const char *end = "[End system prompt reminder.]\n\n";
-    size_t len = strlen(start) + strlen(tools) + strlen(end) + 1;
+    size_t start_len = strlen(start);
+    size_t tools_len = strlen(tools);
+    size_t end_len = strlen(end);
+    if (start_len > SIZE_MAX - tools_len) {
+        free(tools);
+        fprintf(stderr, "ds4-agent: system prompt reminder overflow\n");
+        exit(1);
+    }
+    size_t prefix_len = start_len + tools_len;
+    if (end_len > SIZE_MAX - prefix_len - 1) {
+        free(tools);
+        fprintf(stderr, "ds4-agent: system prompt reminder overflow\n");
+        exit(1);
+    }
+    size_t len = prefix_len + end_len + 1;
     char *out = xmalloc(len);
-    out[0] = '\0';
-    strcat(out, start);
-    strcat(out, tools);
-    strcat(out, end);
+    size_t off = 0;
+    memcpy(out + off, start, start_len); off += start_len;
+    memcpy(out + off, tools, tools_len); off += tools_len;
+    memcpy(out + off, end, end_len); off += end_len;
+    out[off] = '\0';
     free(tools);
     return out;
 }
@@ -6365,11 +6406,153 @@ static void test_agent_rejects_invalid_native_slash_commands(void) {
     AGENT_TEST_ASSERT(!agent_parse_slash_command("hello", &parsed));
 }
 
+static void agent_test_remove_blob_dir(const char *dir, const char *id) {
+    if (dir && id && ds4_context_blob_id_valid(id)) {
+        char path[PATH_MAX];
+        snprintf(path, sizeof(path), "%s/sha256/%s.txt", dir, id + 7);
+        unlink(path);
+    }
+    if (dir) {
+        char sha_dir[PATH_MAX];
+        snprintf(sha_dir, sizeof(sha_dir), "%s/sha256", dir);
+        rmdir(sha_dir);
+        rmdir(dir);
+    }
+}
+
+static void test_context_blob_put_read_range(void) {
+    char tmpl[PATH_MAX];
+    snprintf(tmpl, sizeof(tmpl), "/tmp/ds4_blob_test_XXXXXX");
+    char *dir = mkdtemp(tmpl);
+    AGENT_TEST_ASSERT(dir != NULL);
+    if (!dir) return;
+
+    const char *text = "abcdefghijklmnopqrstuvwxyz";
+    ds4_context_blob_ref ref;
+    char err[256] = {0};
+    AGENT_TEST_ASSERT(ds4_context_blob_put_text(dir, text, strlen(text),
+                                                &ref, err, sizeof(err)));
+    AGENT_TEST_ASSERT(ds4_context_blob_id_valid(ref.id));
+    AGENT_TEST_ASSERT(!strcmp(ref.id,
+        "sha256:71c480df93d6ae2f1efad1447c66c9525e316218cf51fc8d9ed832f2daf18b73"));
+    AGENT_TEST_ASSERT(ref.bytes == strlen(text));
+
+    char *range = ds4_context_blob_read_range(dir, ref.id, 2, 5,
+                                              err, sizeof(err));
+    AGENT_TEST_ASSERT(range != NULL);
+    AGENT_TEST_ASSERT(range && !strcmp(range, "cdefg"));
+    free(range);
+
+    range = ds4_context_blob_read_range(dir, ref.id, 999, 10,
+                                        err, sizeof(err));
+    AGENT_TEST_ASSERT(range != NULL);
+    AGENT_TEST_ASSERT(range && !strcmp(range, ""));
+    free(range);
+
+    range = ds4_context_blob_read_range(dir, "sha256:../bad", 0, 10,
+                                        err, sizeof(err));
+    AGENT_TEST_ASSERT(range == NULL);
+    AGENT_TEST_ASSERT(strstr(err, "invalid blob id") != NULL);
+    free(range);
+    agent_test_remove_blob_dir(dir, ref.id);
+}
+
+static void test_tool_compression_log_saves_retrievable_original(void) {
+    char tmpl[PATH_MAX];
+    snprintf(tmpl, sizeof(tmpl), "/tmp/ds4_compress_test_XXXXXX");
+    char *dir = mkdtemp(tmpl);
+    AGENT_TEST_ASSERT(dir != NULL);
+    if (!dir) return;
+
+    agent_buf input = {0};
+    for (int i = 0; i < 700; i++) {
+        if (i == 350)
+            agent_buf_puts(&input, "compile.c:42: fatal error: important missing header\n");
+        else
+            agent_buf_puts(&input, "ordinary build noise line with repeated compiler chatter\n");
+    }
+
+    ds4_tool_compress_result r;
+    char err[256] = {0};
+    AGENT_TEST_ASSERT(ds4_tool_compress_result_text("bash", input.ptr,
+                                                    input.len, dir,
+                                                    &r, err, sizeof(err)));
+    AGENT_TEST_ASSERT(r.changed);
+    AGENT_TEST_ASSERT(r.original_saved);
+    AGENT_TEST_ASSERT(r.compressed_bytes < r.original_bytes);
+    AGENT_TEST_ASSERT(ds4_context_blob_id_valid(r.blob_id));
+    AGENT_TEST_ASSERT(strstr(r.text, "[ds4 compressed tool output]") != NULL);
+    AGENT_TEST_ASSERT(strstr(r.text, "fatal error: important missing header") != NULL);
+
+    char *full = ds4_context_blob_read_range(dir, r.blob_id, 0,
+                                             r.original_bytes,
+                                             err, sizeof(err));
+    AGENT_TEST_ASSERT(full != NULL);
+    AGENT_TEST_ASSERT(full && !strcmp(full, input.ptr));
+    free(full);
+
+    char saved_id[80];
+    snprintf(saved_id, sizeof(saved_id), "%s", r.blob_id);
+    ds4_tool_compress_result_free(&r);
+    free(input.ptr);
+    agent_test_remove_blob_dir(dir, saved_id);
+}
+
+static void test_tool_compression_short_output_unchanged(void) {
+    ds4_tool_compress_result r;
+    char err[128] = {0};
+    const char *short_text = "small output\n";
+    AGENT_TEST_ASSERT(ds4_tool_compress_result_text("bash", short_text,
+                                                    strlen(short_text), "/tmp",
+                                                    &r, err, sizeof(err)));
+    AGENT_TEST_ASSERT(!r.changed);
+    AGENT_TEST_ASSERT(r.text == NULL);
+    AGENT_TEST_ASSERT(r.original_bytes == strlen(short_text));
+    ds4_tool_compress_result_free(&r);
+}
+
+static void test_tool_compression_search_keeps_paths_and_omits_bulk(void) {
+    char tmpl[PATH_MAX];
+    snprintf(tmpl, sizeof(tmpl), "/tmp/ds4_search_compress_test_XXXXXX");
+    char *dir = mkdtemp(tmpl);
+    AGENT_TEST_ASSERT(dir != NULL);
+    if (!dir) return;
+
+    agent_buf input = {0};
+    for (int i = 0; i < 900; i++) {
+        char line[160];
+        snprintf(line, sizeof(line), "src/file%d.c:%d: repeated search match %d\n",
+                 i % 3, i + 1, i);
+        agent_buf_puts(&input, line);
+    }
+
+    ds4_tool_compress_result r;
+    char err[256] = {0};
+    AGENT_TEST_ASSERT(ds4_tool_compress_result_text("search", input.ptr,
+                                                    input.len, dir,
+                                                    &r, err, sizeof(err)));
+    AGENT_TEST_ASSERT(r.changed);
+    AGENT_TEST_ASSERT(strstr(r.text, "[search output compressed]") != NULL);
+    AGENT_TEST_ASSERT(strstr(r.text, "src/file0.c") != NULL);
+    AGENT_TEST_ASSERT(strstr(r.text, "omitted_lines:") != NULL);
+    AGENT_TEST_ASSERT(r.omitted_lines > 0);
+
+    char saved_id[80];
+    snprintf(saved_id, sizeof(saved_id), "%s", r.blob_id);
+    ds4_tool_compress_result_free(&r);
+    free(input.ptr);
+    agent_test_remove_blob_dir(dir, saved_id);
+}
+
 static void ds4_agent_unit_tests_run(void) {
     test_agent_edit_upto_tail_newline_is_not_part_of_anchor();
     test_agent_edit_upto_requires_tail_after_newline_strip();
     test_agent_parse_native_slash_commands();
     test_agent_rejects_invalid_native_slash_commands();
+    test_context_blob_put_read_range();
+    test_tool_compression_short_output_unchanged();
+    test_tool_compression_log_saves_retrievable_original();
+    test_tool_compression_search_keeps_paths_and_omits_bulk();
 }
 #endif
 
@@ -7305,6 +7488,65 @@ static pid_t agent_tool_pid(const agent_tool_call *call) {
     return (pid_t)agent_parse_int_default(agent_tool_arg_value(call, "pid"), 0, 0, INT_MAX);
 }
 
+static bool agent_parse_u64_default(const char *s, uint64_t def,
+                                    uint64_t min, uint64_t max,
+                                    uint64_t *out) {
+    if (!s || !s[0]) {
+        *out = def;
+        return def >= min && def <= max;
+    }
+    char *end = NULL;
+    errno = 0;
+    unsigned long long v = strtoull(s, &end, 10);
+    if (errno || s == end) return false;
+    while (*end && isspace((unsigned char)*end)) end++;
+    if (*end || (uint64_t)v < min || (uint64_t)v > max) return false;
+    *out = (uint64_t)v;
+    return true;
+}
+
+static char *agent_tool_retrieve_context_blob(agent_worker *w,
+                                              const agent_tool_call *call) {
+    const char *id = agent_tool_arg_value(call, "id");
+    if (!id || !id[0]) return xstrdup("Tool error: retrieve_context_blob requires id\n");
+    uint64_t offset = 0;
+    uint64_t length = 20000;
+    if (!agent_parse_u64_default(agent_tool_arg_value(call, "offset"), 0, 0,
+                                 UINT64_MAX, &offset))
+        return xstrdup("Tool error: retrieve_context_blob offset must be a non-negative integer\n");
+    if (!agent_parse_u64_default(agent_tool_arg_value(call, "length"), 20000, 1,
+                                 200000, &length))
+        return xstrdup("Tool error: retrieve_context_blob length must be 1..200000\n");
+
+    char err[256] = {0};
+    char *range = ds4_context_blob_read_range(w->context_blob_dir, id, offset,
+                                              length, err, sizeof(err));
+    if (!range) {
+        agent_buf b = {0};
+        agent_buf_puts(&b, "Tool error: retrieve_context_blob failed: ");
+        agent_buf_puts(&b, err[0] ? err : "unknown error");
+        agent_buf_puts(&b, "\n");
+        return agent_buf_take(&b);
+    }
+    pthread_mutex_lock(&w->mu);
+    w->compression_retrieve_count++;
+    agent_wake_locked(w);
+    pthread_mutex_unlock(&w->mu);
+
+    size_t got = strlen(range);
+    agent_buf out = {0};
+    char hdr[256];
+    snprintf(hdr, sizeof(hdr),
+             "context_blob id=%s offset=%llu bytes=%zu requested_length=%llu\n<context_blob_range>\n",
+             id, (unsigned long long)offset, got, (unsigned long long)length);
+    agent_buf_puts(&out, hdr);
+    agent_buf_puts(&out, range);
+    if (got && range[got - 1] != '\n') agent_buf_puts(&out, "\n");
+    agent_buf_puts(&out, "</context_blob_range>\n");
+    free(range);
+    return agent_buf_take(&out);
+}
+
 /* ============================================================================
  * Tool Dispatch
  * ============================================================================
@@ -7323,6 +7565,7 @@ static char *agent_execute_tool_call(agent_worker *w, const agent_tool_call *cal
     if (!strcmp(call->name, "list")) return agent_tool_list(call);
     if (!strcmp(call->name, "edit")) return agent_tool_edit(w, call);
     if (!strcmp(call->name, "search")) return agent_tool_search(w, call);
+    if (!strcmp(call->name, "retrieve_context_blob")) return agent_tool_retrieve_context_blob(w, call);
     if (!strcmp(call->name, "google_search")) return agent_tool_google_search(w, call);
     if (!strcmp(call->name, "visit_page")) return agent_tool_visit_page(w, call);
 
@@ -7389,6 +7632,67 @@ static char *agent_execute_tool_calls(agent_worker *w, const agent_tool_calls *c
     }
     if (calls->len == 0) agent_buf_puts(&all, "Tool error: empty tool call block\n");
     return agent_buf_take(&all);
+}
+
+static const char *agent_tool_calls_compression_name(const agent_tool_calls *calls) {
+    if (!calls || calls->len <= 0) return "tool_result";
+    for (int i = 0; i < calls->len; i++) {
+        if (calls->v[i].name && !strcmp(calls->v[i].name, "retrieve_context_blob"))
+            return "retrieve_context_blob";
+    }
+    if (calls->len != 1 || !calls->v[0].name) return "tool_result";
+    return calls->v[0].name;
+}
+
+static char *agent_maybe_compress_tool_result(agent_worker *w,
+                                              const agent_tool_calls *calls,
+                                              const char *tool_result) {
+    if (!tool_result) return NULL;
+    ds4_tool_compress_result compressed = {0};
+    char err[256] = {0};
+    const char *tool_name = agent_tool_calls_compression_name(calls);
+    bool ok = ds4_tool_compress_result_text(tool_name,
+                                            tool_result,
+                                            strlen(tool_result),
+                                            w->context_blob_dir,
+                                            &compressed,
+                                            err,
+                                            sizeof(err));
+    if (!ok) {
+        agent_trace(w, "tool compression skipped error=%s",
+                    err[0] ? err : "unknown");
+        ds4_tool_compress_result_free(&compressed);
+        return NULL;
+    }
+    if (!compressed.changed || !compressed.text) {
+        ds4_tool_compress_result_free(&compressed);
+        return NULL;
+    }
+
+    char *text = compressed.text;
+    compressed.text = NULL;
+    pthread_mutex_lock(&w->mu);
+    w->compression_events++;
+    w->compression_original_bytes += compressed.original_bytes;
+    w->compression_compressed_bytes += compressed.compressed_bytes;
+    if (compressed.original_saved) w->compression_blob_count++;
+    snprintf(w->last_compression_strategy,
+             sizeof(w->last_compression_strategy), "%s", compressed.strategy);
+    snprintf(w->last_compression_blob_id,
+             sizeof(w->last_compression_blob_id), "%s", compressed.blob_id);
+    agent_wake_locked(w);
+    pthread_mutex_unlock(&w->mu);
+
+    agent_trace(w,
+                "tool compression strategy=%s kind=%s original=%llu compressed=%llu blob=%s omitted_lines=%llu",
+                compressed.strategy,
+                ds4_tool_content_kind_name(compressed.kind),
+                (unsigned long long)compressed.original_bytes,
+                (unsigned long long)compressed.compressed_bytes,
+                compressed.blob_id,
+                (unsigned long long)compressed.omitted_lines);
+    ds4_tool_compress_result_free(&compressed);
+    return text;
 }
 
 /* If compaction happens while a bash process is still alive, inject a small
@@ -8087,14 +8391,18 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
         } else {
             tool_result = agent_execute_tool_calls(w, &dsml.calls);
         }
+        char *compressed_result = agent_maybe_compress_tool_result(w, &dsml.calls,
+                                                                   tool_result);
+        const char *append_result = compressed_result ? compressed_result : tool_result;
         int projected_tokens = 0;
-        if (!agent_tool_result_fits_context(w, tool_result,
+        if (!agent_tool_result_fits_context(w, append_result,
                                             AGENT_TOOL_RESULT_RESERVE_TOKENS,
                                             &projected_tokens))
         {
             if (!agent_worker_compact(w, "tool result would exceed context",
                                       compact_err, sizeof(compact_err)))
             {
+                free(compressed_result);
                 free(tool_result);
                 agent_dsml_parser_free(&dsml);
                 if (agent_err_is_interrupted(compact_err)) {
@@ -8105,22 +8413,25 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
                 agent_set_error(w, compact_err[0] ? compact_err : "context compaction failed");
                 return 1;
             }
-            if (!agent_tool_result_fits_context(w, tool_result,
+            if (!agent_tool_result_fits_context(w, append_result,
                                                 AGENT_TOOL_RESULT_RESERVE_TOKENS,
                                                 &projected_tokens))
             {
+                free(compressed_result);
+                compressed_result = NULL;
                 free(tool_result);
                 agent_buf b = {0};
                 char msg[256];
                 snprintf(msg, sizeof(msg),
-                         "Tool error: tool result still does not fit after context compaction "
+                         "Tool error: tool result still does not fit after live-zone compression and context compaction "
                          "(projected_prompt=%d tokens, ctx=%d, reserve=%d). "
                          "Retry with a smaller read/search/bash output.\n",
                          projected_tokens, w->cfg->gen.ctx_size,
                          AGENT_TOOL_RESULT_RESERVE_TOKENS);
                 agent_buf_puts(&b, msg);
                 tool_result = agent_buf_take(&b);
-                if (!agent_tool_result_fits_context(w, tool_result, 16, NULL)) {
+                append_result = tool_result;
+                if (!agent_tool_result_fits_context(w, append_result, 16, NULL)) {
                     free(tool_result);
                     agent_dsml_parser_free(&dsml);
                     agent_set_error(w, "context full after compaction");
@@ -8128,7 +8439,8 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
                 }
             }
         }
-        ds4_chat_append_message(w->engine, &w->transcript, "tool", tool_result);
+        ds4_chat_append_message(w->engine, &w->transcript, "tool", append_result);
+        free(compressed_result);
         free(tool_result);
         agent_dsml_parser_free(&dsml);
 
@@ -9645,6 +9957,7 @@ static int agent_worker_init(agent_worker *w, ds4_engine *engine, agent_config *
     };
     w->web = ds4_web_create(&web_cfg);
     w->sysprompt_path = ds4_kvstore_path_join(w->cache_dir, "sysprompt.kv");
+    w->context_blob_dir = ds4_kvstore_path_join(w->cache_dir, "context-blobs");
     if (cfg->gen.trace_path && cfg->gen.trace_path[0]) {
         w->trace = fopen(cfg->gen.trace_path, "ab");
         if (!w->trace) {
@@ -9668,6 +9981,7 @@ static void agent_worker_free(agent_worker *w) {
     ds4_tokens_free(&w->transcript);
     free(w->cache_dir);
     free(w->sysprompt_path);
+    free(w->context_blob_dir);
     free(w->session_title);
     free(w->legacy_session_path_to_delete);
     free(w->queued_user_drain_text);

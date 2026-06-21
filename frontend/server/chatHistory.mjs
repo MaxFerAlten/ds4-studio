@@ -80,7 +80,8 @@ export async function listConversationHistory(dir, { limit = 50 } = {}) {
       title: historyTitle(messages),
       modifiedAt: stats.mtime.toISOString(),
       size: stats.size,
-      messages: messages.length
+      messages: messages.length,
+      metadata: parseConversationMetadata(markdown)
     });
   }
 

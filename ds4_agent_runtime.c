@@ -593,15 +593,43 @@ static const char *runtime_command_name(agent_slash_command_kind kind) {
     }
 }
 
+static char *runtime_command_strdup_or_null(const char *s) {
+    if (!s) s = "";
+    size_t n = strlen(s);
+    char *p = malloc(n + 1);
+    if (!p) return NULL;
+    memcpy(p, s, n + 1);
+    return p;
+}
+
+static char *runtime_command_vformat_or_null(const char *fmt, va_list ap) {
+    char *message = NULL;
+    va_list ap_copy;
+    va_copy(ap_copy, ap);
+    if (vasprintf(&message, fmt, ap_copy) < 0) message = NULL;
+    va_end(ap_copy);
+    return message;
+}
+
+static void runtime_command_set_data_json(ds4_agent_command_result *result,
+                                          const char *fmt, ...) {
+    free(result->data_json);
+    result->data_json = NULL;
+    va_list ap;
+    va_start(ap, fmt);
+    result->data_json = runtime_command_vformat_or_null(fmt, ap);
+    va_end(ap);
+}
+
 static void runtime_command_set_message(ds4_agent_command_result *result,
                                         const char *fmt, ...) {
     free(result->message);
     result->message = NULL;
     va_list ap;
     va_start(ap, fmt);
-    if (vasprintf(&result->message, fmt, ap) < 0) result->message = NULL;
+    result->message = runtime_command_vformat_or_null(fmt, ap);
     va_end(ap);
-    if (!result->message) result->message = xstrdup("");
+    if (!result->message) result->message = runtime_command_strdup_or_null("");
 }
 
 static int runtime_command_fail(ds4_agent_command_result *result,
@@ -612,9 +640,10 @@ static int runtime_command_fail(ds4_agent_command_result *result,
     result->message = NULL;
     va_list ap;
     va_start(ap, fmt);
-    if (vasprintf(&result->message, fmt, ap) < 0) result->message = NULL;
+    result->message = runtime_command_vformat_or_null(fmt, ap);
     va_end(ap);
-    if (!result->message) result->message = xstrdup("native agent command failed");
+    if (!result->message)
+        result->message = runtime_command_strdup_or_null("native agent command failed");
     return -1;
 }
 
@@ -720,9 +749,8 @@ int ds4_agent_runtime_command(ds4_agent_runtime *rt, const char *command,
                                         err[0] ? err : "unknown error");
         runtime_command_set_message(result, "Saved session %.8s (%d tokens).",
                                     sha, tokens);
-        if (asprintf(&result->data_json,
-                     "{\"sha\":\"%.40s\",\"tokens\":%d}", sha, tokens) < 0)
-            result->data_json = NULL;
+        runtime_command_set_data_json(
+            result, "{\"sha\":\"%.40s\",\"tokens\":%d}", sha, tokens);
         break;
     }
 
@@ -783,8 +811,7 @@ int ds4_agent_runtime_command(ds4_agent_runtime *rt, const char *command,
             return runtime_command_fail(result, 500, "delete failed: %s",
                                         err[0] ? err : "unknown error");
         runtime_command_set_message(result, "Deleted session %.8s.", sha);
-        if (asprintf(&result->data_json, "{\"sha\":\"%.40s\"}", sha) < 0)
-            result->data_json = NULL;
+        runtime_command_set_data_json(result, "{\"sha\":\"%.40s\"}", sha);
         break;
     }
 
@@ -797,9 +824,8 @@ int ds4_agent_runtime_command(ds4_agent_runtime *rt, const char *command,
                                         err[0] ? err : "unknown error");
         runtime_command_set_message(result, "Stripped session %.8s (%u tokens).",
                                     sha, tokens);
-        if (asprintf(&result->data_json,
-                     "{\"sha\":\"%.40s\",\"tokens\":%u}", sha, tokens) < 0)
-            result->data_json = NULL;
+        runtime_command_set_data_json(
+            result, "{\"sha\":\"%.40s\",\"tokens\":%u}", sha, tokens);
         break;
     }
 

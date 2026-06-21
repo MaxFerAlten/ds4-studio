@@ -11,6 +11,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <ctype.h>
+#include <stdint.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -20,6 +21,7 @@
 
 #define MAX_HEADER (64 * 1024)
 #define MAX_BODY (64 * 1024 * 1024)
+#define WRAP_JSON_STRING_MAX MAX_BODY
 
 static int server_fd = -1;
 static pthread_t accept_thread;
@@ -106,13 +108,23 @@ static char *parse_json_string(const char *json, const char *key) {
     if (!val) return NULL;
     while (*p && *p != '"') {
         if (len + 2 >= cap) {
-            cap *= 2;
-            char *new_val = realloc(val, cap);
+            if (cap >= WRAP_JSON_STRING_MAX + 1) {
+                free(val);
+                return NULL;
+            }
+            size_t new_cap = cap > SIZE_MAX / 2 ? WRAP_JSON_STRING_MAX + 1 : cap * 2;
+            if (new_cap > WRAP_JSON_STRING_MAX + 1) new_cap = WRAP_JSON_STRING_MAX + 1;
+            if (new_cap <= cap) {
+                free(val);
+                return NULL;
+            }
+            char *new_val = realloc(val, new_cap);
             if (!new_val) {
                 free(val);
                 return NULL;
             }
             val = new_val;
+            cap = new_cap;
         }
         if (*p == '\\') {
             p++;
@@ -170,16 +182,32 @@ static bool read_request(int fd, wrap_http_request *r) {
 
     ssize_t hend = -1;
     while (hend < 0 && buf_len < MAX_HEADER) {
-        if (buf_len + 1024 >= buf_cap) {
-            buf_cap *= 2;
-            char *new_buf = realloc(buf, buf_cap);
+        size_t want = MAX_HEADER - buf_len;
+        if (want > 1024) want = 1024;
+        if (want == 0 || buf_len > SIZE_MAX - want - 1) {
+            free(buf);
+            return false;
+        }
+        const size_t need_cap = buf_len + want + 1;
+        if (need_cap > buf_cap) {
+            size_t new_cap = buf_cap;
+            while (new_cap < need_cap) {
+                if (new_cap >= MAX_HEADER + 1 || new_cap > SIZE_MAX / 2) {
+                    free(buf);
+                    return false;
+                }
+                new_cap *= 2;
+                if (new_cap > MAX_HEADER + 1) new_cap = MAX_HEADER + 1;
+            }
+            char *new_buf = realloc(buf, new_cap);
             if (!new_buf) {
                 free(buf);
                 return false;
             }
             buf = new_buf;
+            buf_cap = new_cap;
         }
-        ssize_t n = recv(fd, buf + buf_len, 1024, 0);
+        ssize_t n = recv(fd, buf + buf_len, want, 0);
         if (n < 0 && errno == EINTR) continue;
         if (n <= 0) {
             free(buf);
@@ -215,6 +243,10 @@ static bool read_request(int fd, wrap_http_request *r) {
         return false;
     }
 
+    if ((size_t)hend > SIZE_MAX - (size_t)clen - 1) {
+        free(buf);
+        return false;
+    }
     size_t total_needed = (size_t)hend + (size_t)clen;
     if (buf_cap < total_needed + 1) {
         char *new_buf = realloc(buf, total_needed + 1);

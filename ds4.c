@@ -593,8 +593,33 @@ typedef struct {
     char error[256];
 } ds4_cursor;
 
+static void ds4_threads_shutdown_best_effort(void);
+static void ds4_release_instance_lock(void);
+
+static bool g_alloc_guard_enabled;
+static const char *g_alloc_guard_phase;
+static volatile int g_ds4_fatal_cleanup_running;
+
+static void ds4_fatal_cleanup(void) {
+    if (__sync_lock_test_and_set(&g_ds4_fatal_cleanup_running, 1)) return;
+
+    /* Fatal exits are still process-fatal, but release global runtime state
+     * that is safe to clean without a ds4_engine pointer.  Per-engine mmap and
+     * heap ownership remains with the OS on exit; the singleton lock, GPU
+     * runtime handles and worker pool should not be left dirty when cleanup is
+     * reachable. */
+    g_alloc_guard_enabled = false;
+    g_alloc_guard_phase = NULL;
+    ds4_threads_shutdown_best_effort();
+#ifndef DS4_NO_GPU
+    ds4_gpu_cleanup();
+#endif
+    ds4_release_instance_lock();
+}
+
 static void ds4_die(const char *msg) {
     fprintf(stderr, "ds4: %s\n", msg);
+    ds4_fatal_cleanup();
     exit(1);
 }
 
@@ -623,6 +648,7 @@ static uint32_t ds4_expected_layer_compress_ratio(uint32_t il) {
 
 static void ds4_die_errno(const char *what, const char *path) {
     fprintf(stderr, "ds4: %s '%s': %s\n", what, path, strerror(errno));
+    ds4_fatal_cleanup();
     exit(1);
 }
 
@@ -645,9 +671,6 @@ static uint64_t hash_bytes(const void *ptr, uint64_t len) {
     return h;
 }
 
-static bool g_alloc_guard_enabled;
-static const char *g_alloc_guard_phase;
-
 static void ds4_alloc_guard_begin(const char *phase) {
     g_alloc_guard_phase = phase;
     g_alloc_guard_enabled = true;
@@ -666,6 +689,7 @@ static void ds4_alloc_guard_check(const char *op, size_t size) {
             g_alloc_guard_phase ? g_alloc_guard_phase : "guarded phase",
             op,
             size);
+    ds4_fatal_cleanup();
     exit(1);
 }
 
@@ -700,7 +724,12 @@ static void *xrealloc(void *ptr, size_t size) {
 static void *xmalloc_zeroed(size_t n, size_t size) {
     if (size != 0 && n > SIZE_MAX / size) ds4_die("allocation size overflow");
     const size_t total = n * size;
-    void *p = xmalloc(total ? total : 1);
+    if (total == 0) {
+        void *p = xmalloc(1);
+        memset(p, 0, 1);
+        return p;
+    }
+    void *p = xmalloc(total);
     /*
      * This is intentionally not calloc(). Large untouched calloc ranges may be
      * represented by the VM through shared zero-page bookkeeping. The CPU decode
@@ -1391,14 +1420,33 @@ static void ds4_threads_init(void) {
     }
 }
 
-static void ds4_threads_shutdown(void) {
+static bool ds4_threads_called_from_worker(void) {
+    if (!g_pool.initialized) return false;
+    pthread_t self = pthread_self();
+    for (uint32_t i = 1; i < g_pool.n_threads; i++) {
+        if (pthread_equal(g_pool.threads[i], self)) return true;
+    }
+    return false;
+}
+
+static void ds4_threads_shutdown_impl(bool best_effort) {
     if (!g_pool.initialized) return;
+
+    const bool from_worker = ds4_threads_called_from_worker();
 
     pthread_mutex_lock(&g_pool.mutex);
     g_pool.shutdown = true;
     g_pool.generation++;
     pthread_cond_broadcast(&g_pool.work_cond);
     pthread_mutex_unlock(&g_pool.mutex);
+
+    if (from_worker) {
+        /* A worker-triggered fatal path cannot safely pthread_join itself or
+         * destroy the synchronization primitives it is unwinding through.  The
+         * process is about to exit on fatal cleanup; for non-fatal misuse, this
+         * still avoids a hard self-deadlock. */
+        return;
+    }
 
     for (uint32_t i = 1; i < g_pool.n_threads; i++) {
         pthread_join(g_pool.threads[i], NULL);
@@ -1408,6 +1456,15 @@ static void ds4_threads_shutdown(void) {
     pthread_cond_destroy(&g_pool.work_cond);
     pthread_mutex_destroy(&g_pool.mutex);
     memset(&g_pool, 0, sizeof(g_pool));
+    (void)best_effort;
+}
+
+static void ds4_threads_shutdown_best_effort(void) {
+    ds4_threads_shutdown_impl(true);
+}
+
+static void ds4_threads_shutdown(void) {
+    ds4_threads_shutdown_impl(false);
 }
 
 /* Run a row-parallel CPU kernel, falling back to serial execution for small

@@ -8,6 +8,17 @@ export function parseAgentInput(text, agentMode) {
     return { type: "control", action: control[1].toLowerCase() };
   }
 
+  const pony = trimmed.match(/^\/pony(?:\s+(\S+))?\s*$/i);
+  if (pony) {
+    if (!agentMode) return { type: "pony", action: "inactive" };
+    const arg = (pony[1] || "status").toLowerCase();
+    if (arg === "status") return { type: "pony", action: "status" };
+    if (arg === "start") return { type: "pony", action: "set", mode: "full" };
+    if (arg === "stop") return { type: "pony", action: "set", mode: "off" };
+    if (["off", "lite", "full", "ultra"].includes(arg)) return { type: "pony", action: "set", mode: arg };
+    return { type: "pony", action: "invalid", mode: arg };
+  }
+
   // SageMath control commands — work only when agent mode is active
   const sageControl = trimmed.match(/^\/sage\s+(start|stop|status)\s*$/i);
   if (sageControl) {

@@ -35,6 +35,32 @@ test("agent session starts, reports status, and stores committed messages", () =
   assert.deepEqual(session.messages(), [...messages, { role: "assistant", content: "ok" }]);
 });
 
+test("agent session tracks pony mode and resets prompt state when it changes", () => {
+  const session = new AgentSessionManager();
+  session.start();
+  const first = session.choosePayload(
+    { messages: [{ role: "system", content: "tools" }, { role: "user", content: "hello" }], tools: AGENT_TOOLS },
+    { allowDelta: true }
+  );
+  session.commit(first.pending, { role: "assistant", content: "hi" });
+  assert.equal(session.status().revision, 1);
+
+  const status = session.setPonyMode("full");
+  assert.equal(status.ponyMode, "full");
+  assert.equal(status.revision, 0);
+  assert.deepEqual(session.messages(), []);
+  assert.match(status.lastReason, /pony mode set to full/);
+
+  session.stop();
+  assert.equal(session.status().ponyMode, "off");
+});
+
+test("agent session rejects invalid pony modes", () => {
+  const session = new AgentSessionManager();
+  session.start();
+  assert.throws(() => session.setPonyMode("banana"), /invalid pony mode/);
+});
+
 test("agent session keeps full payloads for stateless chat completions", () => {
   const session = new AgentSessionManager();
   session.start();

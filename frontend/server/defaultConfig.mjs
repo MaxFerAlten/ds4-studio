@@ -101,7 +101,11 @@ export const REQUEST_DEFAULTS = Object.freeze({
   endpoint: "/v1/chat/completions",
   model: "deepseek-v4-flash",
   system: "",
-  max_tokens: 4096,
+  // "auto" is resolved by the DS4-Studio proxy to:
+  // min(context room - context_margin, max_tokens_safety_cap).
+  max_tokens: "auto",
+  max_tokens_safety_cap: 32768,
+  context_margin: 1024,
   temperature: 0,
   top_p: 1,
   top_k: 0,

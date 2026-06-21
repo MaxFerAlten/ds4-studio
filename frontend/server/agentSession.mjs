@@ -14,6 +14,7 @@
 
 import { createHash } from "node:crypto";
 import { ReadGuard } from "./agentTools.mjs";
+import { normalizePonyMode } from "./agentPonyPolicy.mjs";
 
 /** Recursively convert any value into a key-sorted, stable representation. */
 function stable(value) {
@@ -209,6 +210,7 @@ export class AgentSessionManager {
     this.active = false;
     this.lastMode = "none";
     this.lastReason = "not started";
+    this.ponyMode = "off";
     this.readGuard = new ReadGuard();
     this.usageTotals = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
   }
@@ -223,6 +225,7 @@ export class AgentSessionManager {
       toolsHash: sha1(AGENT_TOOLS)
     };
     this.active = true;
+    this.ponyMode = "off";
     this.lastMode = "none";
     this.lastReason = "agent started";
     return this.status();
@@ -232,6 +235,7 @@ export class AgentSessionManager {
   stop() {
     this.state = null;
     this.active = false;
+    this.ponyMode = "off";
     this.lastMode = "none";
     this.lastReason = "agent stopped";
     this.readGuard.clearAll();
@@ -260,8 +264,24 @@ export class AgentSessionManager {
       sessionId: this.state?.sessionId || null,
       revision: this.state?.revision || 0,
       lastMode: this.lastMode,
-      lastReason: this.lastReason
+      lastReason: this.lastReason,
+      ponyMode: this.ponyMode
     };
+  }
+
+  /** Set the DS4 lean-agent policy mode and reset prompt state so it applies. */
+  setPonyMode(mode) {
+    const normalized = normalizePonyMode(mode);
+    if (!normalized) {
+      const err = new Error("invalid pony mode");
+      err.code = "EINVAL";
+      throw err;
+    }
+    this.ponyMode = normalized;
+    if (this.active) {
+      this.reset(`pony mode set to ${normalized}; session reset`);
+    }
+    return this.status();
   }
 
   /** Return a copy of the canonical backend transcript for this agent session. */
@@ -478,13 +498,13 @@ export class AgentSessionManager {
   }
 
   /** Reset session state without deactivating. */
-  reset() {
+  reset(reason = "session reset by user") {
     if (!this.state) return;
     this.state.revision = 0;
     this.state.messageHashes = [];
     this.state.messages = [];
     this.lastMode = "none";
-    this.lastReason = "session reset by user";
+    this.lastReason = reason;
     this.readGuard.clearAll();
     this.usageTotals = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
   }
@@ -533,7 +553,7 @@ export class AgentSessionStore {
 
   stop(key) {
     const mgr = this.sessions.get(this.key(key));
-    if (!mgr) return { active: false, sessionId: null, revision: 0, lastMode: "none", lastReason: "agent stopped" };
+    if (!mgr) return { active: false, sessionId: null, revision: 0, lastMode: "none", lastReason: "agent stopped", ponyMode: "off" };
     const status = mgr.stop();
     this.sessions.delete(this.key(key));
     return status;
@@ -541,7 +561,7 @@ export class AgentSessionStore {
 
   status(key) {
     const mgr = this.sessions.get(this.key(key));
-    if (!mgr) return { active: false, sessionId: null, revision: 0, lastMode: "none", lastReason: "no session" };
+    if (!mgr) return { active: false, sessionId: null, revision: 0, lastMode: "none", lastReason: "no session", ponyMode: "off" };
     return mgr.status();
   }
 
