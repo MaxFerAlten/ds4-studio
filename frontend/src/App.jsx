@@ -17,10 +17,15 @@ const AGENT_SESSION_KEY = readAgentSessionKey();
 const AGENT_HEADERS = { "X-Agent-Session-Key": AGENT_SESSION_KEY };
 import { commandLineFromConfig } from "../server/commandBuilder.mjs";
 import { REQUEST_DEFAULTS } from "../server/defaultConfig.mjs";
-import { buildChatPayload } from "../server/requestPayload.mjs";
+import { buildChatPayload, isAutoMaxTokens } from "../server/requestPayload.mjs";
 import { backendHealthLabel, backendStartupDetail, streamFailureNotice } from "./backendStatus.mjs";
 import { formatNativeAgentNotice, parseAgentInput } from "./agentCommands.mjs";
 import { exportConversationMarkdown, markdownFileName } from "./conversationExport.mjs";
+import {
+  historyHasPersistableAssistant,
+  sessionHasAgentMetadata,
+  sessionsExposeMetadata
+} from "./historyPersistence.mjs";
 import {
   clearStoredExportIncludeReasoning,
   readStoredExportDir,
@@ -172,7 +177,9 @@ const STARTUP_PLACEHOLDERS = {
 };
 
 const REQUEST_HELP = {
-  max_tokens: "Maximum number of tokens generated in the reply.",
+  max_tokens: "Maximum generated tokens. Use 'auto' to fill available context up to the safety cap.",
+  max_tokens_safety_cap: "Upper bound used when max_tokens is auto; prevents runaway generations.",
+  context_margin: "Context tokens reserved when max_tokens is auto, to avoid filling the KV window exactly.",
   temperature: "Sampling creativity; higher values make output less deterministic.",
   top_p: "Nucleus sampling: restricts choice to tokens within the given cumulative probability.",
   top_k: "Restricts sampling to the top K tokens; 0 means no top-k limit.",
@@ -185,6 +192,9 @@ const REQUEST_HELP = {
 };
 
 const REQUEST_PLACEHOLDERS = {
+  max_tokens: "auto or a number",
+  max_tokens_safety_cap: "32768",
+  context_margin: "1024",
   seed: "empty = random/default",
   stop: "optional, one stop sequence per line",
   reasoning_effort: "high"
@@ -237,6 +247,12 @@ const AGENT_COMMANDS = [
   { name: "/exit", desc: "Save and return to server mode" },
   { name: "/agent stop", desc: "Exit agent mode and return to server mode" },
   { name: "/agent status", desc: "Show agent worker status" },
+  { name: "/pony status", desc: "Show Pony/lean agent mode" },
+  { name: "/pony start", desc: "Enable Pony full mode for Agent Mode" },
+  { name: "/pony stop", desc: "Disable Pony mode" },
+  { name: "/pony lite", desc: "Use light lean-agent guidance" },
+  { name: "/pony full", desc: "Use full lean-agent guidance" },
+  { name: "/pony ultra", desc: "Use aggressive YAGNI guidance" },
 ];
 
 const CHECKBOX_FIELDS = new Set([
@@ -532,6 +548,7 @@ export default function App() {
   );
   const [input, setInput] = useState("");
   const [tab, setTab] = useState("request");
+  const [historyTab, setHistoryTab] = useState("chat");
   const [serverBusy, setServerBusy] = useState(false);
   const [callDebugEntries, setCallDebugEntries] = useState([]);
   const [callDebugEnabled, setCallDebugEnabled] = useState(true);
@@ -805,8 +822,7 @@ export default function App() {
 
   useEffect(() => {
     if (generationBusy || !config?.history?.enabled || !messages.length) return;
-    const lastMessage = messages[messages.length - 1];
-    if (lastMessage?.role !== "assistant" || (!lastMessage.content && !lastMessage.reasoning)) return;
+    if (!historyHasPersistableAssistant(messages)) return;
 
     const metadata = { agentMode };
     const signature = JSON.stringify({ dir: config.history.dir, messages, metadata });
@@ -841,6 +857,20 @@ export default function App() {
   const canSend = Boolean(status?.running && status?.healthy && !generationBusy);
   const startupDetail = backendStartupDetail(status);
   const historyConfig = config?.history || { enabled: false, dir: "" };
+  const historyMetadataAvailable = useMemo(
+    () => sessionsExposeMetadata(historySessions),
+    [historySessions]
+  );
+  const chatHistorySessions = useMemo(
+    () => historySessions.filter((session) => !sessionHasAgentMetadata(session)),
+    [historySessions]
+  );
+  const agentHistorySessions = useMemo(
+    () => historySessions.filter(sessionHasAgentMetadata),
+    [historySessions]
+  );
+  const activeConversationHistorySessions = historyTab === "agent" ? agentHistorySessions : chatHistorySessions;
+  const activeConversationHistoryLabel = historyTab === "agent" ? "Agent sessions" : "Chat sessions";
 
   function updateServerField(key, value) {
     setCommandDraft(null);
@@ -1212,7 +1242,9 @@ export default function App() {
         chunkTokens: Number(searchChunkTokens) || 25000,
         request: {
           model: request.model,
-          max_tokens: Number(request.max_tokens),
+          max_tokens: isAutoMaxTokens(request.max_tokens) ? "auto" : Number(request.max_tokens),
+          max_tokens_safety_cap: Number(request.max_tokens_safety_cap),
+          context_margin: Number(request.context_margin),
           temperature: Number(request.temperature),
           top_p: Number(request.top_p),
           top_k: Number(request.top_k),
@@ -1443,6 +1475,45 @@ export default function App() {
       ]);
     } catch (err) {
       setMessages(appendTransientNotice(`Failed /agent status: ${err.message}`));
+    }
+  }
+
+  async function callPonyControl(agentInput) {
+    if (agentInput.action === "inactive") {
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: "Pony mode applies only in Agent Mode. Run /agent start first.", agentNotice: true }
+      ]);
+      return;
+    }
+    if (agentInput.action === "invalid") {
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: `Invalid /pony mode: ${agentInput.mode}. Use start, stop, status, lite, full, or ultra.`, agentNotice: true }
+      ]);
+      return;
+    }
+    try {
+      const options = agentInput.action === "status"
+        ? { method: "GET", headers: AGENT_HEADERS }
+        : {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...AGENT_HEADERS },
+            body: JSON.stringify({ mode: agentInput.mode })
+          };
+      const res = await fetch("/api/agent/pony", options);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setAgentStatus((prev) => ({ ...prev, ...data }));
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: data.message || `Pony mode: ${data.ponyMode || "off"}.`, agentNotice: true }
+      ]);
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: `Failed /pony: ${err.message}`, agentNotice: true }
+      ]);
     }
   }
 
@@ -1689,6 +1760,9 @@ export default function App() {
         if (agentInput.action === "stop") return toggleAgentMode(false);
         return callAgentStatus();
       }
+      if (agentInput.type === "pony") {
+        return callPonyControl(agentInput);
+      }
       if (agentInput.type === "sageControl") {
         return callSageControl(agentInput.action);
       }
@@ -1921,9 +1995,9 @@ export default function App() {
             </button>
           ) : null}
           {agentMode && (
-            <div className="agent-badge" title={`Agent Mode Active - Iteration ${agentStatus?.iteration || 0}`}>
+            <div className="agent-badge" title={`Agent Mode Active - Iteration ${agentStatus?.iteration || 0} · Pony ${agentStatus?.ponyMode || "off"}`}>
               <div className="agent-indicator"></div>
-              <span>Agent Active</span>
+              <span>Agent Active · Pony: {agentStatus?.ponyMode || "off"}</span>
               <button
                 type="button"
                 className="agent-stop-btn"
@@ -2151,8 +2225,37 @@ export default function App() {
         </div>
         {tab === "request" ? (
           <div className="form-grid">
+            <label className="field full" style={{ gridColumn: "1 / -1" }} data-tooltip={requestHelp("max_tokens")}>
+              <span>Output budget / max_tokens</span>
+              <input
+                value={request.max_tokens ?? ""}
+                placeholder={REQUEST_PLACEHOLDERS.max_tokens || ""}
+                onChange={(event) => updateRequestField("max_tokens", event.target.value)}
+              />
+              <small>Usa <code>auto</code> per generare fino a EOS/context, limitato dal safety cap.</small>
+            </label>
+            {isAutoMaxTokens(request.max_tokens) ? (
+              <>
+                <label className="field" data-tooltip={requestHelp("max_tokens_safety_cap")}>
+                  <span>Safety cap</span>
+                  <input
+                    value={request.max_tokens_safety_cap ?? ""}
+                    placeholder={REQUEST_PLACEHOLDERS.max_tokens_safety_cap || ""}
+                    onChange={(event) => updateRequestField("max_tokens_safety_cap", event.target.value)}
+                  />
+                </label>
+                <label className="field" data-tooltip={requestHelp("context_margin")}>
+                  <span>Context margin</span>
+                  <input
+                    value={request.context_margin ?? ""}
+                    placeholder={REQUEST_PLACEHOLDERS.context_margin || ""}
+                    onChange={(event) => updateRequestField("context_margin", event.target.value)}
+                  />
+                </label>
+              </>
+            ) : null}
             {Object.entries(request)
-              .filter(([key]) => key !== "system" && key !== "model" && key !== "endpoint")
+              .filter(([key]) => !["system", "model", "endpoint", "max_tokens", "max_tokens_safety_cap", "context_margin"].includes(key))
               .map(([key, value]) => (
                 <label className="field" key={key} data-tooltip={requestHelp(key)}>
                   <span>{key}</span>
@@ -2300,7 +2403,36 @@ export default function App() {
         ) : null}
         {tab === "history" ? (
           <div className="history-panel">
-            {config?.research?.enabled ? (
+            <div className="history-mode-tabs" role="tablist" aria-label="History type">
+              <button
+                type="button"
+                className={historyTab === "deepresearch" ? "active" : ""}
+                onClick={() => setHistoryTab("deepresearch")}
+                aria-selected={historyTab === "deepresearch"}
+              >
+                <span className="history-mode-label">deepresearch</span>
+                <span className="history-mode-count">{researchSessions.length}</span>
+              </button>
+              <button
+                type="button"
+                className={historyTab === "chat" ? "active" : ""}
+                onClick={() => setHistoryTab("chat")}
+                aria-selected={historyTab === "chat"}
+              >
+                <span className="history-mode-label">chat</span>
+                <span className="history-mode-count">{chatHistorySessions.length}</span>
+              </button>
+              <button
+                type="button"
+                className={historyTab === "agent" ? "active" : ""}
+                onClick={() => setHistoryTab("agent")}
+                aria-selected={historyTab === "agent"}
+              >
+                <span className="history-mode-label">agent</span>
+                <span className="history-mode-count">{agentHistorySessions.length}</span>
+              </button>
+            </div>
+            {historyTab === "deepresearch" && config?.research?.enabled ? (
               <section className="research-history-section">
                 <div className="history-section-header">
                   <strong>Deep Research</strong>
@@ -2343,9 +2475,19 @@ export default function App() {
                 </div>
               </section>
             ) : null}
-            <div className="history-section-header">
-              <strong>Chat sessions</strong>
-            </div>
+            {historyTab === "deepresearch" && !config?.research?.enabled ? (
+              <div className="status-pill warn">Deep Research history is disabled</div>
+            ) : null}
+            {historyTab !== "deepresearch" ? (
+              <>
+                <div className="history-section-header">
+                  <strong>{activeConversationHistoryLabel}</strong>
+                </div>
+                {historyTab === "agent" && historySessions.length > 0 && !historyMetadataAvailable ? (
+                  <div className="status-pill warn">
+                    Agent history is enabled, but the live history endpoint is not returning metadata yet. Restart DS4 Studio to populate this tab.
+                  </div>
+                ) : null}
             <label className="setting-row">
               <input
                 type="checkbox"
@@ -2381,10 +2523,12 @@ export default function App() {
             {historyStatus ? <div className="status-pill">{historyStatus}</div> : null}
             <div className="history-session-list">
               {historyListBusy ? <div className="status-pill">Loading sessions...</div> : null}
-              {!historyListBusy && !historySessions.length ? (
-                <div className="status-pill warn">No saved sessions</div>
+              {!historyListBusy && !activeConversationHistorySessions.length ? (
+                <div className="status-pill warn">
+                  No saved {historyTab === "agent" ? "agent sessions" : "chat sessions"}
+                </div>
               ) : null}
-              {historySessions.map((session) => (
+              {activeConversationHistorySessions.map((session) => (
                 <div
                   className="history-session-row"
                   key={session.fileName}
@@ -2397,7 +2541,10 @@ export default function App() {
                   >
                     <strong>{session.title}</strong>
                     <span>{session.fileName}</span>
-                    <small>{session.messages} messages · {(session.size / 1024).toFixed(1)} KB</small>
+                    <small>
+                      {session.metadata?.agentMode ? "Agent mode · " : ""}
+                      {session.messages} messages · {(session.size / 1024).toFixed(1)} KB
+                    </small>
                   </button>
                   <button
                     type="button"
@@ -2411,6 +2558,8 @@ export default function App() {
                 </div>
               ))}
             </div>
+              </>
+            ) : null}
           </div>
         ) : null}
         {tab === "export" ? (

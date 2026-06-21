@@ -46,6 +46,16 @@ test("does not intercept direct native commands outside agent mode", () => {
   assert.equal(parseAgentInput("/unknown", false), null);
 });
 
+test("parses pony controls only as agent-scoped commands", () => {
+  assert.deepEqual(parseAgentInput("/pony", true), { type: "pony", action: "status" });
+  assert.deepEqual(parseAgentInput("/pony status", true), { type: "pony", action: "status" });
+  assert.deepEqual(parseAgentInput("/pony start", true), { type: "pony", action: "set", mode: "full" });
+  assert.deepEqual(parseAgentInput("/pony stop", true), { type: "pony", action: "set", mode: "off" });
+  assert.deepEqual(parseAgentInput("/pony ultra", true), { type: "pony", action: "set", mode: "ultra" });
+  assert.deepEqual(parseAgentInput("/pony banana", true), { type: "pony", action: "invalid", mode: "banana" });
+  assert.deepEqual(parseAgentInput("/pony start", false), { type: "pony", action: "inactive" });
+});
+
 test("canonicalizes agent aliases and preserves arguments", () => {
   assert.deepEqual(parseAgentInput("/agent save", false), {
     type: "native",

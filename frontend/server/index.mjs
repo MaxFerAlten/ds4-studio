@@ -16,7 +16,12 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
-import { buildChatPayload } from "./requestPayload.mjs";
+import {
+  buildChatPayload,
+  isAutoMaxTokens,
+  parseNonNegativeInt,
+  parsePositiveInt
+} from "./requestPayload.mjs";
 import {
   DEFAULT_PROFILE_NAME,
   buildProfileCandidate,
@@ -43,6 +48,7 @@ import { Ds4ProcessManager } from "./processManager.mjs";
 import { readRequestBody, requestHeadersForProxy } from "./proxy.mjs";
 import { readRocmStatusCached } from "./rocmSmi.mjs";
 import { AgentSessionStore, AGENT_SYSTEM_PROMPT, AGENT_TOOLS } from "./agentSession.mjs";
+import { appendPonyPolicy, buildPonyPolicy, normalizePonyMode, ponyCommandMessage } from "./agentPonyPolicy.mjs";
 import { checkBashFileReadFallback, executeTool } from "./agentTools.mjs";
 import {
   canonicalLegacyCommand,
@@ -82,7 +88,11 @@ if (process.env.DS4_UI_HOST) config.control.host = process.env.DS4_UI_HOST;
 if (process.env.DS4_UI_PORT) config.control.port = process.env.DS4_UI_PORT;
 
 let activeProfile = null;
-let activeRequestDefaults = { ...REQUEST_DEFAULTS };
+let activeRequestDefaults = { ...REQUEST_DEFAULTS, ...(config.requestDefaults || {}) };
+
+function effectiveRequestDefaults(base = REQUEST_DEFAULTS) {
+  return { ...base, ...(config.requestDefaults || {}) };
+}
 
 async function ensureBackendDirs() {
   const tracePath = config.server.trace;
@@ -108,14 +118,14 @@ async function applyProfileByName(name, { applyServerConfig = true } = {}) {
   const entry = await loadProfileOrDefault(name);
   if (!entry) {
     activeProfile = null;
-    activeRequestDefaults = { ...REQUEST_DEFAULTS };
+    activeRequestDefaults = effectiveRequestDefaults();
     return null;
   }
   const candidate = buildProfileCandidate(entry, config, REQUEST_DEFAULTS, entry.name, {
     applyServerConfig
   });
   config = candidate.config;
-  activeRequestDefaults = candidate.requestDefaults;
+  activeRequestDefaults = effectiveRequestDefaults(candidate.requestDefaults);
   activeProfile = entry;
   await ensureBackendDirs();
   return entry;
@@ -245,6 +255,63 @@ async function writeProxyChunk(res, chunk) {
   });
 }
 
+function stripAutoMaxTokenFields(payload = {}) {
+  const out = { ...payload };
+  delete out.max_tokens_safety_cap;
+  delete out.context_margin;
+  return out;
+}
+
+async function resolveAutoMaxTokensPayload(payload, signal) {
+  if (!payload || !isAutoMaxTokens(payload.max_tokens)) return stripAutoMaxTokenFields(payload);
+
+  const safetyCap = parsePositiveInt(
+    payload.max_tokens_safety_cap,
+    REQUEST_DEFAULTS.max_tokens_safety_cap
+  );
+  const contextMargin = parseNonNegativeInt(
+    payload.context_margin,
+    REQUEST_DEFAULTS.context_margin
+  );
+  const countPayload = stripAutoMaxTokenFields(payload);
+  delete countPayload.max_tokens;
+
+  const countRes = await fetch(`${backendBase()}/v1/token-count`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(countPayload),
+    signal
+  });
+  if (!countRes.ok) {
+    const txt = await countRes.text().catch(() => "");
+    throw new Error(`auto max_tokens token-count failed: backend HTTP ${countRes.status}: ${txt.slice(0, 400)}`);
+  }
+  const count = await countRes.json();
+  const contextLength = parsePositiveInt(count.context_length, null);
+  const promptTokens = parseNonNegativeInt(count.prompt_tokens, 0);
+  const room = contextLength === null
+    ? safetyCap
+    : Math.max(1, contextLength - promptTokens - contextMargin);
+  return {
+    ...countPayload,
+    max_tokens: Math.max(1, Math.min(room, safetyCap))
+  };
+}
+
+async function maybeResolveProxyAutoMaxTokens(req, body, signal) {
+  if (req.method !== "POST" || req.originalUrl.split("?")[0] !== "/v1/chat/completions") return body;
+  if (!String(req.headers["content-type"] || "").toLowerCase().includes("application/json")) return body;
+  let payload;
+  try {
+    payload = JSON.parse(body.toString("utf8"));
+  } catch {
+    return body;
+  }
+  if (!isAutoMaxTokens(payload?.max_tokens)) return body;
+  const resolved = await resolveAutoMaxTokensPayload(payload, signal);
+  return Buffer.from(JSON.stringify(resolved));
+}
+
 const manager = new Ds4ProcessManager({
   buildCommand: () => (wrapperEnabled() ? buildDs4WrapperArgs(config) : buildDs4Args(config)),
   buildEnv: () => config.server.env,
@@ -268,7 +335,8 @@ app.use("/v1", async (req, res) => {
   const { signal, cleanup } = abortOnClientDisconnect(req, res);
   try {
     const hasRequestBody = !["GET", "HEAD"].includes(req.method);
-    const body = hasRequestBody ? await readRequestBody(req) : undefined;
+    const rawBody = hasRequestBody ? await readRequestBody(req) : undefined;
+    const body = hasRequestBody ? await maybeResolveProxyAutoMaxTokens(req, rawBody, signal) : undefined;
     const options = {
       method: req.method,
       headers: requestHeadersForProxy(req, body),
@@ -358,7 +426,10 @@ function writeSse(res, event, data) {
 }
 
 async function callBackendCompletion({ messages, request, stream, signal }) {
-  const payload = buildChatPayload({ ...request, stream }, messages);
+  const payload = await resolveAutoMaxTokensPayload(
+    buildChatPayload({ ...request, stream }, messages),
+    signal
+  );
   let res;
   try {
     res = await fetch(`${backendBase()}/v1/chat/completions`, {
@@ -646,7 +717,7 @@ app.post("/api/profiles/select", asyncHandler(async (req, res) => {
   const validation = validateConfig(candidate.config);
   if (!validation.ok) return res.status(400).json(validation);
   config = await saveConfig(candidate.config);
-  activeRequestDefaults = candidate.requestDefaults;
+  activeRequestDefaults = effectiveRequestDefaults(candidate.requestDefaults);
   activeProfile = entry;
   await ensureBackendDirs();
   res.json({
@@ -919,6 +990,89 @@ function agentSessionKey(req) {
   return (headerKey || bodyKey || "").toString();
 }
 
+function writeAgentCommandSse(res, events) {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no"
+  });
+  for (const item of events) {
+    res.write(`event: ${item.event}\ndata: ${JSON.stringify(item.data)}\n\n`);
+  }
+  res.end();
+}
+
+function ponyCommandFromText(text) {
+  const match = String(text || "").trim().match(/^\/pony(?:\s+(\S+))?\s*$/i);
+  if (!match) return null;
+  const arg = (match[1] || "status").toLowerCase();
+  if (arg === "status") return { action: "status" };
+  const mode = normalizePonyMode(arg);
+  return mode ? { action: "set", mode } : { action: "invalid", mode: arg };
+}
+
+function ponyCommandPayload(req, command) {
+  const status = agentSessions.status(agentSessionKey(req));
+  if (command.action === "status") {
+    return {
+      status: 200,
+      payload: {
+        ok: true,
+        ...status,
+        message: `Pony mode: ${status.ponyMode || "off"}. Applies only to Agent Mode.`
+      }
+    };
+  }
+  if (command.action === "invalid") {
+    return {
+      status: 400,
+      payload: {
+        ok: false,
+        ...status,
+        error: `Invalid /pony mode: ${command.mode}. Use start, stop, status, lite, full, or ultra.`
+      }
+    };
+  }
+  const session = agentSessions.get(agentSessionKey(req));
+  if (!session || !session.active) {
+    return {
+      status: 400,
+      payload: {
+        ok: false,
+        active: false,
+        ponyMode: "off",
+        error: "Pony mode applies only in Agent Mode. Use /agent start first."
+      }
+    };
+  }
+  const nextStatus = session.setPonyMode(command.mode);
+  return {
+    status: 200,
+    payload: {
+      ok: true,
+      ...nextStatus,
+      message: ponyCommandMessage(command.mode)
+    }
+  };
+}
+
+function ponyCommandEvents(req, command) {
+  const result = ponyCommandPayload(req, command);
+  const payload = result.payload;
+  if (result.status >= 400) {
+    return [
+      { event: "agent_error", data: { error: payload.error || payload.message || "Pony command failed." } },
+      { event: "agent_done", data: { finish_reason: "error", active: Boolean(payload.active) } }
+    ];
+  }
+  return [
+    { event: "agent_status", data: payload },
+    { event: "agent_text", data: { content: payload.message } },
+    { event: "agent_done", data: { finish_reason: "command", active: Boolean(payload.active) } }
+  ];
+}
+
 app.post("/api/agent/start", asyncHandler(async (req, res) => {
   if (wrapperEnabled()) {
     const up = await fetch(`${backendBase()}/api/wrapper/switch-mode`, {
@@ -929,11 +1083,11 @@ app.post("/api/agent/start", asyncHandler(async (req, res) => {
     });
     const body = await up.json();
     if (!up.ok) return res.status(up.status).json(body);
-    agentSessions.start(agentSessionKey(req));
-    return res.json({ active: true, native: true, wrapper: body });
+    const status = agentSessions.start(agentSessionKey(req));
+    return res.json({ ...status, native: true, wrapper: body });
   }
-  agentSessions.start(agentSessionKey(req));
-  res.json({ active: true, native: false });
+  const status = agentSessions.start(agentSessionKey(req));
+  res.json({ ...status, native: false });
 }));
 
 app.post("/api/agent/stop", asyncHandler(async (req, res) => {
@@ -946,11 +1100,11 @@ app.post("/api/agent/stop", asyncHandler(async (req, res) => {
     });
     const body = await up.json();
     if (!up.ok) return res.status(up.status).json(body);
-    agentSessions.stop(agentSessionKey(req));
-    return res.json({ active: false, native: true, wrapper: body });
+    const status = agentSessions.stop(agentSessionKey(req));
+    return res.json({ ...status, native: true, wrapper: body });
   }
-  agentSessions.stop(agentSessionKey(req));
-  res.json({ active: false, native: false });
+  const status = agentSessions.stop(agentSessionKey(req));
+  res.json({ ...status, native: false });
 }));
 
 app.get("/api/agent/status", async (req, res) => {
@@ -964,6 +1118,43 @@ app.get("/api/agent/status", async (req, res) => {
     readGuardMode: AGENT_READ_GUARD_MODE
   });
 });
+
+app.get("/api/agent/pony", asyncHandler(async (req, res) => {
+  const status = agentSessions.status(agentSessionKey(req));
+  res.json({
+    ok: true,
+    active: status.active,
+    ponyMode: status.ponyMode || "off",
+    message: `Pony mode: ${status.ponyMode || "off"}. Applies only to Agent Mode.`
+  });
+}));
+
+app.post("/api/agent/pony", asyncHandler(async (req, res) => {
+  const session = agentSessions.get(agentSessionKey(req));
+  if (!session || !session.active) {
+    return res.status(400).json({
+      ok: false,
+      active: false,
+      ponyMode: "off",
+      error: "Pony mode applies only in Agent Mode. Use /agent start first."
+    });
+  }
+  const normalized = normalizePonyMode(req.body?.mode || req.body?.action || "status");
+  if (!normalized) {
+    return res.status(400).json({
+      ok: false,
+      active: true,
+      ponyMode: session.ponyMode,
+      error: "Invalid pony mode. Use one of: start, stop, off, lite, full, ultra, status."
+    });
+  }
+  const status = session.setPonyMode(normalized);
+  res.json({
+    ok: true,
+    ...status,
+    message: ponyCommandMessage(normalized)
+  });
+}));
 
 // ---------------------------------------------------------------------------
 // SageMath control endpoints
@@ -1026,6 +1217,12 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
       return res.status(400).json({ error: "message is required and must be a non-empty string" });
     }
 
+    const ponyCommand = ponyCommandFromText(message);
+    if (ponyCommand) {
+      writeAgentCommandSse(res, ponyCommandEvents(req, ponyCommand));
+      return;
+    }
+
     if (isAgentSlashCommand(message)) {
       const result = await proxyNativeAgentCommand(
         fetch,
@@ -1036,23 +1233,20 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
       if (result.payload.active === false) {
         agentSessions.stop(agentSessionKey(req));
       }
-      res.writeHead(200, {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache, no-transform",
-        Connection: "keep-alive",
-        "X-Accel-Buffering": "no"
-      });
-      for (const item of nativeCommandEvents(result.payload, result.ok)) {
-        res.write(`event: ${item.event}\ndata: ${JSON.stringify(item.data)}\n\n`);
-      }
-      res.end();
+      writeAgentCommandSse(res, nativeCommandEvents(result.payload, result.ok));
       return;
     }
+
+    const agentSession = agentSessions.get(agentSessionKey(req));
+    const ponyPolicy = buildPonyPolicy(agentSession?.ponyMode);
+    const outboundMessage = ponyPolicy
+      ? `${ponyPolicy}\n\nUser request:\n${message}`
+      : message;
 
     const up = await fetch(`${backendBase()}/api/native-agent/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message }),
+      body: JSON.stringify({ message: outboundMessage }),
       signal: req.signal
     });
 
@@ -1083,6 +1277,12 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
   const conversationMessages = Array.isArray(req.body?.messages) ? req.body.messages : [];
   const reqParams = req.body?.request || {};
 
+  const ponyCommand = ponyCommandFromText(userMessage);
+  if (ponyCommand) {
+    writeAgentCommandSse(res, ponyCommandEvents(req, ponyCommand));
+    return;
+  }
+
   if (!userMessage && !conversationMessages.length) {
     return res.status(400).json({ error: "message or messages array required" });
   }
@@ -1090,7 +1290,7 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
   let fullMessages = agentSession.messages();
   if (!fullMessages.length) {
     fullMessages = [
-      { role: "system", content: AGENT_SYSTEM_PROMPT },
+      { role: "system", content: appendPonyPolicy(AGENT_SYSTEM_PROMPT, agentSession.ponyMode) },
       ...normalizeAgentMessages(conversationMessages)
     ];
   }
@@ -1138,13 +1338,14 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
       }
       iteration++;
 
-      const basePayload = buildChatPayload({ ...reqParams, stream: true }, fullMessages);
+      let basePayload = buildChatPayload({ ...reqParams, stream: true }, fullMessages);
       // Filter out sage tool if SageMath is not enabled
       basePayload.tools = sageState.enabled
         ? AGENT_TOOLS
         : AGENT_TOOLS.filter((t) => t.function?.name !== "sage");
       basePayload.stream = true;
       basePayload.stream_options = { include_usage: true };
+      basePayload = await resolveAutoMaxTokensPayload(basePayload, controller.signal);
 
       // Choose payload mode. Probe the backend (cached) at the start of each
       // iteration so the stateful path is used automatically when supported,
@@ -1162,7 +1363,8 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
           iteration,
           mode: modeChoice.mode,
           reason: modeChoice.reason,
-          statefulSupported: allowDelta
+          statefulSupported: allowDelta,
+          ponyMode: agentSession.ponyMode
         });
         const url = `${backendBase()}${allowDelta ? AGENT_STATEFUL_PATH : "/v1/chat/completions"}`;
         try {
@@ -1189,7 +1391,8 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
           writeAgentSse("agent_status", {
             iteration,
             mode: "reset",
-            reason: "409 from backend; retrying as reset"
+            reason: "409 from backend; retrying as reset",
+            ponyMode: agentSession.ponyMode
           });
           modeChoice = agentSession.choosePayload(basePayload, {
             allowDelta,
@@ -1440,9 +1643,14 @@ app.post("/api/wrapper/switch-mode", asyncHandler(async (req, res) => {
 }));
 
 app.post("/api/native-agent/command", asyncHandler(async (req, res) => {
-  if (!wrapperEnabled()) return res.status(400).json({ error: "wrapper is not enabled" });
   const command = typeof req.body?.command === "string" ? req.body.command.trim() : "";
   if (!command) return res.status(400).json({ error: "command is required" });
+  const ponyCommand = ponyCommandFromText(command);
+  if (ponyCommand) {
+    const result = ponyCommandPayload(req, ponyCommand);
+    return res.status(result.status).json(result.payload);
+  }
+  if (!wrapperEnabled()) return res.status(400).json({ error: "wrapper is not enabled" });
   const result = await proxyNativeAgentCommand(
     fetch,
     backendBase(),

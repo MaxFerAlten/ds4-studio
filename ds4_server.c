@@ -115,8 +115,11 @@ static void buf_reserve(buf *b, size_t add) {
     if (add > SIZE_MAX - b->len - 1) die("buffer overflow");
     size_t need = b->len + add + 1;
     if (need <= b->cap) return;
-    size_t cap = b->cap ? b->cap * 2 : 256;
-    while (cap < need) cap *= 2;
+    size_t cap = b->cap ? b->cap : 256;
+    while (cap < need) {
+        if (cap > SIZE_MAX / 2) die("buffer overflow");
+        cap *= 2;
+    }
     b->ptr = xrealloc(b->ptr, cap);
     b->cap = cap;
 }

@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { DEFAULT_CONFIG } from "./defaultConfig.mjs";
+import { DEFAULT_CONFIG, REQUEST_DEFAULTS } from "./defaultConfig.mjs";
 
 const FRONTEND_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PROJECT_ROOT = path.resolve(FRONTEND_ROOT, "..");
@@ -65,7 +65,9 @@ export function mapProfileToRequestDefaults(profile) {
   const r = profile.request_defaults || {};
   const thinkingType = r.thinking?.type;
   return {
-    max_tokens: r.max_tokens ?? 4096,
+    max_tokens: r.max_tokens ?? REQUEST_DEFAULTS.max_tokens,
+    max_tokens_safety_cap: r.max_tokens_safety_cap ?? REQUEST_DEFAULTS.max_tokens_safety_cap,
+    context_margin: r.context_margin ?? REQUEST_DEFAULTS.context_margin,
     temperature: r.temperature ?? 0,
     top_p: r.top_p ?? 1,
     top_k: r.top_k ?? 0,

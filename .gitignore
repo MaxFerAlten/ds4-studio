@@ -21,6 +21,7 @@ doc/
 .superpowers/
 .docs/
 /docs/superpowers/plans/
+docs/certifications/
 docs/superpowers/specs/2026-06-13-deep-research-history-katex-export-design.md
 docs/superpowers/specs/2026-06-14-call-debug-page-design.md
 /frontend/dist/

@@ -66,6 +66,27 @@ test("listConversationHistory lists saved sessions newest first", async () => {
   }
 });
 
+test("listConversationHistory includes conversation metadata for history grouping", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "ds4-history-meta-test-"));
+  try {
+    await saveConversationHistory(
+      [{ role: "user", content: "agent task" }, { role: "assistant", content: "done" }],
+      {
+        dir: tmp,
+        now: new Date("2026-05-24T12:00:00Z"),
+        uniqueId: "agent",
+        metadata: { agentMode: true }
+      }
+    );
+
+    const sessions = await listConversationHistory(tmp);
+    assert.equal(sessions.length, 1);
+    assert.deepEqual(sessions[0].metadata, { agentMode: true });
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
+});
+
 test("deleteConversationHistory removes a single session file", async () => {
   const tmp = await mkdtemp(path.join(os.tmpdir(), "ds4-history-del-test-"));
   try {

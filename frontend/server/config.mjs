@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { DEFAULT_CONFIG } from "./defaultConfig.mjs";
+import { DEFAULT_CONFIG, REQUEST_DEFAULTS } from "./defaultConfig.mjs";
 import { mergeResearchConfig, validateResearchConfig } from "./research/researchConfig.mjs";
 
 export { buildDs4Args } from "./commandBuilder.mjs";
@@ -122,6 +122,10 @@ export function mergeConfig(input = {}) {
       ...DEFAULT_CONFIG.wrapper,
       ...wrapperInput
     },
+    requestDefaults: {
+      ...REQUEST_DEFAULTS,
+      ...(isPlainObject(input.requestDefaults) ? input.requestDefaults : {})
+    },
     research: mergeResearchConfig(input.research),
     callDebug: {
       ...DEFAULT_CONFIG.callDebug,
@@ -229,7 +233,7 @@ function validateOptionalEnvTokens(env, key, label, min, max) {
 }
 
 export function validateConfig(config) {
-  const errors = { control: {}, history: {}, server: {}, wrapper: {}, research: {}, callDebug: {} };
+  const errors = { control: {}, history: {}, server: {}, wrapper: {}, requestDefaults: {}, research: {}, callDebug: {} };
   if (!validatePort(config.control.port)) errors.control.port = "must be between 1 and 65535";
   if (!validatePort(config.server.port)) errors.server.port = "must be between 1 and 65535";
   if (!config.control.host) errors.control.host = "is required";
@@ -313,6 +317,18 @@ export function validateConfig(config) {
   if (typeof config.wrapper.agentEnabledAtStartup !== "boolean") errors.wrapper.agentEnabledAtStartup = "must be boolean";
   if (!isNonNegativeInt(config.wrapper.ramFreezeMaxMb)) errors.wrapper.ramFreezeMaxMb = "must be a non-negative integer";
   if (!isPositiveInt(config.wrapper.modeSwitchTimeoutMs)) errors.wrapper.modeSwitchTimeoutMs = "must be a positive integer";
+  const requestDefaults = config.requestDefaults || {};
+  const maxTokens = requestDefaults.max_tokens;
+  const maxTokensIsAuto = typeof maxTokens === "string" && maxTokens.trim().toLowerCase() === "auto";
+  if (!maxTokensIsAuto && !isPositiveInt(maxTokens)) {
+    errors.requestDefaults.max_tokens = "must be 'auto' or a positive integer";
+  }
+  if (!isPositiveInt(requestDefaults.max_tokens_safety_cap)) {
+    errors.requestDefaults.max_tokens_safety_cap = "must be a positive integer";
+  }
+  if (!isNonNegativeInt(requestDefaults.context_margin)) {
+    errors.requestDefaults.context_margin = "must be a non-negative integer";
+  }
   errors.research = validateResearchConfig(config.research || {});
   errors.callDebug = validateCallDebug(config.callDebug || {});
   const ok =
@@ -320,6 +336,7 @@ export function validateConfig(config) {
     Object.keys(errors.history).length === 0 &&
     Object.keys(errors.server).length === 0 &&
     Object.keys(errors.wrapper).length === 0 &&
+    Object.keys(errors.requestDefaults).length === 0 &&
     Object.keys(errors.research).length === 0 &&
     Object.keys(errors.callDebug).length === 0;
   return { ok, errors };

@@ -10,7 +10,9 @@ test("direct chat defaults enable thinking with high reasoning effort", () => {
 
   assert.equal(payload.think, true);
   assert.equal(payload.reasoning_effort, "high");
-  assert.ok(payload.max_tokens >= 4096);
+  assert.equal(payload.max_tokens, "auto");
+  assert.equal(payload.max_tokens_safety_cap, 32768);
+  assert.equal(payload.context_margin, 1024);
 });
 
 test("direct chat can opt into thinking with a reasoning effort", () => {
@@ -21,4 +23,15 @@ test("direct chat can opt into thinking with a reasoning effort", () => {
 
   assert.equal(payload.think, true);
   assert.equal(payload.reasoning_effort, "max");
+});
+
+test("direct chat still accepts a fixed numeric max_tokens override", () => {
+  const payload = buildChatPayload(
+    { ...REQUEST_DEFAULTS, max_tokens: 1234 },
+    [{ role: "user", content: "solve" }]
+  );
+
+  assert.equal(payload.max_tokens, 1234);
+  assert.equal(payload.max_tokens_safety_cap, undefined);
+  assert.equal(payload.context_margin, undefined);
 });

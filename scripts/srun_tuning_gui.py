@@ -112,6 +112,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "ramFreezeMaxMb": 4096,
         "modeSwitchTimeoutMs": 120000,
     },
+    "requestDefaults": {
+        "max_tokens": "auto",
+        "max_tokens_safety_cap": 32768,
+        "context_margin": 1024,
+    },
 }
 
 
@@ -139,6 +144,9 @@ FIELDS: list[Field] = [
     Field("server.port", "Backend port", "port", "Server"),
     Field("server.maxQueuedJobs", "Max queued jobs", "positive_int", "Server"),
     Field("server.trace", "Trace file", "string", "Server"),
+    Field("requestDefaults.max_tokens", "Request max_tokens (auto or fixed)", "auto_or_positive_int", "Request"),
+    Field("requestDefaults.max_tokens_safety_cap", "Auto max_tokens safety cap", "positive_int", "Request"),
+    Field("requestDefaults.context_margin", "Auto context margin", "nonnegative_int", "Request"),
     Field("server.dirSteeringFile", "Directional steering file", "string", "Server"),
     Field("server.dirSteeringFfn", "Directional FFN strength", "optional_float", "Server"),
     Field("server.dirSteeringAttn", "Directional attention strength", "optional_float", "Server"),
@@ -256,6 +264,8 @@ def parse_value(path: str, raw: str) -> Any:
     text = raw.strip()
     if kind == "bool":
         return parse_bool(text)
+    if kind == "auto_or_positive_int":
+        return "auto" if text.lower() == "auto" else int(text)
     if kind in {"positive_int", "nonnegative_int", "port"}:
         return int(text)
     if kind in {"float", "optional_float"}:
@@ -327,6 +337,21 @@ def validate_config(config: dict[str, Any]) -> list[str]:
             value = env.get(key, "")
             if value not in {"", "1"}:
                 errors.append(f"{key} must be empty or 1")
+    request_defaults = config.get("requestDefaults", {})
+    if not isinstance(request_defaults, dict):
+        errors.append("requestDefaults must be an object")
+    else:
+        max_tokens = request_defaults.get("max_tokens")
+        if not (isinstance(max_tokens, str) and max_tokens.strip().lower() == "auto"):
+            n = int_value(max_tokens)
+            if n is None or n <= 0:
+                errors.append("requestDefaults.max_tokens must be auto or a positive integer")
+        n = int_value(request_defaults.get("max_tokens_safety_cap"))
+        if n is None or n <= 0:
+            errors.append("requestDefaults.max_tokens_safety_cap must be a positive integer")
+        if int_value(request_defaults.get("context_margin")) is None:
+            errors.append("requestDefaults.context_margin must be a non-negative integer")
+
     wrapper = config.get("wrapper", {})
     if not isinstance(wrapper, dict):
         errors.append("wrapper must be an object")
@@ -364,7 +389,7 @@ class TuningDialog:
         notebook.pack(fill="both", expand=True, padx=10, pady=10)
 
         tabs: dict[str, Any] = {}
-        for tab in ["Server", "Wrapper", "KV/Tools", "CUDA/Prefill", "Profiling", "MoE Kernel", "MoE Rows", "Extra Env"]:
+        for tab in ["Server", "Request", "Wrapper", "KV/Tools", "CUDA/Prefill", "Profiling", "MoE Kernel", "MoE Rows", "Extra Env"]:
             frame = ttk.Frame(notebook)
             notebook.add(frame, text=tab)
             tabs[tab] = self.scroll_frame(frame)
@@ -431,6 +456,8 @@ class TuningDialog:
             value = raw
             if kind == "bool":
                 value = bool(var.get())
+            elif kind == "auto_or_positive_int":
+                value = parse_value(path, raw)
             elif kind in {"positive_int", "nonnegative_int", "port"}:
                 value = int(raw.strip())
             elif kind in {"float", "optional_float"}:

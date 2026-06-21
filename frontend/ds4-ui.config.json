@@ -86,6 +86,11 @@
     "ramFreezeMaxMb": 4096,
     "modeSwitchTimeoutMs": 120000
   },
+  "requestDefaults": {
+    "max_tokens": "auto",
+    "max_tokens_safety_cap": 32768,
+    "context_margin": 1024
+  },
   "research": {
     "enabled": true,
     "search": {

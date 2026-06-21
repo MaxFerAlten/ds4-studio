@@ -638,9 +638,57 @@ pre {
 
 .history-panel {
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
   gap: 10px;
   min-height: 0;
+  overflow: hidden;
+}
+
+.history-mode-tabs {
+  background: #11161d;
+  border: 1px solid #303845;
+  border-radius: 10px;
+  display: grid;
+  gap: 4px;
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 0.8fr) minmax(0, 0.8fr);
+  padding: 4px;
+}
+
+.history-mode-tabs button {
+  align-items: center;
+  background: transparent;
+  border-color: transparent;
+  display: inline-flex;
+  font-size: 11px;
+  gap: 4px;
+  justify-content: center;
+  min-width: 0;
+  overflow: hidden;
+  padding: 8px 5px;
+  white-space: nowrap;
+}
+
+.history-mode-tabs button.active {
+  background: #243146;
+  border-color: #6b8fbd;
+  color: #eef2f5;
+}
+
+.history-mode-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.history-mode-count {
+  background: #2a323f;
+  border-radius: 999px;
+  color: #c4cbd6;
+  flex: 0 0 auto;
+  font-size: 10px;
+  line-height: 1;
+  padding: 3px 5px;
 }
 
 .history-section-header {
@@ -651,16 +699,17 @@ pre {
 }
 
 .research-history-section {
-  border-bottom: 1px solid #303845;
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
   gap: 8px;
-  padding-bottom: 10px;
+  min-height: 0;
 }
 
 .research-history-list {
-  flex: 0 1 auto;
-  max-height: 260px;
+  flex: 1 1 auto;
+  max-height: none;
+  min-height: 0;
 }
 
 .research-history-session.selected {
@@ -670,6 +719,7 @@ pre {
 
 .history-session-list {
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
   gap: 8px;
   min-height: 0;
