@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { TripAdvisorProvider } from "./tripAdvisorProvider.mjs";
+import { TripAdvisorProvider } from "./providers.mjs";
 
 test("tripadvisor is unconfigured without both key and endpoint", () => {
   assert.equal(new TripAdvisorProvider({}).isConfigured(), false);

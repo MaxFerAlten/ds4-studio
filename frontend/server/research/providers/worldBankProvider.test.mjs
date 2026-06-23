@@ -4,7 +4,7 @@ import {
   WorldBankProvider,
   resolveIndicator,
   resolveCountry
-} from "./worldBankProvider.mjs";
+} from "./providers.mjs";
 
 function json(body) {
   return new Response(JSON.stringify(body), {

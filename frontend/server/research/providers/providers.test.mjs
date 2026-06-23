@@ -1,9 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { WikipediaProvider } from "./wikipediaProvider.mjs";
-import { OpenAlexProvider, abstractInvertedIndexToText } from "./openAlexProvider.mjs";
-import { TavilyProvider } from "./tavilyProvider.mjs";
-import { JinaReaderProvider } from "./jinaReaderProvider.mjs";
+import { WikipediaProvider, OpenAlexProvider, abstractInvertedIndexToText, TavilyProvider, JinaReaderProvider } from "./providers.mjs";
 
 function json(body, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });

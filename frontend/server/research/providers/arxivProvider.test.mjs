@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ArxivProvider, parseArxivFeed } from "./arxivProvider.mjs";
+import { ArxivProvider, parseArxivFeed } from "./providers.mjs";
 
 const FEED = `<?xml version='1.0' encoding='UTF-8'?>
 <feed xmlns="http://www.w3.org/2005/Atom">
