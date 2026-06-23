@@ -8,6 +8,7 @@ import { backendHealthLabel, backendStartupDetail, streamFailureNotice, formatNa
 import { exportConversationMarkdown, markdownFileName } from "./conversationExport.mjs";
 import { MessageContent } from "./MessageContent.mjs";
 import { ResearchPanel } from "./research/ResearchPanel.jsx";
+import { ChatPanel } from "./chat/ChatPanel.jsx";
 import { listResearchSessions } from "./research/researchApi.mjs";
 import {
   readAgentSessionKey, AGENT_HEADERS,
@@ -29,273 +30,6 @@ import {
   updateLiveStats
 } from "./throughputStats.mjs";
 
-const STARTUP_GROUPS = [
-  ["Model", ["binary", "model", "mtp", "mtpDraft", "mtpMargin"]],
-  ["Runtime", ["ctx", "tokens", "threads", "backend", "quality", "warmWeights"]],
-  ["HTTP", ["host", "port", "maxQueuedJobs", "trace"]],
-  [
-    "GPU Env",
-    [
-      "DS4_METAL_PREFILL_CHUNK",
-      "DS4_CUDA_Q8_F16_CACHE_MB",
-      "DS4_CUDA_Q8_F16_CACHE_RESERVE_MB",
-      "DS4_CUDA_WEIGHT_ARENA_CHUNK_MB",
-      "DS4_CUDA_COPY_MODEL_CHUNKED",
-      "DS4_CUDA_DIRECT_MODEL",
-      "DS4_CUDA_NO_FD_CACHE"
-    ]
-  ],
-  [
-    "KV Cache",
-    [
-      "kvDiskDir",
-      "kvDiskSpaceMb",
-      "kvCacheMinTokens",
-      "kvCacheColdMaxTokens",
-      "kvCacheContinuedIntervalTokens",
-      "kvCacheBoundaryTrimTokens",
-      "kvCacheBoundaryAlignTokens",
-      "kvCacheRejectDifferentQuant"
-    ]
-  ],
-  ["Tool Replay", ["disableExactDsmlToolReplay", "toolMemoryMaxIds"]],
-  ["Steering", ["dirSteeringFile", "dirSteeringFfn", "dirSteeringAttn"]]
-];
-
-const FIELD_LABELS = {
-  binary: "Binary",
-  model: "Model",
-  mtp: "MTP model",
-  mtpDraft: "MTP draft",
-  mtpMargin: "MTP margin",
-  ctx: "Context",
-  tokens: "Default tokens",
-  threads: "Threads",
-  backend: "Backend",
-  quality: "Quality",
-  warmWeights: "Warm weights",
-  host: "Host",
-  port: "Port",
-  maxQueuedJobs: "Max queue",
-  trace: "Trace file",
-  DS4_METAL_PREFILL_CHUNK: "Prefill chunk tokens",
-  DS4_CUDA_Q8_F16_CACHE_MB: "Q8/F16 cache MB",
-  DS4_CUDA_Q8_F16_CACHE_RESERVE_MB: "Q8/F16 reserve MB",
-  DS4_CUDA_WEIGHT_ARENA_CHUNK_MB: "Weight arena MB",
-  DS4_CUDA_COPY_MODEL_CHUNKED: "Chunked model copy",
-  DS4_CUDA_DIRECT_MODEL: "Direct model",
-  DS4_CUDA_NO_FD_CACHE: "No FD cache",
-  kvDiskDir: "KV disk dir",
-  kvDiskSpaceMb: "KV disk MB",
-  kvCacheMinTokens: "KV min tokens",
-  kvCacheColdMaxTokens: "KV cold max",
-  kvCacheContinuedIntervalTokens: "KV interval",
-  kvCacheBoundaryTrimTokens: "KV trim",
-  kvCacheBoundaryAlignTokens: "KV align",
-  kvCacheRejectDifferentQuant: "Reject quant mismatch",
-  disableExactDsmlToolReplay: "Disable exact DSML replay",
-  toolMemoryMaxIds: "Tool memory IDs",
-  dirSteeringFile: "Direction file",
-  dirSteeringFfn: "Steer FFN",
-  dirSteeringAttn: "Steer attention"
-};
-
-const STARTUP_HELP = {
-  binary: "Executable to launch for the DS4 backend.",
-  model: "Main GGUF file to load.",
-  mtp: "Optional MTP GGUF for speculative decoding; empty means disabled.",
-  mtpDraft: "Number of draft tokens for MTP / speculative decoding.",
-  mtpMargin: "MTP confidence margin; higher values accept fewer drafts.",
-  ctx: "Maximum context size in tokens.",
-  tokens: "Default maximum tokens generated per request.",
-  threads: "CPU threads; 0 lets the backend choose automatically.",
-  backend: "Compute backend to use: auto, metal, cuda or cpu.",
-  quality: "Enable quality-oriented checks/modes when supported.",
-  warmWeights: "Preload/warm the weights at startup to reduce later latency.",
-  host: "HTTP host ds4-server listens on; usually 127.0.0.1.",
-  port: "HTTP port of the ds4-server backend.",
-  maxQueuedJobs: "Maximum requests waiting for the single worker before HTTP 503.",
-  trace: "Optional file to save detailed request traces; empty disables tracing.",
-  DS4_METAL_PREFILL_CHUNK: "GPU prefill chunk in tokens; 8192 is the measured optimum on Strix Halo (ROCm caps chunks at 8192).",
-  DS4_CUDA_Q8_F16_CACHE_MB: "Optional ROCm/HIP Q8 to F16 cache size in MB.",
-  DS4_CUDA_Q8_F16_CACHE_RESERVE_MB: "Optional reserved MB kept outside the Q8 to F16 cache.",
-  DS4_CUDA_WEIGHT_ARENA_CHUNK_MB: "Optional ROCm/HIP weight arena chunk size in MB.",
-  DS4_CUDA_COPY_MODEL_CHUNKED: "Copy the full model image into GPU memory at startup.",
-  DS4_CUDA_DIRECT_MODEL: "Optional DS4_CUDA_DIRECT_MODEL override; empty leaves default.",
-  DS4_CUDA_NO_FD_CACHE: "Optional DS4_CUDA_NO_FD_CACHE override; empty leaves default.",
-  kvDiskDir: "Optional directory for on-disk KV cache; empty disables disk persistence.",
-  kvDiskSpaceMb: "Maximum MB reserved for the on-disk KV cache.",
-  kvCacheMinTokens: "Minimum token threshold before considering cache reuse worthwhile.",
-  kvCacheColdMaxTokens: "Maximum cold-cache tokens; 0 disables this limit.",
-  kvCacheContinuedIntervalTokens: "Token interval between KV cache continuation checkpoints.",
-  kvCacheBoundaryTrimTokens: "Tokens trimmed near cache boundaries for re-alignment.",
-  kvCacheBoundaryAlignTokens: "Cache boundary alignment in tokens.",
-  kvCacheRejectDifferentQuant: "Reject caches created with a different quantization.",
-  disableExactDsmlToolReplay: "Disable exact DSML tool call replay.",
-  toolMemoryMaxIds: "Maximum number of tool IDs kept for replay / canonicalization.",
-  dirSteeringFile: "Optional vector file for directional steering; empty disables steering.",
-  dirSteeringFfn: "Optional steering scale on FFN layers.",
-  dirSteeringAttn: "Optional steering scale on attention layers."
-};
-
-const STARTUP_PLACEHOLDERS = {
-  binary: "./ds4-server",
-  model: "ds4flash.gguf",
-  mtp: "empty = MTP disabled",
-  threads: "0 = auto",
-  host: "127.0.0.1",
-  trace: "empty = trace disabled",
-  DS4_CUDA_Q8_F16_CACHE_MB: "empty = backend default",
-  DS4_CUDA_Q8_F16_CACHE_RESERVE_MB: "empty = backend default",
-  DS4_CUDA_WEIGHT_ARENA_CHUNK_MB: "empty = backend default",
-  DS4_CUDA_COPY_MODEL_CHUNKED: "empty = backend default",
-  DS4_CUDA_DIRECT_MODEL: "empty = backend default",
-  DS4_CUDA_NO_FD_CACHE: "empty = backend default",
-  kvDiskDir: "empty = disk KV dir disabled",
-  dirSteeringFile: "empty = steering disabled",
-  dirSteeringFfn: "optional scale",
-  dirSteeringAttn: "optional scale"
-};
-
-const REQUEST_HELP = {
-  max_tokens: "Maximum generated tokens. Use 'auto' to fill available context up to the safety cap.",
-  max_tokens_safety_cap: "Upper bound used when max_tokens is auto; prevents runaway generations.",
-  context_margin: "Context tokens reserved when max_tokens is auto, to avoid filling the KV window exactly.",
-  temperature: "Sampling creativity; higher values make output less deterministic.",
-  top_p: "Nucleus sampling: restricts choice to tokens within the given cumulative probability.",
-  top_k: "Restricts sampling to the top K tokens; 0 means no top-k limit.",
-  min_p: "Minimum relative probability threshold to filter implausible tokens.",
-  seed: "Optional seed for reproducible sampling; empty means random/default.",
-  stream: "Send tokens as they are generated.",
-  thinking: "Enable thinking/reasoning. When off, hidden reasoning does not consume the reply budget.",
-  reasoning_effort: "Thinking intensity when enabled: low, medium, high, xhigh or max.",
-  stop: "Optional stop sequences, one per line; empty means no extra stop."
-};
-
-const REQUEST_PLACEHOLDERS = {
-  max_tokens: "auto or a number",
-  max_tokens_safety_cap: "32768",
-  context_margin: "1024",
-  seed: "empty = random/default",
-  stop: "optional, one stop sequence per line",
-  reasoning_effort: "high"
-};
-
-const STRATEGY_OPTIONS = [
-  {
-    key: "A",
-    title: "Exhaustive pairwise",
-    description: "Compare every chunk pair to find contradictions or relationships. Maximum accuracy.",
-    tradeoff: "Cost O(N^2): 13 chunks = 78 calls. Prohibitive on long documents.",
-    disabled: true
-  },
-  {
-    key: "B",
-    title: "Claim extraction + check",
-    description: "Extracts atomic claims (subject, predicate, value, citation) per chunk, then compares claims on the same subject. Targets contradictions.",
-    tradeoff: "O(N) map + O(C^2) check on claims. Practical but loses unstructurable nuance.",
-    disabled: true
-  },
-  {
-    key: "C",
-    title: "Cluster by topic + local pairwise",
-    description: "Groups chunks by topic via embeddings, then runs pairwise comparison inside each cluster.",
-    tradeoff: "Requires an extra embedding model. Finds local contradictions, misses cross-topic ones.",
-    disabled: true
-  },
-  {
-    key: "F",
-    title: "Full document in context",
-    description: "Inserisce l'intero documento nel messaggio: contenuto completo visibile in chat e mantenuto nel contesto della sessione, senza chunking.",
-    tradeoff: "Nessuna perdita di informazione. Richiede che il documento stia nella context window del modello.",
-    recommended: true,
-    disabled: false
-  },
-  {
-    key: "D",
-    title: "Map-reduce with summaries",
-    description: "Summarizes every chunk preserving facts, numbers, names, citations; then a reduce step answers using the summaries.",
-    tradeoff: "Linear O(N). Great for Q&A and general analysis. Weak on subtle contradictions.",
-    disabled: false
-  }
-];
-
-const AGENT_COMMANDS = [
-  { name: "/help", desc: "Show list of available commands" },
-  { name: "/save", desc: "Save the current agent session" },
-  { name: "/compact", desc: "Compact the current session context" },
-  { name: "/list", desc: "List all saved agent sessions" },
-  { name: "/switch", desc: "Load a saved session (e.g. /switch <SHA>)" },
-  { name: "/del", desc: "Delete a saved session (e.g. /del <SHA>)" },
-  { name: "/strip", desc: "Strip KV payload from session (e.g. /strip <SHA>)" },
-  { name: "/history", desc: "Show recent user turns (e.g. /history [N])" },
-  { name: "/power", desc: "Set GPU duty cycle % (e.g. /power <1..100>)" },
-  { name: "/new", desc: "Start a fresh agent session" },
-  { name: "/quit", desc: "Save and return to server mode" },
-  { name: "/exit", desc: "Save and return to server mode" },
-  { name: "/agent stop", desc: "Exit agent mode and return to server mode" },
-  { name: "/agent status", desc: "Show agent worker status" },
-  { name: "/pony status", desc: "Show Pony/lean agent mode" },
-  { name: "/pony start", desc: "Enable Pony full mode for Agent Mode" },
-  { name: "/pony stop", desc: "Disable Pony mode" },
-  { name: "/pony lite", desc: "Use light lean-agent guidance" },
-  { name: "/pony full", desc: "Use full lean-agent guidance" },
-  { name: "/pony ultra", desc: "Use aggressive YAGNI guidance" },
-];
-
-const CHECKBOX_FIELDS = new Set([
-  "quality",
-  "warmWeights",
-  "kvCacheRejectDifferentQuant",
-  "disableExactDsmlToolReplay"
-]);
-
-const TEXT_FIELDS = new Set([
-  "model",
-  "mtp",
-  "binary",
-  "trace",
-  "kvDiskDir",
-  "dirSteeringFile",
-  "DS4_METAL_PREFILL_CHUNK",
-  "DS4_CUDA_Q8_F16_CACHE_MB",
-  "DS4_CUDA_Q8_F16_CACHE_RESERVE_MB",
-  "DS4_CUDA_WEIGHT_ARENA_CHUNK_MB",
-  "DS4_CUDA_COPY_MODEL_CHUNKED",
-  "DS4_CUDA_DIRECT_MODEL",
-  "DS4_CUDA_NO_FD_CACHE"
-]);
-
-const ENV_FIELDS = new Set([
-  "DS4_METAL_PREFILL_CHUNK",
-  "DS4_CUDA_Q8_F16_CACHE_MB",
-  "DS4_CUDA_Q8_F16_CACHE_RESERVE_MB",
-  "DS4_CUDA_WEIGHT_ARENA_CHUNK_MB",
-  "DS4_CUDA_COPY_MODEL_CHUNKED",
-  "DS4_CUDA_DIRECT_MODEL",
-  "DS4_CUDA_NO_FD_CACHE"
-]);
-
-function fieldType(key) {
-  if (CHECKBOX_FIELDS.has(key)) return "checkbox";
-  if (key === "backend") return "select";
-  if (TEXT_FIELDS.has(key)) return "text";
-  return "number";
-}
-
-function startupHelp(key) {
-  return STARTUP_HELP[key] || FIELD_LABELS[key] || key;
-}
-
-function serverFieldValue(server, key) {
-  if (ENV_FIELDS.has(key)) return server.env?.[key] ?? "";
-  return server[key];
-}
-
-function requestHelp(key) {
-  return REQUEST_HELP[key] || key;
-}
-
 async function jsonFetch(url, options) {
   const res = await fetch(url, options);
   const data = await res.json().catch(() => ({}));
@@ -303,97 +37,6 @@ async function jsonFetch(url, options) {
   return data;
 }
 
-function appendAssistantDelta(content, reasoning) {
-  return (prev) =>
-    prev.map((message, index) =>
-      index === prev.length - 1
-        ? {
-            ...message,
-            content: message.content + content,
-            reasoning: message.reasoning + reasoning
-          }
-        : message
-    );
-}
-
-function replaceAssistantMessage(content, reasoning = "") {
-  return (prev) =>
-    prev.map((message, index) => (index === prev.length - 1 ? { ...message, content, reasoning } : message));
-}
-
-function appendAssistantNotice(notice) {
-  return (prev) =>
-    prev.map((message, index) => {
-      if (index !== prev.length - 1) return message;
-      const separator = message.content ? "\n\n" : "";
-      return { ...message, content: `${message.content}${separator}${notice}` };
-    });
-}
-
-// UI-only status/error message: pushes a new assistant message flagged with
-// agentNotice so it is rendered in the chat but excluded from history export
-// and from the prompt sent to the model on subsequent turns.
-function appendTransientNotice(notice) {
-  return (prev) => [
-    ...prev,
-    { role: "assistant", content: notice, agentNotice: true }
-  ];
-}
-
-function parseSseData(block) {
-  return block
-    .split(/\r?\n/)
-    .filter((line) => line.startsWith("data:"))
-    .map((line) => line.slice(5).trimStart().replace(/\r$/, ""))
-    .join("\n");
-}
-
-function formatMetric(value, suffix = "") {
-  if (value === null || value === undefined || value === "") return "N/A";
-  return `${value}${suffix}`;
-}
-
-function initialExportSettings() {
-  const includeReasoning = readStoredExportIncludeReasoning();
-  return {
-    includeReasoning: includeReasoning ?? false,
-    saved: includeReasoning !== null
-  };
-}
-
-const SESSION_STORAGE_KEY = "ds4.session";
-
-function readStoredSession() {
-  if (typeof window === "undefined") return { fileName: null, messages: [] };
-  try {
-    const raw = window.localStorage.getItem(SESSION_STORAGE_KEY);
-    if (!raw) return { fileName: null, messages: [] };
-    const parsed = JSON.parse(raw);
-    return {
-      fileName: typeof parsed?.fileName === "string" ? parsed.fileName : null,
-      messages: Array.isArray(parsed?.messages) ? parsed.messages : []
-    };
-  } catch {
-    return { fileName: null, messages: [] };
-  }
-}
-
-function writeStoredSession({ fileName, messages }) {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(
-      SESSION_STORAGE_KEY,
-      JSON.stringify({ fileName: fileName || null, messages: messages || [] })
-    );
-  } catch {}
-}
-
-function clearStoredSession() {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.removeItem(SESSION_STORAGE_KEY);
-  } catch {}
-}
 
 function RocmFooter({ rocm, stats }) {
   const gpus = rocm?.gpus || [];
@@ -2024,227 +1667,45 @@ export default function App() {
         </section>
         </aside>
 
-        <section className={`chat-panel panel${researchMode ? " research-active" : ""}`}>
-        <div className="chat-header">
-          <button
-            type="button"
-            className="new-session-btn"
-            onClick={startNewSession}
-            disabled={generationBusy || !messages.length}
-            title="Start a new chat session (clears messages and attachments)"
-          >
-            <Plus size={16} />
-            New session
-          </button>
-          {config?.research?.enabled ? (
-            <button
-              type="button"
-              className={`research-toggle ${researchMode ? "active" : ""}`}
-              onClick={() => setResearchMode((v) => !v)}
-              disabled={agentMode}
-              title="Toggle Deep Research mode"
-            >
-              Deep Research
-            </button>
-          ) : null}
-          {agentMode && (
-            <div className="agent-badge" title={`Agent Mode Active - Iteration ${agentStatus?.iteration || 0} · Pony ${agentStatus?.ponyMode || "off"}`}>
-              <div className="agent-indicator"></div>
-              <span>Agent Active · Pony: {agentStatus?.ponyMode || "off"}</span>
-              <button
-                type="button"
-                className="agent-stop-btn"
-                onClick={() => toggleAgentMode(false)}
-                title="Stop Agent Mode"
-              >
-                <Square size={12} />
-              </button>
-            </div>
-          )}
-        </div>
-        {researchMode ? (
-          <ResearchPanel
-            sessionId={selectedResearchSessionId}
-            onSessionChange={setSelectedResearchSessionId}
-            onHistoryChange={handleResearchHistoryChange}
-          />
-        ) : null}
-        <div className="messages" ref={messagesRef}>
-          {messages.map((message, index) => (
-            <article className={`message ${message.role}`} key={index}>
-              <strong>{message.role}</strong>
-              {message.reasoning ? (
-                <details>
-                  <summary>Reasoning</summary>
-                  <MessageContent content={message.reasoning} />
-                </details>
-              ) : null}
-              {message.tool_calls ? (
-                <div className="tool-calls-container">
-                  {message.tool_calls.map(tc => (
-                    <div key={tc.id} className="tool-call-block">
-                      <div className="tool-call-header">Tool Call: <code>{tc.name}</code></div>
-                      <pre className="tool-call-args">{tc.arguments}</pre>
-                      {tc.progress ? (
-                        <pre className="tool-call-progress" aria-live="polite">{tc.progress}</pre>
-                      ) : null}
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-              {message.role === "tool" ? (
-                <div className={`tool-result-block ${message.isError ? "error" : ""} ${message.guarded ? "guarded" : ""}`}>
-                  <div className="tool-result-header">
-                    Tool Result: <code>{message.name}</code>
-                    {message.guarded ? <span className="tool-result-guard">guarded</span> : null}
-                  </div>
-                  <pre className="tool-result-content">{message.content}</pre>
-                </div>
-              ) : (
-                <MessageContent content={message.content} />
-              )}
-            </article>
-          ))}
-        </div>
-        <div className="export-row">
-          <button
-            type="button"
-            onClick={downloadConversation}
-            disabled={!messages.length}
-            title="Export the whole conversation as Obsidian-compatible Markdown"
-          >
-            <Download size={16} />
-            Export MD
-          </button>
-          {exportNotice ? (
-            <div className={`export-notice ${exportNotice.kind}`} role="status" aria-live="polite">
-              {exportNotice.message}
-              <button
-                type="button"
-                className="export-notice-close"
-                onClick={() => setExportNotice(null)}
-                aria-label="Dismiss notice"
-                title="Dismiss"
-              >×</button>
-            </div>
-          ) : null}
-        </div>
-        {attachedDoc ? (
-          <div className="attachments">
-            <span className="attachment-chip">
-              {attachedDoc.name} · ~{attachedDoc.approxTokens.toLocaleString()} tokens · strategy {searchStrategy}
-              <button
-                type="button"
-                className="attachment-remove"
-                onClick={() => setAttachedDoc(null)}
-                title="Remove attachment"
-                disabled={generationBusy}
-              >×</button>
-            </span>
-          </div>
-        ) : null}
-        {chunkProgress ? (
-          <div className="attachments">
-            <span className="attachment-chip">
-              {chunkProgress.phase === "map"
-                ? `Map ${chunkProgress.current}/${chunkProgress.total}`
-                : chunkProgress.phase === "reduce"
-                  ? `Reduce over ${chunkProgress.total} sections`
-                  : `Split: ${chunkProgress.total} sections`}
-            </span>
-          </div>
-        ) : null}
-        {uploadedFiles.length && !attachedDoc ? (
-          <div className="attachments">
-            {uploadedFiles.map((file) => (
-              <span key={file.extractPath}>{file.name}</span>
-            ))}
-          </div>
-        ) : null}
-        <div className="composer">
-          <input
-            ref={fileInputRef}
-            className="file-input"
-            type="file"
-            accept={fileAccept}
-            onChange={(event) => {
-              uploadFile(event.target.files?.[0]);
-              event.target.value = "";
-            }}
-          />
-          <button
-            className="icon-button"
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={uploadBusy || generationBusy}
-            title="Add file"
-            aria-label="Add file"
-          >
-            <Plus size={18} />
-          </button>
-          {isSuggestionsOpen && (
-            <div className="composer-suggestions">
-              {filteredSuggestions.map((cmd, idx) => (
-                <div
-                  key={cmd.name}
-                  className={`suggestion-item ${idx === activeIndex ? "active" : ""}`}
-                  onClick={() => handleSelectSuggestion(cmd)}
-                  onMouseEnter={() => setActiveSuggestionIndex(idx)}
-                >
-                  <strong className="suggestion-name">{cmd.name}</strong>
-                  <span className="suggestion-desc">{cmd.desc}</span>
-                </div>
-              ))}
-            </div>
-          )}
-          <textarea
-            ref={composerRef}
-            value={input}
-            title="Message to send to the model. Paste text with right-click."
-            placeholder="Write a message..."
-            onChange={(event) => handleInputChange(event.target.value)}
-            onKeyDown={(event) => {
-              if (isSuggestionsOpen) {
-                if (event.key === "ArrowDown") {
-                  event.preventDefault();
-                  setActiveSuggestionIndex((prev) => (prev + 1) % filteredSuggestions.length);
-                } else if (event.key === "ArrowUp") {
-                  event.preventDefault();
-                  setActiveSuggestionIndex((prev) => (prev - 1 + filteredSuggestions.length) % filteredSuggestions.length);
-                } else if (event.key === "Enter" || event.key === "Tab") {
-                  event.preventDefault();
-                  const selected = filteredSuggestions[activeIndex];
-                  if (selected) {
-                    handleSelectSuggestion(selected);
-                  }
-                } else if (event.key === "Escape") {
-                  event.preventDefault();
-                  setHideSuggestions(true);
-                }
-              } else {
-                if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) sendMessage();
-              }
-            }}
-          />
-          {generationBusy ? (
-            <button
-              className="send-button stop-button"
-              type="button"
-              onClick={() => abortGeneration("Interrupted.")}
-              title="Stop generation"
-              aria-label="Stop"
-            >
-              <Square size={16} />
-              Stop
-            </button>
-          ) : (
-            <button className="send-button" type="button" onClick={sendMessage} disabled={!canSend || uploadBusy}>
-              <Send size={16} />
-              Send
-            </button>
-          )}
-        </div>
-        </section>
+        <ChatPanel
+          messages={messages}
+          input={input}
+          generationBusy={generationBusy}
+          uploadBusy={uploadBusy}
+          fileAccept={fileAccept}
+          uploadedFiles={uploadedFiles}
+          attachedDoc={attachedDoc}
+          setAttachedDoc={setAttachedDoc}
+          chunkProgress={chunkProgress}
+          searchStrategy={searchStrategy}
+          agentMode={agentMode}
+          agentStatus={agentStatus}
+          composerRef={composerRef}
+          fileInputRef={fileInputRef}
+          messagesRef={messagesRef}
+          exportNotice={exportNotice}
+          setExportNotice={setExportNotice}
+          config={config}
+          researchMode={researchMode}
+          setResearchMode={setResearchMode}
+          selectedResearchSessionId={selectedResearchSessionId}
+          setSelectedResearchSessionId={setSelectedResearchSessionId}
+          canSend={canSend}
+          filteredSuggestions={filteredSuggestions}
+          setActiveSuggestionIndex={setActiveSuggestionIndex}
+          setHideSuggestions={setHideSuggestions}
+          isSuggestionsOpen={isSuggestionsOpen}
+          activeIndex={activeIndex}
+          sendMessage={sendMessage}
+          toggleAgentMode={toggleAgentMode}
+          startNewSession={startNewSession}
+          downloadConversation={downloadConversation}
+          uploadFile={uploadFile}
+          abortGeneration={abortGeneration}
+          handleInputChange={handleInputChange}
+          handleSelectSuggestion={handleSelectSuggestion}
+          handleResearchHistoryChange={handleResearchHistoryChange}
+        />
 
         <aside className="right-rail panel">
         <div className="tabs">

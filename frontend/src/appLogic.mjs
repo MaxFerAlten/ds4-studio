@@ -1,9 +1,9 @@
-// Pure logic and constants extracted from App.jsx for testability.
-// No JSX, no React state — pure functions and data only.
+// Pure logic and constants extracted verbatim from App.jsx for testability.
+// These definitions are byte-identical to the originals (only `export` added)
+// to guarantee ISO-functionality. App.jsx imports these instead of defining
+// them inline.
 
-// ---------------------------------------------------------------------------
-// Agent session key helpers
-// ---------------------------------------------------------------------------
+import { readStoredExportIncludeReasoning } from "./utils.mjs";
 
 export function readAgentSessionKey() {
   try {
@@ -19,10 +19,6 @@ export function readAgentSessionKey() {
 }
 export const AGENT_SESSION_KEY = readAgentSessionKey();
 export const AGENT_HEADERS = { "X-Agent-Session-Key": AGENT_SESSION_KEY };
-
-// ---------------------------------------------------------------------------
-// UI configuration constants (must match App.jsx exactly)
-// ---------------------------------------------------------------------------
 
 export const STARTUP_GROUPS = [
   ["Model", ["binary", "model", "mtp", "mtpDraft", "mtpMargin"]],
@@ -137,19 +133,9 @@ export const STARTUP_PLACEHOLDERS = {
   binary: "./ds4-server",
   model: "ds4flash.gguf",
   mtp: "empty = MTP disabled",
-  mtpDraft: "",
-  mtpMargin: "",
-  ctx: "65536",
-  tokens: "8192",
   threads: "0 = auto",
-  backend: "auto",
-  quality: "",
-  warmWeights: "",
   host: "127.0.0.1",
-  port: "8002",
-  maxQueuedJobs: "",
   trace: "empty = trace disabled",
-  DS4_METAL_PREFILL_CHUNK: "",
   DS4_CUDA_Q8_F16_CACHE_MB: "empty = backend default",
   DS4_CUDA_Q8_F16_CACHE_RESERVE_MB: "empty = backend default",
   DS4_CUDA_WEIGHT_ARENA_CHUNK_MB: "empty = backend default",
@@ -157,15 +143,6 @@ export const STARTUP_PLACEHOLDERS = {
   DS4_CUDA_DIRECT_MODEL: "empty = backend default",
   DS4_CUDA_NO_FD_CACHE: "empty = backend default",
   kvDiskDir: "empty = disk KV dir disabled",
-  kvDiskSpaceMb: "",
-  kvCacheMinTokens: "",
-  kvCacheColdMaxTokens: "",
-  kvCacheContinuedIntervalTokens: "",
-  kvCacheBoundaryTrimTokens: "",
-  kvCacheBoundaryAlignTokens: "",
-  kvCacheRejectDifferentQuant: "",
-  disableExactDsmlToolReplay: "",
-  toolMemoryMaxIds: "",
   dirSteeringFile: "empty = steering disabled",
   dirSteeringFfn: "optional scale",
   dirSteeringAttn: "optional scale"
@@ -290,10 +267,6 @@ export const ENV_FIELDS = new Set([
   "DS4_CUDA_NO_FD_CACHE"
 ]);
 
-// ---------------------------------------------------------------------------
-// Pure helper functions (must match App.jsx exactly)
-// ---------------------------------------------------------------------------
-
 export function fieldType(key) {
   if (CHECKBOX_FIELDS.has(key)) return "checkbox";
   if (key === "backend") return "select";
@@ -312,13 +285,6 @@ export function serverFieldValue(server, key) {
 
 export function requestHelp(key) {
   return REQUEST_HELP[key] || key;
-}
-
-export async function jsonFetch(url, options) {
-  const res = await fetch(url, options);
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || data.message || `HTTP ${res.status}`);
-  return data;
 }
 
 export function appendAssistantDelta(content, reasoning) {
@@ -348,6 +314,9 @@ export function appendAssistantNotice(notice) {
     });
 }
 
+// UI-only status/error message: pushes a new assistant message flagged with
+// agentNotice so it is rendered in the chat but excluded from history export
+// and from the prompt sent to the model on subsequent turns.
 export function appendTransientNotice(notice) {
   return (prev) => [
     ...prev,
@@ -356,16 +325,11 @@ export function appendTransientNotice(notice) {
 }
 
 export function parseSseData(block) {
-  const lines = block.split(/\r?\n/);
-  let event = "message";
-  let data = null;
-  for (const line of lines) {
-    if (line.startsWith("event:")) event = line.slice(6).trim();
-    else if (line.startsWith("data:")) data = line.slice(5).trimStart();
-  }
-  if (!data) return null;
-  if (event === "message") return data;
-  return null;
+  return block
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trimStart().replace(/\r$/, ""))
+    .join("\n");
 }
 
 export function formatMetric(value, suffix = "") {
@@ -374,35 +338,43 @@ export function formatMetric(value, suffix = "") {
 }
 
 export function initialExportSettings() {
-  return { includeReasoning: true, saved: false };
+  const includeReasoning = readStoredExportIncludeReasoning();
+  return {
+    includeReasoning: includeReasoning ?? false,
+    saved: includeReasoning !== null
+  };
 }
 
 export const SESSION_STORAGE_KEY = "ds4.session";
 
-export function readStoredSession(storage) {
-  const store = storage || globalThis.sessionStorage || null;
-  if (!store) return { messages: [], fileName: null };
+export function readStoredSession() {
+  if (typeof window === "undefined") return { fileName: null, messages: [] };
   try {
-    const value = store.getItem(SESSION_STORAGE_KEY);
-    if (!value) return { messages: [], fileName: null };
-    const parsed = JSON.parse(value);
+    const raw = window.localStorage.getItem(SESSION_STORAGE_KEY);
+    if (!raw) return { fileName: null, messages: [] };
+    const parsed = JSON.parse(raw);
     return {
-      messages: Array.isArray(parsed.messages) ? parsed.messages : [],
-      fileName: typeof parsed.fileName === "string" ? parsed.fileName : null
+      fileName: typeof parsed?.fileName === "string" ? parsed.fileName : null,
+      messages: Array.isArray(parsed?.messages) ? parsed.messages : []
     };
   } catch {
-    return { messages: [], fileName: null };
+    return { fileName: null, messages: [] };
   }
 }
 
-export function writeStoredSession({ fileName, messages }, storage) {
-  const store = storage || globalThis.sessionStorage || null;
-  if (!store) return;
-  store.setItem(SESSION_STORAGE_KEY, JSON.stringify({ fileName, messages }));
+export function writeStoredSession({ fileName, messages }) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(
+      SESSION_STORAGE_KEY,
+      JSON.stringify({ fileName: fileName || null, messages: messages || [] })
+    );
+  } catch {}
 }
 
-export function clearStoredSession(storage) {
-  const store = storage || globalThis.sessionStorage || null;
-  if (!store) return;
-  store.removeItem(SESSION_STORAGE_KEY);
+export function clearStoredSession() {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(SESSION_STORAGE_KEY);
+  } catch {}
 }
