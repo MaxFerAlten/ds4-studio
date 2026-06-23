@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ScrapingBeeProvider } from "./scrapingBeeProvider.mjs";
+import { ScrapingBeeProvider } from "./providers.mjs";
 
 function jsonRes(body, status = 200) {
   return { ok: status >= 200 && status < 300, status, json: async () => body };

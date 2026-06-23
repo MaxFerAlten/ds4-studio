@@ -6,19 +6,7 @@
 import { selectPlatform } from "./searchPlatformSelector.mjs";
 import { dedupeWebSources, rankWebSources, toWebSource } from "./webSources.mjs";
 import { tryReadPage } from "./pageReader.mjs";
-import { WikipediaProvider } from "./providers/wikipediaProvider.mjs";
-import { OpenAlexProvider } from "./providers/openAlexProvider.mjs";
-import { TavilyProvider } from "./providers/tavilyProvider.mjs";
-import { JinaReaderProvider } from "./providers/jinaReaderProvider.mjs";
-import { SerpApiProvider } from "./providers/serpApiProvider.mjs";
-import { ScrapingBeeProvider } from "./providers/scrapingBeeProvider.mjs";
-import { ArxivProvider } from "./providers/arxivProvider.mjs";
-import { CnrProvider } from "./providers/cnrProvider.mjs";
-import { WorldBankProvider } from "./providers/worldBankProvider.mjs";
-import { OpenTripMapProvider } from "./providers/openTripMapProvider.mjs";
-import { TripAdvisorProvider } from "./providers/tripAdvisorProvider.mjs";
-import { AliyunProvider } from "./providers/aliyunProvider.mjs";
-import { BaiduProvider } from "./providers/baiduProvider.mjs";
+import { WikipediaProvider, OpenAlexProvider, TavilyProvider, JinaReaderProvider, SerpApiProvider, ScrapingBeeProvider, ArxivProvider, CnrProvider, WorldBankProvider, OpenTripMapProvider, TripAdvisorProvider, AliyunProvider, BaiduProvider } from "./providers/providers.mjs";
 import { SourceCache } from "./sourceCache.mjs";
 import { RateLimiter } from "./rateLimiter.mjs";
 

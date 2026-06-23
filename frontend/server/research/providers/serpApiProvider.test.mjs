@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { SerpApiProvider } from "./serpApiProvider.mjs";
+import { SerpApiProvider } from "./providers.mjs";
 
 function json(body) {
   return new Response(JSON.stringify(body), {

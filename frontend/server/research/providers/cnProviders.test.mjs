@@ -1,7 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { AliyunProvider } from "./aliyunProvider.mjs";
-import { BaiduProvider } from "./baiduProvider.mjs";
+import { AliyunProvider, BaiduProvider } from "./providers.mjs";
 
 function json(body) {
   return new Response(JSON.stringify(body), {

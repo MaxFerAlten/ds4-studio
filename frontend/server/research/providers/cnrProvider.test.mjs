@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { CnrProvider, parseCnrSolr, toSolrTextQuery } from "./cnrProvider.mjs";
+import { CnrProvider, parseCnrSolr, toSolrTextQuery } from "./providers.mjs";
 
 const SOLR = `<?xml version="1.0" encoding="UTF-8"?>
 <response>
