@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createDeltaBatcher } from "./deltaBatcher.mjs";
+import { createDeltaBatcher } from "./utils.mjs";
 
 function fakeTimers() {
   const timers = [];

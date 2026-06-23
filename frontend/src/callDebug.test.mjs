@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { clearCallDebug, fetchCallDebug } from "./callDebug.mjs";
+import { clearCallDebug, fetchCallDebug } from "./utils.mjs";
 
 function okJson(payload) {
   return async () => ({ ok: true, status: 200, json: async () => payload });

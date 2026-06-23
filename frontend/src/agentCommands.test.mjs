@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { formatNativeAgentNotice, parseAgentInput } from "./agentCommands.mjs";
+import { formatNativeAgentNotice, parseAgentInput } from "./utils.mjs";
 
 test("parses agent control commands independently of agent mode", () => {
   assert.deepEqual(parseAgentInput("/agent start", false), {

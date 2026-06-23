@@ -4,7 +4,7 @@ import {
   clearStoredExportIncludeReasoning,
   readStoredExportIncludeReasoning,
   writeStoredExportIncludeReasoning
-} from "./exportPreferences.mjs";
+} from "./utils.mjs";
 
 function createStorage(initial = {}) {
   const entries = new Map(Object.entries(initial));
