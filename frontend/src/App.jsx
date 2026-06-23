@@ -1,20 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Download, Plus, Play, Power, RefreshCw, Send, Square, Terminal } from "lucide-react";
 
-function readAgentSessionKey() {
-  try {
-    let k = sessionStorage.getItem("ds4_agent_session_key");
-    if (!k) {
-      k = `tab_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
-      sessionStorage.setItem("ds4_agent_session_key", k);
-    }
-    return k;
-  } catch {
-    return "default";
-  }
-}
-const AGENT_SESSION_KEY = readAgentSessionKey();
-const AGENT_HEADERS = { "X-Agent-Session-Key": AGENT_SESSION_KEY };
 import { commandLineFromConfig } from "../server/commandBuilder.mjs";
 import { REQUEST_DEFAULTS } from "../server/defaultConfig.mjs";
 import { buildChatPayload, isAutoMaxTokens } from "../server/requestPayload.mjs";
@@ -23,6 +9,17 @@ import { exportConversationMarkdown, markdownFileName } from "./conversationExpo
 import { MessageContent } from "./MessageContent.mjs";
 import { ResearchPanel } from "./research/ResearchPanel.jsx";
 import { listResearchSessions } from "./research/researchApi.mjs";
+import {
+  readAgentSessionKey, AGENT_HEADERS,
+  STARTUP_GROUPS, FIELD_LABELS, STARTUP_HELP, STARTUP_PLACEHOLDERS,
+  REQUEST_HELP, REQUEST_PLACEHOLDERS, STRATEGY_OPTIONS, AGENT_COMMANDS,
+  CHECKBOX_FIELDS, TEXT_FIELDS, ENV_FIELDS,
+  fieldType, startupHelp, serverFieldValue, requestHelp,
+  appendAssistantDelta, replaceAssistantMessage,
+  appendAssistantNotice, appendTransientNotice,
+  parseSseData, formatMetric, initialExportSettings,
+  SESSION_STORAGE_KEY, readStoredSession, writeStoredSession, clearStoredSession
+} from "./appLogic.mjs";
 import { metricRows, metricsAvailable, metricsSummary } from "./serverMetrics.mjs";
 import {
   createLiveStatsTracker,
