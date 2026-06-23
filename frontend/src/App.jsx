@@ -18,28 +18,12 @@ const AGENT_HEADERS = { "X-Agent-Session-Key": AGENT_SESSION_KEY };
 import { commandLineFromConfig } from "../server/commandBuilder.mjs";
 import { REQUEST_DEFAULTS } from "../server/defaultConfig.mjs";
 import { buildChatPayload, isAutoMaxTokens } from "../server/requestPayload.mjs";
-import { backendHealthLabel, backendStartupDetail, streamFailureNotice } from "./backendStatus.mjs";
-import { formatNativeAgentNotice, parseAgentInput } from "./agentCommands.mjs";
+import { backendHealthLabel, backendStartupDetail, streamFailureNotice, formatNativeAgentNotice, parseAgentInput, withAgentPriming, historyHasPersistableAssistant, sessionHasAgentMetadata, sessionsExposeMetadata, clearStoredExportIncludeReasoning, readStoredExportDir, readStoredExportIncludeReasoning, writeStoredExportDir, writeStoredExportIncludeReasoning, createDeltaBatcher, documentIsVisible, clearCallDebug, fetchCallDebug } from "./utils.mjs";
 import { exportConversationMarkdown, markdownFileName } from "./conversationExport.mjs";
-import {
-  historyHasPersistableAssistant,
-  sessionHasAgentMetadata,
-  sessionsExposeMetadata
-} from "./historyPersistence.mjs";
-import {
-  clearStoredExportIncludeReasoning,
-  readStoredExportDir,
-  readStoredExportIncludeReasoning,
-  writeStoredExportDir,
-  writeStoredExportIncludeReasoning
-} from "./exportPreferences.mjs";
 import { MessageContent } from "./MessageContent.mjs";
 import { ResearchPanel } from "./research/ResearchPanel.jsx";
 import { listResearchSessions } from "./research/researchApi.mjs";
-import { createDeltaBatcher } from "./deltaBatcher.mjs";
-import { documentIsVisible } from "./polling.mjs";
 import { metricRows, metricsAvailable, metricsSummary } from "./serverMetrics.mjs";
-import { clearCallDebug, fetchCallDebug } from "./callDebug.mjs";
 import {
   createLiveStatsTracker,
   estimateTokenCount,
@@ -223,11 +207,18 @@ const STRATEGY_OPTIONS = [
     disabled: true
   },
   {
+    key: "F",
+    title: "Full document in context",
+    description: "Inserisce l'intero documento nel messaggio: contenuto completo visibile in chat e mantenuto nel contesto della sessione, senza chunking.",
+    tradeoff: "Nessuna perdita di informazione. Richiede che il documento stia nella context window del modello.",
+    recommended: true,
+    disabled: false
+  },
+  {
     key: "D",
     title: "Map-reduce with summaries",
     description: "Summarizes every chunk preserving facts, numbers, names, citations; then a reduce step answers using the summaries.",
     tradeoff: "Linear O(N). Great for Q&A and general analysis. Weak on subtle contradictions.",
-    recommended: true,
     disabled: false
   }
 ];
@@ -571,7 +562,7 @@ export default function App() {
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0);
   const [hideSuggestions, setHideSuggestions] = useState(false);
   const [agentStatus, setAgentStatus] = useState(null);
-  const [searchStrategy, setSearchStrategy] = useState("D");
+  const [searchStrategy, setSearchStrategy] = useState("F");
   const [searchChunkTokens, setSearchChunkTokens] = useState(25000);
   const [attachedDoc, setAttachedDoc] = useState(null);
   const [chunkProgress, setChunkProgress] = useState(null);
@@ -603,6 +594,13 @@ export default function App() {
   const fileInputRef = useRef(null);
   const messagesRef = useRef(null);
   const lastSavedHistorySignatureRef = useRef("");
+  // Set to true when the user enters agent mode while there is already a chat
+  // history (typically an attached document the user wants to validate with
+  // /sage). The next `sendAgentMessage` consumes the flag and prepends the
+  // serialised history to the outbound message so the native agent — which
+  // only receives a single `message` string per turn — gets the context. See
+  // ./agentPriming.mjs for the rationale.
+  const agentPrimingPendingRef = useRef(false);
 
   const refreshResearchSessions = useCallback(async () => {
     setResearchHistoryBusy(true);
@@ -1128,6 +1126,21 @@ export default function App() {
   }
 
   function appendFileToComposer(file) {
+    if (searchStrategy === "F") {
+      // Full context: show the whole document in the chat immediately and keep it
+      // as part of the session context. Multiple files accumulate into the same
+      // trailing user turn so chat role alternation stays valid on the next send.
+      const docBlock = `\uD83D\uDCCE **${file.name}**\n\n${file.markdown}`;
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        if (last && last.role === "user" && last.attachment) {
+          return [...prev.slice(0, -1), { ...last, content: `${last.content}\n\n---\n\n${docBlock}` }];
+        }
+        return [...prev, { role: "user", content: docBlock, attachment: true }];
+      });
+      setHistoryAutoLoaded(true);
+      return;
+    }
     if (searchStrategy === "D") {
       setAttachedDoc({
         name: file.name,
@@ -1384,6 +1397,14 @@ export default function App() {
   }
 
   async function toggleAgentMode(start, { notice = true } = {}) {
+    // Snapshot BEFORE the fetch: when the user flips into agent mode, any
+    // already-visible chat turns (including a pending document attached with
+    // the "+" button) must be replayed into the very first agent turn,
+    // otherwise the native runtime starts with an empty context. We arm a ref
+    // here and let `sendAgentMessage` consume it on the next send.
+    const hasReplayableHistory = start && messages.some(
+      (msg) => msg && !msg.agentNotice && (msg.role === "user" || msg.role === "assistant")
+    );
     try {
       const res = await fetch(start ? "/api/agent/start" : "/api/agent/stop", {
         method: "POST",
@@ -1392,6 +1413,13 @@ export default function App() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       setAgentMode(data.active);
+      if (data.active && hasReplayableHistory) {
+        agentPrimingPendingRef.current = true;
+      } else if (!data.active) {
+        // Leaving agent mode clears any pending priming intent: if the user
+        // ever re-enters with fresh history, we'll re-arm it then.
+        agentPrimingPendingRef.current = false;
+      }
       setActiveSuggestionIndex(0);
       setHideSuggestions(false);
       setAgentStatus(data);
@@ -1576,9 +1604,22 @@ export default function App() {
       setMessages(appendAssistantDelta(content, reasoning));
     });
 
+    // The native agent runtime accepts only a single `message` string and
+    // ignores `messages` (see frontend/server/index.mjs `/api/agent/chat` and
+    // ds4_wrapper_http.c). If the user entered agent mode with prior chat
+    // turns (e.g. an attached document), `agentPrimingPendingRef` is armed —
+    // fold the visible history into the outbound message exactly once so the
+    // agent receives the context it needs (e.g. the document `/sage` should
+    // validate). The locally rendered turns stay untouched.
+    let outboundMessage = text;
+    if (agentPrimingPendingRef.current) {
+      outboundMessage = withAgentPriming(messages, text);
+      agentPrimingPendingRef.current = false;
+    }
+
     try {
       const payload = {
-        message: text,
+        message: outboundMessage,
         messages: messages,
         request: { ...request }
       };
@@ -1750,7 +1791,9 @@ export default function App() {
 
   async function sendMessage() {
     const text = input.trim();
-    if (!text || !canSend) return;
+    const lastMessage = messages[messages.length - 1];
+    const pendingDoc = Boolean(lastMessage && lastMessage.role === "user" && lastMessage.attachment);
+    if ((!text && !pendingDoc) || !canSend) return;
 
     const agentInput = parseAgentInput(text, agentMode);
     if (agentInput) {
@@ -1779,11 +1822,24 @@ export default function App() {
 
     handleInputChange("");
     setError("");
-    const nextMessages = [
-      ...messages,
-      { role: "user", content: text },
-      { role: "assistant", content: "", reasoning: "" }
-    ];
+    // Strategy "F" (full context): a document loaded with the "+" button is already
+    // shown in the chat as a trailing user turn flagged `attachment`. Merge the typed
+    // question into that same turn so the conversation keeps valid user/assistant
+    // alternation while the full document stays visible and part of the context.
+    const nextMessages = pendingDoc
+      ? [
+          ...messages.slice(0, -1),
+          {
+            role: "user",
+            content: text ? `${lastMessage.content}\n\n---\n\n${text}` : lastMessage.content
+          },
+          { role: "assistant", content: "", reasoning: "" }
+        ]
+      : [
+          ...messages,
+          { role: "user", content: text },
+          { role: "assistant", content: "", reasoning: "" }
+        ];
     setMessages(nextMessages);
     setHistoryAutoLoaded(true);
 

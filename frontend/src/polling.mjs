@@ -1,3 +1,2 @@
-export function documentIsVisible(doc = globalThis.document) {
-  return !doc || doc.hidden !== true;
-}
+// Deprecated: import from ./utils.mjs instead
+export { documentIsVisible } from "./utils.mjs";

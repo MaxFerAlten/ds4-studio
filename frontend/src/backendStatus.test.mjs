@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { backendHealthLabel, backendStartupDetail, streamFailureNotice } from "./backendStatus.mjs";
+import { backendHealthLabel, backendStartupDetail, streamFailureNotice } from "./utils.mjs";
 
 test("backendHealthLabel names CUDA model copy startup", () => {
   const status = {

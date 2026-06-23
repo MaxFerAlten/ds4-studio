@@ -4,7 +4,7 @@ import {
   historyHasPersistableAssistant,
   sessionHasAgentMetadata,
   sessionsExposeMetadata
-} from "./historyPersistence.mjs";
+} from "./utils.mjs";
 
 test("historyHasPersistableAssistant accepts agent transcripts ending with an empty placeholder", () => {
   assert.equal(historyHasPersistableAssistant([
