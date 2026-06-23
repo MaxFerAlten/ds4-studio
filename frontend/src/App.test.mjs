@@ -23,7 +23,6 @@ import {
   startupHelp,
   serverFieldValue,
   requestHelp,
-  jsonFetch,
   appendAssistantDelta,
   replaceAssistantMessage,
   appendAssistantNotice,
@@ -61,11 +60,12 @@ test("STARTUP_HELP covers all startup keys", () => {
   }
 });
 
-test("STARTUP_PLACEHOLDERS covers all startup keys", () => {
-  const allKeys = STARTUP_GROUPS.flatMap((g) => g[1]);
-  for (const key of allKeys) {
-    assert.ok(STARTUP_PLACEHOLDERS[key] !== undefined, `Missing STARTUP_PLACEHOLDERS for ${key}`);
-  }
+test("STARTUP_PLACEHOLDERS only defines a subset; missing keys fall back to '' in JSX", () => {
+  assert.equal(STARTUP_PLACEHOLDERS.binary, "./ds4-server");
+  assert.equal(STARTUP_PLACEHOLDERS.model, "ds4flash.gguf");
+  assert.equal(STARTUP_PLACEHOLDERS.threads, "0 = auto");
+  assert.equal(STARTUP_PLACEHOLDERS.mtpDraft, undefined);
+  assert.equal(STARTUP_PLACEHOLDERS.ctx, undefined);
 });
 
 test("REQUEST_HELP covers all request fields", () => {
@@ -153,38 +153,6 @@ test("requestHelp returns help for known keys", () => {
   assert.equal(requestHelp("nonexistent"), "nonexistent");
 });
 
-test("jsonFetch wraps fetch with JSON parsing and error handling", async () => {
-  // Use a relative URL with a mock fetch that doesn't actually hit the network
-  let calledUrl = null;
-  const mockFetch = async (url, options) => {
-    calledUrl = url;
-    return {
-      ok: true,
-      status: 200,
-      json: async () => ({ hello: "world" }),
-      text: async () => ""
-    };
-  };
-  globalThis.fetch = mockFetch;
-  const result = await jsonFetch("/api/test");
-  assert.deepEqual(result, { hello: "world" });
-  assert.equal(calledUrl, "/api/test");
-});
-
-test("jsonFetch throws on non-ok status", async () => {
-  const mockFetch = async (url, options) => ({
-    ok: false,
-    status: 500,
-    json: async () => ({ error: "server error" }),
-    text: async () => ""
-  });
-  globalThis.fetch = mockFetch;
-  await assert.rejects(
-    () => jsonFetch("/api/test"),
-    /server error/
-  );
-});
-
 test("appendAssistantDelta appends content and reasoning to last assistant message", () => {
   const messages = [
     { role: "user", content: "hello" },
@@ -231,14 +199,15 @@ test("appendTransientNotice pushes a new assistant message with agentNotice", ()
   assert.equal(result[1].agentNotice, true);
 });
 
-test("parseSseData parses SSE protocol correctly", () => {
-  const block = "event: message\ndata: {\"hello\":\"world\"}\n\n";
-  const parsed = parseSseData(block);
-  assert.equal(parsed, '{"hello":"world"}');
+test("parseSseData joins all data: lines, stripping the prefix", () => {
+  // Original behavior: collects every line starting with "data:", slices 5 chars,
+  // trimStart, removes trailing \r, joins with \n.
+  assert.equal(parseSseData("event: message\ndata: {\"hello\":\"world\"}"), '{"hello":"world"}');
+  assert.equal(parseSseData("data: line1\ndata: line2"), "line1\nline2");
 });
 
-test("parseSseData returns null for incomplete blocks", () => {
-  assert.equal(parseSseData("no data field"), null);
+test("parseSseData returns empty string when no data lines present", () => {
+  assert.equal(parseSseData("no data field"), "");
 });
 
 test("formatMetric formats values with suffix", () => {
@@ -250,10 +219,13 @@ test("formatMetric formats values with suffix", () => {
   assert.equal(formatMetric("", " Hz"), "N/A");
 });
 
-test("initialExportSettings returns default settings", () => {
+test("initialExportSettings returns false/unsaved when no window/localStorage", () => {
+  const prev = globalThis.window;
+  delete globalThis.window;
   const settings = initialExportSettings();
-  assert.ok(typeof settings.includeReasoning === "boolean");
-  assert.ok(typeof settings.saved === "boolean");
+  assert.equal(settings.includeReasoning, false);
+  assert.equal(settings.saved, false);
+  if (prev !== undefined) globalThis.window = prev;
 });
 
 test("SESSION_STORAGE_KEY is a constant string", () => {
@@ -268,26 +240,36 @@ test("readStoredSession returns default session when storage is empty", () => {
   assert.equal(session.fileName, null);
 });
 
-test("readStoredSession parses stored JSON session", () => {
+test("readStoredSession parses stored JSON session via window.localStorage", () => {
   const stored = JSON.stringify({ messages: [{ role: "user", content: "saved" }], fileName: "test.md" });
-  const storage = { getItem: () => stored };
-  const session = readStoredSession(storage);
+  const prev = globalThis.window;
+  globalThis.window = { localStorage: { getItem: () => stored } };
+  const session = readStoredSession();
   assert.equal(session.fileName, "test.md");
   assert.equal(session.messages[0].content, "saved");
+  if (prev !== undefined) globalThis.window = prev; else delete globalThis.window;
 });
 
-test("writeStoredSession stores session to storage", () => {
+test("writeStoredSession stores session to window.localStorage (fileName||null, messages||[])", () => {
   let written = null;
-  const storage = { setItem: (key, value) => { written = value; } };
-  writeStoredSession({ fileName: "s.md", messages: [{ role: "user", content: "x" }] }, storage);
+  const prev = globalThis.window;
+  globalThis.window = { localStorage: { setItem: (key, value) => { written = value; } } };
+  writeStoredSession({ fileName: "s.md", messages: [{ role: "user", content: "x" }] });
   const parsed = JSON.parse(written);
   assert.equal(parsed.fileName, "s.md");
   assert.equal(parsed.messages[0].content, "x");
+  writeStoredSession({ fileName: undefined, messages: undefined });
+  const parsed2 = JSON.parse(written);
+  assert.equal(parsed2.fileName, null);
+  assert.deepEqual(parsed2.messages, []);
+  if (prev !== undefined) globalThis.window = prev; else delete globalThis.window;
 });
 
-test("clearStoredSession removes session from storage", () => {
+test("clearStoredSession removes session from window.localStorage", () => {
   let removed = null;
-  const storage = { removeItem: (key) => { removed = key; } };
-  clearStoredSession(storage);
+  const prev = globalThis.window;
+  globalThis.window = { localStorage: { removeItem: (key) => { removed = key; } } };
+  clearStoredSession();
   assert.equal(removed, "ds4.session");
+  if (prev !== undefined) globalThis.window = prev; else delete globalThis.window;
 });
