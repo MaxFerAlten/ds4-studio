@@ -21,6 +21,20 @@
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
+#include "buf.h"
+
+static void kvstore_buf_error(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    fprintf(stderr, "ds4-kvstore: ");
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    exit(1);
+}
+
+__attribute__((constructor)) static void init_buf_error_kv(void) {
+    g_dynbuf_error = kvstore_buf_error;
+}
 
 #define KV_CACHE_MAGIC0 'K'
 #define KV_CACHE_MAGIC1 'V'
@@ -55,11 +69,7 @@
  * density to evict them. */
 #define KV_CACHE_ANCHOR_REASON_SCORE_FACTOR 2.0
 
-typedef struct {
-    char *ptr;
-    size_t len;
-    size_t cap;
-} kv_buf;
+typedef DynBuf kv_buf;
 
 static void kv_die(const char *msg) {
     fprintf(stderr, "ds4-kvstore: %s\n", msg);
@@ -85,44 +95,11 @@ static char *kv_xstrdup(const char *s) {
     return p;
 }
 
-static void kv_buf_reserve(kv_buf *b, size_t add) {
-    if (add > SIZE_MAX - b->len - 1) kv_die("buffer overflow");
-    size_t need = b->len + add + 1;
-    if (need <= b->cap) return;
-    size_t cap = b->cap ? b->cap * 2 : 256;
-    while (cap < need) cap *= 2;
-    b->ptr = kv_xrealloc(b->ptr, cap);
-    b->cap = cap;
-}
+static void kv_buf_append(kv_buf *b, const void *p, size_t n) { dynbuf_append((DynBuf *)b, p, n); }
+static void kv_buf_putc(kv_buf *b, char c) { dynbuf_putc((DynBuf *)b, c); }
+static void kv_buf_puts(kv_buf *b, const char *s) { dynbuf_puts((DynBuf *)b, s); }
 
-static void kv_buf_append(kv_buf *b, const void *p, size_t n) {
-    kv_buf_reserve(b, n);
-    memcpy(b->ptr + b->len, p, n);
-    b->len += n;
-    b->ptr[b->len] = '\0';
-}
-
-static void kv_buf_putc(kv_buf *b, char c) {
-    kv_buf_append(b, &c, 1);
-}
-
-static void kv_buf_puts(kv_buf *b, const char *s) {
-    kv_buf_append(b, s, strlen(s));
-}
-
-static void kv_buf_printf(kv_buf *b, const char *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    va_list ap2;
-    va_copy(ap2, ap);
-    int n = vsnprintf(NULL, 0, fmt, ap);
-    va_end(ap);
-    if (n < 0) kv_die("vsnprintf failed");
-    kv_buf_reserve(b, (size_t)n);
-    vsnprintf(b->ptr + b->len, b->cap - b->len, fmt, ap2);
-    va_end(ap2);
-    b->len += (size_t)n;
-}
+static void kv_buf_printf(kv_buf *b, const char *fmt, ...) { dynbuf_printf((DynBuf *)b, fmt); }
 
 static char *kv_buf_take(kv_buf *b) {
     if (!b->ptr) return kv_xstrdup("");
