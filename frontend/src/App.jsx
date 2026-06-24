@@ -8,6 +8,8 @@ import { backendHealthLabel, backendStartupDetail, streamFailureNotice, formatNa
 import { exportConversationMarkdown, markdownFileName } from "./conversationExport.mjs";
 import { ChatPanel } from "./chat/ChatPanel.jsx";
 import { RequestPanel, ProfilePanel, StartupPanel, StrategyPanel, LogsPanel, MetricsPanel, CallDebugPanel } from "./panels/RightRailPanels.jsx";
+import { LeftRail } from "./panels/LeftRail.jsx";
+import { HistoryPanel } from "./panels/HistoryPanel.jsx";
 import { listResearchSessions } from "./research/researchApi.mjs";
 import {
   AGENT_HEADERS, AGENT_COMMANDS, ENV_FIELDS,
@@ -1606,60 +1608,11 @@ export default function App() {
   return (
     <>
       <main className="studio">
-        <aside className="left-rail panel">
-        <div className="brand-row">
-          <Terminal size={20} />
-          <h1>DS4 Studio</h1>
-        </div>
-        <div className={`status-pill ${status.running ? "ok" : "bad"}`}>{status.running ? "Running" : "Stopped"}</div>
-        <div className={`status-pill ${status.healthy ? "ok" : "warn"}`}>
-          {backendHealthLabel(status)}
-        </div>
-        {startupDetail ? <div className="status-detail">{startupDetail}</div> : null}
-        {error ? <div className="status-pill bad">{error}</div> : null}
-        <div className="button-row">
-          <button type="button" onClick={() => serverAction("start")} disabled={serverBusy}>
-            <Play size={16} />
-            Start
-          </button>
-          <button type="button" onClick={() => serverAction("stop")} disabled={serverBusy}>
-            <Power size={16} />
-            Stop
-          </button>
-          <button type="button" onClick={() => serverAction("restart")} disabled={serverBusy}>
-            <RefreshCw size={16} />
-            Restart
-          </button>
-        </div>
-        <label className="field full">
-          <span>Command preview</span>
-          <textarea
-            value={effectiveCommand}
-            rows={6}
-            spellCheck={false}
-            onChange={(event) => setCommandDraft(event.target.value)}
-            title="Edit to start ds4-server with a custom command. Reset returns to the form."
-          />
-          {commandIsCustom ? (
-            <button
-              type="button"
-              className="command-reset"
-              onClick={() => setCommandDraft(null)}
-              title="Discard override and use the Startup form"
-            >
-              Reset to form
-            </button>
-          ) : null}
-        </label>
-        {commandIsCustom ? <div className="status-pill warn">Custom command override</div> : null}
-        {hasPendingStartup ? <div className="status-pill warn">Pending restart</div> : null}
-        <section className="log-tail">
-          <h2>Logs</h2>
-          {(status.logs || []).slice(-12).map((line, index) => (
-            <pre key={`${line.time}-${index}`}>{line.message}</pre>
-          ))}
-        </section>
-        </aside>
+        <LeftRail status={status} error={error} startupDetail={startupDetail}
+          serverBusy={serverBusy} serverAction={serverAction}
+          effectiveCommand={effectiveCommand} commandDraft={commandDraft}
+          setCommandDraft={setCommandDraft} commandIsCustom={commandIsCustom}
+          hasPendingStartup={hasPendingStartup} />
 
         <ChatPanel
           messages={messages}
@@ -1743,166 +1696,33 @@ export default function App() {
         {tab === "strategy" ? (
           <StrategyPanel searchChunkTokens={searchChunkTokens} setSearchChunkTokens={setSearchChunkTokens} searchStrategy={searchStrategy} setSearchStrategy={setSearchStrategy} />
         ) : null}
-        {tab === "history" ? (
-          <div className="history-panel">
-            <div className="history-mode-tabs" role="tablist" aria-label="History type">
-              <button
-                type="button"
-                className={historyTab === "deepresearch" ? "active" : ""}
-                onClick={() => setHistoryTab("deepresearch")}
-                aria-selected={historyTab === "deepresearch"}
-              >
-                <span className="history-mode-label">deepresearch</span>
-                <span className="history-mode-count">{researchSessions.length}</span>
-              </button>
-              <button
-                type="button"
-                className={historyTab === "chat" ? "active" : ""}
-                onClick={() => setHistoryTab("chat")}
-                aria-selected={historyTab === "chat"}
-              >
-                <span className="history-mode-label">chat</span>
-                <span className="history-mode-count">{chatHistorySessions.length}</span>
-              </button>
-              <button
-                type="button"
-                className={historyTab === "agent" ? "active" : ""}
-                onClick={() => setHistoryTab("agent")}
-                aria-selected={historyTab === "agent"}
-              >
-                <span className="history-mode-label">agent</span>
-                <span className="history-mode-count">{agentHistorySessions.length}</span>
-              </button>
-            </div>
-            {historyTab === "deepresearch" && config?.research?.enabled ? (
-              <section className="research-history-section">
-                <div className="history-section-header">
-                  <strong>Deep Research</strong>
-                  <button
-                    type="button"
-                    onClick={handleResearchHistoryChange}
-                    disabled={researchHistoryBusy}
-                  >
-                    Refresh research
-                  </button>
-                </div>
-                <div className="history-session-list research-history-list">
-                  {researchHistoryBusy ? <div className="status-pill">Loading research...</div> : null}
-                  {!researchHistoryBusy && !researchSessions.length ? (
-                    <div className="status-pill warn">No Deep Research sessions</div>
-                  ) : null}
-                  {researchSessions.map((session) => (
-                    <div className="history-session-row" key={session.sessionId}>
-                      <button
-                        type="button"
-                        className={`history-session research-history-session${
-                          selectedResearchSessionId === session.sessionId ? " selected" : ""
-                        }`}
-                        onClick={() => loadResearchSession(session.sessionId)}
-                        title={session.sessionId}
-                      >
-                        <strong>{session.query || "Untitled research"}</strong>
-                        <span>
-                          {session.sessionId}
-                          <span className={`research-engine-badge ${session.engine || "local"}`}>
-                            {session.engine || "local"}
-                          </span>
-                        </span>
-                        <small>
-                          {session.status} · {new Date(session.updatedAt).toLocaleString()}
-                        </small>
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </section>
-            ) : null}
-            {historyTab === "deepresearch" && !config?.research?.enabled ? (
-              <div className="status-pill warn">Deep Research history is disabled</div>
-            ) : null}
-            {historyTab !== "deepresearch" ? (
-              <>
-                <div className="history-section-header">
-                  <strong>{activeConversationHistoryLabel}</strong>
-                </div>
-                {historyTab === "agent" && historySessions.length > 0 && !historyMetadataAvailable ? (
-                  <div className="status-pill warn">
-                    Agent history is enabled, but the live history endpoint is not returning metadata yet. Restart DS4 Studio to populate this tab.
-                  </div>
-                ) : null}
-            <label className="setting-row">
-              <input
-                type="checkbox"
-                checked={Boolean((historyDraft || historyConfig).enabled)}
-                onChange={(event) => updateHistoryDraft("enabled", event.target.checked)}
-              />
-              <span>Keep chat history</span>
-            </label>
-            <label className="field full" data-tooltip="Server-side directory where Markdown history files are saved.">
-              <span>History folder</span>
-              <input
-                value={(historyDraft || historyConfig).dir || ""}
-                placeholder="/home/tendermachine/workspace_ds4studio/history"
-                onChange={(event) => updateHistoryDraft("dir", event.target.value)}
-              />
-            </label>
-            <div className="button-row">
-              <button type="button" onClick={saveHistorySettings} disabled={historyBusy}>
-                Save history settings
-              </button>
-              <button type="button" onClick={() => refreshHistorySessions()} disabled={historyListBusy}>
-                Refresh sessions
-              </button>
-              <button
-                type="button"
-                onClick={deleteAllHistorySessions}
-                disabled={historyListBusy || !historySessions.length}
-                title="Delete every session file in the history folder"
-              >
-                Delete all
-              </button>
-            </div>
-            {historyStatus ? <div className="status-pill">{historyStatus}</div> : null}
-            <div className="history-session-list">
-              {historyListBusy ? <div className="status-pill">Loading sessions...</div> : null}
-              {!historyListBusy && !activeConversationHistorySessions.length ? (
-                <div className="status-pill warn">
-                  No saved {historyTab === "agent" ? "agent sessions" : "chat sessions"}
-                </div>
-              ) : null}
-              {activeConversationHistorySessions.map((session) => (
-                <div
-                  className="history-session-row"
-                  key={session.fileName}
-                >
-                  <button
-                    type="button"
-                    className="history-session"
-                    onClick={() => loadHistorySession(session.fileName)}
-                    title={session.fileName}
-                  >
-                    <strong>{session.title}</strong>
-                    <span>{session.fileName}</span>
-                    <small>
-                      {session.metadata?.agentMode ? "Agent mode · " : ""}
-                      {session.messages} messages · {(session.size / 1024).toFixed(1)} KB
-                    </small>
-                  </button>
-                  <button
-                    type="button"
-                    className="history-session-delete"
-                    onClick={() => deleteHistorySession(session.fileName)}
-                    title={`Delete ${session.fileName}`}
-                    disabled={historyListBusy}
-                  >
-                    ×
-                  </button>
-                </div>
-              ))}
-            </div>
-              </>
-            ) : null}
-          </div>
+        {tab === "history" ? (<HistoryPanel historyTab={historyTab} setHistoryTab={setHistoryTab}
+            researchSessions={researchSessions} selectedResearchSessionId={selectedResearchSessionId}
+            setSelectedResearchSessionId={setSelectedResearchSessionId}
+            loadResearchSession={loadResearchSession}
+            handleResearchHistoryChange={handleResearchHistoryChange}
+            researchHistoryBusy={researchHistoryBusy}
+            config={config} historyDraft={historyDraft} historyConfig={historyConfig}
+            updateHistoryDraft={updateHistoryDraft}
+            saveHistorySettings={saveHistorySettings}
+            refreshHistorySessions={refreshHistorySessions}
+            deleteAllHistorySessions={deleteAllHistorySessions}
+            historyStatus={historyStatus} historyListBusy={historyListBusy}
+            activeConversationHistorySessions={activeConversationHistorySessions}
+            historyMetadataAvailable={historyMetadataAvailable}
+            chatHistorySessions={chatHistorySessions}
+            agentHistorySessions={agentHistorySessions}
+            activeConversationHistoryLabel={activeConversationHistoryLabel}
+            deleteHistorySession={deleteHistorySession}
+            currentSessionFileName={currentSessionFileName}
+            setMessages={setMessages}
+            setCurrentSessionFileName={setCurrentSessionFileName}
+            historyAutoLoaded={historyAutoLoaded}
+            setHistoryAutoLoaded={setHistoryAutoLoaded}
+            lastSavedHistorySignatureRef={lastSavedHistorySignatureRef}
+            clearStoredSession={clearStoredSession}
+            sessionStorage={sessionStorage}
+            setError={setError} />
         ) : null}
         {tab === "export" ? (
           <ExportSettingsPanel
