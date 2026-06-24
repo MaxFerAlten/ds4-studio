@@ -1708,12 +1708,15 @@ export default function App() {
             refreshHistorySessions={refreshHistorySessions}
             deleteAllHistorySessions={deleteAllHistorySessions}
             historyStatus={historyStatus} historyListBusy={historyListBusy}
+            historyBusy={historyBusy}
             activeConversationHistorySessions={activeConversationHistorySessions}
+            historySessions={historySessions}
             historyMetadataAvailable={historyMetadataAvailable}
             chatHistorySessions={chatHistorySessions}
             agentHistorySessions={agentHistorySessions}
             activeConversationHistoryLabel={activeConversationHistoryLabel}
             deleteHistorySession={deleteHistorySession}
+            loadHistorySession={loadHistorySession}
             currentSessionFileName={currentSessionFileName}
             setMessages={setMessages}
             setCurrentSessionFileName={setCurrentSessionFileName}
