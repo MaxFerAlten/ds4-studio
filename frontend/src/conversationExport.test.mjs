@@ -114,6 +114,57 @@ test("trims whitespace inside dollar math delimiters for Obsidian", () => {
   assert.match(markdown, /```txt\n\$ not math \$\n```/);
 });
 
+test("preserves literal pipes inside display-math array environments for Obsidian", () => {
+  // Regression: $$\begin{array}{c|c|c}...\end{array}$$ exported to an Obsidian
+  // vault was being rewritten to \begin{array}{c\vert c\vert c}, which KaTeX
+  // refuses to render. Pipes inside display math must stay literal.
+  const markdown = exportConversationMarkdown([
+    {
+      role: "assistant",
+      content: [
+        "$$",
+        "\\begin{array}{c|c|c}",
+        "\\text{Punto} & x & f(x)\\\\",
+        "\\hline",
+        "H_1 & 3.6098 & -15.8947\\\\",
+        "\\end{array}",
+        "$$"
+      ].join("\n")
+    }
+  ]);
+
+  assert.match(markdown, /\\begin\{array\}\{c\|c\|c\}/);
+  assert.doesNotMatch(markdown, /\\begin\{array\}\{c\\vert/);
+});
+
+test("rewrites bare < > and \\[..] spacing to portable KaTeX for Obsidian", () => {
+  // Regression: $$\begin{cases} ... & 0\le x<3,\\[2mm] ... \end{cases}$$ rendered
+  // in DS4 Studio but broke in Obsidian, whose markdown/HTML pass mangles bare
+  // `<`/`>` (x<3 looks like a tag) and flags the \\[2mm] row spacing.
+  const markdown = exportConversationMarkdown([
+    {
+      role: "assistant",
+      content: [
+        "$$",
+        "f(x)=\\begin{cases}",
+        "x-20, & 0\\le x<3,\\\\[2mm]",
+        "2x-24, & 7<x\\le 10.",
+        "\\end{cases}",
+        "$$",
+        "",
+        "Inoltre $f''(2)=7>0$ e $a<=b$."
+      ].join("\n")
+    }
+  ]);
+
+  assert.match(markdown, /0\\le x\\lt 3/);
+  assert.match(markdown, /7\\lt x\\le 10/);
+  assert.match(markdown, /f''\(2\)=7\\gt 0/);
+  assert.match(markdown, /a\\le b/);
+  assert.doesNotMatch(markdown, /x<3/);
+  assert.doesNotMatch(markdown, /\\\\\[2mm\]/);
+});
+
 test("normalizes vertical bars inside table math for Obsidian", () => {
   const markdown = exportConversationMarkdown([
     {
