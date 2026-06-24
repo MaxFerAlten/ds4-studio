@@ -399,28 +399,53 @@ function normalizeLatexDocument(content) {
   ].filter(Boolean).join("\n\n");
 }
 
-function normalizeMathBody(math) {
-  return math.trim().replace(/\|/g, "\\vert ");
+// KaTeX renders bare `<` and `>` as relations, but markdown/HTML parsing can
+// mangle them before math rendering (`x<3` looks like a tag opener). Use explicit
+// \lt / \gt and collapse optional \\[..] row spacing for portable KaTeX.
+function normalizeMathOperators(math) {
+  return math
+    .replace(/\\\\\[[^\]\n]*\]/g, "\\\\")
+    .replace(/<=/g, "\\le ")
+    .replace(/>=/g, "\\ge ")
+    .replace(/</g, "\\lt ")
+    .replace(/>/g, "\\gt ");
+}
+
+// Display math (\[...\], $$...$$, ```latex fences) is a block-level construct that
+// remark-math parses as a single atomic node, so pipes inside it cannot collide
+// with GFM table column separators. We must NOT escape `|` here, otherwise we
+// would corrupt KaTeX environments like \begin{array}{c|c|c}, |x|, \left|...\right|,
+// where the literal pipe carries syntactic meaning.
+function normalizeDisplayMathBody(math) {
+  return normalizeMathOperators(math.trim());
+}
+
+// Inline math ($...$, \(...\)) can appear inside GFM table cells, where an
+// unescaped `|` would be interpreted as a column separator and split the cell.
+// Replacing with \vert keeps the rendered output identical while making the
+// markdown safe for the GFM table parser.
+function normalizeInlineMathBody(math) {
+  return normalizeMathOperators(math.trim()).replace(/\|/g, "\\vert ");
 }
 
 function normalizeTextMath(segment) {
   const withBackslashDisplayMath = segment.replace(/\\\[([\s\S]*?)\\\]/g, (_, math) => {
-    const body = normalizeMathBody(math);
+    const body = normalizeDisplayMathBody(math);
     return body ? `\n\n$$\n${body}\n$$\n\n` : "";
   });
 
   const withBackslashInlineMath = withBackslashDisplayMath.replace(
     /\\\(([\s\S]*?)\\\)/g,
-    (_, math) => `$${normalizeMathBody(math)}$`
+    (_, math) => `$${normalizeInlineMathBody(math)}$`
   );
 
   const withDollarDisplayMath = withBackslashInlineMath.replace(/\$\$([\s\S]*?)\$\$/g, (_, math) => {
-    const body = normalizeMathBody(math);
+    const body = normalizeDisplayMathBody(math);
     return body ? `\n\n$$\n${body}\n$$\n\n` : "";
   });
 
   const withDollarInlineMath = withDollarDisplayMath.replace(/(^|[^$])\$([^$\n]+?)\$(?!\$)/g, (_, prefix, math) => {
-    const body = normalizeMathBody(math);
+    const body = normalizeInlineMathBody(math);
     return body ? `${prefix}$${body}$` : `${prefix}$$`;
   });
 

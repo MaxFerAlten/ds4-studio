@@ -119,6 +119,52 @@ test("unwraps math fenced code", () => {
   assert.doesNotMatch(html, /<pre><code/);
 });
 
+test("renders portable KaTeX for bare inequalities and row spacing", () => {
+  const html = renderToStaticMarkup(
+    createElement(MessageContent, {
+      content: [
+        "$$",
+        "f(x)=\\begin{cases}",
+        "x-20, & 0\\le x<3,\\\\[2mm]",
+        "2x-24, & 7<x\\le 10.",
+        "\\end{cases}",
+        "$$",
+        "",
+        "Inline $f''(2)=7>0$."
+      ].join("\n")
+    })
+  );
+
+  assert.match(html, /class="[^"]*katex/);
+  assert.match(html, /katex-display/);
+  assert.doesNotMatch(html, /ParseError/);
+  assert.doesNotMatch(html, /\\\[2mm\]/);
+});
+
+test("renders display-math array environments with literal column pipes", () => {
+  // Regression: a $$\begin{array}{c|c|c}...\end{array}$$ block was being
+  // rewritten to \begin{array}{c\vert c\vert c}, which is not a valid KaTeX
+  // column specifier, so the block fell back to red unparsed source.
+  const html = renderToStaticMarkup(
+    createElement(MessageContent, {
+      content: [
+        "$$",
+        "\\begin{array}{c|c|c}",
+        "\\text{Punto} & x & f(x)\\\\",
+        "\\hline",
+        "H_1 & 3.6098 & -15.8947\\\\",
+        "\\end{array}",
+        "$$"
+      ].join("\n")
+    })
+  );
+
+  assert.match(html, /class="[^"]*katex/);
+  assert.match(html, /katex-display/);
+  assert.doesNotMatch(html, /\\begin\{array\}\{c\\vert/);
+  assert.doesNotMatch(html, /ParseError/);
+});
+
 test("renders GFM tables with math that contains vertical bars", () => {
   const html = renderToStaticMarkup(
     createElement(MessageContent, {

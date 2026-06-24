@@ -1,24 +1,52 @@
-function normalizeMathBody(math) {
-  return math.trim().replace(/\|/g, "\\vert ");
+// KaTeX renders bare `<` and `>` as relation operators, but Obsidian's
+// markdown/HTML pass mangles them before math rendering (`x<3` looks like an
+// HTML tag opener), so the formula breaks in the vault even though it renders
+// in DS4 Studio. Rewrite them to the explicit \lt / \gt commands and collapse
+// optional \\[..] row spacing that some renderers flag. The rendered math is
+// identical, just portable across both renderers.
+// Known limitation: a literal `<`/`>` inside \text{...} is also rewritten; this
+// is rare in practice and the agent doctrine emits relations in math mode.
+function normalizeMathOperators(math) {
+  return math
+    .replace(/\\\\\[[^\]\n]*\]/g, "\\\\")
+    .replace(/<=/g, "\\le ")
+    .replace(/>=/g, "\\ge ")
+    .replace(/</g, "\\lt ")
+    .replace(/>/g, "\\gt ");
+}
+
+// Display math (\[...\], $$...$$, ```latex fences) is a block-level construct so
+// its pipes cannot collide with GFM table column separators. Escaping `|` to
+// \vert here would corrupt KaTeX environments like \begin{array}{c|c|c} or
+// \left|...\right|, which require the literal `|` character.
+function normalizeDisplayMathBody(math) {
+  return normalizeMathOperators(math.trim());
+}
+
+// Inline math ($...$, \(...\)) may live inside GFM table cells, where an
+// unescaped `|` would split the cell. Using \vert keeps the rendering identical
+// while keeping the markdown table-safe.
+function normalizeInlineMathBody(math) {
+  return normalizeMathOperators(math.trim()).replace(/\|/g, "\\vert ");
 }
 
 function normalizeTextMath(segment) {
   const withDisplayMath = segment.replace(/\\\[([\s\S]*?)\\\]/g, (_, math) => {
-    const body = normalizeMathBody(math);
+    const body = normalizeDisplayMathBody(math);
     return body ? `\n\n$$\n${body}\n$$\n\n` : "";
   });
   const withInlineMath = withDisplayMath.replace(
     /\\\(([\s\S]*?)\\\)/g,
-    (_, math) => `$${normalizeMathBody(math)}$`
+    (_, math) => `$${normalizeInlineMathBody(math)}$`
   );
   const withDollarDisplayMath = withInlineMath.replace(/\$\$([\s\S]*?)\$\$/g, (_, math) => {
-    const body = normalizeMathBody(math);
+    const body = normalizeDisplayMathBody(math);
     return body ? `\n\n$$\n${body}\n$$\n\n` : "";
   });
   const withDollarInlineMath = withDollarDisplayMath.replace(
     /(^|[^$])\$([^$\n]+?)\$(?!\$)/g,
     (_, prefix, math) => {
-      const body = normalizeMathBody(math);
+      const body = normalizeInlineMathBody(math);
       return body ? `${prefix}$${body}$` : `${prefix}$$`;
     }
   );
