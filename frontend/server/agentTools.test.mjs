@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { ReadGuard, bashFileReadFallbackReason, checkBashFileReadFallback, executeTool } from "./agentTools.mjs";
+
+const HAS_SAGE = spawnSync("sage", ["--version"], { encoding: "utf8" }).status === 0;
 
 async function withTmpWorkspace(fn) {
   const tmp = await mkdtemp(path.join(os.tmpdir(), "ds4-agent-tools-"));
@@ -226,6 +229,12 @@ test("bashFileReadFallbackReason flags python/node file reads", () => {
   );
 });
 
+test("bashFileReadFallbackReason flags sage even after shell control operators", () => {
+  assert.match(bashFileReadFallbackReason({ command: "sage script.sage" }), /sage/);
+  assert.match(bashFileReadFallbackReason({ command: "cd repo && sage script.sage" }), /sage/);
+  assert.match(bashFileReadFallbackReason({ command: "printf ok; Sage -c '2+2'" }), /sage/);
+});
+
 test("bashFileReadFallbackReason leaves safe commands alone", () => {
   assert.equal(bashFileReadFallbackReason({ command: "ls -la" }), undefined);
   assert.equal(bashFileReadFallbackReason({ command: "grep -rn foo src/" }), undefined);
@@ -237,4 +246,33 @@ test("checkBashFileReadFallback returns a stronger reason after a read-guard blo
   const decision = checkBashFileReadFallback({ command: "cat ds4.h" }, true);
   assert.ok(decision?.block);
   assert.match(decision.reason, /after a read guard block/);
+});
+
+test("sage tool evaluates a single Sage expression with preparsing", { skip: !HAS_SAGE }, async () => {
+  await withTmpWorkspace(async (cwd) => {
+    const result = await executeTool("sage", { code: "2^3", timeout_sec: 20 }, { cwd });
+
+    assert.equal(result.isError, false);
+    assert.match(result.content, /LaTeX:\s*8/);
+    assert.match(result.content, /Result:\s*8/);
+  });
+});
+
+test("sage tool executes multi-statement Sage scripts and renders result", { skip: !HAS_SAGE }, async () => {
+  await withTmpWorkspace(async (cwd) => {
+    const result = await executeTool("sage", {
+      code: [
+        "var('x')",
+        "f(x) = x^2",
+        "print('value:', f(3))",
+        "result = integral(x^2, x, 0, 2)"
+      ].join("\n"),
+      timeout_sec: 20
+    }, { cwd });
+
+    assert.equal(result.isError, false);
+    assert.match(result.content, /value:\s*9/);
+    assert.match(result.content, /LaTeX:\s*\\frac\{8\}\{3\}/);
+    assert.match(result.content, /Result:\s*8\/3/);
+  });
 });

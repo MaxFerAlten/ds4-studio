@@ -968,6 +968,21 @@ static const char agent_tools_prompt_after_edit[] =
     "{\n"
     "  \"type\": \"function\",\n"
     "  \"function\": {\n"
+    "    \"name\": \"sage\",\n"
+    "    \"description\": \"**PREFERRED tool for ALL mathematical computations.** Execute SageMath code and return results. Use for: calculus (derivatives, integrals, limits), algebra (factor, solve, expand), number theory, linear algebra, symbolic computation, plotting. Better than using bash to run sage on a .sage file.\",\n"
+    "    \"parameters\": {\n"
+    "      \"type\": \"object\",\n"
+    "      \"properties\": {\n"
+    "        \"code\": {\"type\": \"string\", \"description\": \"SageMath code to execute. Define var('x') first for symbolic variables. Use diff(f,x) for derivatives, diff(f,x,2) for second derivative, find_root(f,a,b) for numeric zeros (NEVER solve() for degree>=3). Use latex(expr) to get LaTeX output. Examples: diff(sin(x)^2,x).trig_reduce(), find_root(cos(x)-0.5,0,2), latex(integrate(exp(x)*sin(x),x)).\"},\n"
+    "        \"timeout_sec\": {\"type\": \"number\", \"description\": \"Timeout in seconds. Default 60. Increase for large computations.\"}\n"
+    "      },\n"
+    "      \"required\": [\"code\"]\n"
+    "    }\n"
+    "  }\n"
+    "}\n\n"
+    "{\n"
+    "  \"type\": \"function\",\n"
+    "  \"function\": {\n"
     "    \"name\": \"read\",\n"
     "    \"description\": \"Read a text file or a range of lines.\",\n"
     "    \"parameters\": {\n"
@@ -7548,6 +7563,114 @@ static char *agent_tool_retrieve_context_blob(agent_worker *w,
 }
 
 /* ============================================================================
+ * Sage Tool
+ * ============================================================================
+ */
+
+/* Execute a SageMath computation. The user code is written to a .sage file and
+ * evaluated by a fixed runner that preparses it (so Sage syntax such as 2^3,
+ * var('x'), and f(x)=... keeps its meaning) and, for a single expression, prints
+ * both "LaTeX:" and "Result:". This mirrors the JS agent's toolSage so the same
+ * `sage` tool call yields the same observation on either backend. Two design
+ * points matter:
+ *   - the runner is itself a .sage file, not .py, because Sage only predefines
+ *     the canonical symbolic variable `x` for .sage scripts; a .py runner would
+ *     make `find_root(cos(x)-0.5,0,2)` fail with NameError on x;
+ *   - the runner reads the code from the file instead of embedding it, which
+ *     sidesteps any source-escaping concern.
+ * The run is bounded by `timeout_sec` (default 60) via coreutils `timeout`: an
+ * unbounded popen on a runaway computation would otherwise hang the worker. */
+static char *agent_tool_sage(agent_worker *w, const agent_tool_call *call) {
+    const char *code = agent_tool_arg_value(call, "code");
+    if (!code || !code[0]) return xstrdup("Tool error: sage requires code\n");
+
+    int timeout = agent_parse_int_default(agent_tool_arg_value(call, "timeout_sec"),
+                                          60, 1, 24 * 3600);
+
+    char tmp[] = "/tmp/ds4-sage-XXXXXX";
+    int fd = mkstemp(tmp);
+    if (fd < 0) return xstrdup("Tool error: sage cannot create temp file\n");
+
+    size_t len = strlen(code);
+    ssize_t written = 0;
+    while (written < (ssize_t)len) {
+        ssize_t n = write(fd, code + written, len - written);
+        if (n <= 0) { close(fd); unlink(tmp); return xstrdup("Tool error: sage write failed\n"); }
+        written += n;
+    }
+    close(fd);
+
+    /* mkstemp emits only [A-Za-z0-9] in the suffix, so the paths never contain a
+     * quote and embed safely both in the shell command and the Python literal. */
+    char sagefile[PATH_MAX], runfile[PATH_MAX];
+    snprintf(sagefile, sizeof(sagefile), "%s.sage", tmp);
+    snprintf(runfile, sizeof(runfile), "%s_run.sage", tmp);
+    if (rename(tmp, sagefile) != 0) { unlink(tmp); return xstrdup("Tool error: sage temp rename failed\n"); }
+
+    FILE *rf = fopen(runfile, "w");
+    if (!rf) { unlink(sagefile); return xstrdup("Tool error: sage cannot create runner\n"); }
+    fprintf(rf,
+        "from sage.repl.preparse import preparse\n"
+        "__s__ = object()\n"
+        "__r__ = __s__\n"
+        "__g__ = globals()\n"
+        "with open('%s') as __f__:\n"
+        "    __src__ = __f__.read()\n"
+        "__code__ = preparse(__src__)\n"
+        "try:\n"
+        "    __r__ = eval(compile(__code__, '<ds4-sage-tool>', 'eval'), __g__, __g__)\n"
+        "except SyntaxError:\n"
+        "    exec(compile(__code__, '<ds4-sage-tool>', 'exec'), __g__, __g__)\n"
+        "    if '__result__' in __g__: __r__ = __g__['__result__']\n"
+        "    elif 'result' in __g__: __r__ = __g__['result']\n"
+        "if __r__ is not __s__ and __r__ is not None:\n"
+        "    try: print('LaTeX:', latex(__r__))\n"
+        "    except Exception: pass\n"
+        "    print('Result:', __r__)\n",
+        sagefile);
+    fclose(rf);
+
+    agent_publishf_system_status(w, "Running Sage...");
+
+    char cmd[PATH_MAX + 64];
+    snprintf(cmd, sizeof(cmd), "timeout %d sage '%s' 2>&1", timeout, runfile);
+
+    agent_buf result = {0};
+    char buf[4096];
+    FILE *fp = popen(cmd, "r");
+    if (!fp) {
+        unlink(sagefile);
+        unlink(runfile);
+        return xstrdup("Tool error: sage popen failed\n");
+    }
+    while (fgets(buf, sizeof(buf), fp)) agent_buf_puts(&result, buf);
+    int status = pclose(fp);
+    unlink(sagefile);
+    unlink(runfile);
+
+    int exit_code = (status >= 0 && WIFEXITED(status)) ? WEXITSTATUS(status) : -1;
+    if (exit_code == 124) {            /* coreutils `timeout` exit convention */
+        free(result.ptr);
+        char msg[96];
+        snprintf(msg, sizeof(msg), "Tool error: sage timed out after %ds\n", timeout);
+        return xstrdup(msg);
+    }
+    if (exit_code == 127) {
+        free(result.ptr);
+        return xstrdup("Tool error: sage binary not found (install SageMath, e.g. 'apt install sagemath')\n");
+    }
+    if (!result.ptr) {
+        if (exit_code > 0) {
+            char msg[128];
+            snprintf(msg, sizeof(msg), "Tool error: sage exited with code %d\n", exit_code);
+            return xstrdup(msg);
+        }
+        return xstrdup("[sage returned no output]\n");
+    }
+    return agent_buf_take(&result);
+}
+
+/* ============================================================================
  * Tool Dispatch
  * ============================================================================
  */
@@ -7568,6 +7691,7 @@ static char *agent_execute_tool_call(agent_worker *w, const agent_tool_call *cal
     if (!strcmp(call->name, "retrieve_context_blob")) return agent_tool_retrieve_context_blob(w, call);
     if (!strcmp(call->name, "google_search")) return agent_tool_google_search(w, call);
     if (!strcmp(call->name, "visit_page")) return agent_tool_visit_page(w, call);
+    if (!strcmp(call->name, "sage")) return agent_tool_sage(w, call);
 
     if (!strcmp(call->name, "bash")) {
         const char *cmd = agent_tool_arg_value(call, "command");

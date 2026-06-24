@@ -68,8 +68,41 @@ Other rules:
 - Write code that is reliable and works well.
 - Preserve the current system configuration integrity, unless explicitly asked otherwise by the user.
 - If a tool returns an error, explain the issue and suggest a fix.
-- **IMPORTANT — SageMath tool**: When the user asks for mathematical computation and SageMath is enabled (via /sage start), you MUST use the dedicated 'sage' tool. Do NOT use bash to call sage manually — the sage tool is faster, returns LaTeX automatically, and logs to Call Debug. The sage tool accepts a 'code' parameter with Sage syntax. Sage variables must be declared with var(). Always wrap Sage results in $$...$$ for KaTeX rendering.
-- **NEVER** use bash to invoke sage, python with sympy, or any other math software manually. The bash guard will block sage/bash calls. Use the 'sage' tool instead.
+- **SageMath — CRITICAL RULES** (read before anything else):
+  (a) USE the **sage** tool (send code as the \`code\` parameter) — NEVER write .sage files and run with bash. The bash guard will BLOCK \`sage\` in any bash command.
+  (b) NEVER use \`solve()\` for sin/cos equations — it returns only the principal branch, silently MISSING most roots. Enumerate over integer k instead (see examples below).
+  (c) ALWAYS classify every critical point with f''(x) sign (minimo/massimo).
+  (d) NEVER use \`solve()\` for polynomial zeros of degree >= 3 — use \`find_root()\` or sampling instead.
+
+  WRONG (solve gives only x=0, misses 7.5,8,8.5,9,9.5):
+  > solve(df3, x)
+
+  RIGHT (enumerate sin(2*pi*x)=0 -> x=k/2):
+  > for k in range(15, 21): print(k/2)
+
+  WRONG (solve gives implicit unsolved form):
+  > solve(df2, x)
+
+  RIGHT (trig identity + find_root per subinterval):
+  > # df2 = 2 + pi*sin(2*pi*x)
+  > for k in range(3, 8):
+  >     find_root(df2, k, k+0.5)
+  >     find_root(df2, k+0.5, k+1)
+
+- **Function study — 7 steps**:
+
+  1. **Define & differentiate**: var('x'), define each branch, compute df,d2f. Print with .factor() (polynomial), .trig_reduce() (trigonometric), .expand() (otherwise).
+  2. **Continuity & differentiability** at junctions via limit(f1,x,3,dir='minus'), limit(f2,x,3,dir='plus').
+  3. **Critical points (polynomial)**: solve(df==0,x), filter to domain.
+  4. **Critical points (periodic)**: enumerate (see CRITICAL RULES). NEVER solve().
+  5. **Zeros**: degree >= 3 use find_root(); periodic enumerate; if sign never changes state no zeros.
+  6. **Classify every critical point**: f''(x0) > 0 -> min, < 0 -> max. Mark boundary/non-derivable points.
+  7. **Inflection points**: solve(d2f==0,x) for polynomials; enumerate cos(2*pi*x)=0 -> x=1/4+k/2.
+
+- **Output format**: $$...$$ KaTeX blocks or markdown tables. Use \\lt, \\gt, \\le, \\ge. Tables for extrema/flessi. Image links for plots.
+
+- **Validation**: never assert without Sage producing the number this session. Fix errors and re-run.
+
 `;
 
 /** OpenAI function-calling tool schemas, matching ds4_agent.c capabilities. */
@@ -179,7 +212,7 @@ const AGENT_TOOLS = [
       parameters: {
         type: "object",
         properties: {
-          code: { type: "string", description: "SageMath code to execute. Use Sage syntax (not plain Python). Sage's latex() function is available. Examples: integral(exp(x)*sin(x), x), factor(x^2 - 5*x + 6), solve(x^2 - 3*x + 2 == 0, x), latex(matrix([[1,2],[3,4]]).det()), is_prime(7919), plot(sin(x), x, -pi, pi)." },
+          code: { type: "string", description: "SageMath code to execute. Use Sage syntax (not plain Python). Sage's latex() function is available. IMPORTANT: use diff(f,x).factor() for polynomial derivatives, diff(f,x).trig_reduce() for trigonometric ones, diff(f,x,2).expand() for second derivatives. Use find_root(f,a,b) for numeric zeros, NOT solve(). For periodic equations like sin(2πx)=c, enumerate points from the closed form over integer k. Examples: integral(exp(x)*sin(x), x), factor(x^2 - 5*x + 6), solve(x^2 - 3*x + 2 == 0, x), diff(sin(x)^2, x).trig_reduce(), find_root(cos(x)-0.5, 0, 2), latex(matrix([[1,2],[3,4]]).det()), is_prime(7919), plot(sin(x), x, -pi, pi)." },
           timeout_sec: { type: "number", description: "Timeout in seconds. Default 60. Increase for large computations." }
         },
         required: ["code"]

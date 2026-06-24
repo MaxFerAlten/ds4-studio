@@ -871,8 +871,9 @@ export function bashFileReadFallbackReason(input) {
     : undefined;
   if (typeof command !== "string" || command.trim().length === 0) return undefined;
 
-  // Detect when bash is used to call sage manually — redirect to sage tool
-  const sagePattern = /^\s*(sage|Sage)\b/m;
+  // Detect when bash is used to call sage manually — redirect to sage tool.
+  // It may appear after shell control operators, e.g. `cd repo && sage file.sage`.
+  const sagePattern = /(?:^|[;&|()])\s*(sage|Sage)\b/m;
   if (sagePattern.test(command.trim())) {
     return "bash command invokes sage manually. Use the 'sage' tool instead — it returns LaTeX automatically and logs to Call Debug.";
   }
@@ -928,18 +929,38 @@ async function toolSage(args, options) {
   const cwd = workspaceRoot(options);
   const sageCallLog = options.sageCallLog;
 
-  // Wrap the user code so Sage prints both the plain result and LaTeX
+  // Wrap the user code so Sage can run either a single expression or a full
+  // multi-statement Sage script.  We preparse the submitted Sage syntax before
+  // compile/eval/exec so Sage-only constructs such as `2^3`, `var('x')`, and
+  // `f(x) = ...` keep their normal meaning.  Expression results are printed as
+  // both LaTeX and plain text.  For scripts, stdout is preserved; if the script
+  // assigns `result` or `__result__`, that value is also rendered as LaTeX.
+  const userCodeLiteral = JSON.stringify(code);
   const wrapper = `
-__result__ = ${code.trim()}
-if __result__ is not None:
+from sage.all import *
+from sage.repl.preparse import preparse
+
+__ds4_user_code__ = ${userCodeLiteral}
+__ds4_code__ = preparse(__ds4_user_code__)
+__ds4_sentinel__ = object()
+__ds4_result__ = __ds4_sentinel__
+__ds4_globals__ = globals()
+
+try:
+    __ds4_result__ = eval(compile(__ds4_code__, "<ds4-sage-tool>", "eval"), __ds4_globals__, __ds4_globals__)
+except SyntaxError:
+    exec(compile(__ds4_code__, "<ds4-sage-tool>", "exec"), __ds4_globals__, __ds4_globals__)
+    if "__result__" in __ds4_globals__:
+        __ds4_result__ = __ds4_globals__["__result__"]
+    elif "result" in __ds4_globals__:
+        __ds4_result__ = __ds4_globals__["result"]
+
+if __ds4_result__ is not __ds4_sentinel__ and __ds4_result__ is not None:
     try:
-        import json
-        # Try latex() for symbolic results
-        from sage.all import latex
-        print("LaTeX:", latex(__result__))
-    except:
+        print("LaTeX:", latex(__ds4_result__))
+    except Exception:
         pass
-    print("Result:", __result__)
+    print("Result:", __ds4_result__)
 `;
 
   return new Promise((resolve) => {
