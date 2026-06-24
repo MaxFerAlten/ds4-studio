@@ -5,7 +5,11 @@
  */
 
 import { spawn, execSync } from "node:child_process";
-import fs from "node:fs/promises";
+// Synchronous fs API: SageCallLog persists the NDJSON ring with existsSync/
+// readFileSync/appendFileSync/writeFileSync. Importing node:fs/promises here
+// silently broke persistence (those sync methods are absent on that surface and
+// the surrounding try/catch swallowed the TypeError).
+import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
