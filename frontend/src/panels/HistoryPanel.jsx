@@ -6,9 +6,9 @@ export function HistoryPanel({
   loadResearchSession, handleResearchHistoryChange, researchHistoryBusy,
   config, historyDraft, historyConfig, updateHistoryDraft,
   saveHistorySettings, refreshHistorySessions, deleteAllHistorySessions,
-  historyStatus, historyListBusy, activeConversationHistorySessions,
-  historyMetadataAvailable, chatHistorySessions, agentHistorySessions,
-  activeConversationHistoryLabel, deleteHistorySession, currentSessionFileName,
+  historyStatus, historyListBusy, historyBusy, activeConversationHistorySessions,
+  historySessions, historyMetadataAvailable, chatHistorySessions, agentHistorySessions,
+  activeConversationHistoryLabel, deleteHistorySession, loadHistorySession, currentSessionFileName,
   setMessages, setCurrentSessionFileName, historyAutoLoaded, setHistoryAutoLoaded,
   lastSavedHistorySignatureRef, clearStoredSession,
   sessionStorage, setError
