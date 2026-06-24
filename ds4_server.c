@@ -3,6 +3,22 @@
 #include "ds4_help.h"
 #include "ds4_kvstore.h"
 #include "rax.h"
+#include <stdarg.h>
+#include <stdlib.h>
+#include "buf.h"
+
+static void server_buf_error(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    fprintf(stderr, "ds4-server: ");
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    exit(1);
+}
+
+__attribute__((constructor)) static void init_buf_error(void) {
+    g_dynbuf_error = server_buf_error;
+}
 
 /* OpenAI/Anthropic compatible local server.
  *
@@ -56,11 +72,7 @@ static void stop_signal_handler(int sig) {
     }
 }
 
-typedef struct {
-    char *ptr;
-    size_t len;
-    size_t cap;
-} buf;
+typedef DynBuf buf;
 
 static void die(const char *msg) {
     fprintf(stderr, "ds4-server: %s\n", msg);
@@ -111,47 +123,11 @@ static char *xstrndup(const char *s, size_t n) {
     return p;
 }
 
-static void buf_reserve(buf *b, size_t add) {
-    if (add > SIZE_MAX - b->len - 1) die("buffer overflow");
-    size_t need = b->len + add + 1;
-    if (need <= b->cap) return;
-    size_t cap = b->cap ? b->cap : 256;
-    while (cap < need) {
-        if (cap > SIZE_MAX / 2) die("buffer overflow");
-        cap *= 2;
-    }
-    b->ptr = xrealloc(b->ptr, cap);
-    b->cap = cap;
-}
-
-static void buf_append(buf *b, const void *p, size_t n) {
-    buf_reserve(b, n);
-    memcpy(b->ptr + b->len, p, n);
-    b->len += n;
-    b->ptr[b->len] = '\0';
-}
-
-static void buf_putc(buf *b, char c) {
-    buf_append(b, &c, 1);
-}
-
-static void buf_puts(buf *b, const char *s) {
-    buf_append(b, s, strlen(s));
-}
-
-static void buf_printf(buf *b, const char *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    va_list ap2;
-    va_copy(ap2, ap);
-    int n = vsnprintf(NULL, 0, fmt, ap);
-    va_end(ap);
-    if (n < 0) die("vsnprintf failed");
-    buf_reserve(b, (size_t)n);
-    vsnprintf(b->ptr + b->len, b->cap - b->len, fmt, ap2);
-    va_end(ap2);
-    b->len += (size_t)n;
-}
+void buf_reserve(buf *b, size_t add) { dynbuf_reserve((DynBuf *)b, add); }
+void buf_append(buf *b, const void *p, size_t n) { dynbuf_append((DynBuf *)b, p, n); }
+void buf_putc(buf *b, char c) { dynbuf_putc((DynBuf *)b, c); }
+void buf_puts(buf *b, const char *s) { dynbuf_puts((DynBuf *)b, s); }
+void buf_printf(buf *b, const char *fmt, ...) { dynbuf_printf((DynBuf *)b, fmt); }
 
 static char *buf_take(buf *b) {
     if (!b->ptr) return xstrdup("");

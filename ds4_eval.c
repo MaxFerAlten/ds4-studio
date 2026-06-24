@@ -44,6 +44,20 @@
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
+#include "buf.h"
+
+static void eval_buf_error(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    fprintf(stderr, "ds4-eval: ");
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    exit(1);
+}
+
+__attribute__((constructor)) static void init_buf_error_eval(void) {
+    g_dynbuf_error = eval_buf_error;
+}
 
 #define ANSI_RESET "\x1b[0m"
 #define ANSI_DIM "\x1b[90m"
@@ -1178,11 +1192,7 @@ static const eval_case eval_cases[] = {
     },
 };
 
-typedef struct {
-    char *v;
-    size_t len;
-    size_t cap;
-} byte_buf;
+typedef DynBuf byte_buf;
 
 typedef struct {
     unsigned char *v;
@@ -1331,44 +1341,13 @@ static eval_input global_input = {
     .mu = PTHREAD_MUTEX_INITIALIZER,
 };
 
-static void buf_append(byte_buf *b, const char *p, size_t n) {
+static void buf_append(byte_buf *b, const void *p, size_t n) {
     if (n == 0) return;
-    if (b->len + n + 1 > b->cap) {
-        size_t cap = b->cap ? b->cap : 1024;
-        while (cap < b->len + n + 1) cap *= 2;
-        char *v = realloc(b->v, cap);
-        if (!v) {
-            fprintf(stderr, "ds4-eval: out of memory\n");
-            exit(1);
-        }
-        b->v = v;
-        b->cap = cap;
-    }
-    memcpy(b->v + b->len, p, n);
-    b->len += n;
-    b->v[b->len] = '\0';
+    dynbuf_append((DynBuf *)b, p, n);
 }
 
 static void buf_appendf(byte_buf *b, const char *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    va_list copy;
-    va_copy(copy, ap);
-    int n = vsnprintf(NULL, 0, fmt, copy);
-    va_end(copy);
-    if (n < 0) {
-        va_end(ap);
-        return;
-    }
-    char *tmp = malloc((size_t)n + 1);
-    if (!tmp) {
-        fprintf(stderr, "ds4-eval: out of memory\n");
-        exit(1);
-    }
-    vsnprintf(tmp, (size_t)n + 1, fmt, ap);
-    va_end(ap);
-    buf_append(b, tmp, (size_t)n);
-    free(tmp);
+    dynbuf_printf((DynBuf *)b, fmt);
 }
 
 static int eval_case_nchoices(const eval_case *tc) {
@@ -1403,7 +1382,7 @@ static void style_append(style_buf *b, unsigned char style, size_t n) {
 }
 
 static void buf_free(byte_buf *b) {
-    free(b->v);
+    free(b->ptr);
     memset(b, 0, sizeof(*b));
 }
 
@@ -2069,7 +2048,7 @@ static void tui_draw_left(eval_ui *ui) {
 
 static void tui_reset_stream(eval_ui *ui, const eval_case *tc, bool in_think) {
     ui->stream.len = 0;
-    if (ui->stream.v) ui->stream.v[0] = '\0';
+    if (ui->stream.ptr) ui->stream.ptr[0] = '\0';
     ui->styles.len = 0;
     ui->in_think = in_think;
     ui->pending_tag_len = 0;
@@ -2161,7 +2140,7 @@ static void tui_draw_stream(eval_ui *ui) {
     int col = 0;
 
     for (size_t i = 0; i < ui->stream.len; i++) {
-        char c = ui->stream.v[i];
+        char c = ui->stream.ptr[i];
         bool end_line = false;
         size_t end = i;
         if (c == '\n') {
@@ -2216,7 +2195,7 @@ static void tui_draw_stream(eval_ui *ui) {
                 fputs(st ? ANSI_DIM : ANSI_RESET, stdout);
                 cur_style = st;
             }
-            char c = ui->stream.v[i];
+            char c = ui->stream.ptr[i];
             if (c == '\r' || c == '\n') continue;
             if (c == '\t') c = ' ';
             fputc((unsigned char)c, stdout);
@@ -2393,7 +2372,7 @@ static char *build_question_prompt(const eval_case *tc) {
                    "format and do not write anything after it:\n"
                    "Answer: <integer>"));
     }
-    if (b.v) return b.v;
+    if (b.ptr) return b.ptr;
     char *empty = malloc(1);
     if (empty) empty[0] = '\0';
     return empty;
@@ -3540,7 +3519,7 @@ static eval_run_result run_one_case(ds4_engine *engine, ds4_session *session,
                 tui_run_clock_stop(ui);
                 tui_refresh(ui, "idle");
                 trace_write_case(trace, cfg, tc, idx, ui->ncases, "STOPPED", NULL,
-                                 system, question, raw.v ? raw.v : "", think_mode,
+                                 system, question, raw.ptr ? raw.ptr : "", think_mode,
                                  prompt_tokens, ui->generated, now_sec() - t0, "?",
                                  &think_close);
                 free(question);
@@ -3554,7 +3533,7 @@ static eval_run_result run_one_case(ds4_engine *engine, ds4_session *session,
                 tui_run_clock_stop(ui);
                 tui_refresh(ui, "idle");
                 trace_write_case(trace, cfg, tc, idx, ui->ncases, "SWITCHED", NULL,
-                                 system, question, raw.v ? raw.v : "", think_mode,
+                                 system, question, raw.ptr ? raw.ptr : "", think_mode,
                                  prompt_tokens, ui->generated, now_sec() - t0, "?",
                                  &think_close);
                 free(question);
@@ -3573,7 +3552,7 @@ static eval_run_result run_one_case(ds4_engine *engine, ds4_session *session,
                 tui_run_clock_stop(ui);
                 tui_refresh(ui, "idle");
                 trace_write_case(trace, cfg, tc, idx, ui->ncases, "STOPPED", NULL,
-                                 system, question, raw.v ? raw.v : "", think_mode,
+                                 system, question, raw.ptr ? raw.ptr : "", think_mode,
                                  prompt_tokens, ui->generated, now_sec() - t0, "?",
                                  &think_close);
                 free(question);
@@ -3587,7 +3566,7 @@ static eval_run_result run_one_case(ds4_engine *engine, ds4_session *session,
                 tui_run_clock_stop(ui);
                 tui_refresh(ui, "idle");
                 trace_write_case(trace, cfg, tc, idx, ui->ncases, "SWITCHED", NULL,
-                                 system, question, raw.v ? raw.v : "", think_mode,
+                                 system, question, raw.ptr ? raw.ptr : "", think_mode,
                                  prompt_tokens, ui->generated, now_sec() - t0, "?",
                                  &think_close);
                 free(question);
@@ -3644,7 +3623,7 @@ static eval_run_result run_one_case(ds4_engine *engine, ds4_session *session,
             tui_run_clock_stop(ui);
             fprintf(stderr, "ds4-eval: decode failed for %s: %s\n", tc->id, err);
             trace_write_case(trace, cfg, tc, idx, ui->ncases, "ERROR", err,
-                             system, question, raw.v ? raw.v : "", think_mode,
+                             system, question, raw.ptr ? raw.ptr : "", think_mode,
                              prompt_tokens, ui->generated, now_sec() - t0, "?",
                              &think_close);
             free(question);
@@ -3659,7 +3638,7 @@ static eval_run_result run_one_case(ds4_engine *engine, ds4_session *session,
         ui->generated++;
         ui->generated_tokens[idx] = ui->generated;
         tui_run_clock_tick(ui);
-        if (generation_in_think && raw.v && strstr(raw.v, "</think>")) {
+        if (generation_in_think && raw.ptr && strstr(raw.ptr, "</think>")) {
             generation_in_think = false;
             if (think_close.kind == EVAL_THINK_CLOSE_NONE) {
                 think_close.kind = EVAL_THINK_CLOSE_NATURAL;
@@ -3675,7 +3654,7 @@ static eval_run_result run_one_case(ds4_engine *engine, ds4_session *session,
             stream_append_token_text(ui, text, len, false);
             tui_refresh(ui, ui->in_think ? "thinking" : "answer");
         } else {
-            if (plain_in_think && strstr(raw.v ? raw.v : "", "</think>")) {
+            if (plain_in_think && strstr(raw.ptr ? raw.ptr : "", "</think>")) {
                 plain_in_think = false;
                 plain_reset_color(use_plain_color);
             }
@@ -3689,11 +3668,11 @@ static eval_run_result run_one_case(ds4_engine *engine, ds4_session *session,
         tui_draw_stream(ui);
     } else {
         plain_reset_color(use_plain_color);
-        if (!raw.v || raw.len == 0 || raw.v[raw.len - 1] != '\n') fputc('\n', stdout);
+        if (!raw.ptr || raw.len == 0 || raw.ptr[raw.len - 1] != '\n') fputc('\n', stdout);
     }
 
     char got[EVAL_ANSWER_MAX];
-    find_case_answer(tc, raw.v ? raw.v : "", got, sizeof(got));
+    find_case_answer(tc, raw.ptr ? raw.ptr : "", got, sizeof(got));
     snprintf(ui->guess[idx], EVAL_ANSWER_MAX, "%s", got);
     bool pass = answer_matches(tc, got);
     ui->status[idx] = pass ? EVAL_PASSED : EVAL_FAILED;
@@ -3702,7 +3681,7 @@ static eval_run_result run_one_case(ds4_engine *engine, ds4_session *session,
     double sec = now_sec() - t0;
     tui_refresh(ui, pass ? "passed" : "failed");
     trace_write_case(trace, cfg, tc, idx, ui->ncases, pass ? "PASSED" : "FAILED", NULL,
-                     system, question, raw.v ? raw.v : "", think_mode, prompt_tokens,
+                     system, question, raw.ptr ? raw.ptr : "", think_mode, prompt_tokens,
                      ui->generated, sec, got, &think_close);
 
     if (!tty) {
