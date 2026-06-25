@@ -2,6 +2,62 @@ import { normalizeObsidianMath } from "./obsidianMath.mjs";
 
 export { normalizeObsidianMath } from "./obsidianMath.mjs";
 
+/**
+ * Detect if a single line looks like a native-agent shell transcript line.
+ * We look for clear shell indicators: the native-agent tool icon prefix,
+ * shell redirects to /dev/null, or pipes followed by shell commands.
+ * Lines starting with bare "$ " are ambiguous with inline math and are
+ * NOT treated as shell transcript to avoid false positives.
+ */
+function looksLikeShellTranscriptLine(line) {
+  // Starts with the native-agent tool icon followed by a shell command
+  if (/^\s*🛠️\s*\$/.test(line)) return true;
+  // Contains shell redirect to /dev/null (e.g. "2>/dev/null" or "2> /dev/null")
+  if (/\s2>\s*[\/]dev[\/]null(\s|$)/.test(line)) return true;
+  // Contains a pipe followed by a shell command word
+  if (/\s\|\s*(grep|head|tail|awk|sed|cat|wc|sort|uniq|find)\b/.test(line)) return true;
+  return false;
+}
+
+/**
+ * Detect if a block of text contains shell/tool transcript lines that must
+ * NOT be passed through normalizeObsidianMath.
+ */
+function looksLikeRawToolTranscript(content) {
+  return String(content || "")
+    .split(/\r?\n/)
+    .some(looksLikeShellTranscriptLine);
+}
+
+/**
+ * Normalize export text while protecting shell/tool transcript content.
+ * - role="tool" / role="function" messages are always kept raw.
+ * - Messages flagged with rawToolTranscript are kept raw.
+ * - Messages whose content looks like a raw tool transcript are kept raw.
+ * - All other content passes through normalizeObsidianMath as before.
+ */
+function normalizeExportText(message, fieldName) {
+  const text = String(message?.[fieldName] || "");
+  if (!text) return "";
+
+  // Tool/function messages: never normalize
+  if (message.role === "tool" || message.role === "function") {
+    return text;
+  }
+
+  // Messages explicitly marked as raw tool transcript
+  if (message.rawToolTranscript) {
+    return text;
+  }
+
+  // Auto-detect shell transcript lines in assistant content
+  if (looksLikeRawToolTranscript(text)) {
+    return text;
+  }
+
+  return normalizeObsidianMath(text);
+}
+
 function roleTitle(role) {
   if (role === "assistant") return "Assistant";
   if (role === "user") return "User";
@@ -54,8 +110,8 @@ export function exportConversationMarkdown(messages, { includeReasoning = false,
     // transcript if it were ever re-injected into a backend conversation.
     if (message.agentNotice) continue;
 
-    const content = normalizeObsidianMath(message.content || "");
-    const reasoning = normalizeObsidianMath(message.reasoning || "");
+    const content = normalizeExportText(message, "content");
+    const reasoning = normalizeExportText(message, "reasoning");
     const toolCalls = toolCallsMarkdown(message.tool_calls);
     if (!content && !toolCalls && (!includeReasoning || !reasoning)) continue;
 
