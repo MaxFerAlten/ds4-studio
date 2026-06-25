@@ -246,3 +246,62 @@ test("parseConversationMetadata returns null when no marker present", () => {
   const markdown = exportConversationMarkdown([{ role: "user", content: "ciao" }]);
   assert.equal(parseConversationMetadata(markdown), null);
 });
+
+test("exportConversationMarkdown preserves raw shell transcript lines", () => {
+  // This input contains shell constructs like "$-name" (shell flags var)
+  // and "2>/dev/null | head". It must NOT be passed through
+  // normalizeObsidianMath which would corrupt shell operators.
+  const input = "🛠️ $find . -type f \$-name '*.c' -o -name '*.h' \$ 2>/dev/null | head";
+  const out = exportConversationMarkdown([
+    { role: "assistant", content: input }
+  ]);
+
+  // The shell redirect and pipe must survive
+  assert.match(out, /2>\/dev\/null \| head/);
+  // No KaTeX corruption: \gt, \vert must NOT appear
+  assert.doesNotMatch(out, /\\gt/);
+  assert.doesNotMatch(out, /\\vert/);
+  // The dollar signs must stay literal (not escaped as \$)
+  assert.match(out, /\$-name/);
+  assert.match(out, /🛠️ \$find/);
+});
+
+test("exportConversationMarkdown does not normalize tool message content", () => {
+  const input = "grep x file 2>/dev/null | head";
+  const out = exportConversationMarkdown([
+    { role: "tool", tool_call_id: "call_1", content: input }
+  ]);
+
+  assert.match(out, /2>\/dev\/null \| head/);
+  assert.doesNotMatch(out, /\\gt/);
+  assert.doesNotMatch(out, /\\vert/);
+});
+
+test("exportConversationMarkdown still normalizes ordinary math", () => {
+  const out = exportConversationMarkdown([
+    { role: "assistant", content: "Formula: $x<3|y$" }
+  ]);
+
+  assert.match(out, /\\lt/);
+  assert.match(out, /\\vert/);
+});
+
+test("exportConversationMarkdown respects rawToolTranscript flag", () => {
+  const input = "grep foo 2>/dev/null | tail";
+  const out = exportConversationMarkdown([
+    { role: "assistant", content: input, rawToolTranscript: true }
+  ]);
+
+  assert.match(out, /2>\/dev\/null \| tail/);
+  assert.doesNotMatch(out, /\\gt/);
+});
+
+test("exportConversationMarkdown preserves native-agent prefix lines", () => {
+  const input = "🛠️ $cat /etc/passwd | grep root";
+  const out = exportConversationMarkdown([
+    { role: "assistant", content: input }
+  ]);
+
+  assert.match(out, /🛠️ \$cat \/etc\/passwd \| grep root/);
+  assert.doesNotMatch(out, /\\gt/);
+});
