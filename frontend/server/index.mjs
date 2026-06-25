@@ -17,10 +17,12 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 import {
+  autoMaxTokenSettings,
   buildChatPayload,
   isAutoMaxTokens,
   parseNonNegativeInt,
-  parsePositiveInt
+  parsePositiveInt,
+  resolveAutoMaxTokens
 } from "./requestPayload.mjs";
 import {
   DEFAULT_PROFILE_NAME,
@@ -46,10 +48,12 @@ import {
 } from "./costLimits.mjs";
 import { Ds4ProcessManager } from "./processManager.mjs";
 import { readRequestBody, requestHeadersForProxy } from "./proxy.mjs";
+import { fetchWithBusyRetry } from "./backendRetry.mjs";
 import { readRocmStatusCached } from "./rocmSmi.mjs";
 import { AgentSessionStore, AGENT_SYSTEM_PROMPT, AGENT_TOOLS } from "./agentSession.mjs";
 import { appendPonyPolicy, buildPonyPolicy, normalizePonyMode, ponyCommandMessage } from "./agentPonyPolicy.mjs";
-import { checkBashFileReadFallback, executeTool } from "./agentTools.mjs";
+import { checkBashFileReadFallback, executeTool, sageSessionDir, toolSage } from "./agentTools.mjs";
+import { ToolBlobStore } from "./toolBlobStore.mjs";
 import {
   canonicalLegacyCommand,
   isAgentSlashCommand,
@@ -86,6 +90,10 @@ if (typeof process.loadEnvFile === "function") {
 let config = await loadConfig();
 if (process.env.DS4_UI_HOST) config.control.host = process.env.DS4_UI_HOST;
 if (process.env.DS4_UI_PORT) config.control.port = process.env.DS4_UI_PORT;
+
+// Expose the frontend port to child processes (ds4-wrapper agent needs it
+// to call back into the Node server for delegated sage execution).
+process.env.FRONTEND_PORT = String(config.control.port);
 
 let activeProfile = null;
 let activeRequestDefaults = { ...REQUEST_DEFAULTS, ...(config.requestDefaults || {}) };
@@ -167,6 +175,12 @@ const sageCallLogDir = path.isAbsolute(config.callDebug.dir)
   ? path.join(config.callDebug.dir, "..", "sage")
   : path.join(PROJECT_ROOT, config.callDebug.dir, "..", "sage");
 const sageCallLog = new SageCallLog({ dir: sageCallLogDir, maxEntries: 100 });
+
+// Tool blob store for compressed tool output retrieval.
+const toolBlobsDir = path.isAbsolute(config.toolBlobs.dir)
+  ? config.toolBlobs.dir
+  : path.join(PROJECT_ROOT, config.toolBlobs.dir);
+const toolBlobStore = new ToolBlobStore(toolBlobsDir);
 
 async function healthCheck() {
   // The wrapper gates server endpoints by mode (/v1/models -> 409 in agent mode),
@@ -265,36 +279,36 @@ function stripAutoMaxTokenFields(payload = {}) {
 async function resolveAutoMaxTokensPayload(payload, signal) {
   if (!payload || !isAutoMaxTokens(payload.max_tokens)) return stripAutoMaxTokenFields(payload);
 
-  const safetyCap = parsePositiveInt(
-    payload.max_tokens_safety_cap,
-    REQUEST_DEFAULTS.max_tokens_safety_cap
-  );
-  const contextMargin = parseNonNegativeInt(
-    payload.context_margin,
-    REQUEST_DEFAULTS.context_margin
-  );
+  const settings = autoMaxTokenSettings(payload);
   const countPayload = stripAutoMaxTokenFields(payload);
   delete countPayload.max_tokens;
 
-  const countRes = await fetch(`${backendBase()}/v1/token-count`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(countPayload),
-    signal
-  });
-  if (!countRes.ok) {
-    const txt = await countRes.text().catch(() => "");
-    throw new Error(`auto max_tokens token-count failed: backend HTTP ${countRes.status}: ${txt.slice(0, 400)}`);
+  let count = null;
+  try {
+    const countRes = await fetchWithBusyRetry(fetch, `${backendBase()}/v1/token-count`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(countPayload),
+      signal
+    });
+    if (!countRes.ok) {
+      try { await countRes.body?.cancel(); } catch {}
+      throw new Error(`backend HTTP ${countRes.status}`);
+    }
+    count = await countRes.json();
+  } catch (err) {
+    // Graceful degradation: a failed auto-sizing probe (wrapper busy past the
+    // retry budget, transient network error, …) must not kill the whole chat.
+    // Fall back to the safety cap — resolveAutoMaxTokens(null, …) returns it —
+    // and let the chat endpoint enforce the real context-length limit. An
+    // explicit client abort is still propagated.
+    if (signal?.aborted) throw err;
+    count = null;
   }
-  const count = await countRes.json();
-  const contextLength = parsePositiveInt(count.context_length, null);
-  const promptTokens = parseNonNegativeInt(count.prompt_tokens, 0);
-  const room = contextLength === null
-    ? safetyCap
-    : Math.max(1, contextLength - promptTokens - contextMargin);
+
   return {
     ...countPayload,
-    max_tokens: Math.max(1, Math.min(room, safetyCap))
+    max_tokens: resolveAutoMaxTokens(count, settings)
   };
 }
 
@@ -343,7 +357,10 @@ app.use("/v1", async (req, res) => {
       signal
     };
     if (hasRequestBody) options.body = body;
-    const upstream = await fetch(target, options);
+    // The wrapper answers a transient 409 "busy" while another request is
+    // streaming; retry with backoff so a quick race does not surface to the
+    // user. The 409 is returned before any stream starts, so this is safe.
+    const upstream = await fetchWithBusyRetry(fetch, target, options);
     res.status(upstream.status);
     upstream.headers.forEach((value, key) => res.setHeader(key, value));
     if (!upstream.body) return res.end();
@@ -949,6 +966,10 @@ let _agentProbeInflight = null;
 async function probeStatefulBackend() {
   if (AGENT_STATEFUL_MODE === "1" || AGENT_STATEFUL_MODE === "on") return true;
   if (AGENT_STATEFUL_MODE === "0" || AGENT_STATEFUL_MODE === "off") return false;
+  // With the wrapper enabled the agent runs through /api/native-agent/chat and
+  // never touches the stateful path; probing it only spams the wrapper with
+  // 404s, so report "unsupported" without a network round-trip.
+  if (wrapperEnabled()) return false;
   const now = Date.now();
   if (_agentProbeResult !== null && now - _agentProbeAt < AGENT_PROBE_TTL_MS) return _agentProbeResult;
   if (_agentProbeInflight) return _agentProbeInflight;
@@ -1203,6 +1224,33 @@ app.get("/api/sage/status", asyncHandler(async (req, res) => {
   });
 }));
 
+/**
+ * Execute SageMath and return the result.
+ * Used by the C agent (ds4-wrapper) to delegate sage execution via HTTP.
+ * Body: { code, timeout_sec?, sessionId? }
+ */
+app.post("/api/sage/exec", asyncHandler(async (req, res) => {
+  const { code, timeout_sec, sessionId } = req.body || {};
+  if (!code || typeof code !== "string" || !code.trim()) {
+    return res.status(400).json({ error: "code is required" });
+  }
+
+  const args = {
+    code,
+    timeout_sec: Number(timeout_sec) || 60
+  };
+  const opts = {
+    sageCallLog,
+    toolBlobStore,
+    sageWorkdir: sessionId
+      ? sageSessionDir(fileWorkspace.root, sessionId)
+      : undefined
+  };
+
+  const result = await toolSage(args, opts);
+  res.json(result);
+}));
+
 // ---------------------------------------------------------------------------
 
 /**
@@ -1237,16 +1285,28 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
       return;
     }
 
-    const agentSession = agentSessions.get(agentSessionKey(req));
-    const ponyPolicy = buildPonyPolicy(agentSession?.ponyMode);
+    // Require an active agent session before forwarding to native-agent
+    const nativeSessionKey = agentSessionKey(req);
+    const nativeAgentSession = agentSessions.get(nativeSessionKey);
+    if (!nativeAgentSession || !nativeAgentSession.active) {
+      return res.status(400).json({ error: "Agent mode is not active. Use /agent start first." });
+    }
+
+    const ponyPolicy = buildPonyPolicy(nativeAgentSession.ponyMode);
     const outboundMessage = ponyPolicy
       ? `${ponyPolicy}\n\nUser request:\n${message}`
       : message;
 
+    // Forward request params (max_tokens, temperature, etc.) to the native agent
+    const outboundBody = {
+      message: outboundMessage,
+      request: req.body?.request || {}
+    };
+
     const up = await fetch(`${backendBase()}/api/native-agent/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: outboundMessage }),
+      body: JSON.stringify(outboundBody),
       signal: req.signal
     });
 
@@ -1255,10 +1315,18 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
       return res.status(up.status).json({ error: `Wrapper error: ${errorBody}` });
     }
 
+    // Simple timeout guard for the native agent stream
+    const nativeStartedAt = Date.now();
+    const nativeMaxMs = config.agent?.nativeChatTimeoutMs || 480000;
+
     res.status(up.status);
     up.headers.forEach((value, key) => res.setHeader(key, value));
     if (up.body) {
       for await (const chunk of up.body) {
+        if (Date.now() - nativeStartedAt > nativeMaxMs) {
+          res.write(`event: agent_error\ndata: ${JSON.stringify({ error: "Native agent timeout" })}\n\n`);
+          break;
+        }
         res.write(chunk);
       }
     }
@@ -1573,7 +1641,12 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
           onProgress: tc.name === "bash"
             ? (chunk) => writeAgentSse("agent_tool_progress", { id: tc.id, name: tc.name, chunk })
             : undefined,
-          sageCallLog: tc.name === "sage" ? sageCallLog : undefined
+          sageCallLog: tc.name === "sage" ? sageCallLog : undefined,
+          toolBlobStore: tc.name === "sage" ? toolBlobStore : undefined,
+          // Keep sage-generated files (.sage.py, plots, …) out of the project
+          // tree: run sage in a per-session dir under the workspace that holds
+          // history/sessions.
+          sageWorkdir: tc.name === "sage" ? sageSessionDir(fileWorkspace.root, sessionKey) : undefined
         };
         const result = await executeTool(tc.name, tc.arguments, opts);
 
@@ -1834,6 +1907,29 @@ app.post("/api/research/cancel", asyncHandler(async (req, res) => {
   if (!requireResearchEnabled(res)) return;
   const state = await researchRuntime.cancel(req.body?.sessionId);
   res.json({ status: state?.status || "cancelled" });
+}));
+
+/**
+ * Tool blob retrieval endpoint.
+ * Used by the C agent's retrieve_context_blob tool to fetch exact original bytes
+ * from a previously compressed tool output.  Also usable by the JS runtime.
+ * Path: /api/tool-blob/:id?offset=0&length=20000
+ */
+app.get("/api/tool-blob/:id", asyncHandler(async (req, res) => {
+  const id = req.params.id;
+  const offset = Math.max(0, parseInt(req.query.offset, 10) || 0);
+  const length = Math.min(200_000, Math.max(1, parseInt(req.query.length, 10) || 20_000));
+
+  if (!ToolBlobStore.isValidId(id)) {
+    return res.status(400).json({ error: "invalid blob id" });
+  }
+
+  const text = await toolBlobStore.get(id, offset, length);
+  if (text === null) {
+    return res.status(404).json({ error: "blob not found" });
+  }
+
+  res.type("text/plain").send(text);
 }));
 
 app.use((err, _req, res, next) => {
