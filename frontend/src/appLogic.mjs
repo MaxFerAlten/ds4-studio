@@ -336,6 +336,10 @@ export function buildChatMessages(messages = [], { system = "" } = {}) {
   for (const message of messages) {
     if (!message || message.agentNotice) continue;
     if (message.role === "assistant" && !message.content) continue;
+    // Messages loaded from a Markdown archive are historical records, not
+    // operational tool transcript. They must not be re-injected into the
+    // active prompt context to prevent corrupted commands from reaching the model.
+    if (message.fromArchive) continue;
     out.push({ role: message.role, content: message.content });
   }
   return out;
