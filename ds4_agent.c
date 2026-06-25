@@ -3,8 +3,6 @@
 #include "ds4_help.h"
 #include "ds4_kvstore.h"
 #include "ds4_web.h"
-#include "ds4_context_blob.h"
-#include "ds4_tool_compress.h"
 #include "linenoise.h"
 
 #include <errno.h>
@@ -73,6 +71,7 @@ typedef struct {
     agent_generation_options gen;
     const char *chdir_path;
     bool non_interactive;
+    int frontend_port;
 } agent_config;
 
 typedef enum {
@@ -116,7 +115,6 @@ typedef struct {
     ds4_tokens transcript;
     char *cache_dir;
     char *sysprompt_path;
-    char *context_blob_dir;
     char session_sha[41];
     char *session_title;
     uint64_t session_created_at;
@@ -161,13 +159,17 @@ typedef struct {
     agent_bash_job *bash_jobs;
     int next_bash_job_id;
     bool raw_mode_needs_restore;
-    uint64_t compression_events;
-    uint64_t compression_original_bytes;
-    uint64_t compression_compressed_bytes;
-    uint64_t compression_blob_count;
-    uint64_t compression_retrieve_count;
-    char last_compression_strategy[64];
-    char last_compression_blob_id[80];
+
+
+    /* Anti-loop guard: ring buffer of recent tool command fingerprints.
+     * Used to detect sterile grep/find/read loops where the same command
+     * repeats with no progress. */
+#define AGENT_LOOP_GUARD_RING_SIZE 8
+    char loop_guard_ring[AGENT_LOOP_GUARD_RING_SIZE][128];
+    int loop_guard_ring_pos;
+    int loop_guard_consecutive_empty;
+    int loop_guard_consecutive_similar;
+    int loop_guard_max_tool_rounds;
 
     /* Wrapper embedding hook: when set, agent_publish() forwards published
      * bytes to this callback on the worker thread (before locking w->mu) so the
@@ -1015,7 +1017,7 @@ static const char agent_tools_prompt_after_edit[] =
     "  \"type\": \"function\",\n"
     "  \"function\": {\n"
     "    \"name\": \"retrieve_context_blob\",\n"
-    "    \"description\": \"Retrieve an exact byte range from a previously compressed local tool output blob.\",\n"
+    "    \"description\": \"Retrieve an exact byte range from a previously compressed tool output blob (server-side blob store).\",\n"
     "    \"parameters\": {\n"
     "      \"type\": \"object\",\n"
     "      \"properties\": {\n"
@@ -6420,155 +6422,6 @@ static void test_agent_rejects_invalid_native_slash_commands(void) {
     AGENT_TEST_ASSERT(!agent_parse_slash_command("/unknown", &parsed));
     AGENT_TEST_ASSERT(!agent_parse_slash_command("hello", &parsed));
 }
-
-static void agent_test_remove_blob_dir(const char *dir, const char *id) {
-    if (dir && id && ds4_context_blob_id_valid(id)) {
-        char path[PATH_MAX];
-        snprintf(path, sizeof(path), "%s/sha256/%s.txt", dir, id + 7);
-        unlink(path);
-    }
-    if (dir) {
-        char sha_dir[PATH_MAX];
-        snprintf(sha_dir, sizeof(sha_dir), "%s/sha256", dir);
-        rmdir(sha_dir);
-        rmdir(dir);
-    }
-}
-
-static void test_context_blob_put_read_range(void) {
-    char tmpl[PATH_MAX];
-    snprintf(tmpl, sizeof(tmpl), "/tmp/ds4_blob_test_XXXXXX");
-    char *dir = mkdtemp(tmpl);
-    AGENT_TEST_ASSERT(dir != NULL);
-    if (!dir) return;
-
-    const char *text = "abcdefghijklmnopqrstuvwxyz";
-    ds4_context_blob_ref ref;
-    char err[256] = {0};
-    AGENT_TEST_ASSERT(ds4_context_blob_put_text(dir, text, strlen(text),
-                                                &ref, err, sizeof(err)));
-    AGENT_TEST_ASSERT(ds4_context_blob_id_valid(ref.id));
-    AGENT_TEST_ASSERT(!strcmp(ref.id,
-        "sha256:71c480df93d6ae2f1efad1447c66c9525e316218cf51fc8d9ed832f2daf18b73"));
-    AGENT_TEST_ASSERT(ref.bytes == strlen(text));
-
-    char *range = ds4_context_blob_read_range(dir, ref.id, 2, 5,
-                                              err, sizeof(err));
-    AGENT_TEST_ASSERT(range != NULL);
-    AGENT_TEST_ASSERT(range && !strcmp(range, "cdefg"));
-    free(range);
-
-    range = ds4_context_blob_read_range(dir, ref.id, 999, 10,
-                                        err, sizeof(err));
-    AGENT_TEST_ASSERT(range != NULL);
-    AGENT_TEST_ASSERT(range && !strcmp(range, ""));
-    free(range);
-
-    range = ds4_context_blob_read_range(dir, "sha256:../bad", 0, 10,
-                                        err, sizeof(err));
-    AGENT_TEST_ASSERT(range == NULL);
-    AGENT_TEST_ASSERT(strstr(err, "invalid blob id") != NULL);
-    free(range);
-    agent_test_remove_blob_dir(dir, ref.id);
-}
-
-static void test_tool_compression_log_saves_retrievable_original(void) {
-    char tmpl[PATH_MAX];
-    snprintf(tmpl, sizeof(tmpl), "/tmp/ds4_compress_test_XXXXXX");
-    char *dir = mkdtemp(tmpl);
-    AGENT_TEST_ASSERT(dir != NULL);
-    if (!dir) return;
-
-    agent_buf input = {0};
-    for (int i = 0; i < 700; i++) {
-        if (i == 350)
-            agent_buf_puts(&input, "compile.c:42: fatal error: important missing header\n");
-        else
-            agent_buf_puts(&input, "ordinary build noise line with repeated compiler chatter\n");
-    }
-
-    ds4_tool_compress_result r;
-    char err[256] = {0};
-    AGENT_TEST_ASSERT(ds4_tool_compress_result_text("bash", input.ptr,
-                                                    input.len, dir,
-                                                    &r, err, sizeof(err)));
-    AGENT_TEST_ASSERT(r.changed);
-    AGENT_TEST_ASSERT(r.original_saved);
-    AGENT_TEST_ASSERT(r.compressed_bytes < r.original_bytes);
-    AGENT_TEST_ASSERT(ds4_context_blob_id_valid(r.blob_id));
-    AGENT_TEST_ASSERT(strstr(r.text, "[ds4 compressed tool output]") != NULL);
-    AGENT_TEST_ASSERT(strstr(r.text, "fatal error: important missing header") != NULL);
-
-    char *full = ds4_context_blob_read_range(dir, r.blob_id, 0,
-                                             r.original_bytes,
-                                             err, sizeof(err));
-    AGENT_TEST_ASSERT(full != NULL);
-    AGENT_TEST_ASSERT(full && !strcmp(full, input.ptr));
-    free(full);
-
-    char saved_id[80];
-    snprintf(saved_id, sizeof(saved_id), "%s", r.blob_id);
-    ds4_tool_compress_result_free(&r);
-    free(input.ptr);
-    agent_test_remove_blob_dir(dir, saved_id);
-}
-
-static void test_tool_compression_short_output_unchanged(void) {
-    ds4_tool_compress_result r;
-    char err[128] = {0};
-    const char *short_text = "small output\n";
-    AGENT_TEST_ASSERT(ds4_tool_compress_result_text("bash", short_text,
-                                                    strlen(short_text), "/tmp",
-                                                    &r, err, sizeof(err)));
-    AGENT_TEST_ASSERT(!r.changed);
-    AGENT_TEST_ASSERT(r.text == NULL);
-    AGENT_TEST_ASSERT(r.original_bytes == strlen(short_text));
-    ds4_tool_compress_result_free(&r);
-}
-
-static void test_tool_compression_search_keeps_paths_and_omits_bulk(void) {
-    char tmpl[PATH_MAX];
-    snprintf(tmpl, sizeof(tmpl), "/tmp/ds4_search_compress_test_XXXXXX");
-    char *dir = mkdtemp(tmpl);
-    AGENT_TEST_ASSERT(dir != NULL);
-    if (!dir) return;
-
-    agent_buf input = {0};
-    for (int i = 0; i < 900; i++) {
-        char line[160];
-        snprintf(line, sizeof(line), "src/file%d.c:%d: repeated search match %d\n",
-                 i % 3, i + 1, i);
-        agent_buf_puts(&input, line);
-    }
-
-    ds4_tool_compress_result r;
-    char err[256] = {0};
-    AGENT_TEST_ASSERT(ds4_tool_compress_result_text("search", input.ptr,
-                                                    input.len, dir,
-                                                    &r, err, sizeof(err)));
-    AGENT_TEST_ASSERT(r.changed);
-    AGENT_TEST_ASSERT(strstr(r.text, "[search output compressed]") != NULL);
-    AGENT_TEST_ASSERT(strstr(r.text, "src/file0.c") != NULL);
-    AGENT_TEST_ASSERT(strstr(r.text, "omitted_lines:") != NULL);
-    AGENT_TEST_ASSERT(r.omitted_lines > 0);
-
-    char saved_id[80];
-    snprintf(saved_id, sizeof(saved_id), "%s", r.blob_id);
-    ds4_tool_compress_result_free(&r);
-    free(input.ptr);
-    agent_test_remove_blob_dir(dir, saved_id);
-}
-
-static void ds4_agent_unit_tests_run(void) {
-    test_agent_edit_upto_tail_newline_is_not_part_of_anchor();
-    test_agent_edit_upto_requires_tail_after_newline_strip();
-    test_agent_parse_native_slash_commands();
-    test_agent_rejects_invalid_native_slash_commands();
-    test_context_blob_put_read_range();
-    test_tool_compression_short_output_unchanged();
-    test_tool_compression_log_saves_retrievable_original();
-    test_tool_compression_search_keeps_paths_and_omits_bulk();
-}
 #endif
 
 static bool agent_preflight_edit_old(agent_worker *w, const agent_tool_call *call,
@@ -7533,32 +7386,45 @@ static char *agent_tool_retrieve_context_blob(agent_worker *w,
                                  200000, &length))
         return xstrdup("Tool error: retrieve_context_blob length must be 1..200000\n");
 
-    char err[256] = {0};
-    char *range = ds4_context_blob_read_range(w->context_blob_dir, id, offset,
-                                              length, err, sizeof(err));
-    if (!range) {
-        agent_buf b = {0};
-        agent_buf_puts(&b, "Tool error: retrieve_context_blob failed: ");
-        agent_buf_puts(&b, err[0] ? err : "unknown error");
-        agent_buf_puts(&b, "\n");
-        return agent_buf_take(&b);
+    int port = w->cfg->frontend_port;
+    if (port <= 0) {
+        return xstrdup("Tool error: retrieve_context_blob HTTP backend unavailable (FRONTEND_PORT not set)\n");
     }
-    pthread_mutex_lock(&w->mu);
-    w->compression_retrieve_count++;
-    agent_wake_locked(w);
-    pthread_mutex_unlock(&w->mu);
 
-    size_t got = strlen(range);
+    char cmd[1024];
+    snprintf(cmd, sizeof(cmd),
+        "curl -s \"http://127.0.0.1:%d/api/tool-blob/%s?offset=%llu&length=%llu\" "
+        "--max-time 30 2>/dev/null",
+        port, id, (unsigned long long)offset, (unsigned long long)length);
+
+    agent_buf result = {0};
+    char buf[4096];
+    FILE *fp = popen(cmd, "r");
+    if (!fp) {
+        return xstrdup("Tool error: retrieve_context_blob HTTP backend unavailable (popen failed)\n");
+    }
+    while (fgets(buf, sizeof(buf), fp)) agent_buf_puts(&result, buf);
+    int status = pclose(fp);
+
+    int exit_code = (status >= 0 && WIFEXITED(status)) ? WEXITSTATUS(status) : -1;
+    if (exit_code != 0 || !result.ptr) {
+        free(result.ptr);
+        return xstrdup("Tool error: retrieve_context_blob HTTP request failed\n");
+    }
+
+    /* Wrap the retrieved content in context_blob range markers so the model
+     * sees the same structure as the old local implementation. */
+    size_t got = strlen(result.ptr);
     agent_buf out = {0};
     char hdr[256];
     snprintf(hdr, sizeof(hdr),
              "context_blob id=%s offset=%llu bytes=%zu requested_length=%llu\n<context_blob_range>\n",
              id, (unsigned long long)offset, got, (unsigned long long)length);
     agent_buf_puts(&out, hdr);
-    agent_buf_puts(&out, range);
-    if (got && range[got - 1] != '\n') agent_buf_puts(&out, "\n");
+    agent_buf_puts(&out, result.ptr);
+    if (got && result.ptr[got - 1] != '\n') agent_buf_puts(&out, "\n");
     agent_buf_puts(&out, "</context_blob_range>\n");
-    free(range);
+    free(result.ptr);
     return agent_buf_take(&out);
 }
 
@@ -7580,95 +7446,246 @@ static char *agent_tool_retrieve_context_blob(agent_worker *w,
  *     sidesteps any source-escaping concern.
  * The run is bounded by `timeout_sec` (default 60) via coreutils `timeout`: an
  * unbounded popen on a runaway computation would otherwise hang the worker. */
-static char *agent_tool_sage(agent_worker *w, const agent_tool_call *call) {
+/* --------------------------------------------------------------------------
+ * JSON helpers for HTTP-based tool delegation
+ * --------------------------------------------------------------------------
+ * Minimal JSON string escape: wraps a string in double quotes and escapes
+ * " \ \n \t \b \f and control chars.  Returns a newly allocated buffer or
+ * NULL on OOM. */
+static char *agent_json_escape(const char *s, size_t len) {
+    if (!s) return xstrdup("\"\"");
+    size_t cap = len * 2 + 3;
+    char *buf = malloc(cap);
+    if (!buf) return NULL;
+    size_t pos = 0;
+    buf[pos++] = '"';
+    for (size_t i = 0; i < len && s[i]; i++) {
+        unsigned char c = (unsigned char)s[i];
+        switch (c) {
+            case '"': buf[pos++] = '\\'; buf[pos++] = '"'; break;
+            case '\\': buf[pos++] = '\\'; buf[pos++] = '\\'; break;
+            case '\n': buf[pos++] = '\\'; buf[pos++] = 'n'; break;
+            case '\t': buf[pos++] = '\\'; buf[pos++] = 't'; break;
+            case '\r': buf[pos++] = '\\'; buf[pos++] = 'r'; break;
+            case '\b': buf[pos++] = '\\'; buf[pos++] = 'b'; break;
+            case '\f': buf[pos++] = '\\'; buf[pos++] = 'f'; break;
+            default:
+                if (c < 0x20) {
+                    pos += snprintf(buf + pos, cap - pos, "\\u%04x", c);
+                } else {
+                    buf[pos++] = c;
+                }
+                break;
+        }
+        if (pos + 8 > cap) {
+            free(buf);
+            return NULL;
+        }
+    }
+    buf[pos++] = '"';
+    buf[pos] = '\0';
+    return buf;
+}
+
+/* Minimal JSON string value extractor.  Given a buffer containing a JSON object
+ * response, extracts the value of a top-level string key.  The key must be a
+ * JSON string literal at the top level (depth 1).  Returns a newly allocated
+ * string or NULL on failure.  The caller must free the result. */
+static char *agent_json_extract_string(const char *json, const char *key) {
+    if (!json || !key) return NULL;
+    /* Build the search pattern: "key": "  (key, colon, space, quote) */
+    size_t key_len = strlen(key);
+    /* Search for "<key>":" or "<key>": " (with optional whitespace) */
+    const char *p = json;
+    while (*p) {
+        /* Look for the key in quotes */
+        if (*p == '"') {
+            p++;
+            if (strncmp(p, key, key_len) == 0 && p[key_len] == '"') {
+                p += key_len + 1;
+                /* Skip whitespace */
+                while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+                if (*p != ':') continue;
+                p++;
+                /* Skip whitespace after colon */
+                while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+                if (*p != '"') continue;
+                p++; /* skip opening quote */
+                /* Extract until closing unescaped quote */
+                size_t out_len = 0;
+                size_t out_cap = 256;
+                char *out = malloc(out_cap);
+                if (!out) return NULL;
+                while (*p && *p != '"') {
+                    if (*p == '\\' && p[1]) {
+                        p++;
+                        switch (*p) {
+                            case '"': out[out_len++] = '"'; break;
+                            case '\\': out[out_len++] = '\\'; break;
+                            case 'n': out[out_len++] = '\n'; break;
+                            case 't': out[out_len++] = '\t'; break;
+                            case 'r': out[out_len++] = '\r'; break;
+                            default: out[out_len++] = *p; break;
+                        }
+                        p++;
+                    } else {
+                        out[out_len++] = *p++;
+                    }
+                    if (out_len + 4 > out_cap) {
+                        char *tmp = realloc(out, out_cap * 2);
+                        if (!tmp) { free(out); return NULL; }
+                        out = tmp;
+                        out_cap *= 2;
+                    }
+                }
+                out[out_len] = '\0';
+                return out;
+            }
+            p += key_len;
+            while (*p && *p != '"') p++;
+            if (*p) p++;
+        } else {
+            p++;
+        }
+    }
+    return NULL;
+}
+
+/* Extract a boolean value from a top-level JSON key.  Returns true if the
+ * value is `true` (case-sensitive), false otherwise. */
+static bool agent_json_extract_bool(const char *json, const char *key) {
+    if (!json || !key) return false;
+    size_t key_len = strlen(key);
+    const char *p = json;
+    while (*p) {
+        if (*p == '"') {
+            p++;
+            if (strncmp(p, key, key_len) == 0 && p[key_len] == '"') {
+                p += key_len + 1;
+                while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+                if (*p != ':') continue;
+                p++;
+                while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+                if (strncmp(p, "true", 4) == 0) return true;
+                return false;
+            }
+            p += key_len;
+            while (*p && *p != '"') p++;
+            if (*p) p++;
+        } else {
+            p++;
+        }
+    }
+    return false;
+}
+
+/* Sage tool implementation that delegates execution to the Node frontend server
+ * via HTTP POST /api/sage/exec.  Replaces the local popen-based agent_tool_sage
+ * so that sage lives exclusively in the JS runtime (richer features, testable).
+ * The frontend port is read from w->cfg->frontend_port (set from FRONTEND_PORT
+ * env var by ds4_agent_runtime_init). */
+static char *agent_tool_sage_via_http(agent_worker *w, const agent_tool_call *call) {
     const char *code = agent_tool_arg_value(call, "code");
     if (!code || !code[0]) return xstrdup("Tool error: sage requires code\n");
 
     int timeout = agent_parse_int_default(agent_tool_arg_value(call, "timeout_sec"),
                                           60, 1, 24 * 3600);
 
-    char tmp[] = "/tmp/ds4-sage-XXXXXX";
-    int fd = mkstemp(tmp);
-    if (fd < 0) return xstrdup("Tool error: sage cannot create temp file\n");
-
-    size_t len = strlen(code);
-    ssize_t written = 0;
-    while (written < (ssize_t)len) {
-        ssize_t n = write(fd, code + written, len - written);
-        if (n <= 0) { close(fd); unlink(tmp); return xstrdup("Tool error: sage write failed\n"); }
-        written += n;
+    int port = w->cfg->frontend_port;
+    if (port <= 0) {
+        return xstrdup("Tool error: sage HTTP backend unavailable (FRONTEND_PORT not set)\n");
     }
-    close(fd);
 
-    /* mkstemp emits only [A-Za-z0-9] in the suffix, so the paths never contain a
-     * quote and embed safely both in the shell command and the Python literal. */
-    char sagefile[PATH_MAX], runfile[PATH_MAX];
-    snprintf(sagefile, sizeof(sagefile), "%s.sage", tmp);
-    snprintf(runfile, sizeof(runfile), "%s_run.sage", tmp);
-    if (rename(tmp, sagefile) != 0) { unlink(tmp); return xstrdup("Tool error: sage temp rename failed\n"); }
+    /* Build JSON request body with proper string escaping. */
+    char *escaped_code = agent_json_escape(code, strlen(code));
+    if (!escaped_code) return xstrdup("Tool error: sage memory error\n");
 
-    FILE *rf = fopen(runfile, "w");
-    if (!rf) { unlink(sagefile); return xstrdup("Tool error: sage cannot create runner\n"); }
-    fprintf(rf,
-        "from sage.repl.preparse import preparse\n"
-        "__s__ = object()\n"
-        "__r__ = __s__\n"
-        "__g__ = globals()\n"
-        "with open('%s') as __f__:\n"
-        "    __src__ = __f__.read()\n"
-        "__code__ = preparse(__src__)\n"
-        "try:\n"
-        "    __r__ = eval(compile(__code__, '<ds4-sage-tool>', 'eval'), __g__, __g__)\n"
-        "except SyntaxError:\n"
-        "    exec(compile(__code__, '<ds4-sage-tool>', 'exec'), __g__, __g__)\n"
-        "    if '__result__' in __g__: __r__ = __g__['__result__']\n"
-        "    elif 'result' in __g__: __r__ = __g__['result']\n"
-        "if __r__ is not __s__ and __r__ is not None:\n"
-        "    try: print('LaTeX:', latex(__r__))\n"
-        "    except Exception: pass\n"
-        "    print('Result:', __r__)\n",
-        sagefile);
-    fclose(rf);
+    char *body = NULL;
+    {
+        int body_needed = snprintf(NULL, 0,
+            "{\"code\":%s,\"timeout_sec\":%d}",
+            escaped_code, timeout);
+        if (body_needed <= 0) {
+            free(escaped_code);
+            return xstrdup("Tool error: sage request encoding error\n");
+        }
+        body = malloc((size_t)body_needed + 1);
+        if (!body) {
+            free(escaped_code);
+            return xstrdup("Tool error: sage memory error\n");
+        }
+        snprintf(body, (size_t)body_needed + 1,
+            "{\"code\":%s,\"timeout_sec\":%d}",
+            escaped_code, timeout);
+    }
+    free(escaped_code);
 
-    agent_publishf_system_status(w, "Running Sage...");
+    /* Build curl command.  --max-time adds a safety margin beyond the Sage
+     * timeout so a hung Node process does not wedge the worker. */
+    char cmd[8192];
+    int curl_timeout = timeout + 10;
+    if (curl_timeout < 30) curl_timeout = 30;
+    snprintf(cmd, sizeof(cmd),
+        "curl -s -X POST http://127.0.0.1:%d/api/sage/exec "
+        "-H 'Content-Type: application/json' "
+        "-d '%s' --max-time %d 2>/dev/null",
+        port, body, curl_timeout);
 
-    char cmd[PATH_MAX + 64];
-    snprintf(cmd, sizeof(cmd), "timeout %d sage '%s' 2>&1", timeout, runfile);
+    agent_publishf_system_status(w, "Running Sage via HTTP...");
 
     agent_buf result = {0};
     char buf[4096];
     FILE *fp = popen(cmd, "r");
     if (!fp) {
-        unlink(sagefile);
-        unlink(runfile);
-        return xstrdup("Tool error: sage popen failed\n");
+        free(body);
+        return xstrdup("Tool error: sage HTTP backend unavailable (popen failed)\n");
     }
     while (fgets(buf, sizeof(buf), fp)) agent_buf_puts(&result, buf);
     int status = pclose(fp);
-    unlink(sagefile);
-    unlink(runfile);
 
+    /* Check for curl errors */
     int exit_code = (status >= 0 && WIFEXITED(status)) ? WEXITSTATUS(status) : -1;
-    if (exit_code == 124) {            /* coreutils `timeout` exit convention */
-        free(result.ptr);
-        char msg[96];
-        snprintf(msg, sizeof(msg), "Tool error: sage timed out after %ds\n", timeout);
+    if (exit_code == 0 && result.ptr) {
+        /* Parse JSON response */
+        char *content = agent_json_extract_string(result.ptr, "content");
+        bool is_error = agent_json_extract_bool(result.ptr, "isError");
+
+        if (content && !is_error) {
+            free(result.ptr);
+            free(body);
+            return content;
+        }
+        free(content);
+        if (is_error && result.ptr) {
+            /* Try to get the error content for a more informative message */
+            char *err_content = agent_json_extract_string(result.ptr, "content");
+            agent_buf b = {0};
+            agent_buf_puts(&b, "Tool error: sage computation failed");
+            if (err_content) {
+                agent_buf_puts(&b, ": ");
+                agent_buf_puts(&b, err_content);
+                free(err_content);
+            }
+            agent_buf_puts(&b, "\n");
+            free(result.ptr);
+            free(body);
+            return agent_buf_take(&b);
+        }
+        /* Fall through to error handling */
+    }
+
+    free(result.ptr);
+    if (exit_code > 0) {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "Tool error: sage HTTP request failed (curl exit %d)\n", exit_code);
+        free(body);
         return xstrdup(msg);
     }
-    if (exit_code == 127) {
-        free(result.ptr);
-        return xstrdup("Tool error: sage binary not found (install SageMath, e.g. 'apt install sagemath')\n");
-    }
-    if (!result.ptr) {
-        if (exit_code > 0) {
-            char msg[128];
-            snprintf(msg, sizeof(msg), "Tool error: sage exited with code %d\n", exit_code);
-            return xstrdup(msg);
-        }
-        return xstrdup("[sage returned no output]\n");
-    }
-    return agent_buf_take(&result);
+    free(body);
+    return xstrdup("Tool error: sage HTTP backend error (no output)\n");
 }
+
+
 
 /* ============================================================================
  * Tool Dispatch
@@ -7691,7 +7708,7 @@ static char *agent_execute_tool_call(agent_worker *w, const agent_tool_call *cal
     if (!strcmp(call->name, "retrieve_context_blob")) return agent_tool_retrieve_context_blob(w, call);
     if (!strcmp(call->name, "google_search")) return agent_tool_google_search(w, call);
     if (!strcmp(call->name, "visit_page")) return agent_tool_visit_page(w, call);
-    if (!strcmp(call->name, "sage")) return agent_tool_sage(w, call);
+    if (!strcmp(call->name, "sage")) return agent_tool_sage_via_http(w, call);
 
     if (!strcmp(call->name, "bash")) {
         const char *cmd = agent_tool_arg_value(call, "command");
@@ -7758,66 +7775,9 @@ static char *agent_execute_tool_calls(agent_worker *w, const agent_tool_calls *c
     return agent_buf_take(&all);
 }
 
-static const char *agent_tool_calls_compression_name(const agent_tool_calls *calls) {
-    if (!calls || calls->len <= 0) return "tool_result";
-    for (int i = 0; i < calls->len; i++) {
-        if (calls->v[i].name && !strcmp(calls->v[i].name, "retrieve_context_blob"))
-            return "retrieve_context_blob";
-    }
-    if (calls->len != 1 || !calls->v[0].name) return "tool_result";
-    return calls->v[0].name;
-}
 
-static char *agent_maybe_compress_tool_result(agent_worker *w,
-                                              const agent_tool_calls *calls,
-                                              const char *tool_result) {
-    if (!tool_result) return NULL;
-    ds4_tool_compress_result compressed = {0};
-    char err[256] = {0};
-    const char *tool_name = agent_tool_calls_compression_name(calls);
-    bool ok = ds4_tool_compress_result_text(tool_name,
-                                            tool_result,
-                                            strlen(tool_result),
-                                            w->context_blob_dir,
-                                            &compressed,
-                                            err,
-                                            sizeof(err));
-    if (!ok) {
-        agent_trace(w, "tool compression skipped error=%s",
-                    err[0] ? err : "unknown");
-        ds4_tool_compress_result_free(&compressed);
-        return NULL;
-    }
-    if (!compressed.changed || !compressed.text) {
-        ds4_tool_compress_result_free(&compressed);
-        return NULL;
-    }
 
-    char *text = compressed.text;
-    compressed.text = NULL;
-    pthread_mutex_lock(&w->mu);
-    w->compression_events++;
-    w->compression_original_bytes += compressed.original_bytes;
-    w->compression_compressed_bytes += compressed.compressed_bytes;
-    if (compressed.original_saved) w->compression_blob_count++;
-    snprintf(w->last_compression_strategy,
-             sizeof(w->last_compression_strategy), "%s", compressed.strategy);
-    snprintf(w->last_compression_blob_id,
-             sizeof(w->last_compression_blob_id), "%s", compressed.blob_id);
-    agent_wake_locked(w);
-    pthread_mutex_unlock(&w->mu);
 
-    agent_trace(w,
-                "tool compression strategy=%s kind=%s original=%llu compressed=%llu blob=%s omitted_lines=%llu",
-                compressed.strategy,
-                ds4_tool_content_kind_name(compressed.kind),
-                (unsigned long long)compressed.original_bytes,
-                (unsigned long long)compressed.compressed_bytes,
-                compressed.blob_id,
-                (unsigned long long)compressed.omitted_lines);
-    ds4_tool_compress_result_free(&compressed);
-    return text;
-}
 
 /* If compaction happens while a bash process is still alive, inject a small
  * tool-role reminder into the rebuilt transcript.  Otherwise the summary could
@@ -8221,6 +8181,76 @@ static int worker_sample_with_mode(agent_worker *w, const agent_config *cfg,
                               rng);
 }
 
+/* ── Anti-loop guard helpers ─────────────────────────────────────────── */
+
+/* Strip noise filters and normalize whitespace for command fingerprinting.
+ * Removes common sterile pipeline suffixes like | cat -A, | awk 'NF',
+ * | grep -v '^$', | wc -l, and collapses whitespace. */
+static void agent_fingerprint_command(const char *cmd, char *out, size_t out_cap) {
+    if (!cmd || !cmd[0]) { out[0] = '\0'; return; }
+    /* Copy command into a temp buffer, skipping noise filters */
+    char buf[256];
+    size_t pos = 0;
+    const char *s = cmd;
+    while (*s && pos < sizeof(buf) - 1) {
+        /* Skip common noise filter patterns */
+        if (strncmp(s, "| cat -A", 8) == 0 ||
+            strncmp(s, "| awk 'NF'", 9) == 0 ||
+            strncmp(s, "| grep -v '^$'", 13) == 0 ||
+            strncmp(s, "| grep -v ^''$", 13) == 0 ||
+            strncmp(s, "| wc -l", 7) == 0)
+        {
+            s += (*s == '|' ? 1 : 0);
+            /* skip to next pipe or end */
+            while (*s && *s != '|' && *s != '\n') s++;
+            continue;
+        }
+        /* Collapse consecutive whitespace into single space */
+        if (isspace((unsigned char)*s)) {
+            if (pos == 0 || buf[pos - 1] != ' ') buf[pos++] = ' ';
+            s++;
+            while (*s && isspace((unsigned char)*s)) s++;
+            continue;
+        }
+        buf[pos++] = *s++;
+    }
+    buf[pos] = '\0';
+    /* Trim and truncate to fit output */
+    size_t len = strlen(buf);
+    while (len > 0 && isspace((unsigned char)buf[len - 1])) len--;
+    size_t copy = len < out_cap - 1 ? len : out_cap - 1;
+    memcpy(out, buf, copy);
+    out[copy] = '\0';
+}
+
+/* Update the anti-loop guard ring buffer with a command fingerprint.
+ * Returns true if the command is a repeat of a recent fingerprint. */
+static bool agent_loop_guard_record(agent_worker *w, const char *fingerprint) {
+    if (!fingerprint || !fingerprint[0]) return false;
+    int ring = AGENT_LOOP_GUARD_RING_SIZE;
+    int pos = w->loop_guard_ring_pos % ring;
+    /* Check if this fingerprint matches any of the last N entries */
+    for (int i = 0; i < ring; i++) {
+        int idx = (pos - i + ring) % ring;
+        if (w->loop_guard_ring[idx][0] &&
+            !strcmp(w->loop_guard_ring[idx], fingerprint))
+        {
+            w->loop_guard_consecutive_similar++;
+            /* Record the fingerprint at current position */
+            strncpy(w->loop_guard_ring[pos], fingerprint, sizeof(w->loop_guard_ring[pos]) - 1);
+            w->loop_guard_ring[pos][sizeof(w->loop_guard_ring[pos]) - 1] = '\0';
+            w->loop_guard_ring_pos++;
+            return true;
+        }
+    }
+    /* New fingerprint — reset similar counter */
+    w->loop_guard_consecutive_similar = 0;
+    strncpy(w->loop_guard_ring[pos], fingerprint, sizeof(w->loop_guard_ring[pos]) - 1);
+    w->loop_guard_ring[pos][sizeof(w->loop_guard_ring[pos]) - 1] = '\0';
+    w->loop_guard_ring_pos++;
+    return false;
+}
+
 static void worker_set_greedy_sampling(agent_worker *w, bool greedy) {
     pthread_mutex_lock(&w->mu);
     if (w->status.greedy_sampling != greedy) {
@@ -8285,8 +8315,24 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
      * pressure, compaction, user Ctrl+C, and the model's final answer are the
      * real stopping conditions.  The transcript is the single source of truth:
      * after a DSML stanza completes we terminate that assistant message, append
-     * the tool result as a tool message, then ask the model to continue. */
+     * the tool result as a tool message, then ask the model to continue.
+     *
+     * Anti-loop guard: limit tool rounds to prevent sterile grep/find loops
+     * where the same command repeats with no progress. */
+    w->loop_guard_consecutive_empty = 0;
+    w->loop_guard_consecutive_similar = 0;
+    w->loop_guard_ring_pos = 0;
     for (int tool_round = 0; ; tool_round++) {
+        if (tool_round >= w->loop_guard_max_tool_rounds) {
+            agent_buf b = {0};
+            agent_buf_puts(&b, "Tool error: too many tool rounds without finishing. ");
+            agent_buf_puts(&b, "The model may be looping. Please provide a final answer.\n");
+            char *err_result = agent_buf_take(&b);
+            ds4_chat_append_message(w->engine, &w->transcript, "tool", err_result);
+            free(err_result);
+            agent_set_status(w, AGENT_WORKER_IDLE);
+            return 0;
+        }
         if (tool_round > 0 &&
             !agent_worker_compact_if_needed(w, "soft limit before tool continuation",
                                             compact_err, sizeof(compact_err)))
@@ -8515,9 +8561,7 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
         } else {
             tool_result = agent_execute_tool_calls(w, &dsml.calls);
         }
-        char *compressed_result = agent_maybe_compress_tool_result(w, &dsml.calls,
-                                                                   tool_result);
-        const char *append_result = compressed_result ? compressed_result : tool_result;
+        const char *append_result = tool_result;
         int projected_tokens = 0;
         if (!agent_tool_result_fits_context(w, append_result,
                                             AGENT_TOOL_RESULT_RESERVE_TOKENS,
@@ -8526,7 +8570,6 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
             if (!agent_worker_compact(w, "tool result would exceed context",
                                       compact_err, sizeof(compact_err)))
             {
-                free(compressed_result);
                 free(tool_result);
                 agent_dsml_parser_free(&dsml);
                 if (agent_err_is_interrupted(compact_err)) {
@@ -8541,13 +8584,11 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
                                                 AGENT_TOOL_RESULT_RESERVE_TOKENS,
                                                 &projected_tokens))
             {
-                free(compressed_result);
-                compressed_result = NULL;
                 free(tool_result);
                 agent_buf b = {0};
                 char msg[256];
                 snprintf(msg, sizeof(msg),
-                         "Tool error: tool result still does not fit after live-zone compression and context compaction "
+                         "Tool error: tool result still does not fit after context compaction "
                          "(projected_prompt=%d tokens, ctx=%d, reserve=%d). "
                          "Retry with a smaller read/search/bash output.\n",
                          projected_tokens, w->cfg->gen.ctx_size,
@@ -8564,7 +8605,59 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
             }
         }
         ds4_chat_append_message(w->engine, &w->transcript, "tool", append_result);
-        free(compressed_result);
+
+        /* Anti-loop guard: fingerprint the command and check for sterile loops.
+         * If the tool result is empty or very small, increment empty counter.
+         * If N consecutive commands are similar or empty, inject an error. */
+        if (dsml.calls.len > 0) {
+            char fingerprint[128];
+            /* Fingerprint the first tool call's command */
+            const char *cmd = NULL;
+            if (!strcmp(dsml.calls.v[0].name, "bash")) {
+                cmd = agent_tool_arg_value(&dsml.calls.v[0], "command");
+            } else if (!strcmp(dsml.calls.v[0].name, "read")) {
+                cmd = agent_tool_arg_value(&dsml.calls.v[0], "path");
+            } else if (!strcmp(dsml.calls.v[0].name, "search")) {
+                cmd = agent_tool_arg_value(&dsml.calls.v[0], "query");
+            } else if (!strcmp(dsml.calls.v[0].name, "grep") ||
+                       !strcmp(dsml.calls.v[0].name, "find")) {
+                cmd = agent_tool_arg_value(&dsml.calls.v[0], "command");
+            }
+            if (cmd && cmd[0]) {
+                agent_fingerprint_command(cmd, fingerprint, sizeof(fingerprint));
+                bool is_repeat = agent_loop_guard_record(w, fingerprint);
+                (void)is_repeat;
+            }
+
+            /* Check if tool result is empty or trivially small */
+            size_t result_len = strlen(append_result);
+            if (result_len < 16) {
+                w->loop_guard_consecutive_empty++;
+            } else {
+                w->loop_guard_consecutive_empty = 0;
+            }
+
+            /* Stop if N consecutive empty results or N consecutive similar commands */
+            if (w->loop_guard_consecutive_empty >= 5 ||
+                w->loop_guard_consecutive_similar >= 4)
+            {
+                agent_buf b = {0};
+                agent_buf_puts(&b, "Tool error: loop detected — ");
+                if (w->loop_guard_consecutive_empty >= 5)
+                    agent_buf_puts(&b, "tool results are empty. ");
+                else
+                    agent_buf_puts(&b, "similar commands repeat without progress. ");
+                agent_buf_puts(&b, "Please provide a final answer.\n");
+                char *loop_err = agent_buf_take(&b);
+                ds4_chat_append_message(w->engine, &w->transcript, "tool", loop_err);
+                free(loop_err);
+                free(tool_result);
+                agent_dsml_parser_free(&dsml);
+                agent_set_status(w, AGENT_WORKER_IDLE);
+                return 0;
+            }
+        }
+
         free(tool_result);
         agent_dsml_parser_free(&dsml);
 
@@ -10050,6 +10143,7 @@ static int agent_worker_init(agent_worker *w, ds4_engine *engine, agent_config *
     memset(w, 0, sizeof(*w));
     w->engine = engine;
     w->cfg = cfg;
+    w->loop_guard_max_tool_rounds = 50;
     w->wake_fd[0] = -1;
     w->wake_fd[1] = -1;
     pthread_mutex_init(&w->mu, NULL);
@@ -10081,7 +10175,6 @@ static int agent_worker_init(agent_worker *w, ds4_engine *engine, agent_config *
     };
     w->web = ds4_web_create(&web_cfg);
     w->sysprompt_path = ds4_kvstore_path_join(w->cache_dir, "sysprompt.kv");
-    w->context_blob_dir = ds4_kvstore_path_join(w->cache_dir, "context-blobs");
     if (cfg->gen.trace_path && cfg->gen.trace_path[0]) {
         w->trace = fopen(cfg->gen.trace_path, "ab");
         if (!w->trace) {
@@ -10105,7 +10198,6 @@ static void agent_worker_free(agent_worker *w) {
     ds4_tokens_free(&w->transcript);
     free(w->cache_dir);
     free(w->sysprompt_path);
-    free(w->context_blob_dir);
     free(w->session_title);
     free(w->legacy_session_path_to_delete);
     free(w->queued_user_drain_text);
