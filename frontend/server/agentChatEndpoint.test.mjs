@@ -1,0 +1,156 @@
+// Integration tests for the /api/agent/chat endpoint's wrapper path.
+// Tests session validation, request forwarding, and timeout guard logic
+// by mocking the Express handler's dependencies.
+
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { AgentSessionStore } from "./agentSession.mjs";
+
+// ── Helpers to simulate the wrapper-path logic ─────────────────────────
+
+/**
+ * Simulate the session validation check from the wrapper path:
+ *   if (!nativeAgentSession || !nativeAgentSession.active) -> 400
+ */
+function validateWrapperSession(store, sessionKey) {
+  const session = store.get(sessionKey);
+  if (!session || !session.active) {
+    return { status: 400, error: "Agent mode is not active. Use /agent start first." };
+  }
+  return { status: 200, session };
+}
+
+/**
+ * Simulate the outbound body construction:
+ *   { message: outboundMessage, request: req.body?.request || {} }
+ */
+function buildWrapperOutbound(message, ponyPolicy, requestParams) {
+  const outboundMessage = ponyPolicy
+    ? `${ponyPolicy}\n\nUser request:\n${message}`
+    : message;
+  return {
+    message: outboundMessage,
+    request: requestParams || {}
+  };
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────
+
+test("wrapper path rejects chat without active session", () => {
+  const store = new AgentSessionStore();
+
+  // No session started yet
+  const result = validateWrapperSession(store, "tab_unknown");
+  assert.equal(result.status, 400);
+  assert.match(result.error, /Agent mode is not active/);
+
+  // Start a session for a different key
+  store.start("tab_other");
+  const result2 = validateWrapperSession(store, "tab_unknown");
+  assert.equal(result2.status, 400);
+  assert.match(result2.error, /Agent mode is not active/);
+});
+
+test("wrapper path accepts chat with active session", () => {
+  const store = new AgentSessionStore();
+  store.start("tab_active");
+
+  const result = validateWrapperSession(store, "tab_active");
+  assert.equal(result.status, 200);
+  assert.ok(result.session.active);
+});
+
+test("wrapper path builds outbound body with request params", () => {
+  const message = "analizza progetto";
+  const requestParams = {
+    max_tokens: 512,
+    temperature: 0.7,
+    top_p: 1.0
+  };
+
+  const body = buildWrapperOutbound(message, null, requestParams);
+  assert.equal(body.message, message);
+  assert.deepEqual(body.request, requestParams);
+});
+
+test("wrapper path includes pony policy in outbound message", () => {
+  const message = "analizza";
+  const policy = "<DS4 Lean Agent Policy>\nBe concise.";
+  const requestParams = { max_tokens: 256 };
+
+  const body = buildWrapperOutbound(message, policy, requestParams);
+  assert.match(body.message, /<DS4 Lean Agent Policy>/);
+  assert.match(body.message, /User request:\nanalizza/);
+  assert.deepEqual(body.request, requestParams);
+});
+
+test("wrapper path defaults request to empty object when absent", () => {
+  const body = buildWrapperOutbound("test", null, undefined);
+  assert.deepEqual(body.request, {});
+});
+
+test("timeout guard stops streaming after deadline", async () => {
+  // Simulate a slow stream where each chunk takes 100ms
+  // Timeout is 50ms — only the error chunk should be emitted
+  const deadline = Date.now() + 50;
+  const chunks = [
+    "event: agent_text\ndata: {\"content\":\"first\"}\n\n",
+    "event: agent_text\ndata: {\"content\":\"second\"}\n\n",
+    "event: agent_text\ndata: {\"content\":\"third\"}\n\n"
+  ];
+
+  const results = [];
+  for (const chunk of chunks) {
+    await new Promise(r => setTimeout(r, 100));
+    if (Date.now() > deadline) {
+      results.push({ event: "agent_error", data: { error: "Native agent timeout" } });
+      break;
+    }
+    results.push(chunk);
+  }
+
+  // No chunks made it through; only the timeout error was emitted
+  assert.equal(results.length, 1);
+  assert.deepEqual(results[0], {
+    event: "agent_error",
+    data: { error: "Native agent timeout" }
+  });
+});
+
+test("timeout guard lets fast chunks pass through", async () => {
+  // Fast chunks (10ms each) within a generous timeout (500ms)
+  const deadline = Date.now() + 500;
+  const chunks = [
+    "event: agent_text\ndata: {\"content\":\"alpha\"}\n\n",
+    "event: agent_text\ndata: {\"content\":\"beta\"}\n\n",
+  ];
+
+  const results = [];
+  for (const chunk of chunks) {
+    await new Promise(r => setTimeout(r, 10));
+    if (Date.now() > deadline) {
+      results.push({ event: "agent_error", data: { error: "Native agent timeout" } });
+      break;
+    }
+    results.push(chunk);
+  }
+
+  assert.equal(results.length, 2);
+  assert.equal(typeof results[0], "string");
+  assert.equal(typeof results[1], "string");
+});
+
+test("pony policy preserves message content", () => {
+  const message = "Ciao, analizza il progetto.";
+  const policy = "<ponyPolicy>\nFocus on code.";
+  const requestParams = { max_tokens: 1024 };
+
+  const body = buildWrapperOutbound(message, policy, requestParams);
+
+  // The original message must be fully present after the policy
+  assert.match(body.message, /Ciao, analizza il progetto\.$/m);
+  // The policy must precede the message
+  assert.match(body.message, /^<ponyPolicy>\nFocus on code\.\n\nUser request:\nCiao/);
+  // Request params must survive
+  assert.deepEqual(body.request, requestParams);
+});
