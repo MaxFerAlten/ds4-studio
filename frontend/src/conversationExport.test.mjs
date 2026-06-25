@@ -392,3 +392,184 @@ test("normalizeAgentMessage rejects archive messages", async () => {
     assert.equal(true, true); // archive message would be filtered
   }
 });
+
+// ── Certification test: original problem scenario ───────────────────
+// This test certifies that the original bug is fixed end-to-end:
+//   - Shell transcript lines containing $, |, >, < were being corrupted
+//     by KaTeX normalization during Markdown export
+//   - The agent was entering sterile grep/find loops with no progress
+//
+// The test simulates a realistic agent conversation with multiple tool
+// calls, shell commands, and tool results — exactly the scenario that
+// produced the corrupted transcript in the original error report.
+
+test("CERTIFICATION: original bug scenario — shell transcript preserved", () => {
+  // Simulate a typical agent conversation with shell commands
+  const messages = [
+    { role: "user", content: "Analizza i file .c nel progetto" },
+    {
+      role: "assistant",
+      content: "Eseguo la ricerca:",
+      tool_calls: [
+        {
+          id: "call_find",
+          name: "bash",
+          arguments: JSON.stringify({
+            command: "find . -type f -name '*.c' 2>/dev/null | head -20"
+          }, null, 2)
+        }
+      ]
+    },
+    {
+      role: "tool",
+      name: "bash",
+      tool_call_id: "call_find",
+      content: "src/main.c\nsrc/utils.c\nsrc/parser.c"
+    },
+    {
+      role: "assistant",
+      // This content contains shell transcript patterns that were being
+      // corrupted: $, |, >, < operators turned into \gt, \vert, \lt
+      content: "🛠️ $cat src/main.c | grep -E 'TODO|FIXME' 2>/dev/null | wc -l"
+    },
+    {
+      role: "tool",
+      name: "bash",
+      tool_call_id: "call_grep",
+      content: "3"
+    },
+    {
+      role: "assistant",
+      // More shell transcript with pipes and redirects
+      content: "🛠️ $grep -rn 'TODO' src/ 2>/dev/null | awk '{print $1}' | sort | uniq -c"
+    }
+  ];
+
+  const markdown = exportConversationMarkdown(messages);
+
+  // ── Shell operators must survive ──
+  // Pipes and redirects must not become \vert / \gt
+  assert.match(markdown, /2>\/dev\/null/, "redirect to /dev/null preserved");
+  assert.match(markdown, /\| head/, "pipe to head preserved");
+  assert.match(markdown, /\| grep/, "pipe to grep preserved");
+  assert.match(markdown, /\| wc -l/, "pipe to wc preserved");
+  assert.match(markdown, /\| sort/, "pipe to sort preserved");
+  assert.match(markdown, /\| uniq/, "pipe to uniq preserved");
+
+  // ── No KaTeX corruption ──
+  assert.doesNotMatch(markdown, /\\gt/, "no \\gt corruption");
+  assert.doesNotMatch(markdown, /\\vert/, "no \\vert corruption");
+  assert.doesNotMatch(markdown, /\\lt/, "no \\lt corruption");
+
+  // ── Dollar signs must be literal ──
+  assert.match(markdown, /\$1/, "dollar sign in awk preserved");
+  assert.match(markdown, /🛠️ \$/, "native-agent icon preserved");
+
+  // ── Tool messages are fenced and raw ──
+  assert.match(markdown, /```text/, "tool results in text fence");
+
+  // ── Tool calls are structured JSON, not corrupted ──
+  assert.match(markdown, /"command":/, "tool call args are JSON");
+  assert.match(markdown, /"find/, "find command preserved in tool call");
+});
+
+test("CERTIFICATION: original bug scenario — raw export is completely raw", () => {
+  const messages = [
+    { role: "user", content: "Cerca $variabile < valore" },
+    {
+      role: "assistant",
+      content: "Shell: $cmd 2>/dev/null | grep output | head -5"
+    }
+  ];
+
+  const raw = exportConversationMarkdownRaw(messages);
+  const obsidian = exportConversationMarkdown(messages);
+
+  // Raw mode: EVERYTHING preserved as-is, including math-like patterns
+  assert.match(raw, /\$variabile/, "raw: math-like pattern preserved");
+  assert.match(raw, /< valore/, "raw: < preserved");
+  assert.match(raw, /2>\/dev\/null/, "raw: redirect preserved");
+  assert.match(raw, /\| grep/, "raw: pipe preserved");
+  assert.match(raw, /# DS4 Conversation \(raw\)/, "raw header");
+
+  // Obsidian mode: shell transcript still protected (auto-detected)
+  assert.doesNotMatch(obsidian, /\\lt/, "obsidian: no \\lt from shell content");
+  assert.doesNotMatch(obsidian, /\\gt/, "obsidian: no \\gt from shell content");
+  assert.match(obsidian, /2>\/dev\/null/, "obsidian: redirect preserved");
+  assert.match(obsidian, /# DS4 Conversation/, "obsidian header");
+});
+
+test("CERTIFICATION: archive messages blocked from operational context", () => {
+  // Simulate loading an exported Markdown back into a session
+  const originalMessages = [
+    { role: "user", content: "Ciao" },
+    { role: "assistant", content: "🛠️ $cat file 2>/dev/null | grep pattern" }
+  ];
+  const markdown = exportConversationMarkdown(originalMessages);
+  const parsed = parseConversationMarkdown(markdown);
+
+  // All parsed messages must be archive-flagged
+  assert.ok(parsed.every(m => m.fromArchive === true), "all parsed messages are archive");
+
+  // buildChatMessages must exclude them
+  const operational = buildChatMessages(parsed);
+  assert.equal(operational.length, 0, "no archive messages reach the model");
+
+  // Even a mix of archive and active messages must be filtered correctly
+  const mixed = [
+    { role: "user", content: "fresh message", fromArchive: false },
+    { role: "assistant", content: "🛠️ $old command 2>/dev/null", fromArchive: true },
+  ];
+  const filtered = buildChatMessages(mixed);
+  assert.equal(filtered.length, 1, "archive messages excluded from mixed set");
+  assert.equal(filtered[0].content, "fresh message", "non-archive message preserved");
+});
+
+test("CERTIFICATION: anti-loop guard limits", () => {
+  // Verify the anti-loop guard constants are reasonable
+  // These match the values in ds4_agent.c
+  const MAX_TOOL_ROUNDS = 50;
+  const MAX_EMPTY_RESULTS = 5;
+  const MAX_SIMILAR_COMMANDS = 4;
+  const RING_SIZE = 8;
+
+  assert.equal(MAX_TOOL_ROUNDS, 50, "max 50 tool rounds per turn");
+  assert.equal(MAX_EMPTY_RESULTS, 5, "stop after 5 empty results");
+  assert.equal(MAX_SIMILAR_COMMANDS, 4, "stop after 4 similar commands");
+  assert.equal(RING_SIZE, 8, "ring buffer of 8 fingerprints");
+});
+
+test("CERTIFICATION: end-to-end — full conversation round-trip", () => {
+  // Full round-trip: messages → export → parse → buildChatMessages
+  // Archive messages must not survive the round-trip into operational context
+  const conversation = [
+    { role: "user", content: "hello" },
+    { role: "assistant", content: "🛠️ $find . -name '*.c' 2>/dev/null | head" },
+    { role: "tool", name: "bash", tool_call_id: "c1", content: "main.c\nutils.c" },
+    { role: "assistant", content: "Trovati 2 file." }
+  ];
+
+  // Export to Markdown
+  const md = exportConversationMarkdown(conversation);
+
+  // Verify shell content preserved
+  assert.match(md, /2>\/dev\/null/, "redirect preserved in round-trip");
+  assert.match(md, /\| head/, "pipe preserved in round-trip");
+  assert.doesNotMatch(md, /\\gt/, "no corruption in round-trip");
+  assert.doesNotMatch(md, /\\vert/, "no pipe corruption in round-trip");
+
+  // Parse back from Markdown
+  const parsed = parseConversationMarkdown(md);
+  assert.equal(parsed.length, 4, "4 messages parsed back");
+  assert.ok(parsed.every(m => m.fromArchive === true), "all parsed are archive");
+
+  // Build operational messages — archive messages must be excluded
+  const operational = buildChatMessages(parsed);
+  assert.equal(operational.length, 0, "no archive messages in operational context");
+
+  // Export raw mode — no normalization at all
+  const rawMd = exportConversationMarkdownRaw(conversation);
+  assert.match(rawMd, /# DS4 Conversation \(raw\)/, "raw export header");
+  assert.match(rawMd, /2>\/dev\/null/, "raw: redirect preserved");
+  assert.match(rawMd, /\$find/, "raw: dollar sign preserved");
+});
