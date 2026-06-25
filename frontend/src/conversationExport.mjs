@@ -101,8 +101,32 @@ function toolResultMarkdown(message) {
 
 const META_MARKER_RE = /<!--\s*ds4-meta:\s*(\{[\s\S]*?\})\s*-->/;
 
-export function exportConversationMarkdown(messages, { includeReasoning = false, metadata = null } = {}) {
-  const blocks = ["# DS4 Conversation"];
+/**
+ * Render a single message's content for a given export mode.
+ * "obsidian" mode applies KaTeX normalization (with shell transcript protection).
+ * "raw" mode returns the content unchanged.
+ */
+function renderContent(message, fieldName, mode) {
+  if (mode === "raw") {
+    return String(message?.[fieldName] || "");
+  }
+  return normalizeExportText(message, fieldName);
+}
+
+export function exportConversationMarkdown(messages, opts = {}) {
+  return buildConversationMarkdown(messages, { ...opts, mode: "obsidian" });
+}
+
+/**
+ * Export a conversation as raw Markdown suitable for debug/resume.
+ * No KaTeX normalization is applied; all content is preserved as-is.
+ */
+export function exportConversationMarkdownRaw(messages, opts = {}) {
+  return buildConversationMarkdown(messages, { ...opts, mode: "raw" });
+}
+
+function buildConversationMarkdown(messages, { includeReasoning = false, metadata = null, mode = "obsidian" } = {}) {
+  const blocks = [mode === "raw" ? "# DS4 Conversation (raw)" : "# DS4 Conversation"];
 
   for (const message of messages || []) {
     // Client-side notices (agent mode toggles, error banners) are UI-only and
@@ -110,8 +134,8 @@ export function exportConversationMarkdown(messages, { includeReasoning = false,
     // transcript if it were ever re-injected into a backend conversation.
     if (message.agentNotice) continue;
 
-    const content = normalizeExportText(message, "content");
-    const reasoning = normalizeExportText(message, "reasoning");
+    const content = renderContent(message, "content", mode);
+    const reasoning = renderContent(message, "reasoning", mode);
     const toolCalls = toolCallsMarkdown(message.tool_calls);
     if (!content && !toolCalls && (!includeReasoning || !reasoning)) continue;
 

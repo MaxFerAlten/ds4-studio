@@ -11,7 +11,7 @@ import {
   loadConversationHistory,
   saveConversationHistory
 } from "./chatHistory.mjs";
-import { exportConversationMarkdown } from "../src/conversationExport.mjs";
+import { exportConversationMarkdown, exportConversationMarkdownRaw } from "../src/conversationExport.mjs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -873,7 +873,9 @@ app.post("/api/export/conversation", asyncHandler(async (req, res) => {
   }
 
   const includeReasoning = Boolean(req.body?.includeReasoning);
-  const markdown = exportConversationMarkdown(messages, { includeReasoning });
+  const exportMode = String(req.body?.mode || "obsidian").trim();
+  const exporter = exportMode === "raw" ? exportConversationMarkdownRaw : exportConversationMarkdown;
+  const markdown = exporter(messages, { includeReasoning });
 
   await fs.mkdir(resolvedDir, { recursive: true });
   const filePath = path.join(resolvedDir, fileNameRaw);

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   exportConversationMarkdown,
+  exportConversationMarkdownRaw,
   markdownFileName,
   parseConversationMarkdown,
   parseConversationMetadata
@@ -304,4 +305,46 @@ test("exportConversationMarkdown preserves native-agent prefix lines", () => {
 
   assert.match(out, /🛠️ \$cat \/etc\/passwd \| grep root/);
   assert.doesNotMatch(out, /\\gt/);
+});
+
+test("exportConversationMarkdownRaw preserves all content unchanged", () => {
+  // Pure math content (no shell patterns)
+  const mathInput = "Formula: $x<3|y$";
+  const obsidian = exportConversationMarkdown([{ role: "assistant", content: mathInput }]);
+  const raw = exportConversationMarkdownRaw([{ role: "assistant", content: mathInput }]);
+
+  // Obsidian mode normalizes math operators
+  assert.match(obsidian, /\\lt/);
+  assert.match(obsidian, /\\vert/);
+
+  // Raw mode preserves everything as-is
+  assert.match(raw, /x<3/);
+  assert.match(raw, /\|y/);
+  assert.doesNotMatch(raw, /\\lt/);
+  assert.doesNotMatch(raw, /\\vert/);
+  assert.match(raw, /# DS4 Conversation \(raw\)/);
+
+  // Mixed content with shell transcript: obsidian mode also preserves raw
+  // because shell patterns trigger full-content protection
+  const mixedInput = "Shell: $x<3|y$ 2>/dev/null | head";
+  const mixedObsidian = exportConversationMarkdown([{ role: "assistant", content: mixedInput }]);
+  assert.match(mixedObsidian, /2>\/dev\/null \| head/);
+  assert.doesNotMatch(mixedObsidian, /\\lt/);
+  assert.doesNotMatch(mixedObsidian, /\\vert/);
+});
+
+test("exportConversationMarkdownRaw preserves tool messages", () => {
+  const input = "grep foo 2>/dev/null";
+  const raw = exportConversationMarkdownRaw([{ role: "tool", content: input }]);
+  assert.match(raw, /2>\/dev\/null/);
+  assert.doesNotMatch(raw, /\\gt/);
+});
+
+test("exportConversationMarkdownRaw skips agentNotice messages", () => {
+  const raw = exportConversationMarkdownRaw([
+    { role: "assistant", content: "real" },
+    { role: "assistant", content: "notice", agentNotice: true }
+  ]);
+  assert.match(raw, /real/);
+  assert.doesNotMatch(raw, /notice/);
 });

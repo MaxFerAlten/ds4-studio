@@ -324,6 +324,23 @@ export function appendTransientNotice(notice) {
   ];
 }
 
+// Build the messages array sent to /v1/chat/completions from the visible chat.
+// Drops the empty trailing assistant placeholder AND any transient UI notices
+// (agentNotice) such as a "Stream failed: …" banner, so an error message is
+// never echoed back into the prompt — and re-nested — on the next turn.
+export function buildChatMessages(messages = [], { system = "" } = {}) {
+  const out = [];
+  if (typeof system === "string" && system.trim()) {
+    out.push({ role: "system", content: system });
+  }
+  for (const message of messages) {
+    if (!message || message.agentNotice) continue;
+    if (message.role === "assistant" && !message.content) continue;
+    out.push({ role: message.role, content: message.content });
+  }
+  return out;
+}
+
 export function parseSseData(block) {
   return block
     .split(/\r?\n/)
@@ -341,7 +358,8 @@ export function initialExportSettings() {
   const includeReasoning = readStoredExportIncludeReasoning();
   return {
     includeReasoning: includeReasoning ?? false,
-    saved: includeReasoning !== null
+    saved: includeReasoning !== null,
+    mode: "obsidian"
   };
 }
 
