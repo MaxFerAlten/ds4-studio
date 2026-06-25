@@ -74,7 +74,7 @@ function RocmFooter({ rocm, stats }) {
   );
 }
 
-function ExportDialog({ includeReasoning, onIncludeReasoningChange, onCancel, onConfirm }) {
+function ExportDialog({ includeReasoning, exportMode, onIncludeReasoningChange, onExportModeChange, onCancel, onConfirm }) {
   return (
     <div className="modal-backdrop">
       <form
@@ -95,6 +95,29 @@ function ExportDialog({ includeReasoning, onIncludeReasoningChange, onCancel, on
             onChange={(event) => onIncludeReasoningChange(event.target.checked)}
           />
           <span>Include reasoning</span>
+        </label>
+        <label className="radio-line">
+          <span className="radio-label">Mode:</span>
+          <label className="radio-option">
+            <input
+              type="radio"
+              name="exportMode"
+              value="obsidian"
+              checked={exportMode === "obsidian"}
+              onChange={() => onExportModeChange("obsidian")}
+            />
+            <span>Obsidian (KaTeX-normalized)</span>
+          </label>
+          <label className="radio-option">
+            <input
+              type="radio"
+              name="exportMode"
+              value="raw"
+              checked={exportMode === "raw"}
+              onChange={() => onExportModeChange("raw")}
+            />
+            <span>Raw (debug/resume)</span>
+          </label>
         </label>
         <div className="modal-actions">
           <button type="button" className="secondary-action" onClick={onCancel}>
@@ -206,6 +229,9 @@ export default function App() {
   const [exportDialogOpen, setExportDialogOpen] = useState(false);
   const [exportDialogIncludeReasoning, setExportDialogIncludeReasoning] = useState(
     exportSettings.includeReasoning
+  );
+  const [exportDialogMode, setExportDialogMode] = useState(
+    exportSettings.mode || "obsidian"
   );
   const [exportDir, setExportDir] = useState(() => readStoredExportDir());
   const [exportDirDraft, setExportDirDraft] = useState(() => readStoredExportDir());
@@ -670,8 +696,9 @@ export default function App() {
     exportNoticeTimerRef.current = setTimeout(() => setExportNotice(null), 5000);
   }
 
-  function browserDownloadMarkdown(includeReasoning) {
-    const markdown = exportConversationMarkdown(messages, { includeReasoning });
+  function browserDownloadMarkdown(includeReasoning, mode) {
+    const exporter = mode === "raw" ? exportConversationMarkdownRaw : exportConversationMarkdown;
+    const markdown = exporter(messages, { includeReasoning });
     const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -685,9 +712,9 @@ export default function App() {
     showExportNotice("ok", `Downloaded: ${fileName}`);
   }
 
-  function exportMarkdown(includeReasoning) {
+  function exportMarkdown(includeReasoning, mode) {
     if (!exportDir) {
-      browserDownloadMarkdown(includeReasoning);
+      browserDownloadMarkdown(includeReasoning, mode);
       return;
     }
     const fileName = markdownFileName();
@@ -696,7 +723,7 @@ export default function App() {
     jsonFetch("/api/export/conversation", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages, includeReasoning, dir: exportDir, fileName })
+      body: JSON.stringify({ messages, includeReasoning, mode, dir: exportDir, fileName })
     })
       .then((data) => {
         setExportDirStatus(`Saved: ${data.file.filePath}`);
@@ -748,7 +775,7 @@ export default function App() {
     if (!messages.length) return;
     const includeReasoning = savedExportPreference();
     if (includeReasoning !== null) {
-      exportMarkdown(includeReasoning);
+      exportMarkdown(includeReasoning, exportSettings.mode);
       return;
     }
     setExportDialogIncludeReasoning(exportSettings.includeReasoning);
@@ -757,8 +784,9 @@ export default function App() {
 
   function confirmExportDialog() {
     saveExportPreference(exportDialogIncludeReasoning);
+    setExportSettings((prev) => ({ ...prev, mode: exportDialogMode }));
     setExportDialogOpen(false);
-    exportMarkdown(exportDialogIncludeReasoning);
+    exportMarkdown(exportDialogIncludeReasoning, exportDialogMode);
   }
 
   function appendFileToComposer(file) {
@@ -1774,7 +1802,9 @@ export default function App() {
       {exportDialogOpen ? (
         <ExportDialog
           includeReasoning={exportDialogIncludeReasoning}
+          exportMode={exportDialogMode}
           onIncludeReasoningChange={setExportDialogIncludeReasoning}
+          onExportModeChange={setExportDialogMode}
           onCancel={() => setExportDialogOpen(false)}
           onConfirm={confirmExportDialog}
         />
