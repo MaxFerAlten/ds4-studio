@@ -542,6 +542,9 @@ function normalizeAgentToolCall(toolCall = {}) {
 
 function normalizeAgentMessage(message) {
   if (!message || typeof message !== "object" || message.agentNotice) return null;
+  // Messages loaded from a Markdown archive are historical records, not
+  // operational tool transcript. They must not reach the model's prompt.
+  if (message.fromArchive) return null;
   const role = message.role;
   if (!["system", "user", "assistant", "tool", "function"].includes(role)) return null;
 

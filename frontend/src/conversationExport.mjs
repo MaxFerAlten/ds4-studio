@@ -203,7 +203,10 @@ export function parseConversationMarkdown(markdown) {
         }
       }
 
-      return { role, content: body, reasoning };
+      // Messages parsed from a Markdown export are historical archives, not
+      // operational tool transcript. Mark them so the agent chat endpoint and
+      // buildChatMessages can exclude them from the active prompt context.
+      return { role, content: body, reasoning, fromArchive: true };
     })
     .filter(Boolean);
 }
