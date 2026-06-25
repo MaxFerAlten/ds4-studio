@@ -14,7 +14,7 @@ import { listResearchSessions } from "./research/researchApi.mjs";
 import {
   AGENT_HEADERS, AGENT_COMMANDS, ENV_FIELDS,
   appendAssistantDelta, replaceAssistantMessage,
-  appendAssistantNotice, appendTransientNotice,
+  appendAssistantNotice, appendTransientNotice, buildChatMessages,
   parseSseData, formatMetric, initialExportSettings,
   readStoredSession, writeStoredSession, clearStoredSession
 } from "./appLogic.mjs";
@@ -1236,8 +1236,31 @@ export default function App() {
         [...messages.map((message) => message.content || ""), text].join("\n\n")
       )
     });
+    // Detect if accumulated content contains shell transcript lines that
+    // must bypass KaTeX normalization during Markdown export.
+    function looksLikeShellTranscriptContent(text) {
+      if (!text) return false;
+      // Native-agent tool icon prefix
+      if (/^\s*🛠️\s*\$/m.test(text)) return true;
+      // Shell redirect to /dev/null
+      if (/\s2>\s*[\/]dev[\/]null(\s|$)/m.test(text)) return true;
+      // Pipe followed by shell command
+      if (/\s\|\s*(grep|head|tail|awk|sed|cat|wc|sort|uniq|find)\b/m.test(text)) return true;
+      return false;
+    }
     const deltaBatcher = createDeltaBatcher((content, reasoning) => {
-      setMessages(appendAssistantDelta(content, reasoning));
+      const isRawShell = looksLikeShellTranscriptContent(content);
+      setMessages((prev) => {
+        if (isRawShell) {
+          // Mark the last assistant message with rawToolTranscript flag
+          return prev.map((message, index) =>
+            index === prev.length - 1
+              ? { ...message, content: message.content + content, reasoning: message.reasoning + reasoning, rawToolTranscript: true }
+              : message
+          );
+        }
+        return appendAssistantDelta(content, reasoning)(prev);
+      });
     });
 
     // The native agent runtime accepts only a single `message` string and
@@ -1487,11 +1510,7 @@ export default function App() {
     });
 
     try {
-      const chatMessages = [];
-      if (request.system.trim()) chatMessages.push({ role: "system", content: request.system });
-      for (const message of nextMessages.filter((item) => item.role !== "assistant" || item.content)) {
-        chatMessages.push({ role: message.role, content: message.content });
-      }
+      const chatMessages = buildChatMessages(nextMessages, { system: request.system });
 
       const payload = buildChatPayload(request, chatMessages);
 
