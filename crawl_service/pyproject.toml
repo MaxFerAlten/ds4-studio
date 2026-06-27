@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ds4-crawl-service"
+version = "0.1.0"
+description = "Local authenticated Crawl4AI service for ds4-studio"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+  "crawl4ai==0.9.0",
+  "fastapi>=0.115,<1",
+  "httpx>=0.28,<1",
+  "pydantic>=2.10,<3",
+  "uvicorn>=0.34,<1",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3,<10",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
