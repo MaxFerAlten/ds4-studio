@@ -2,3 +2,7 @@
 .venv/
 *.egg-info/
 __pycache__/
+build/
+dist/
+*.orig
+*.rej
