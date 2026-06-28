@@ -218,6 +218,35 @@ const AGENT_TOOLS = [
         required: ["code"]
       }
     }
+  },
+  {
+    type: "function",
+    function: {
+      name: "web_search",
+      description: "Search the web via Google. Returns titles, snippets, and URLs. Use for queries needing current web information. Produces large output suitable for compression.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Search query." },
+          max_results: { type: "number", description: "Max results to return (1-20). Default 10." }
+        },
+        required: ["query"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "web_read",
+      description: "Read the full text content of a web page. Use after web_search to get details from a result. Produces large output suitable for compression.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "URL of the web page to read." }
+        },
+        required: ["url"]
+      }
+    }
   }
 ];
 

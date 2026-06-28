@@ -324,6 +324,31 @@ export function appendTransientNotice(notice) {
   ];
 }
 
+// Web search results are pushed to the chat as agentNotice (display-only), which
+// buildChatMessages drops from the prompt. Inject them into the latest user turn
+// so the model actually sees them — otherwise it answers blind and hallucinates.
+// `messages` ends with the user turn followed by the empty assistant placeholder.
+export function injectSearchResults(messages = [], searchResult = "") {
+  if (!searchResult) return messages;
+  const userIdx = messages.length - 2;
+  if (userIdx < 0 || messages[userIdx]?.role !== "user") return messages;
+  // Ground the model in the results: without an explicit directive, models treat
+  // the dump as ambient text and fabricate (e.g. invented headlines/dates).
+  return messages.map((m, i) =>
+    i === userIdx
+      ? {
+          ...m,
+          content:
+            `${m.content}\n\n---\n` +
+            `Live web search results are below. Answer using ONLY these results: ` +
+            `cite the titles and URLs, and do not invent news, facts, or dates. ` +
+            `If the results are only links or site descriptions, list them and tell ` +
+            `the user to open the URLs for the full articles.\n\n${searchResult}`
+        }
+      : m
+  );
+}
+
 // Build the messages array sent to /v1/chat/completions from the visible chat.
 // Drops the empty trailing assistant placeholder AND any transient UI notices
 // (agentNotice) such as a "Stream failed: …" banner, so an error message is

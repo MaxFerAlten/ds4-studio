@@ -27,5 +27,8 @@ testpaths = ["tests"]
 where = ["src"]
 
 
+[project.scripts]
+ds4-crawl-service = "ds4_crawl.cli:main"
+
 [tool.setuptools.package-data]
 ds4_crawl = ["migrations/*.sql"]

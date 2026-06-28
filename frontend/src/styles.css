@@ -456,6 +456,13 @@ pre {
   border-color: #803636;
 }
 
+.compression-panel h2 {
+  color: #eef2f5;
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0 0 16px 0;
+}
+
 /* Call Debug */
 .call-debug-panel {
   display: flex;

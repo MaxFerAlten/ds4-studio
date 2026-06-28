@@ -7,14 +7,14 @@ import { buildChatPayload, isAutoMaxTokens } from "../server/requestPayload.mjs"
 import { backendHealthLabel, backendStartupDetail, streamFailureNotice, formatNativeAgentNotice, parseAgentInput, withAgentPriming, historyHasPersistableAssistant, sessionHasAgentMetadata, sessionsExposeMetadata, clearStoredExportIncludeReasoning, readStoredExportDir, readStoredExportIncludeReasoning, writeStoredExportDir, writeStoredExportIncludeReasoning, createDeltaBatcher, documentIsVisible, clearCallDebug, fetchCallDebug } from "./utils.mjs";
 import { exportConversationMarkdown, markdownFileName } from "./conversationExport.mjs";
 import { ChatPanel } from "./chat/ChatPanel.jsx";
-import { RequestPanel, ProfilePanel, StartupPanel, StrategyPanel, LogsPanel, MetricsPanel, CallDebugPanel } from "./panels/RightRailPanels.jsx";
+import { RequestPanel, ProfilePanel, StartupPanel, StrategyPanel, LogsPanel, MetricsPanel, CompressionPanel, CallDebugPanel } from "./panels/RightRailPanels.jsx";
 import { LeftRail } from "./panels/LeftRail.jsx";
 import { HistoryPanel } from "./panels/HistoryPanel.jsx";
 import { listResearchSessions } from "./research/researchApi.mjs";
 import {
   AGENT_HEADERS, AGENT_COMMANDS, ENV_FIELDS,
   appendAssistantDelta, replaceAssistantMessage,
-  appendAssistantNotice, appendTransientNotice, buildChatMessages,
+  appendAssistantNotice, appendTransientNotice, buildChatMessages, injectSearchResults,
   parseSseData, formatMetric, initialExportSettings,
   readStoredSession, writeStoredSession, clearStoredSession
 } from "./appLogic.mjs";
@@ -36,21 +36,27 @@ async function jsonFetch(url, options) {
 
 function RocmFooter({ rocm, stats }) {
   const gpus = rocm?.gpus || [];
+  const source = rocm?.source === "amd-smi" ? "AMD SMI" : "ROCm SMI";
   return (
     <footer className={`rocm-footer ${rocm?.ok === false ? "warn" : ""}`}>
-      <strong>ROCm SMI</strong>
+      <strong>{source}</strong>
       {rocm?.ok === false ? <span>{rocm.error || "unavailable"}</span> : null}
       {gpus.length
         ? gpus.map((gpu) => (
             <span className="rocm-card" key={gpu.id}>
               GPU{gpu.index}
-              <b>{formatMetric(gpu.temperatureC, "°C")}</b>
-              <b>{formatMetric(gpu.powerW, "W")}</b>
-              <b>GPU {formatMetric(gpu.gpuUsePercent, "%")}</b>
-              <b>VRAM {formatMetric(gpu.vramUsePercent, "%")}</b>
-              <b>Fan {formatMetric(gpu.fanPercent, "%")}</b>
-              {gpu.sclk ? <b>SCLK {gpu.sclk}</b> : null}
+              {gpu.temperatureC != null ? <b>{formatMetric(gpu.temperatureC, "°C")}</b> : null}
+              {gpu.powerW != null ? <b>{formatMetric(gpu.powerW, "W")}</b> : null}
+              {gpu.gpuUsePercent != null ? <b>GPU {formatMetric(gpu.gpuUsePercent, "%")}</b> : null}
+              {gpu.gttUsePercent != null
+                ? <b>GTT {formatMetric(Math.round(gpu.gttUsePercent), "%")}</b>
+                : gpu.vramUsePercent != null
+                  ? <b>VRAM {formatMetric(gpu.vramUsePercent, "%")}</b>
+                  : null}
+              {gpu.fanPercent != null ? <b>Fan {formatMetric(gpu.fanPercent, "%")}</b> : null}
+              {gpu.fclkMhz != null ? <b>FCLK {gpu.fclkMhz}MHz</b> : gpu.sclk ? <b>SCLK {gpu.sclk}</b> : null}
               {gpu.mclk ? <b>MCLK {gpu.mclk}</b> : null}
+              {gpu.perfLevel ? <b>{gpu.perfLevel.replace(/^AMDSMI_DEV_PERF_LEVEL_/, "")}</b> : null}
             </span>
           ))
         : rocm?.ok !== false
@@ -221,6 +227,9 @@ export default function App() {
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0);
   const [hideSuggestions, setHideSuggestions] = useState(false);
   const [agentStatus, setAgentStatus] = useState(null);
+  const [compressionMetrics, setCompressionMetrics] = useState(null);
+  const [headroomEnabled, setHeadroomEnabled] = useState(false);
+  const [webSearchMode, setWebSearchMode] = useState(false);
   const [searchStrategy, setSearchStrategy] = useState("F");
   const [searchChunkTokens, setSearchChunkTokens] = useState(25000);
   const [attachedDoc, setAttachedDoc] = useState(null);
@@ -394,7 +403,7 @@ export default function App() {
         return null;
       })
       .catch((err) => setError(err.message));
-    refreshRocmStatus().catch(() => setRocm({ ok: false, error: "rocm-smi unavailable", gpus: [] }));
+    refreshRocmStatus().catch(() => setRocm({ ok: false, error: "amd-smi unavailable", gpus: [] }));
     refreshProfiles().catch(() => setProfiles([]));
     jsonFetch("/api/files/supported")
       .then((data) => setFileAccept(data.accept || ""))
@@ -419,11 +428,15 @@ export default function App() {
           return null;
         })
         .catch((err) => setError(err.message));
+      /* Fetch compression metrics periodically when agent is active. */
+      jsonFetch("/api/agent/compression-metrics")
+        .then((data) => setCompressionMetrics(data))
+        .catch(() => {});
     }, 3000);
     const rocmTimer = setInterval(
       () => {
         if (!documentIsVisible()) return;
-        refreshRocmStatus().catch(() => setRocm({ ok: false, error: "rocm-smi unavailable", gpus: [] }));
+        refreshRocmStatus().catch(() => setRocm({ ok: false, error: "amd-smi unavailable", gpus: [] }));
       },
       5000
     );
@@ -1209,6 +1222,42 @@ export default function App() {
     }
   }
 
+  async function callHeadroomControl(agentInput) {
+    try {
+      if (agentInput.action === "status") {
+        const res = await fetch("/api/agent/headroom", { headers: AGENT_HEADERS });
+        const data = await res.json().catch(() => ({ ok: false, enabled: false }));
+        setHeadroomEnabled(data.enabled);
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", content: `Headroom compression ${data.enabled ? "enabled" : "disabled"}.`, agentNotice: true }
+        ]);
+        return;
+      }
+      const enabled = agentInput.action === "set" && Boolean(agentInput.enabled);
+      const res = await fetch("/api/agent/headroom", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...AGENT_HEADERS },
+        body: JSON.stringify({ enabled })
+      });
+      const data = await res.json().catch(() => ({ ok: false }));
+      if (data.ok) {
+        setHeadroomEnabled(enabled);
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", content: data.message || `Headroom compression ${enabled ? "enabled" : "disabled"}.`, agentNotice: true }
+        ]);
+      } else {
+        throw new Error(data.error || "Failed to toggle headroom");
+      }
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: `Failed /headroom: ${err.message}`, agentNotice: true }
+      ]);
+    }
+  }
+
   async function callSageControl(action) {
     try {
       const res = await fetch("/api/sage/" + action, {
@@ -1231,6 +1280,53 @@ export default function App() {
         {
           role: "assistant",
           content: `Failed /sage ${action}: ${err.message}`,
+          agentNotice: true
+        }
+      ]);
+    }
+  }
+
+  // Web search mode is client-only state: the search endpoint (/api/agent/web-search)
+  // is stateless and takes the query directly, so no server round-trip is needed.
+  function callWebSearchModeControl(agentInput) {
+    if (agentInput.action === "status") {
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: `Web search mode is ${webSearchMode ? "enabled" : "disabled"}.`, agentNotice: true }
+      ]);
+      return;
+    }
+    const enabled = Boolean(agentInput.enabled);
+    setWebSearchMode(enabled);
+    setMessages((prev) => [
+      ...prev,
+      { role: "assistant", content: `Web search mode ${enabled ? "enabled" : "disabled"}.`, agentNotice: true }
+    ]);
+  }
+
+  async function callWebSearch(query) {
+    try {
+      const res = await fetch("/api/agent/web-search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: data.result || "web_search completed.",
+          agentNotice: true
+        }
+      ]);
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: `web_search failed: ${err.message}`,
           agentNotice: true
         }
       ]);
@@ -1493,6 +1589,15 @@ export default function App() {
       if (agentInput.type === "pony") {
         return callPonyControl(agentInput);
       }
+      if (agentInput.type === "headroom") {
+        return callHeadroomControl(agentInput);
+      }
+      if (agentInput.type === "webSearch") {
+        return callWebSearch(agentInput.query);
+      }
+      if (agentInput.type === "webSearchMode") {
+        return callWebSearchModeControl(agentInput);
+      }
       if (agentInput.type === "sageControl") {
         return callSageControl(agentInput.action);
       }
@@ -1538,7 +1643,34 @@ export default function App() {
     });
 
     try {
-      const chatMessages = buildChatMessages(nextMessages, { system: request.system });
+      /* If web search mode is active, intercept the user message and search automatically */
+      let searchResult = null;
+      if (webSearchMode && !pendingDoc) {
+        const res = await fetch("/api/agent/web-search", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: text })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          searchResult = data.result || null;
+        }
+      }
+      if (searchResult) {
+        // Compact notice only: the model presents the results below (they are fed
+        // into the prompt via injectSearchResults). Dumping the raw results here too
+        // would show every hit twice.
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", content: `🔍 Searched the web for "${text}".`, agentNotice: true }
+        ]);
+      }
+      // injectSearchResults feeds the raw results into the user turn so the model
+      // sees them (agentNotice above is display-only and dropped from the prompt).
+      const chatMessages = buildChatMessages(
+        injectSearchResults(nextMessages, searchResult),
+        { system: request.system }
+      );
 
       const payload = buildChatPayload(request, chatMessages);
 
@@ -1674,6 +1806,7 @@ export default function App() {
           searchStrategy={searchStrategy}
           agentMode={agentMode}
           agentStatus={agentStatus}
+          headroomEnabled={headroomEnabled}
           composerRef={composerRef}
           fileInputRef={fileInputRef}
           messagesRef={messagesRef}
@@ -1729,6 +1862,9 @@ export default function App() {
           </button>
           <button type="button" className={tab === "call-debug" ? "active" : ""} onClick={() => setTab("call-debug")}>
             Call Debug
+          </button>
+          <button type="button" className={tab === "compression" ? "active" : ""} onClick={() => setTab("compression")}>
+            Compression
           </button>
         </div>
         {tab === "request" ? (
@@ -1796,6 +1932,9 @@ export default function App() {
         ) : null}
         {tab === "call-debug" ? (
           <CallDebugPanel refreshCallDebug={refreshCallDebug} callDebugBusy={callDebugBusy} handleClearCallDebug={handleClearCallDebug} callDebugEntries={callDebugEntries} callDebugEnabled={callDebugEnabled} callDebugNotice={callDebugNotice} callDebugOpen={callDebugOpen} setCallDebugOpen={setCallDebugOpen} />
+        ) : null}
+        {tab === "compression" ? (
+          <CompressionPanel metrics={compressionMetrics} />
         ) : null}
         </aside>
       </main>

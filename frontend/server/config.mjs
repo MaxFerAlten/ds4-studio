@@ -132,6 +132,18 @@ export function mergeConfig(input = {}) {
       ...(input.callDebug && typeof input.callDebug === "object" && !Array.isArray(input.callDebug)
         ? input.callDebug
         : {})
+    },
+    toolBlobs: {
+      ...DEFAULT_CONFIG.toolBlobs,
+      ...(input.toolBlobs && typeof input.toolBlobs === "object" && !Array.isArray(input.toolBlobs)
+        ? input.toolBlobs
+        : {})
+    },
+    crawl: {
+      ...DEFAULT_CONFIG.crawl,
+      ...(input.crawl && typeof input.crawl === "object" && !Array.isArray(input.crawl)
+        ? input.crawl
+        : {})
     }
   };
 }
@@ -156,6 +168,12 @@ function validateCallDebug(callDebug = {}) {
   ) {
     errors.excludePaths = "must be an array of strings";
   }
+  return errors;
+}
+
+function validateToolBlobs(toolBlobs = {}) {
+  const errors = {};
+  if (typeof toolBlobs.dir !== "string" || !toolBlobs.dir.trim()) errors.dir = "is required";
   return errors;
 }
 
@@ -331,6 +349,7 @@ export function validateConfig(config) {
   }
   errors.research = validateResearchConfig(config.research || {});
   errors.callDebug = validateCallDebug(config.callDebug || {});
+  errors.toolBlobs = validateToolBlobs(config.toolBlobs || {});
   const ok =
     Object.keys(errors.control).length === 0 &&
     Object.keys(errors.history).length === 0 &&
@@ -338,7 +357,8 @@ export function validateConfig(config) {
     Object.keys(errors.wrapper).length === 0 &&
     Object.keys(errors.requestDefaults).length === 0 &&
     Object.keys(errors.research).length === 0 &&
-    Object.keys(errors.callDebug).length === 0;
+    Object.keys(errors.callDebug).length === 0 &&
+    Object.keys(errors.toolBlobs).length === 0;
   return { ok, errors };
 }
 

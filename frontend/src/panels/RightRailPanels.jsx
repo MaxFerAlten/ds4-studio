@@ -234,6 +234,71 @@ export function MetricsPanel({ serverMetrics, metricsError }) {
   );
 }
 
+function bytesLabel(value) {
+  if (value === null || value === undefined) return "-";
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "-";
+  if (n < 1024) return `${Math.round(n)} B`;
+  const units = ["KiB", "MiB", "GiB", "TiB"];
+  let scaled = n / 1024;
+  let unit = units[0];
+  for (let i = 1; i < units.length && scaled >= 1024; i++) {
+    scaled /= 1024;
+    unit = units[i];
+  }
+  return `${scaled.toFixed(1)} ${unit}`;
+}
+
+export function CompressionPanel({ metrics }) {
+  if (!metrics || !metrics.ok) return null;
+  const { events, originalBytes, compressedBytes, blobCount, retrieveCount, lastStrategy } = metrics;
+  const saving = originalBytes > 0
+    ? ((originalBytes - compressedBytes) * 100 / originalBytes).toFixed(1)
+    : 0;
+  const ratio = originalBytes > 0
+    ? (compressedBytes / originalBytes).toFixed(4)
+    : 0;
+  return (
+    <div className="compression-panel">
+      <h2>Tool Output Compression</h2>
+      <div className="metrics-grid">
+        <div className="metric-row plain">
+          <span>Events</span>
+          <strong>{events != null ? String(events) : "-"}</strong>
+        </div>
+        <div className="metric-row plain">
+          <span>Original bytes</span>
+          <strong>{bytesLabel(originalBytes)}</strong>
+        </div>
+        <div className="metric-row ok">
+          <span>Compressed bytes</span>
+          <strong>{bytesLabel(compressedBytes)}</strong>
+        </div>
+        <div className="metric-row ok">
+          <span>Saved</span>
+          <strong>{saving}%</strong>
+        </div>
+        <div className="metric-row ok">
+          <span>Ratio</span>
+          <strong>{ratio}x</strong>
+        </div>
+        <div className="metric-row plain">
+          <span>Blobs stored</span>
+          <strong>{blobCount != null ? String(blobCount) : "-"}</strong>
+        </div>
+        <div className="metric-row plain">
+          <span>Retrieves</span>
+          <strong>{retrieveCount != null ? String(retrieveCount) : "-"}</strong>
+        </div>
+        <div className="metric-row plain">
+          <span>Last strategy</span>
+          <strong>{lastStrategy || "-"}</strong>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function CallDebugPanel({
   refreshCallDebug, callDebugBusy, handleClearCallDebug,
   callDebugEntries, callDebugEnabled, callDebugNotice,

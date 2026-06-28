@@ -698,8 +698,8 @@ ds4>
 The interactive CLI is a real multi-turn chat. It keeps the rendered chat
 transcript and the live graph KV checkpoint, so each turn extends the previous
 conversation. Useful commands are `/help`, `/think`, `/think-max`, `/nothink`,
-`/ctx N`, `/read FILE`, and `/quit`. Ctrl+C interrupts the current generation
-and returns to `ds4>`.
+`/ctx N`, `/read FILE`, `/crawl start URL`, `/crawl status JOB_ID`, `/crawl cancel JOB_ID`, and `/quit`. Ctrl+C interrupts the current generation
+and returns to `ds4>`. `/crawl start` sends a crawl job to the ds4-crawl-service (Crawl4AI-based HTTP service running on 127.0.0.1:9090), polls until completion, and feeds the result through the model for the final answer.
 
 The CLI defaults to thinking mode. Use `/nothink` or `--nothink` for direct
 answers. `--mtp MTP.gguf --mtp-draft 2` enables the optional MTP speculative

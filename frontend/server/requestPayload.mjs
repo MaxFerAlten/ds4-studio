@@ -35,6 +35,25 @@ export function autoMaxTokenSettings(request = {}) {
   };
 }
 
+/**
+ * Pure computation of the integer max_tokens for an "auto" request, given a
+ * /v1/token-count response (`count`).
+ *
+ * When `count` is null/missing — e.g. the token-count probe failed and we are
+ * degrading gracefully — this falls back to the safety cap so the chat can
+ * still proceed; the chat endpoint enforces the real context-length limit.
+ */
+export function resolveAutoMaxTokens(count, settings = {}) {
+  const safetyCap = parsePositiveInt(settings.safetyCap, REQUEST_DEFAULTS.max_tokens_safety_cap);
+  const contextMargin = parseNonNegativeInt(settings.contextMargin, REQUEST_DEFAULTS.context_margin);
+  const contextLength = parsePositiveInt(count?.context_length, null);
+  const promptTokens = parseNonNegativeInt(count?.prompt_tokens, 0);
+  const room = contextLength === null
+    ? safetyCap
+    : Math.max(1, contextLength - promptTokens - contextMargin);
+  return Math.max(1, Math.min(room, safetyCap));
+}
+
 function applyMaxTokens(payload, request = {}) {
   const raw = isBlank(request.max_tokens) ? REQUEST_DEFAULTS.max_tokens : request.max_tokens;
   if (isAutoMaxTokens(raw)) {

@@ -10,7 +10,7 @@ from typing import Any
 _TRANSITIONS = {
     "queued": {"starting", "cancelled"},
     "starting": {"running", "cancelling", "failed"},
-    "running": {"cancelling", "succeeded", "partially_succeeded", "failed"},
+    "running": {"cancelling", "cancelled", "succeeded", "partially_succeeded", "failed"},
     "cancelling": {"cancelled", "failed"},
     "cancelled": set(),
     "succeeded": set(),
@@ -108,5 +108,57 @@ class Repository:
                  WHERE id = ? AND state = ?
                 """,
                 (target, _utc_now(), job_id, expected),
+            )
+        return cursor.rowcount == 1
+
+    def commit_result(self, job_id: str, state: str, manifest: dict[str, object]) -> None:
+        with self.connection:
+            self.connection.execute(
+                """
+                UPDATE jobs
+                   SET state = ?, result_manifest_json = ?, updated_at = ?
+                 WHERE id = ?
+                """,
+                (state, json.dumps(manifest, ensure_ascii=False, sort_keys=True), _utc_now(), job_id),
+            )
+
+    def list_pages(self, job_id: str) -> list[dict[str, Any]]:
+        rows = self.connection.execute(
+            "SELECT * FROM pages WHERE job_id = ? ORDER BY page_index",
+            (job_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def create_session(self, session_id: str, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+        now = _utc_now()
+        meta_json = json.dumps(metadata or {}, ensure_ascii=False, sort_keys=True)
+        with self.connection:
+            self.connection.execute(
+                """
+                INSERT OR REPLACE INTO sessions(id, state, created_at, updated_at, metadata_json)
+                VALUES (?, 'open', ?, ?, ?)
+                """,
+                (session_id, now, now, meta_json),
+            )
+        return {"id": session_id, "state": "open", "metadata": metadata or {}}
+
+    def get_session(self, session_id: str) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            "SELECT * FROM sessions WHERE id = ?", (session_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        result["metadata"] = json.loads(result.get("metadata_json", "{}"))
+        return result
+
+    def close_session(self, session_id: str) -> bool:
+        with self.connection:
+            cursor = self.connection.execute(
+                """
+                UPDATE sessions SET state = 'closed', updated_at = ?
+                 WHERE id = ? AND state = 'open'
+                """,
+                (_utc_now(), session_id),
             )
         return cursor.rowcount == 1

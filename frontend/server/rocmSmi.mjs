@@ -10,6 +10,8 @@ const ROCM_SMI_ARGS = [
   "--showmemuse",
   "--showfan",
   "--showclocks",
+  "--showmeminfo",
+  "vram",
   "--json"
 ];
 
@@ -50,14 +52,23 @@ export function parseRocmSmiJson(raw) {
       temperatureC: numberOrNull(firstMatchingValue(values, [/temperature.*\(c\)/i, /temp/i])),
       powerW: numberOrNull(firstMatchingValue(values, [/power.*\(w\)/i, /power/i])),
       gpuUsePercent: numberOrNull(firstMatchingValue(values, [/gpu use/i])),
-      vramUsePercent: numberOrNull(firstMatchingValue(values, [/vram/i, /memory.*allocated/i])),
+      vramUsePercent: numberOrNull(firstMatchingValue(values, [/\(vram%\)/i, /vram%.*percent/i, /memory.*allocated/i, /gpu.*vram.*use/i])),
+      vramTotalBytes: numberOrNull(firstMatchingValue(values, [/vram.*total.*\(b\)/i, /vram.*total.*memory/i])),
+      vramUsedBytes: numberOrNull(firstMatchingValue(values, [/vram.*used.*\(b\)/i, /vram.*used.*memory/i])),
       fanPercent: numberOrNull(firstMatchingValue(values, [/fan.*%/i, /fan speed/i])),
       sclk: clockOrEmpty(firstMatchingValue(values, [/sclk.*speed/i])),
       sclkLevel: String(firstMatchingValue(values, [/sclk.*level/i]) ?? ""),
       mclk: clockOrEmpty(firstMatchingValue(values, [/mclk.*speed/i])),
       memoryActivity: String(firstMatchingValue(values, [/memory activity/i]) ?? "")
     }))
-    .sort((a, b) => a.index - b.index);
+    .sort((a, b) => a.index - b.index)
+    .map((gpu) => {
+      // Compute VRAM% from bytes if direct percentage is missing but bytes are available
+      if (gpu.vramUsePercent === null && gpu.vramTotalBytes != null && gpu.vramTotalBytes > 0 && gpu.vramUsedBytes != null) {
+        gpu.vramUsePercent = Math.round((gpu.vramUsedBytes / gpu.vramTotalBytes) * 100);
+      }
+      return gpu;
+    });
 
   return {
     ok: true,

@@ -475,6 +475,40 @@ static void send_legacy_native_agent_response(ds4_wrapper *w, int fd,
     ds4_agent_command_result_free(&result);
 }
 
+static void send_agent_compression_metrics(ds4_wrapper *w, int fd) {
+    pthread_mutex_lock(&w->mu);
+    bool active = w->active_mode == DS4_WRAP_MODE_AGENT;
+    ds4_agent_compression_metrics m = {0};
+    if (active && w->agent_rt)
+        ds4_agent_runtime_get_compression_metrics(w->agent_rt, &m);
+    pthread_mutex_unlock(&w->mu);
+
+    /* Build JSON manually to avoid printf %% format confusion. */
+    char buf[2048];
+    int n = snprintf(buf, sizeof(buf),
+                     "{\"ok\":true,\"active\":%s,"
+                     "\"events\":%llu,"
+                     "\"originalBytes\":%llu,"
+                     "\"compressedBytes\":%llu,"
+                     "\"blobCount\":%llu,"
+                     "\"retrieveCount\":%llu,"
+                     "\"lastStrategy\":\"%s\","
+                     "\"lastBlobId\":\"%s\"}\n",
+                     active ? "true" : "false",
+                     (unsigned long long)m.events,
+                     (unsigned long long)m.original_bytes,
+                     (unsigned long long)m.compressed_bytes,
+                     (unsigned long long)m.blob_count,
+                     (unsigned long long)m.retrieve_count,
+                     m.last_strategy[0] ? m.last_strategy : "",
+                     m.last_blob_id[0] ? m.last_blob_id : "");
+    if (n > 0 && (size_t)n < sizeof(buf))
+        send_response(fd, true, 200, "application/json", buf);
+    else
+        send_json_error(fd, true, 500, "serialization_error",
+                        "Compression metrics too large or failed to serialize");
+}
+
 typedef struct {
     ds4_wrapper *w;
     int fd;
@@ -622,6 +656,14 @@ static void *client_thread_main(void *arg) {
                 send_json_error(fd, true, 500, "thaw_error", err_buf);
             }
         }
+    } else if (!strcmp(hr.method, "POST") && !strcmp(hr.path, "/v1/cancel")) {
+        /* Cancellation is driven by the client aborting the streaming
+         * connection: the in-flight generation observes the closed socket and
+         * stops. This endpoint exists so the studio's belt-and-suspenders
+         * /v1/cancel POST is acknowledged instead of 404'd. It deliberately
+         * bypasses ds4_wrapper_enter_request so a cancel issued while a request
+         * is streaming (state BUSY) is not itself rejected with 409. */
+        send_response(fd, true, 200, "application/json", "{\"ok\":true}\n");
     } else if (!strcmp(hr.method, "POST") && (
                !strcmp(hr.path, "/v1/chat/completions") ||
                !strcmp(hr.path, "/v1/token-count") ||
@@ -720,6 +762,9 @@ static void *client_thread_main(void *arg) {
     } else if (!strcmp(hr.method, "POST") &&
                !strcmp(hr.path, "/api/native-agent/compact")) {
         send_legacy_native_agent_response(w, fd, "/compact", "compact");
+    } else if (!strcmp(hr.method, "GET") &&
+               !strcmp(hr.path, "/api/agent/compression-metrics")) {
+        send_agent_compression_metrics(w, fd);
     } else {
         send_json_error(fd, true, 404, "not_found", "Endpoint not found");
     }

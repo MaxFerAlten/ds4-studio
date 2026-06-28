@@ -14,6 +14,8 @@ import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { compressToolOutput, ContentKind } from "./toolOutputCompressor.mjs";
+import { webSearch, webReadPage } from "./webSearchTool.mjs";
 
 const DEFAULT_TIMEOUT_SEC = 30;
 const DEFAULT_MAX_LINES = 500;
@@ -88,6 +90,31 @@ function sandboxEnabled() {
 
 function workspaceRoot(options = {}) {
   return path.resolve(options.cwd || process.env.DS4_AGENT_WORKSPACE || DEFAULT_WORKSPACE_ROOT);
+}
+
+/**
+ * Filesystem-safe, bounded session id used to name the per-session sage dir.
+ * Non [A-Za-z0-9._-] chars collapse to "_"; a blank/garbage id becomes
+ * "default" so a directory name is always produced.
+ */
+export function sanitizeSessionId(sessionId) {
+  const cleaned = String(sessionId || "")
+    .trim()
+    .replace(/[^A-Za-z0-9._-]/g, "_")
+    .replace(/^\.+/, "")
+    .slice(0, 128);
+  return cleaned || "default";
+}
+
+/**
+ * Per-session working directory for SageMath: `<base>/sage_<sessionId>`.
+ * Sage writes preparse artifacts (.sage.py), saved plots and any other
+ * generated files into its cwd, so isolating each session here keeps those
+ * artifacts out of the project tree and grouped by conversation, inside the
+ * same workspace that holds chat history and sessions.
+ */
+export function sageSessionDir(base, sessionId) {
+  return path.join(path.resolve(base), `sage_${sanitizeSessionId(sessionId)}`);
 }
 
 /**
@@ -192,6 +219,10 @@ export async function executeTool(name, args = {}, options = {}) {
         return await toolList(args, options);
       case "sage":
         return await toolSage(args, options);
+      case "web_search":
+        return await toolWebSearch(args, options);
+      case "web_read":
+        return await toolWebRead(args, options);
       default:
         return { content: `Unknown tool: ${name}`, isError: true };
     }
@@ -919,14 +950,25 @@ export function bashFileReadFallbackReason(input) {
  * Falls back to `sage -c "print(\"LaTeX:\"); print(latex(\"code\"))"` for
  * LaTeX-formatted math when possible.
  */
-async function toolSage(args, options) {
+export async function toolSage(args, options) {
   const code = args.code;
   if (!code || typeof code !== "string") {
     return { content: "sage: code is required", isError: true };
   }
 
   const timeoutSec = Number(args.timeout_sec) || 60;
-  const cwd = workspaceRoot(options);
+  // Sage writes preparse artifacts (.sage.py), saved plots and other generated
+  // files into its cwd. Prefer the per-session sage directory when provided so
+  // those artifacts land in the workspace (grouped by session) instead of the
+  // project tree; fall back to the workspace root for backward compatibility.
+  const cwd = options.sageWorkdir
+    ? path.resolve(options.sageWorkdir)
+    : workspaceRoot(options);
+  try {
+    await fs.mkdir(cwd, { recursive: true });
+  } catch {
+    // best effort: a real cwd failure surfaces as a spawn error below
+  }
   const sageCallLog = options.sageCallLog;
 
   // Wrap the user code so Sage can run either a single expression or a full
@@ -1031,20 +1073,68 @@ if __ds4_result__ is not __ds4_sentinel__ and __ds4_result__ is not None:
         });
       }
 
-      const content = parts.join("\n\n");
-      resolve({
-        content,
-        isError: (exitCode !== 0 && !stdout) || killed,
-        raw: {
-          exit_code: exitCode,
-          signal: signalName,
-          killed,
-          stdout_bytes: stdoutBuf.total,
-          stderr_bytes: stderrBuf.total
+      let content = parts.join("\n\n");
+
+      // Apply tool output compression if a blob store is configured and the
+      // output is large enough.  The compressed version carries a marker with
+      // a blob id so the model can retrieve the exact original via the
+      // retrieve_context_blob tool.  The original is saved in the blob store.
+      const doResolve = async () => {
+        if (options.toolBlobStore && content && Buffer.byteLength(content, "utf8") >= 4096) {
+          const compressed = await compressToolOutput(
+            "sage", content, Buffer.byteLength(content, "utf8"), options.toolBlobStore
+          );
+          if (compressed && compressed.changed && compressed.text) {
+            content = compressed.text;
+          }
         }
-      });
+        resolve({
+          content,
+          isError: (exitCode !== 0 && !stdout) || killed,
+          latexOutput,
+          raw: {
+            exit_code: exitCode,
+            signal: signalName,
+            killed,
+            stdout_bytes: stdoutBuf.total,
+            stderr_bytes: stderrBuf.total
+          }
+        });
+      };
+      doResolve();
     });
   });
+}
+
+// ---------------------------------------------------------------------------
+// web_search / web_read
+// ---------------------------------------------------------------------------
+
+async function toolWebSearch(args, options) {
+  const query = args.query;
+  if (!query) return { content: "web_search: query is required", isError: true };
+  const maxResults = Number(args.max_results) || 10;
+  const signal = options.signal;
+
+  try {
+    const content = await webSearch(query, maxResults);
+    return { content, isError: false };
+  } catch (err) {
+    return { content: `web_search error: ${err.message}`, isError: true };
+  }
+}
+
+async function toolWebRead(args, options) {
+  const url = args.url;
+  if (!url) return { content: "web_read: url is required", isError: true };
+  const signal = options.signal;
+
+  try {
+    const content = await webReadPage(url);
+    return { content, isError: false };
+  } catch (err) {
+    return { content: `web_read error: ${err.message}`, isError: true };
+  }
 }
 
 export function checkBashFileReadFallback(input, afterReadGuardBlock = false) {

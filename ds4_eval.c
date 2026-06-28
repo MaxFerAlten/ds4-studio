@@ -1347,7 +1347,7 @@ static void buf_append(byte_buf *b, const void *p, size_t n) {
 }
 
 static void buf_appendf(byte_buf *b, const char *fmt, ...) {
-    dynbuf_printf((DynBuf *)b, fmt);
+    va_list ap; va_start(ap, fmt); dynbuf_vprintf((DynBuf *)b, fmt, ap); va_end(ap);
 }
 
 static int eval_case_nchoices(const eval_case *tc) {

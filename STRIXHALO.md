@@ -10,12 +10,20 @@ On Ubuntu 26.04 LTS, install the ROCm compiler/runtime and libraries used by the
 ```sh
 sudo apt-get update
 sudo apt-get install -y \
-  hipcc rocminfo rocm-smi \
+  hipcc rocminfo amd-smi-lib \
   libamdhip64-dev \
   libhipblas-dev libhipblaslt-dev \
   librocblas-dev \
   librocwmma-dev \
   libhipcub-dev
+```
+
+The package `amd-smi-lib` provides the `amd-smi` CLI tool. The legacy
+`rocm-smi` tool is no longer available — use `amd-smi` instead:
+```sh
+amd-smi metric --json          # GPU telemetry (temperature, GTT, clocks)
+amd-smi static --json          # static GPU info
+sudo amd-smi set -g 0 -l high  # set performance level
 ```
 
 The backend uses rocWMMA. On this Ubuntu 26.04 setup, `librocwmma-dev`

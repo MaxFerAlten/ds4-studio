@@ -1,10 +1,17 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { ReadGuard, bashFileReadFallbackReason, checkBashFileReadFallback, executeTool } from "./agentTools.mjs";
+import {
+  ReadGuard,
+  bashFileReadFallbackReason,
+  checkBashFileReadFallback,
+  executeTool,
+  sageSessionDir,
+  sanitizeSessionId
+} from "./agentTools.mjs";
 
 const HAS_SAGE = spawnSync("sage", ["--version"], { encoding: "utf8" }).status === 0;
 
@@ -274,5 +281,56 @@ test("sage tool executes multi-statement Sage scripts and renders result", { ski
     assert.match(result.content, /value:\s*9/);
     assert.match(result.content, /LaTeX:\s*\\frac\{8\}\{3\}/);
     assert.match(result.content, /Result:\s*8\/3/);
+  });
+});
+
+// ── per-session sage working directory ───────────────────────────────────
+
+test("sanitizeSessionId keeps safe chars, collapses the rest, and bounds length", () => {
+  assert.equal(sanitizeSessionId("abc-123_X.y"), "abc-123_X.y");
+  assert.equal(sanitizeSessionId("a/b c:d*e"), "a_b_c_d_e");
+  assert.equal(sanitizeSessionId(""), "default");
+  assert.equal(sanitizeSessionId(null), "default");
+  assert.equal(sanitizeSessionId("   "), "default");
+  assert.equal(sanitizeSessionId("../../etc"), "_.._etc"); // leading dots stripped, slashes collapsed
+  assert.equal(sanitizeSessionId("x".repeat(200)).length, 128);
+});
+
+test("sageSessionDir builds <base>/sage_<sessionId> with an absolute base", () => {
+  assert.equal(sageSessionDir("/ws", "sess1"), path.join("/ws", "sage_sess1"));
+  assert.equal(sageSessionDir("/ws/history/..", "sess1"), path.join("/ws", "sage_sess1"));
+  // unsafe ids are sanitised into the directory name
+  assert.equal(sageSessionDir("/ws", "a/b"), path.join("/ws", "sage_a_b"));
+  // blank id still yields a directory
+  assert.equal(sageSessionDir("/ws", ""), path.join("/ws", "sage_default"));
+});
+
+test("sage tool creates and runs inside the per-session workdir", { skip: !HAS_SAGE }, async () => {
+  await withTmpWorkspace(async (base) => {
+    const sageWorkdir = sageSessionDir(base, "sessABC");
+    const result = await executeTool(
+      "sage",
+      { code: "import os\nprint('CWD:', os.getcwd())\nresult = 2^3", timeout_sec: 30 },
+      { sageWorkdir }
+    );
+    assert.equal(result.isError, false);
+    assert.match(result.content, /Result:\s*8/);
+    // Sage actually ran in the per-session directory…
+    assert.match(result.content, new RegExp(`CWD:\\s*${sageWorkdir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+    // …and the directory exists under the workspace base, not the project tree.
+    const dirStat = await stat(sageWorkdir);
+    assert.equal(dirStat.isDirectory(), true);
+  });
+});
+
+test("sage tool creates the per-session workdir even when sage is absent", { skip: HAS_SAGE }, async () => {
+  await withTmpWorkspace(async (base) => {
+    const sageWorkdir = sageSessionDir(base, "sessNoSage");
+    // sage binary missing → tool reports an error, but the workdir must still
+    // be created (mkdir happens before spawn), proving artifacts would be
+    // isolated there rather than in the project tree.
+    await executeTool("sage", { code: "2^3" }, { sageWorkdir });
+    const dirStat = await stat(sageWorkdir);
+    assert.equal(dirStat.isDirectory(), true);
   });
 });

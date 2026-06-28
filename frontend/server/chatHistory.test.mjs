@@ -150,8 +150,8 @@ test("loadConversationHistory reads a saved session safely", async () => {
 
     assert.equal(loaded.fileName, saved.fileName);
     assert.deepEqual(loaded.messages, [
-      { role: "user", content: "ciao", reasoning: "" },
-      { role: "assistant", content: "salve", reasoning: "" }
+      { role: "user", content: "ciao", reasoning: "", fromArchive: true },
+      { role: "assistant", content: "salve", reasoning: "", fromArchive: true }
     ]);
     await assert.rejects(() => loadConversationHistory(tmp, "../outside.md"), /invalid history file/);
   } finally {

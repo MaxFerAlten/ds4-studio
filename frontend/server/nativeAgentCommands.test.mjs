@@ -87,6 +87,59 @@ test("proxies a native command and preserves status and JSON", async () => {
   assert.equal(result.payload.active, false);
 });
 
+test("routes crawl commands directly to the crawl service", async () => {
+  const calls = [];
+  const responses = [
+    new Response(JSON.stringify({ job_id: "job-123", state: "queued" }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    }),
+    new Response(JSON.stringify({ job_id: "job-123", state: "running" }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    }),
+    new Response(JSON.stringify({
+      job_id: "job-123",
+      state: "succeeded",
+      result_manifest: {
+        pages: [{ url: "https://example.com", state: "succeeded", content: "real page text" }],
+        total_pages: 1,
+        all_succeeded: true
+      }
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    })
+  ];
+
+  const result = await proxyNativeAgentCommand(
+    async (url, options) => {
+      calls.push({ url, options });
+      return responses.shift();
+    },
+    "http://127.0.0.1:8002",
+    "/crawl start https://example.com",
+    undefined,
+    {
+      crawlBaseUrl: "http://127.0.0.1:9090",
+      crawlToken: "test-token",
+      pollIntervalMs: 0,
+      maxPolls: 3
+    }
+  );
+
+  assert.deepEqual(calls.map((call) => call.url), [
+    "http://127.0.0.1:9090/jobs",
+    "http://127.0.0.1:9090/jobs/job-123",
+    "http://127.0.0.1:9090/jobs/job-123"
+  ]);
+  assert.equal(calls[0].options.headers.Authorization, "Bearer test-token");
+  assert.equal(result.status, 200);
+  assert.equal(result.ok, true);
+  assert.match(result.payload.message, /real page text/);
+  assert.doesNotMatch(result.payload.message, /Crawl result:\n\{\}/);
+});
+
 test("normalizes non-JSON wrapper errors", async () => {
   const result = await proxyNativeAgentCommand(
     async () => new Response("wrapper unavailable", { status: 503 }),
