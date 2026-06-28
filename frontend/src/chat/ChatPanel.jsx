@@ -14,6 +14,7 @@ export function ChatPanel({
   searchStrategy,
   agentMode,
   agentStatus,
+  headroomEnabled,
   composerRef,
   fileInputRef,
   messagesRef,
@@ -60,9 +61,9 @@ export function ChatPanel({
           </button>
         ) : null}
         {agentMode && (
-          <div className="agent-badge" title={`Agent Mode Active - Iteration ${agentStatus?.iteration || 0} · Pony ${agentStatus?.ponyMode || "off"}`}>
+          <div className="agent-badge" title={`Agent Mode Active - Iteration ${agentStatus?.iteration || 0} · Pony ${agentStatus?.ponyMode || "off"} · Headroom ${headroomEnabled ? "on" : "off"}`}>
             <div className="agent-indicator"></div>
-            <span>Agent Active · Pony: {agentStatus?.ponyMode || "off"}</span>
+            <span>Agent Active · Pony: {agentStatus?.ponyMode || "off"} · Headroom: {headroomEnabled ? "ON" : "OFF"}</span>
             <button
               type="button"
               className="agent-stop-btn"

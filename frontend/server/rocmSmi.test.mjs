@@ -25,6 +25,8 @@ test("parseRocmSmiJson extracts essential ROCm SMI fields", () => {
     powerW: 20.088,
     gpuUsePercent: 7,
     vramUsePercent: 99,
+    vramTotalBytes: null,
+    vramUsedBytes: null,
     fanPercent: 0,
     sclk: "637Mhz",
     sclkLevel: "1",
@@ -46,6 +48,9 @@ test("parseRocmSmiJson handles missing or N/A fields", () => {
   assert.equal(status.gpus[0].temperatureC, null);
   assert.equal(status.gpus[0].gpuUsePercent, null);
   assert.equal(status.gpus[0].powerW, null);
+  assert.equal(status.gpus[0].vramTotalBytes, null);
+  assert.equal(status.gpus[0].vramUsedBytes, null);
+  assert.equal(status.gpus[0].fanPercent, null);
 });
 
 test("cached ROCm status reader deduplicates in-flight calls and respects TTL", async () => {
@@ -53,7 +58,9 @@ test("cached ROCm status reader deduplicates in-flight calls and respects TTL", 
   let now = 1000;
   const sample = JSON.stringify({
     card0: {
-      "GPU use (%)": "9"
+      "GPU use (%)": "9",
+      "VRAM Total Memory (B)": "536870912",
+      "VRAM Total Used Memory (B)": "468783104"
     }
   });
   const reader = createRocmStatusReader({

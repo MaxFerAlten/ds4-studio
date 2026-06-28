@@ -15,7 +15,6 @@ OBJCFLAGS ?= -O3 $(DEBUG_FLAGS) $(NATIVE_CPU_FLAG) -Wall -Wextra -fobjc-arc
 LDLIBS ?= -lm -pthread
 METAL_SRCS := $(wildcard metal/*.metal)
 ROCM_SRCS := $(wildcard rocm/*.cuh)
-AGENT_SUPPORT_OBJS = ds4_context_blob.o ds4_tool_compress.o
 BUF_OBJS = buf.o
 
 # ds4-wrapper objects.  The server/agent runtimes textually #include
@@ -24,8 +23,8 @@ BUF_OBJS = buf.o
 WRAPPER_OBJS = ds4_wrapper.o ds4_wrapper_config.o ds4_wrapper_state.o \
                ds4_wrapper_http.o ds4_wrapper_metrics.o \
                ds4_server_runtime.o ds4_agent_runtime.o ds4_agent_session_store.o \
-               ds4_help.o ds4_web.o ds4_kvstore.o linenoise.o rax.o \
-               $(AGENT_SUPPORT_OBJS)
+               ds4_context_blob.o ds4_tool_compress.o \
+               ds4_help.o ds4_web.o ds4_kvstore.o linenoise.o rax.o
 
 ifeq ($(UNAME_S),Darwin)
 METAL_LDLIBS := $(LDLIBS) -framework Foundation -framework Metal
@@ -45,7 +44,7 @@ CPU_CORE_OBJS = ds4_cpu.o ds4_distributed.o ds4_ssd.o
 CUDA_LDLIBS ?= -lm -Xcompiler -pthread -L$(CUDA_HOME)/targets/sbsa-linux/lib -L$(CUDA_HOME)/lib64 -lcudart -lcublas
 HIPCC ?= $(shell command -v hipcc 2>/dev/null || echo /opt/rocm/bin/hipcc)
 ROCM_ARCH ?= gfx1151
-ROCM_CFLAGS ?= -O3 -ffast-math -g -fno-finite-math-only -pthread -D__HIP_PLATFORM_AMD__ -Wno-unused-command-line-argument --offload-arch=$(ROCM_ARCH)
+ROCM_CFLAGS ?= -O3 -ffast-math -g -fno-finite-math-only -pthread -D__HIP_PLATFORM_AMD__ -D__AMDGCN_WAVEFRONT_SIZE=64 -I/tmp/rocm-headers -cxx-isystem /opt/rocm-7.2.4/include -L/opt/rocm-7.2.4/lib -Wno-unused-command-line-argument -Wno-\#pragma-messages --offload-arch=$(ROCM_ARCH)
 ROCM_LDLIBS ?= -lm -pthread -lhipblas -lhipblaslt
 DS4_LINK ?= $(NVCC) $(NVCCFLAGS)
 DS4_LINK_LIBS ?= $(CUDA_LDLIBS)
@@ -63,7 +62,7 @@ DS4_LINK_LIBS = $(ROCM_LDLIBS)
 endif
 endif
 
-.PHONY: all help clean test cpu cuda cuda-spark cuda-generic cuda-regression strix-halo rocm certify-tool-compression certify-tool-compression-model certify-tool-compression-operational certify-tool-compression-operational-long certify-tool-compression-metadata-repeat tool-compression-evidence
+.PHONY: all help clean test cpu cuda cuda-spark cuda-generic cuda-regression strix-halo rocm ds4-crawl-grounding-test
 
 ifeq ($(UNAME_S),Darwin)
 all: ds4 ds4-server ds4-bench ds4-eval ds4-agent
@@ -75,8 +74,8 @@ help:
 	@echo "  make test         Build and run tests"
 	@echo "  make clean        Remove build outputs"
 
-ds4: ds4_cli.o ds4_help.o linenoise.o $(CORE_OBJS)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ ds4_cli.o ds4_help.o linenoise.o $(CORE_OBJS) $(METAL_LDLIBS)
+ds4: ds4_cli.o ds4_help.o ds4_crawl_grounding.o linenoise.o $(CORE_OBJS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ ds4_cli.o ds4_help.o ds4_crawl_grounding.o linenoise.o $(CORE_OBJS) $(METAL_LDLIBS)
 
 ds4-server: ds4_server.o ds4_help.o ds4_kvstore.o rax.o $(BUF_OBJS) $(CORE_OBJS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ ds4_server.o ds4_help.o ds4_kvstore.o rax.o $(BUF_OBJS) $(CORE_OBJS) $(METAL_LDLIBS)
@@ -87,18 +86,18 @@ ds4-bench: ds4_bench.o ds4_help.o $(CORE_OBJS)
 ds4-eval: ds4_eval.o ds4_help.o $(BUF_OBJS) $(CORE_OBJS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ ds4_eval.o ds4_help.o $(BUF_OBJS) $(CORE_OBJS) $(METAL_LDLIBS)
 
-ds4-agent: ds4_agent.o ds4_help.o ds4_web.o ds4_kvstore.o linenoise.o $(AGENT_SUPPORT_OBJS) $(BUF_OBJS) $(CORE_OBJS)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ ds4_agent.o ds4_help.o ds4_web.o ds4_kvstore.o linenoise.o $(AGENT_SUPPORT_OBJS) $(BUF_OBJS) $(CORE_OBJS) $(METAL_LDLIBS)
+ds4-agent: ds4_agent.o ds4_help.o ds4_web.o ds4_kvstore.o ds4_context_blob.o ds4_tool_compress.o linenoise.o $(BUF_OBJS) $(CORE_OBJS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ ds4_agent.o ds4_help.o ds4_web.o ds4_kvstore.o ds4_context_blob.o ds4_tool_compress.o linenoise.o $(BUF_OBJS) $(CORE_OBJS) $(METAL_LDLIBS)
 
-ds4-wrapper: $(WRAPPER_OBJS) $(BUF_OBJS) $(CORE_OBJS)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(WRAPPER_OBJS) $(BUF_OBJS) $(CORE_OBJS) $(METAL_LDLIBS)
+ds4-wrapper: $(WRAPPER_OBJS) ds4_crawl_grounding.o $(BUF_OBJS) $(CORE_OBJS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $(WRAPPER_OBJS) ds4_crawl_grounding.o $(BUF_OBJS) $(CORE_OBJS) $(METAL_LDLIBS)
 
-cpu: ds4_cli_cpu.o ds4_server_cpu.o ds4_bench_cpu.o ds4_eval_cpu.o ds4_agent_cpu.o ds4_help.o ds4_web.o ds4_kvstore.o linenoise.o rax.o $(AGENT_SUPPORT_OBJS) $(CPU_CORE_OBJS)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o ds4 ds4_cli_cpu.o ds4_help.o linenoise.o $(CPU_CORE_OBJS) $(LDLIBS)
+cpu: ds4_cli_cpu.o ds4_server_cpu.o ds4_bench_cpu.o ds4_eval_cpu.o ds4_agent_cpu.o ds4_help.o ds4_crawl_grounding.o ds4_web.o ds4_kvstore.o ds4_context_blob.o ds4_tool_compress.o linenoise.o rax.o $(CPU_CORE_OBJS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o ds4 ds4_cli_cpu.o ds4_help.o ds4_crawl_grounding.o linenoise.o $(CPU_CORE_OBJS) $(LDLIBS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o ds4-server ds4_server_cpu.o ds4_help.o ds4_kvstore.o rax.o $(BUF_OBJS) $(CPU_CORE_OBJS) $(LDLIBS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o ds4-bench ds4_bench_cpu.o ds4_help.o $(CPU_CORE_OBJS) $(LDLIBS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o ds4-eval ds4_eval_cpu.o ds4_help.o $(BUF_OBJS) $(CPU_CORE_OBJS) $(LDLIBS)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o ds4-agent ds4_agent_cpu.o ds4_help.o ds4_web.o ds4_kvstore.o linenoise.o $(AGENT_SUPPORT_OBJS) $(BUF_OBJS) $(CPU_CORE_OBJS) $(LDLIBS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o ds4-agent ds4_agent_cpu.o ds4_help.o ds4_crawl_grounding.o ds4_web.o ds4_kvstore.o ds4_context_blob.o ds4_tool_compress.o linenoise.o $(BUF_OBJS) $(CPU_CORE_OBJS) $(LDLIBS)
 
 cuda-regression:
 	@echo "cuda-regression requires a CUDA build"
@@ -133,13 +132,13 @@ cuda:
 strix-halo:
 	$(MAKE) -B ds4 ds4-server ds4-bench ds4-eval ds4-agent ds4-wrapper \
 		CORE_OBJS="ds4.o ds4_distributed.o ds4_ssd.o ds4_rocm.o" \
-		CFLAGS="$(CFLAGS) -DDS4_ROCM_BUILD" \
+		CFLAGS="$(filter-out -flto, $(CFLAGS)) -DDS4_ROCM_BUILD" \
 		DS4_LINK="$(HIPCC) $(ROCM_CFLAGS)" \
 		DS4_LINK_LIBS="$(ROCM_LDLIBS)"
 
 rocm: strix-halo
 
-ds4: ds4_cli.o ds4_help.o linenoise.o $(CORE_OBJS)
+ds4: ds4_cli.o ds4_help.o ds4_crawl_grounding.o linenoise.o $(CORE_OBJS)
 	$(DS4_LINK) -o $@ $^ $(DS4_LINK_LIBS)
 
 ds4-server: ds4_server.o ds4_help.o ds4_kvstore.o rax.o $(BUF_OBJS) $(CORE_OBJS)
@@ -151,18 +150,18 @@ ds4-bench: ds4_bench.o ds4_help.o $(CORE_OBJS)
 ds4-eval: ds4_eval.o ds4_help.o $(BUF_OBJS) $(CORE_OBJS)
 	$(DS4_LINK) -o $@ $^ $(DS4_LINK_LIBS)
 
-ds4-agent: ds4_agent.o ds4_help.o ds4_web.o ds4_kvstore.o linenoise.o $(AGENT_SUPPORT_OBJS) $(BUF_OBJS) $(CORE_OBJS)
+ds4-agent: ds4_agent.o ds4_help.o ds4_crawl_grounding.o ds4_web.o ds4_kvstore.o ds4_context_blob.o ds4_tool_compress.o linenoise.o $(BUF_OBJS) $(CORE_OBJS)
 	$(DS4_LINK) -o $@ $^ $(DS4_LINK_LIBS)
 
-ds4-wrapper: $(WRAPPER_OBJS) $(BUF_OBJS) $(CORE_OBJS)
+ds4-wrapper: $(WRAPPER_OBJS) ds4_crawl_grounding.o $(BUF_OBJS) $(CORE_OBJS)
 	$(DS4_LINK) -o $@ $^ $(DS4_LINK_LIBS)
 
-cpu: ds4_cli_cpu.o ds4_server_cpu.o ds4_bench_cpu.o ds4_eval_cpu.o ds4_agent_cpu.o ds4_help.o ds4_web.o ds4_kvstore.o linenoise.o rax.o $(AGENT_SUPPORT_OBJS) $(CPU_CORE_OBJS)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o ds4 ds4_cli_cpu.o ds4_help.o linenoise.o $(CPU_CORE_OBJS) $(LDLIBS)
+cpu: ds4_cli_cpu.o ds4_server_cpu.o ds4_bench_cpu.o ds4_eval_cpu.o ds4_agent_cpu.o ds4_help.o ds4_crawl_grounding.o ds4_web.o ds4_kvstore.o ds4_context_blob.o ds4_tool_compress.o linenoise.o rax.o $(CPU_CORE_OBJS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o ds4 ds4_cli_cpu.o ds4_help.o ds4_crawl_grounding.o linenoise.o $(CPU_CORE_OBJS) $(LDLIBS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o ds4-server ds4_server_cpu.o ds4_help.o ds4_kvstore.o rax.o $(BUF_OBJS) $(CPU_CORE_OBJS) $(LDLIBS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o ds4-bench ds4_bench_cpu.o ds4_help.o $(CPU_CORE_OBJS) $(LDLIBS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o ds4-eval ds4_eval_cpu.o ds4_help.o $(BUF_OBJS) $(CPU_CORE_OBJS) $(LDLIBS)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o ds4-agent ds4_agent_cpu.o ds4_help.o ds4_web.o ds4_kvstore.o linenoise.o $(AGENT_SUPPORT_OBJS) $(BUF_OBJS) $(CPU_CORE_OBJS) $(LDLIBS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o ds4-agent ds4_agent_cpu.o ds4_help.o ds4_crawl_grounding.o ds4_web.o ds4_kvstore.o ds4_context_blob.o ds4_tool_compress.o linenoise.o $(BUF_OBJS) $(CPU_CORE_OBJS) $(LDLIBS)
 
 cuda-regression: tests/cuda_long_context_smoke
 	./tests/cuda_long_context_smoke
@@ -174,8 +173,11 @@ ds4.o: ds4.c ds4.h ds4_ssd.h ds4_distributed.h ds4_gpu.h
 ds4_ssd.o: ds4_ssd.c ds4_ssd.h
 	$(CC) $(CFLAGS) -c -o $@ ds4_ssd.c
 
-ds4_cli.o: ds4_cli.c ds4.h ds4_ssd.h ds4_distributed.h ds4_help.h linenoise.h
+ds4_cli.o: ds4_cli.c ds4.h ds4_ssd.h ds4_distributed.h ds4_help.h linenoise.h ds4_crawl_grounding.h
 	$(CC) $(CFLAGS) -c -o $@ ds4_cli.c
+
+ds4_crawl_grounding.o: ds4_crawl_grounding.c ds4_crawl_grounding.h
+	$(CC) $(CFLAGS) -c -o $@ ds4_crawl_grounding.c
 
 ds4_distributed.o: ds4_distributed.c ds4_distributed.h ds4.h ds4_ssd.h
 	$(CC) $(CFLAGS) -c -o $@ ds4_distributed.c
@@ -234,13 +236,13 @@ ds4_agent_session_store.o: ds4_agent_session_store.c ds4_agent_session_store.h d
 ds4_server_runtime.o: ds4_server_runtime.c ds4_server_runtime.h ds4_wrapper.h ds4.h ds4_kvstore.h ds4_server.c
 	$(CC) $(CFLAGS) -Wno-unused-function -c -o $@ ds4_server_runtime.c
 
-ds4_agent_runtime.o: ds4_agent_runtime.c ds4_agent_runtime.h ds4_wrapper.h ds4_agent_session_store.h ds4_agent.c ds4_context_blob.h ds4_tool_compress.h
+ds4_agent_runtime.o: ds4_agent_runtime.c ds4_agent_runtime.h ds4_wrapper.h ds4_agent_session_store.h ds4_agent.c
 	$(CC) $(CFLAGS) -Wno-unused-function -c -o $@ ds4_agent_runtime.c
 
 ds4_test.o: tests/ds4_test.c ds4_server.c ds4.h ds4_ssd.h ds4_distributed.h ds4_help.h ds4_kvstore.h rax.h
 	$(CC) $(CFLAGS) -Wno-unused-function -c -o $@ tests/ds4_test.c
 
-ds4_agent_test.o: tests/ds4_agent_test.c ds4_agent.c ds4.h ds4_ssd.h ds4_distributed.h ds4_help.h ds4_kvstore.h ds4_web.h ds4_context_blob.h ds4_tool_compress.h linenoise.h
+ds4_agent_test.o: tests/ds4_agent_test.c ds4_agent.c ds4.h ds4_ssd.h ds4_distributed.h ds4_help.h ds4_kvstore.h ds4_web.h linenoise.h
 	$(CC) $(CFLAGS) -Wno-unused-function -c -o $@ tests/ds4_agent_test.c
 
 tests/cuda_long_context_smoke.o: tests/cuda_long_context_smoke.c ds4_gpu.h
@@ -267,7 +269,7 @@ ds4_bench_cpu.o: ds4_bench.c ds4.h ds4_ssd.h ds4_distributed.h ds4_help.h
 ds4_eval_cpu.o: ds4_eval.c ds4.h ds4_ssd.h ds4_distributed.h ds4_help.h
 	$(CC) $(CFLAGS) -DDS4_NO_GPU -c -o $@ ds4_eval.c
 
-ds4_agent_cpu.o: ds4_agent.c ds4.h ds4_ssd.h ds4_distributed.h ds4_help.h ds4_kvstore.h ds4_web.h ds4_context_blob.h ds4_tool_compress.h linenoise.h
+ds4_agent_cpu.o: ds4_agent.c ds4.h ds4_ssd.h ds4_distributed.h ds4_help.h ds4_kvstore.h ds4_web.h linenoise.h
 	$(CC) $(CFLAGS) -DDS4_NO_GPU -c -o $@ ds4_agent.c
 
 ds4_metal.o: ds4_metal.m ds4_gpu.h $(METAL_SRCS)
@@ -289,42 +291,27 @@ else
 	$(NVCC) $(NVCCFLAGS) -o $@ ds4_test.o ds4_help.o ds4_kvstore.o rax.o $(BUF_OBJS) $(CORE_OBJS) $(CUDA_LDLIBS)
 endif
 
-ds4_agent_test: ds4_agent_test.o ds4_help.o ds4_web.o ds4_kvstore.o linenoise.o $(AGENT_SUPPORT_OBJS) $(BUF_OBJS) $(CORE_OBJS)
+ds4_agent_test: ds4_agent_test.o ds4_help.o ds4_web.o ds4_kvstore.o ds4_context_blob.o ds4_tool_compress.o linenoise.o $(BUF_OBJS) $(CORE_OBJS)
 ifeq ($(UNAME_S),Darwin)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ ds4_agent_test.o ds4_help.o ds4_web.o ds4_kvstore.o linenoise.o $(AGENT_SUPPORT_OBJS) $(BUF_OBJS) $(CORE_OBJS) $(METAL_LDLIBS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ ds4_agent_test.o ds4_help.o ds4_web.o ds4_kvstore.o ds4_context_blob.o ds4_tool_compress.o linenoise.o $(BUF_OBJS) $(CORE_OBJS) $(METAL_LDLIBS)
 else
-	$(NVCC) $(NVCCFLAGS) -o $@ ds4_agent_test.o ds4_help.o ds4_web.o ds4_kvstore.o linenoise.o $(AGENT_SUPPORT_OBJS) $(BUF_OBJS) $(CORE_OBJS) $(CUDA_LDLIBS)
+	$(NVCC) $(NVCCFLAGS) -o $@ ds4_agent_test.o ds4_help.o ds4_web.o ds4_kvstore.o ds4_context_blob.o ds4_tool_compress.o linenoise.o $(BUF_OBJS) $(CORE_OBJS) $(CUDA_LDLIBS)
 endif
 
-test: ds4_test ds4_agent_test ds4-eval q4k-dot-test
+test: ds4_test ds4_agent_test ds4-eval q4k-dot-test ds4-crawl-grounding-test
 	./ds4-eval --self-test-extractors
 	./ds4_agent_test
 	./ds4_test
-
-certify-tool-compression:
-	./scripts/certify_tool_compression.sh
-	./scripts/certify_tool_compression_real_corpus.sh
-	./scripts/certify_tool_compression_model_backed.sh
-	./scripts/certify_tool_compression_operational_projected.sh
-
-certify-tool-compression-model:
-	./scripts/certify_tool_compression_model_backed.sh
-
-certify-tool-compression-operational:
-	./scripts/certify_tool_compression_operational_projected.sh
-
-certify-tool-compression-operational-long:
-	DS4_OPERATIONAL_RUN_HUGE_ORIGINALS=1 DS4_OPERATIONAL_LONG_REQUEST_TIMEOUT=7200 ./scripts/certify_tool_compression_operational.sh
-
-certify-tool-compression-metadata-repeat:
-	./scripts/certify_tool_compression_repo_file_metadata_repeat.sh
-
-tool-compression-evidence:
-	python3 scripts/build_tool_compression_evidence_report.py
 
 q4k-dot-test: tests/test_q4k_dot.c
 	$(CC) -O2 -Wall -Wextra -std=c99 -o tests/test_q4k_dot tests/test_q4k_dot.c -lm -pthread
 	./tests/test_q4k_dot
 
+ds4-crawl-grounding-test: tests/ds4_crawl_grounding_test
+	./tests/ds4_crawl_grounding_test
+
+tests/ds4_crawl_grounding_test: tests/ds4_crawl_grounding_test.c ds4_crawl_grounding.c ds4_crawl_grounding.h
+	$(CC) $(CFLAGS) -I. -o $@ tests/ds4_crawl_grounding_test.c ds4_crawl_grounding.c
+
 clean:
-	rm -f ds4 ds4-server ds4-bench ds4-eval ds4-agent ds4-wrapper ds4_cpu ds4_native ds4_server_test ds4_test ds4_agent_test tests/test_q4k_dot *.o tests/cuda_long_context_smoke tests/cuda_long_context_smoke.o
+	rm -f ds4 ds4-server ds4-bench ds4-eval ds4-agent ds4-wrapper ds4_cpu ds4_native ds4_server_test ds4_test ds4_agent_test tests/test_q4k_dot tests/ds4_crawl_grounding_test *.o tests/cuda_long_context_smoke tests/cuda_long_context_smoke.o

@@ -9,7 +9,7 @@
     "dir": "/home/tendermachine/workspace_ds4studio/history"
   },
   "server": {
-    "binary": "./ds4-server",
+    "binary": "./ds4-wrapper",
     "model": "ds4flash.gguf",
     "mtp": "",
     "mtpDraft": 1,
@@ -89,50 +89,192 @@
   "requestDefaults": {
     "max_tokens": "auto",
     "max_tokens_safety_cap": 32768,
-    "context_margin": 1024
+    "context_margin": 1024,
+    "endpoint": "/v1/chat/completions",
+    "model": "deepseek-v4-flash",
+    "system": "",
+    "temperature": 0,
+    "top_p": 1,
+    "top_k": 0,
+    "min_p": 0,
+    "seed": 42,
+    "stream": true,
+    "thinking": false,
+    "reasoning_effort": "high",
+    "stop": ""
   },
   "research": {
     "enabled": true,
+    "maxPlanIterations": 3,
+    "autoAcceptPlan": false,
+    "stateDir": "data/research",
+    "ragEnabled": true,
+    "searchEnabled": false,
+    "webFetchEnabled": false,
+    "researcherCount": 3,
+    "maxSteps": 12,
+    "maxSourcesPerQuery": 8,
+    "maxContextChars": 120000,
+    "exportEnabled": true,
+    "reflection": {
+      "enabled": true,
+      "maxAttempts": 2
+    },
+    "authorVerification": {
+      "enabled": true,
+      "maxAuthors": 10
+    },
+    "engine": "local",
+    "gemini": {
+      "model": "deep-research-preview-04-2026",
+      "apiKeyEnv": "GEMINI_API_KEY",
+      "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
+      "tools": [
+        "google_search",
+        "url_context",
+        "code_execution"
+      ],
+      "collaborativePlanning": true,
+      "thinkingSummaries": true,
+      "timeoutMs": 3600000,
+      "apiKey": ""
+    },
+    "prism": {
+      "cliPath": "/home/tendermachine/.local/bin/prism-pp-cli",
+      "cliPathEnv": "PRISM_CLI_PATH",
+      "cookiesEnv": "PRISM_COOKIES",
+      "reasoningEffort": "medium",
+      "projectId": "",
+      "userId": "",
+      "timeoutMs": 3600000,
+      "pollIntervalMs": 3000
+    },
     "search": {
       "enabled": true,
+      "maxResultsPerQuery": 8,
+      "maxSourcesTotal": 30,
+      "maxFetchedPages": 8,
+      "maxCharsPerPage": 12000,
+      "timeoutMs": 12000,
+      "retryCount": 2,
+      "retryDelayMs": 500,
+      "enablePageReader": true,
+      "enableDirectFetchFallback": true,
       "providers": {
         "wikipedia": {
-          "enabled": true
+          "enabled": true,
+          "endpoint": "https://en.wikipedia.org/w/api.php",
+          "restEndpoint": "https://en.wikipedia.org/api/rest_v1/page/summary"
+        },
+        "arxiv": {
+          "enabled": true,
+          "endpoint": "https://export.arxiv.org/api/query"
+        },
+        "cnr": {
+          "enabled": true,
+          "endpoint": "https://publications.cnr.it/api/v1/search"
         },
         "openalex": {
-          "enabled": true
+          "enabled": true,
+          "endpoint": "https://api.openalex.org"
         },
         "worldbank": {
-          "enabled": true
+          "enabled": true,
+          "endpoint": "https://api.worldbank.org/v2"
         },
         "tavily": {
-          "enabled": true
+          "enabled": true,
+          "apiKeyEnv": "TAVILY_API_KEY",
+          "endpoint": "https://api.tavily.com/search",
+          "apiKey": ""
         },
         "serpapi": {
-          "enabled": true
+          "enabled": true,
+          "apiKeyEnv": "SERPAPI_KEY",
+          "engine": "google",
+          "endpoint": "https://serpapi.com/search.json",
+          "apiKey": ""
         },
         "googlescholar": {
-          "enabled": true
+          "enabled": true,
+          "apiKeyEnv": "SERPAPI_KEY",
+          "endpoint": "https://serpapi.com/search.json",
+          "engine": "google_scholar",
+          "apiKey": ""
         },
         "scrapingbee": {
-          "enabled": true
+          "enabled": true,
+          "apiKeyEnv": "SCRAPINGBEE_API_KEY",
+          "endpoint": "https://app.scrapingbee.com/api/v1/store/google",
+          "apiKey": ""
         },
         "opentripmap": {
-          "enabled": false
+          "enabled": false,
+          "apiKeyEnv": "OPENTRIPMAP_API_KEY",
+          "endpoint": "https://api.opentripmap.com/0.1/en/places",
+          "apiKey": ""
         },
         "tripadvisor": {
-          "enabled": false
+          "enabled": false,
+          "apiKeyEnv": "TRIPADVISOR_API_KEY",
+          "endpoint": "https://api.content.tripadvisor.com/api/v1/location/search",
+          "apiKey": ""
         },
         "aliyun": {
-          "enabled": false
+          "enabled": false,
+          "apiKeyEnv": "ALIYUN_AI_SEARCH_API_KEY",
+          "endpoint": "",
+          "apiKey": ""
         },
         "baidu": {
-          "enabled": false
+          "enabled": false,
+          "apiKeyEnv": "BAIDU_SEARCH_API_KEY",
+          "endpoint": "",
+          "apiKey": ""
         },
         "jina": {
-          "enabled": true
+          "enabled": true,
+          "apiKeyEnv": "JINA_API_KEY",
+          "endpoint": "https://r.jina.ai/",
+          "apiKey": ""
+        }
+      },
+      "cache": {
+        "enabled": true,
+        "dir": "data/research/cache",
+        "defaultTtlMs": 86400000,
+        "freshQueryTtlMs": 900000
+      },
+      "rateLimits": {
+        "default": {
+          "perMinute": 30,
+          "concurrent": 2
         }
       }
+    },
+    "model": {
+      "temperature": 0,
+      "top_p": 1,
+      "max_tokens": 8192
     }
+  },
+  "callDebug": {
+    "enabled": true,
+    "dir": "data/call-debug",
+    "maxEntries": 200,
+    "maxBodyChars": 4000,
+    "maxFileBytes": 5000000,
+    "excludePaths": [
+      "/api/wrapper/status",
+      "/api/server/metrics"
+    ]
+  },
+  "toolBlobs": {
+    "dir": "data/tool-blobs",
+    "compressEnabled": true
+  },
+  "crawl": {
+    "host": "127.0.0.1",
+    "port": 9090
   }
 }

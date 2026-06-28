@@ -256,6 +256,28 @@ export function parseAgentInput(text, agentMode) {
     return { type: "pony", action: "invalid", mode: arg };
   }
 
+  const headroom = trimmed.match(/^\/headroom\s+(start|stop|status)\s*$/i);
+  if (headroom) {
+    const action = headroom[1].toLowerCase();
+    if (action === "status") return { type: "headroom", action: "status" };
+    if (action === "start") return { type: "headroom", action: "set", enabled: true };
+    if (action === "stop") return { type: "headroom", action: "set", enabled: false };
+  }
+
+  const webSearchCmd = trimmed.match(/^\/web_search\s+(.+)$/i);
+  if (webSearchCmd) {
+    return { type: "webSearch", query: webSearchCmd[1].trim() };
+  }
+
+  /* Web Search Mode — persistent search on every message */
+  const webSearchMode = trimmed.match(/^\/web-search\s+(start|stop|status)\s*$/i);
+  if (webSearchMode) {
+    const action = webSearchMode[1].toLowerCase();
+    if (action === "status") return { type: "webSearchMode", action: "status" };
+    if (action === "start") return { type: "webSearchMode", action: "set", enabled: true };
+    if (action === "stop") return { type: "webSearchMode", action: "set", enabled: false };
+  }
+
   // SageMath control commands — work only when agent mode is active
   const sageControl = trimmed.match(/^\/sage\s+(start|stop|status)\s*$/i);
   if (sageControl) {
@@ -270,6 +292,11 @@ export function parseAgentInput(text, agentMode) {
       type: "native",
       command: `/${name}${args ? ` ${args}` : ""}`
     };
+  }
+
+  const crawl = trimmed.match(/^\/crawl(?:\s+([\s\S]*))?$/i);
+  if (crawl) {
+    return { type: "native", command: trimmed };
   }
 
   if (/^\/agent$/i.test(trimmed)) return null;

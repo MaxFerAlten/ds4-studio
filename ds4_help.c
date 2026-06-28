@@ -512,7 +512,8 @@ static void print_topic(FILE *fp, const help_colors *c, ds4_help_tool tool, cons
     else if (tool == DS4_HELP_AGENT && streq(topic, "commands")) print_agent_sessions(fp, c);
     else if (tool == DS4_HELP_AGENT && streq(topic, "tools")) {
         title(fp, c, "Agent Tool System");
-        para(fp, c, "The agent can read, search, write, edit, run bash, and browse through Chrome-backed web tools.");
+        para(fp, c, "The agent can read, search, write, edit, run bash, crawl URLs, and browse through Chrome-backed web tools.");
+        para(fp, c, "crawl fetches a URL via Crawl4AI and returns page content as Markdown without a visible browser.");
         para(fp, c, "Tool calls are emitted by the model as DSML and rendered live in the terminal.");
         para(fp, c, "Edit uses exact old/new replacement; [upto] can bridge a unique head and tail for large anchored edits.");
         fputc('\n', fp);

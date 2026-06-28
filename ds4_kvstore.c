@@ -99,7 +99,7 @@ static void kv_buf_append(kv_buf *b, const void *p, size_t n) { dynbuf_append((D
 static void kv_buf_putc(kv_buf *b, char c) { dynbuf_putc((DynBuf *)b, c); }
 static void kv_buf_puts(kv_buf *b, const char *s) { dynbuf_puts((DynBuf *)b, s); }
 
-static void kv_buf_printf(kv_buf *b, const char *fmt, ...) { dynbuf_printf((DynBuf *)b, fmt); }
+static void kv_buf_printf(kv_buf *b, const char *fmt, ...) { va_list ap; va_start(ap, fmt); dynbuf_vprintf((DynBuf *)b, fmt, ap); va_end(ap); }
 
 static char *kv_buf_take(kv_buf *b) {
     if (!b->ptr) return kv_xstrdup("");

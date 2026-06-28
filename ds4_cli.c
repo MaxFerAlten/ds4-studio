@@ -1,4 +1,5 @@
 #include "ds4.h"
+#include "ds4_crawl_grounding.h"
 #include "ds4_distributed.h"
 #include "ds4_help.h"
 #include "linenoise.h"
@@ -1079,14 +1080,25 @@ static int repl_chat_set_ctx(ds4_engine *engine, repl_chat *chat, int ctx_size) 
  * and assistant markers, then ds4_session_sync() decides whether this is a KV
  * continuation.  If prompt processing fails, the transcript rolls back before
  * returning to the prompt. */
-static int run_chat_turn(ds4_engine *engine, cli_config *cfg, repl_chat *chat, const char *user_text) {
+/* Buffered/deterministic variant: when capture != NULL, generated assistant
+ * text is written to a memory stream (no streaming to stdout, no thinking
+ * channel, no color) and returned via *capture for the caller to inspect.
+ * temperature >= 0 overrides cfg->gen.temperature; < 0 keeps the configured
+ * value.  Used by the grounded crawl summarizer and its isolated verifier. */
+static int run_chat_turn_opts(ds4_engine *engine, cli_config *cfg, repl_chat *chat,
+                              const char *user_text, float temperature,
+                              char **capture) {
+    const bool buffered = capture != NULL;
+    if (buffered)
+        *capture = NULL;
     if (!chat->session) {
         fprintf(stderr, "ds4: no active interactive KV cache\n");
         return 1;
     }
 
-    ds4_think_mode think_mode = ds4_think_mode_for_context(cfg->gen.think_mode,
-                                                           chat->ctx_size);
+    ds4_think_mode think_mode = buffered
+        ? DS4_THINK_NONE
+        : ds4_think_mode_for_context(cfg->gen.think_mode, chat->ctx_size);
     repl_chat_apply_max_prefix(engine, chat, think_mode == DS4_THINK_MAX);
     const int rollback_len = chat->transcript.len;
     ds4_chat_append_message(engine, &chat->transcript, "user", user_text);
@@ -1122,12 +1134,26 @@ static int run_chat_turn(ds4_engine *engine, cli_config *cfg, repl_chat *chat, c
     ds4_session_set_display_progress(chat->session, NULL, NULL);
     const double t_prefill1 = cli_now_sec();
 
+    const float temp = temperature >= 0.0f ? temperature : cfg->gen.temperature;
+    FILE *out_fp = stdout;
+    char *cap_buf = NULL;
+    size_t cap_size = 0;
+    if (buffered) {
+        out_fp = open_memstream(&cap_buf, &cap_size);
+        if (!out_fp) {
+            chat->transcript.len = rollback_len;
+            ds4_session_invalidate(chat->session);
+            fprintf(stderr, "ds4: failed to allocate generation buffer\n");
+            return 1;
+        }
+    }
+
     token_printer printer = {
         .engine = engine,
-        .fp = stdout,
-        .format_thinking = ds4_think_mode_enabled(think_mode),
-        .in_think = ds4_think_mode_enabled(think_mode),
-        .use_color = isatty(fileno(stdout)) != 0,
+        .fp = out_fp,
+        .format_thinking = !buffered && ds4_think_mode_enabled(think_mode),
+        .in_think = !buffered && ds4_think_mode_enabled(think_mode),
+        .use_color = !buffered && isatty(fileno(stdout)) != 0,
         .last_output_newline = true,
     };
 
@@ -1142,7 +1168,7 @@ static int run_chat_turn(ds4_engine *engine, cli_config *cfg, repl_chat *chat, c
     const double t_decode0 = cli_now_sec();
     while (generated < max_tokens && !cli_interrupt_requested()) {
         int token = ds4_session_sample(chat->session,
-                                       cfg->gen.temperature,
+                                       temp,
                                        0,
                                        cfg->gen.top_p,
                                        cfg->gen.min_p,
@@ -1151,7 +1177,7 @@ static int run_chat_turn(ds4_engine *engine, cli_config *cfg, repl_chat *chat, c
 
         int toks[17];
         int ntok = 0;
-        if (cfg->gen.temperature <= 0.0f && ds4_engine_mtp_draft_tokens(engine) > 1 &&
+        if (temp <= 0.0f && ds4_engine_mtp_draft_tokens(engine) > 1 &&
             getenv("DS4_MTP_SPEC_DISABLE") == NULL) {
             cli_dist_busy_set(cfg, true);
             ntok = ds4_session_eval_speculative_argmax(chat->session,
@@ -1165,6 +1191,7 @@ static int run_chat_turn(ds4_engine *engine, cli_config *cfg, repl_chat *chat, c
             cli_dist_busy_set(cfg, false);
             if (ntok < 0) {
                 fprintf(stderr, "ds4: decode failed: %s\n", err);
+                if (buffered) { fclose(out_fp); free(cap_buf); }
                 return 1;
             }
         } else {
@@ -1173,6 +1200,7 @@ static int run_chat_turn(ds4_engine *engine, cli_config *cfg, repl_chat *chat, c
             cli_dist_busy_set(cfg, false);
             if (eval_rc != 0) {
                 fprintf(stderr, "ds4: decode failed: %s\n", err);
+                if (buffered) { fclose(out_fp); free(cap_buf); }
                 return 1;
             }
             toks[0] = token;
@@ -1189,7 +1217,7 @@ static int run_chat_turn(ds4_engine *engine, cli_config *cfg, repl_chat *chat, c
             char *piece = ds4_token_text(engine, toks[j], &piece_len);
             ds4_tokens_push(&chat->transcript, toks[j]);
             token_printer_write_text(&printer, piece, piece_len);
-            fflush(stdout);
+            fflush(out_fp);
             free(piece);
             generated++;
             if (generated >= max_tokens) break;
@@ -1215,7 +1243,362 @@ static int run_chat_turn(ds4_engine *engine, cli_config *cfg, repl_chat *chat, c
             "ds4: prefill: %.2f t/s, generation: %.2f t/s\n",
             prefill_s > 0.0 ? (double)suffix / prefill_s : 0.0,
             decode_s > 0.0 ? (double)generated / decode_s : 0.0);
+    if (buffered) {
+        fclose(out_fp);
+        *capture = cap_buf ? cap_buf : (char *)calloc(1, 1);
+    }
     return 0;
+}
+
+static int run_chat_turn(ds4_engine *engine, cli_config *cfg, repl_chat *chat,
+                         const char *user_text) {
+    return run_chat_turn_opts(engine, cfg, chat, user_text, -1.0f, NULL);
+}
+
+
+static char *crawl_popen(const char *cmd, char *err, size_t err_len) {
+    FILE *fp = popen(cmd, "r");
+    if (!fp) {
+        snprintf(err, err_len, "ds4: failed to run crawl command");
+        return NULL;
+    }
+    char buf[4096];
+    size_t len = 0, cap = 0;
+    char *out = NULL;
+    while (fgets(buf, sizeof(buf), fp)) {
+        size_t n = strlen(buf);
+        if (len + n + 1 > cap) {
+            cap = cap ? cap * 2 : 8192;
+            while (cap < len + n + 1) cap *= 2;
+            char *next = realloc(out, cap);
+            if (!next) { free(out); pclose(fp); return NULL; }
+            out = next;
+        }
+        memcpy(out + len, buf, n);
+        len += n;
+        out[len] = '\0';
+    }
+    int status = pclose(fp);
+    if (!out) {
+        out = malloc(1);
+        if (out) out[0] = '\0';
+    }
+    if (status == -1 && out && !out[0]) {
+        snprintf(err, err_len, "ds4: crawl command returned no output");
+        free(out);
+        return NULL;
+    }
+    return out;
+}
+
+static char *crawl_json_extract_string(const char *json, const char *key) {
+    /* Simple JSON string value extractor: finds "key":"value" or "key": "value" */
+    char pattern[256];
+    int n = snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    if (n < 0 || (size_t)n >= sizeof(pattern)) return NULL;
+    const char *p = strstr(json, pattern);
+    if (!p) return NULL;
+    p += strlen(pattern);
+    while (*p && (*p == ':' || *p == ' ')) p++;
+    if (*p != '"') return NULL;
+    p++;
+    size_t cap = 256, len = 0;
+    char *val = malloc(cap);
+    if (!val) return NULL;
+    while (*p && *p != '"') {
+        if (*p == '\\') { p++; if (!*p) break; }
+        if (len + 1 >= cap) { cap *= 2; char *next = realloc(val, cap); if (!next) { free(val); return NULL; } val = next; }
+        val[len++] = *p++;
+    }
+    val[len] = '\0';
+    return val;
+}
+
+static char *crawl_json_extract_object(const char *json, const char *key) {
+    /* Extracts a JSON object value for the given key (brace-balanced).
+       Finds "key": then skips whitespace and colon, checks for '{', then
+       copies until matching '}' (handling nested braces). */
+    char pattern[256];
+    int n = snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    if (n < 0 || (size_t)n >= sizeof(pattern)) return NULL;
+    const char *p = strstr(json, pattern);
+    if (!p) return NULL;
+    p += strlen(pattern);
+    while (*p && (*p == ':' || *p == ' ')) p++;
+    if (*p != '{') return NULL;
+    const char *start = p;
+    int depth = 0;
+    while (*p) {
+        if (*p == '{') depth++;
+        else if (*p == '}') { depth--; if (depth == 0) { p++; break; } }
+        else if (*p == '"') { p++; while (*p && *p != '"') { if (*p == '\\') p++; p++; } }
+        p++;
+    }
+    if (depth != 0) return NULL;
+    size_t len = (size_t)(p - start);
+    char *val = malloc(len + 1);
+    if (!val) return NULL;
+    memcpy(val, start, len);
+    val[len] = '\0';
+    return val;
+}
+
+static int crawl_read_token(char *token, size_t token_len) {
+    const char *token_path = getenv("HOME");
+    if (!token_path) return 1;
+    char path[512];
+    int n = snprintf(path, sizeof(path), "%s/.config/ds4-studio/crawl/token", token_path);
+    if (n < 0 || (size_t)n >= sizeof(path)) return 1;
+    FILE *f = fopen(path, "r");
+    if (!f) return 1;
+    if (!fgets(token, (int)token_len, f)) { fclose(f); return 1; }
+    fclose(f);
+    size_t len = strlen(token);
+    while (len > 0 && (token[len-1] == '\n' || token[len-1] == '\r')) token[--len] = '\0';
+    return len == 0 ? 1 : 0;
+}
+
+static int crawl_http_post(const char *url, const char *body, char *out, size_t out_len, char *err, size_t err_len) {
+    char token[256];
+    char auth_hdr[512];
+    if (crawl_read_token(token, sizeof(token)) == 0) {
+        int m = snprintf(auth_hdr, sizeof(auth_hdr), "-H 'Authorization: Bearer %s'", token);
+        if (m < 0 || (size_t)m >= sizeof(auth_hdr)) { auth_hdr[0] = '\0'; }
+    } else { auth_hdr[0] = '\0'; }
+    char cmd[8192];
+    int n = snprintf(cmd, sizeof(cmd),
+        "curl -s -X POST http://127.0.0.1:9090%s "
+        "-H 'Content-Type: application/json' "
+        "%s "
+        "-d '%s' --max-time 120 2>/dev/null",
+        url, auth_hdr, body);
+    if (n < 0 || (size_t)n >= sizeof(cmd)) {
+        snprintf(err, err_len, "ds4: crawl command too long");
+        return 1;
+    }
+    char *result = crawl_popen(cmd, err, err_len);
+    if (!result) return 1;
+    size_t result_len = strlen(result);
+    if (result_len >= out_len) result_len = out_len - 1;
+    memcpy(out, result, result_len);
+    out[result_len] = '\0';
+    free(result);
+    return 0;
+}
+
+static int crawl_http_get(const char *path, char *out, size_t out_len, char *err, size_t err_len) {
+    char token[256];
+    char auth_hdr[512];
+    if (crawl_read_token(token, sizeof(token)) == 0) {
+        int m = snprintf(auth_hdr, sizeof(auth_hdr), "-H 'Authorization: Bearer %s'", token);
+        if (m < 0 || (size_t)m >= sizeof(auth_hdr)) { auth_hdr[0] = '\0'; }
+    } else { auth_hdr[0] = '\0'; }
+    char cmd[8192];
+    int n = snprintf(cmd, sizeof(cmd),
+        "curl -s http://127.0.0.1:9090%s %s --max-time 30 2>/dev/null",
+        path, auth_hdr);
+    if (n < 0 || (size_t)n >= sizeof(cmd)) {
+        snprintf(err, err_len, "ds4: crawl command too long");
+        return 1;
+    }
+    char *result = crawl_popen(cmd, err, err_len);
+    if (!result) return 1;
+    size_t result_len = strlen(result);
+    if (result_len >= out_len) result_len = out_len - 1;
+    memcpy(out, result, result_len);
+    out[result_len] = '\0';
+    free(result);
+    return 0;
+}
+
+static bool crawl_has_visible_text(const char *s) {
+    for (; *s; s++)
+        if (!isspace((unsigned char)*s))
+            return true;
+    return false;
+}
+
+/* Grounded crawl summary: extract bounded plain text from the crawl manifest,
+ * summarize it deterministically (temperature 0, buffered), then run an
+ * isolated verifier pass to estimate how well the summary is grounded in the
+ * source.  See docs/superpowers/specs/2026-06-28-grounded-crawl-summary-design.md.
+ * A missing/empty/unreadable manifest is a hard error before any generation;
+ * verifier failure is soft (the summary is still shown). */
+static int run_crawl_grounded_summary(ds4_engine *engine, cli_config *cfg,
+                                      repl_chat *chat, const char *manifest) {
+    char *source = NULL;
+    bool truncated = false;
+    char gerr[256];
+    ds4_crawl_source_status st =
+        ds4_crawl_extract_source(manifest, 24000, &source, &truncated,
+                                 gerr, sizeof(gerr));
+    if (st == DS4_CRAWL_SOURCE_EMPTY) {
+        fprintf(stderr,
+                "ds4: crawl completed but returned no textual content to summarize\n");
+        return 1;
+    }
+    if (st != DS4_CRAWL_SOURCE_OK) {
+        fprintf(stderr, "ds4: crawl returned unreadable content: %s\n", gerr);
+        return 1;
+    }
+
+    /* 1. Deterministic, buffered summary on the interactive session so the
+     *    accepted summary stays in the transcript for later turns. */
+    char *summ_prompt = NULL;
+    if (asprintf(&summ_prompt,
+                 "Summarize the page content below for the user. Base the "
+                 "summary only on this content; do not add outside facts.%s\n\n"
+                 "%s\n",
+                 truncated ? " (The content was truncated.)" : "",
+                 source) < 0) {
+        free(source);
+        fprintf(stderr, "ds4: crawl prompt allocation failed\n");
+        return 1;
+    }
+    char *summary = NULL;
+    int rc = run_chat_turn_opts(engine, cfg, chat, summ_prompt, 0.0f, &summary);
+    free(summ_prompt);
+    if (rc != 0) {
+        free(source);
+        return 1;
+    }
+    if (!summary || !crawl_has_visible_text(summary)) {
+        free(summary);
+        free(source);
+        fprintf(stderr, "ds4: crawl summary generation produced no output\n");
+        return 1;
+    }
+
+    /* Display the buffered summary now that generation is complete. */
+    fputs(summary, stdout);
+    if (summary[strlen(summary) - 1] != '\n')
+        fputc('\n', stdout);
+
+    /* 2. Isolated verifier pass: separate session, never enters the user's
+     *    transcript.  Any failure here is soft. */
+    ds4_crawl_verification v;
+    char *verify_reason = NULL;
+    char *verifier_json = NULL;
+    char *verify_prompt = NULL;
+    bool verified = false;
+    if (asprintf(&verify_prompt,
+                 "You are a strict grounding verifier. Decide how well the "
+                 "SUMMARY is supported by the SOURCE.\n"
+                 "Reply with ONLY a JSON object and nothing else, exactly:\n"
+                 "{\"semantic_support\": <integer 0-100>, \"evidence\": "
+                 "[\"<verbatim quote from SOURCE>\", ...]}\n"
+                 "semantic_support: 100 = every claim supported, 0 = "
+                 "unsupported. evidence: short exact substrings copied from the "
+                 "SOURCE.\n\nSOURCE:\n%s\n\n=== END SOURCE ===\n\nSUMMARY:\n%s\n",
+                 source, summary) < 0) {
+        verify_reason = strdup("verifier prompt allocation failed");
+    } else {
+        repl_chat verifier;
+        memset(&verifier, 0, sizeof(verifier));
+        ds4_chat_begin(engine, &verifier.transcript);
+        if (repl_chat_create_session(engine, &verifier, cfg->gen.ctx_size) != 0) {
+            verify_reason = strdup("verifier session unavailable");
+        } else if (run_chat_turn_opts(engine, cfg, &verifier, verify_prompt,
+                                      0.0f, &verifier_json) != 0 ||
+                   !verifier_json) {
+            verify_reason = strdup("verifier generation failed");
+        } else {
+            char verr[256];
+            if (ds4_crawl_verify_result(source, verifier_json, &v, verr,
+                                        sizeof(verr)) == 0)
+                verified = true;
+            else
+                verify_reason = strdup(verr);
+        }
+        repl_chat_free(&verifier);
+    }
+
+    fputc('\n', stdout);
+    if (verified) {
+        printf("Accuratezza stimata rispetto alla fonte: %d%%\n",
+               v.accuracy_score);
+    } else {
+        printf("Accuratezza stimata rispetto alla fonte: non disponibile\n");
+        fprintf(stderr, "ds4: verifica del grounding non riuscita: %s\n",
+                verify_reason ? verify_reason : "errore sconosciuto");
+    }
+
+    free(verify_reason);
+    free(verifier_json);
+    free(verify_prompt);
+    free(summary);
+    free(source);
+    return 0;
+}
+
+static int run_crawl_start(ds4_engine *engine, cli_config *cfg, repl_chat *chat, const char *url) {
+    char body[8192];
+    char escaped_url[4096];
+    /* Shell-escape single quotes in the URL for curl -d */
+    const char *s;
+    char *w = escaped_url;
+    size_t remaining = sizeof(escaped_url) - 1;
+    for (s = url; *s && remaining > 0; s++) {
+        if (*s == '\'') {
+            if (remaining < 5) break;
+            memcpy(w, "'\\''", 4); w += 4; remaining -= 4;
+        } else {
+            *w++ = *s; remaining--;
+        }
+    }
+    *w = '\0';
+    int n = snprintf(body, sizeof(body), "{\"url\":\"%s\"}", url);
+    if (n < 0 || (size_t)n >= sizeof(body)) {
+        fprintf(stderr, "ds4: crawl request too large\n");
+        return 1;
+    }
+    char json[65536];
+    char err[256];
+    if (crawl_http_post("/jobs", body, json, sizeof(json), err, sizeof(err)) != 0) {
+        fprintf(stderr, "ds4: crawl failed: %s\n", err);
+        return 1;
+    }
+    char *job_id = crawl_json_extract_string(json, "job_id");
+    if (!job_id) {
+        fprintf(stderr, "ds4: crawl did not return a job_id\n");
+        return 1;
+    }
+    printf("ds4: crawl job %s submitted\n", job_id);
+
+    /* Poll until done */
+    char result[65536];
+    for (int i = 0; i < 120; i++) {
+        char path[256];
+        snprintf(path, sizeof(path), "/jobs/%s", job_id);
+        if (crawl_http_get(path, result, sizeof(result), err, sizeof(err)) != 0) {
+            fprintf(stderr, "ds4: crawl status failed: %s\n", err);
+            free(job_id);
+            return 1;
+        }
+        char *state = crawl_json_extract_string(result, "state");
+        if (!state) {
+            fprintf(stderr, "ds4: crawl status parse failed\n");
+            free(job_id);
+            return 1;
+        }
+        if (!strcmp(state, "succeeded") || !strcmp(state, "partially_succeeded")) {
+            char *manifest = crawl_json_extract_object(result, "result_manifest");
+            free(state); free(job_id);
+            int rc = run_crawl_grounded_summary(engine, cfg, chat, manifest);
+            free(manifest);
+            return rc;
+        }
+        if (!strcmp(state, "failed") || !strcmp(state, "cancelled")) {
+            fprintf(stderr, "ds4: crawl %s\n", state);
+            free(state); free(job_id);
+            return 1;
+        }
+        free(state);
+        sleep(1);
+    }
+    fprintf(stderr, "ds4: crawl timed out\n");
+    free(job_id);
+    return 1;
 }
 
 static int run_repl(ds4_engine *engine, cli_config *cfg) {
@@ -1287,6 +1670,44 @@ static int run_repl(ds4_engine *engine, cli_config *cfg) {
                     cfg->engine.power_percent = power;
                     printf("Power: %d%%.\n", power);
                 }
+            }
+        } else if (!strncmp(cmd, "/crawl", 6) && (cmd[6] == '\0' || isspace((unsigned char)cmd[6]))) {
+            char *arg = trim_inplace(cmd + 6);
+            if (!strncmp(arg, "start", 5) && (arg[5] == '\0' || isspace((unsigned char)arg[5]))) {
+                char *url = trim_inplace(arg + 5);
+                if (!url[0]) {
+                    fprintf(stderr, "ds4: /crawl start needs a URL\n");
+                } else if (run_crawl_start(engine, cfg, &chat, url) != 0) {
+                    fprintf(stderr, "ds4: crawl failed\n");
+                }
+            } else if (!strncmp(arg, "status", 6) && (arg[6] == '\0' || isspace((unsigned char)arg[6]))) {
+                char *job_id = trim_inplace(arg + 6);
+                if (!job_id[0]) {
+                    fprintf(stderr, "ds4: /crawl status needs a job_id\n");
+                } else {
+                    char path[256], result[65536], err[256];
+                    snprintf(path, sizeof(path), "/jobs/%s", job_id);
+                    if (crawl_http_get(path, result, sizeof(result), err, sizeof(err)) != 0) {
+                        fprintf(stderr, "ds4: %s\n", err);
+                    } else {
+                        puts(result);
+                    }
+                }
+            } else if (!strncmp(arg, "cancel", 6) && (arg[6] == '\0' || isspace((unsigned char)arg[6]))) {
+                char *job_id = trim_inplace(arg + 6);
+                if (!job_id[0]) {
+                    fprintf(stderr, "ds4: /crawl cancel needs a job_id\n");
+                } else {
+                    char path[256], result[65536], err[256];
+                    snprintf(path, sizeof(path), "/jobs/%s", job_id);
+                    if (crawl_http_post(path, "", result, sizeof(result), err, sizeof(err)) != 0) {
+                        fprintf(stderr, "ds4: %s\n", err);
+                    } else {
+                        puts(result);
+                    }
+                }
+            } else {
+                fprintf(stderr, "ds4: usage: /crawl start <url> | status <job_id> | cancel <job_id>\n");
             }
         } else if (!strncmp(cmd, "/ctx", 4) && (cmd[4] == '\0' || isspace((unsigned char)cmd[4]))) {
             char *arg = trim_inplace(cmd + 4);

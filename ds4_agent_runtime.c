@@ -10,6 +10,7 @@
 #include "ds4_agent.c"
 
 #include "ds4_agent_runtime.h"
+#include "ds4_crawl_grounding.h"
 #include <poll.h>
 #include <stdlib.h>
 #include <string.h>
@@ -144,6 +145,15 @@ int ds4_agent_runtime_init(ds4_agent_runtime **out,
     rt->cfg.gen.prompt = NULL; /* not one-shot */
     rt->cfg.gen.system = opt ? opt->system_prompt : NULL;
     rt->cfg.non_interactive = true;
+
+    /* Read the frontend server port from environment so the worker can call
+     * back into the Node server for delegated sage execution. */
+    {
+        const char *fp = getenv("FRONTEND_PORT");
+        rt->cfg.frontend_port = fp ? atoi(fp) : 0;
+        if (rt->cfg.frontend_port <= 0 || rt->cfg.frontend_port > 65535)
+            rt->cfg.frontend_port = 0;
+    }
 
     /* Release the wrapper's placeholder agent session before spawning the
      * worker.  agent_worker_init() calls ds4_session_create() internally; at
@@ -589,6 +599,7 @@ static const char *runtime_command_name(agent_slash_command_kind kind) {
     case AGENT_SLASH_DELETE:  return "del";
     case AGENT_SLASH_STRIP:   return "strip";
     case AGENT_SLASH_HISTORY: return "history";
+    case AGENT_SLASH_CRAWL:   return "crawl";
     default:                  return "unknown";
     }
 }
@@ -695,6 +706,220 @@ static char *runtime_command_capture_history(ds4_agent_runtime *rt,
         return NULL;
     }
     return agent_buf_take(&capture.output);
+}
+
+static int runtime_command_crawl_read_token(char *token, size_t token_len) {
+    const char *home = getenv("HOME");
+    if (!home) return 1;
+    char path[512];
+    int n = snprintf(path, sizeof(path), "%s/.config/ds4-studio/crawl/token", home);
+    if (n < 0 || (size_t)n >= sizeof(path)) return 1;
+    FILE *f = fopen(path, "r");
+    if (!f) return 1;
+    if (!fgets(token, (int)token_len, f)) {
+        fclose(f);
+        return 1;
+    }
+    fclose(f);
+    size_t len = strlen(token);
+    while (len > 0 && (token[len - 1] == '\n' || token[len - 1] == '\r')) {
+        token[--len] = '\0';
+    }
+    return len == 0 ? 1 : 0;
+}
+
+static int runtime_command_crawl_request(const char *method, const char *path,
+                                         const char *body, char *out,
+                                         size_t out_len) {
+    char token[256];
+    char auth_hdr[512];
+    if (runtime_command_crawl_read_token(token, sizeof(token)) == 0) {
+        int m = snprintf(auth_hdr, sizeof(auth_hdr),
+                         "-H 'Authorization: Bearer %s'", token);
+        if (m < 0 || (size_t)m >= sizeof(auth_hdr)) auth_hdr[0] = '\0';
+    } else {
+        auth_hdr[0] = '\0';
+    }
+
+    char cmd[8192];
+    int n;
+    if (body && body[0]) {
+        n = snprintf(cmd, sizeof(cmd),
+                     "curl -s -X %s http://127.0.0.1:9090%s "
+                     "-H 'Content-Type: application/json' "
+                     "%s "
+                     "-d '%s' --max-time 30 2>/dev/null",
+                     method, path, auth_hdr, body);
+    } else {
+        n = snprintf(cmd, sizeof(cmd),
+                     "curl -s -X %s http://127.0.0.1:9090%s %s --max-time 30 2>/dev/null",
+                     method, path, auth_hdr);
+    }
+    if (n < 0 || (size_t)n >= sizeof(cmd)) return -1;
+
+    char buf[65536];
+    size_t blen = 0;
+    FILE *fp = popen(cmd, "r");
+    if (!fp) return -1;
+    while (fgets(buf + blen, (int)(sizeof(buf) - blen), fp)) {
+        blen += strlen(buf + blen);
+        if (blen >= sizeof(buf) - 1) break;
+    }
+    int st = pclose(fp);
+    if (st != 0 || blen == 0) return -1;
+    buf[blen] = '\0';
+
+    size_t copy = strlen(buf);
+    if (copy >= out_len) copy = out_len - 1;
+    memcpy(out, buf, copy);
+    out[copy] = '\0';
+    return 0;
+}
+
+static char *runtime_command_json_extract_object(const char *json,
+                                                 const char *key) {
+    if (!json || !key) return NULL;
+
+    char pattern[256];
+    int n = snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    if (n < 0 || (size_t)n >= sizeof(pattern)) return NULL;
+
+    const char *p = strstr(json, pattern);
+    if (!p) return NULL;
+    p += strlen(pattern);
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+    if (*p++ != ':') return NULL;
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+    if (*p != '{') return NULL;
+
+    const char *start = p;
+    int depth = 0;
+    while (*p) {
+        if (*p == '"') {
+            p++;
+            while (*p && *p != '"') {
+                if (*p == '\\' && p[1]) p++;
+                p++;
+            }
+            if (*p) p++;
+            continue;
+        }
+        if (*p == '{') {
+            depth++;
+        } else if (*p == '}') {
+            depth--;
+            if (depth == 0) {
+                p++;
+                size_t len = (size_t)(p - start);
+                char *value = malloc(len + 1);
+                if (!value) return NULL;
+                memcpy(value, start, len);
+                value[len] = '\0';
+                return value;
+            }
+        }
+        p++;
+    }
+    return NULL;
+}
+
+static char *runtime_command_crawl_start(ds4_agent_runtime *rt,
+                                         const char *url,
+                                         char *err, size_t err_len) {
+    (void)rt;
+    if (!url || !url[0]) {
+        snprintf(err, err_len, "crawl requires url");
+        return NULL;
+    }
+
+    char body[8192];
+    int n = snprintf(body, sizeof(body), "{\"url\":\"%s\"}", url);
+    if (n < 0 || (size_t)n >= sizeof(body)) {
+        snprintf(err, err_len, "crawl request too large");
+        return NULL;
+    }
+
+    char json[65536];
+    if (runtime_command_crawl_request("POST", "/jobs", body, json, sizeof(json)) != 0) {
+        snprintf(err, err_len, "crawl request failed");
+        return NULL;
+    }
+
+    char *job_id = agent_json_extract_string(json, "job_id");
+    if (!job_id) {
+        snprintf(err, err_len, "crawl did not return a job_id");
+        return NULL;
+    }
+
+    agent_buf result = {0};
+    for (int i = 0; i < 120; i++) {
+        char path[256];
+        snprintf(path, sizeof(path), "/jobs/%s", job_id);
+        char state_json[65536];
+        if (runtime_command_crawl_request("GET", path, NULL, state_json, sizeof(state_json)) != 0) {
+            free(job_id);
+            free(result.ptr);
+            snprintf(err, err_len, "crawl status failed");
+            return NULL;
+        }
+        char *state = agent_json_extract_string(state_json, "state");
+        if (!state) {
+            free(job_id);
+            free(result.ptr);
+            snprintf(err, err_len, "crawl status parse failed");
+            return NULL;
+        }
+        if (!strcmp(state, "succeeded") || !strcmp(state, "partially_succeeded")) {
+            char *manifest = runtime_command_json_extract_object(
+                state_json, "result_manifest");
+            if (!manifest) {
+                free(state);
+                free(job_id);
+                free(result.ptr);
+                snprintf(err, err_len, "crawl result manifest parse failed");
+                return NULL;
+            }
+
+            char *source = NULL;
+            bool truncated = false;
+            ds4_crawl_source_status st = ds4_crawl_extract_source(
+                manifest, (size_t)-1, &source, &truncated,
+                err, err_len);
+            if (st == DS4_CRAWL_SOURCE_OK && source) {
+                agent_buf_puts(&result, "Crawl result:\n");
+                agent_buf_puts(&result, source);
+                if (truncated)
+                    agent_buf_puts(&result, "\n...[crawl content truncated]");
+                free(source);
+            } else {
+                agent_buf_puts(&result, "Crawl result:\n");
+                agent_buf_puts(&result, manifest);
+            }
+
+            free(manifest);
+            free(state);
+            free(job_id);
+            return agent_buf_take(&result);
+        }
+        if (!strcmp(state, "failed")) {
+            agent_buf_puts(&result, "Tool error: crawl failed\n");
+            free(state);
+            free(job_id);
+            return agent_buf_take(&result);
+        }
+        if (!strcmp(state, "cancelled")) {
+            agent_buf_puts(&result, "Tool error: crawl cancelled\n");
+            free(state);
+            free(job_id);
+            return agent_buf_take(&result);
+        }
+        free(state);
+        sleep(1);
+    }
+    free(job_id);
+    free(result.ptr);
+    snprintf(err, err_len, "crawl timed out");
+    return NULL;
 }
 
 void ds4_agent_command_result_free(ds4_agent_command_result *result) {
@@ -839,6 +1064,24 @@ int ds4_agent_runtime_command(ds4_agent_runtime *rt, const char *command,
         break;
     }
 
+    case AGENT_SLASH_CRAWL: {
+        char *arg = parsed.arg;
+        while (*arg == ' ' || *arg == '\t') arg++;
+        if (!strncmp(arg, "start", 5) &&
+            (arg[5] == '\0' || arg[5] == ' ' || arg[5] == '\t')) {
+            char *url = arg + 5;
+            while (*url == ' ' || *url == '\t') url++;
+            char *crawl = runtime_command_crawl_start(rt, url, err, sizeof(err));
+            if (!crawl)
+                return runtime_command_fail(result, 500, "crawl failed: %s",
+                                            err[0] ? err : "unknown error");
+            result->message = crawl;
+        } else {
+            return runtime_command_fail(result, 400, "usage: /crawl start <url>");
+        }
+        break;
+    }
+
     case AGENT_SLASH_POWER:
         if (ds4_session_set_power(rt->worker.session, parsed.number) != 0)
             return runtime_command_fail(result, 500,
@@ -875,4 +1118,23 @@ int ds4_agent_runtime_command(ds4_agent_runtime *rt, const char *command,
 
     result->ok = true;
     return 0;
+}
+
+void ds4_agent_runtime_get_compression_metrics(ds4_agent_runtime *rt,
+                                               ds4_agent_compression_metrics *out) {
+    if (!rt || !out) return;
+    memset(out, 0, sizeof(*out));
+    pthread_mutex_lock(&rt->worker.mu);
+    out->events = rt->worker.status.compression_events;
+    out->original_bytes = rt->worker.status.compression_original_bytes;
+    out->compressed_bytes = rt->worker.status.compression_compressed_bytes;
+    out->blob_count = rt->worker.status.compression_blob_count;
+    out->retrieve_count = rt->worker.status.compression_retrieve_count;
+    strncpy(out->last_strategy, rt->worker.status.last_compression_strategy,
+            sizeof(out->last_strategy) - 1);
+    out->last_strategy[sizeof(out->last_strategy) - 1] = '\0';
+    strncpy(out->last_blob_id, rt->worker.status.last_compression_blob_id,
+            sizeof(out->last_blob_id) - 1);
+    out->last_blob_id[sizeof(out->last_blob_id) - 1] = '\0';
+    pthread_mutex_unlock(&rt->worker.mu);
 }

@@ -1,0 +1,18 @@
+#ifndef DS4_CRAWL_GROUNDING_H
+#define DS4_CRAWL_GROUNDING_H
+
+#include <stdbool.h>
+#include <stddef.h>
+
+typedef enum {
+    DS4_CRAWL_SOURCE_OK = 0,
+    DS4_CRAWL_SOURCE_INVALID,
+    DS4_CRAWL_SOURCE_EMPTY
+} ds4_crawl_source_status;
+
+ds4_crawl_source_status ds4_crawl_extract_source(
+    const char *manifest, size_t max_bytes,
+    char **source_out, bool *truncated_out,
+    char *err, size_t err_len);
+
+#endif

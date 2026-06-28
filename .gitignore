@@ -35,6 +35,13 @@ ds4-studio.1.md
 /derivata_cos.png
 /validazione_sage.sage
 /validazione_sage.sage.py
+# Per-session sage artifacts now live under the workspace (sage_<sessionId>/);
+# ignore any that ever surface in-tree as a safety net.
+sage_*/
 /graphify-out/
 /frontend/graphify-out/
 /tmp/
+.opencode/
+.serena/
+.understand-anything/
+

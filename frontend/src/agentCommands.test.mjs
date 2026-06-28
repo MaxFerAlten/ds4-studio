@@ -31,7 +31,8 @@ test("parses every direct native command while agent mode is active", () => {
     "/power 80",
     "/new",
     "/quit",
-    "/exit"
+    "/exit",
+    "/crawl start https://example.com"
   ];
   for (const command of commands) {
     assert.deepEqual(parseAgentInput(command, true), {
@@ -41,9 +42,13 @@ test("parses every direct native command while agent mode is active", () => {
   }
 });
 
-test("does not intercept direct native commands outside agent mode", () => {
+test("does not intercept direct native commands outside agent mode except crawl", () => {
   assert.equal(parseAgentInput("/save", false), null);
   assert.equal(parseAgentInput("/unknown", false), null);
+  assert.deepEqual(parseAgentInput("/crawl start https://example.com", false), {
+    type: "native",
+    command: "/crawl start https://example.com"
+  });
 });
 
 test("parses pony controls only as agent-scoped commands", () => {

@@ -12,6 +12,7 @@ import {
   saveConversationHistory
 } from "./chatHistory.mjs";
 import { exportConversationMarkdown, exportConversationMarkdownRaw } from "../src/conversationExport.mjs";
+import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
@@ -49,11 +50,13 @@ import {
 import { Ds4ProcessManager } from "./processManager.mjs";
 import { readRequestBody, requestHeadersForProxy } from "./proxy.mjs";
 import { fetchWithBusyRetry } from "./backendRetry.mjs";
-import { readRocmStatusCached } from "./rocmSmi.mjs";
+import { readAmdSmiStatusCached } from "./amdSmi.mjs";
 import { AgentSessionStore, AGENT_SYSTEM_PROMPT, AGENT_TOOLS } from "./agentSession.mjs";
 import { appendPonyPolicy, buildPonyPolicy, normalizePonyMode, ponyCommandMessage } from "./agentPonyPolicy.mjs";
 import { checkBashFileReadFallback, executeTool, sageSessionDir, toolSage } from "./agentTools.mjs";
+import { createHeadroomHandlers } from "./headroomControl.mjs";
 import { ToolBlobStore } from "./toolBlobStore.mjs";
+import { compressToolOutput } from "./toolOutputCompressor.mjs";
 import {
   canonicalLegacyCommand,
   isAgentSlashCommand,
@@ -442,11 +445,101 @@ function writeSse(res, event, data) {
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
+/* ───── Node-side compression metrics accumulator ───── */
+const compressionMetricsAccum = {
+  events: 0,
+  originalBytes: 0,
+  compressedBytes: 0,
+  blobCount: 0,
+  retrieveCount: 0,
+  lastStrategy: "",
+  lastBlobId: ""
+};
+
+async function compressToolResultsInMessages(messages, toolBlobStore) {
+  if (!config?.toolBlobs?.compressEnabled) return messages;
+  const out = [];
+  for (const msg of messages) {
+    if (msg.role !== "tool" || !msg.content || Buffer.byteLength(msg.content, "utf8") < 4096) {
+      out.push(msg);
+      continue;
+    }
+    const compressed = await compressToolOutput(
+      msg.name || "tool",
+      msg.content,
+      Buffer.byteLength(msg.content, "utf8"),
+      toolBlobStore
+    );
+    if (!compressed || !compressed.changed || !compressed.text) {
+      out.push(msg);
+      continue;
+    }
+    /* Accumulate metrics */
+    compressionMetricsAccum.events++;
+    compressionMetricsAccum.originalBytes += compressed.originalBytes || 0;
+    compressionMetricsAccum.compressedBytes += compressed.compressedBytes || 0;
+    if (compressed.blobId) {
+      compressionMetricsAccum.blobCount++;
+      compressionMetricsAccum.lastBlobId = compressed.blobId;
+    }
+    compressionMetricsAccum.lastStrategy = compressed.strategy || "";
+    out.push({ ...msg, content: compressed.text });
+  }
+  return out;
+}
+
+function maybeAddRetrieveBlobTool(payload) {
+  if (!config?.toolBlobs?.compressEnabled) return payload;
+  const hasIt = payload.tools?.find(t => t.function?.name === "retrieve_context_blob");
+  if (hasIt) return payload;
+  return {
+    ...payload,
+    tools: [
+      ...(payload.tools || []),
+      {
+        type: "function",
+        function: {
+          name: "retrieve_context_blob",
+          description: "Retrieve an exact byte range from a previously compressed tool output blob (server-side blob store).",
+          parameters: {
+            type: "object",
+            properties: {
+              id: { type: "string" },
+              offset: { type: "integer", minimum: 0 },
+              length: { type: "integer", minimum: 1, maximum: 200000 }
+            },
+            required: ["id"]
+          }
+        }
+      }
+    ]
+  };
+}
+
 async function callBackendCompletion({ messages, request, stream, signal }) {
-  const payload = await resolveAutoMaxTokensPayload(
-    buildChatPayload({ ...request, stream }, messages),
+  const compressed = await compressToolResultsInMessages(messages, toolBlobStore);
+  let payload = await resolveAutoMaxTokensPayload(
+    buildChatPayload({ ...request, stream }, compressed),
     signal
   );
+  /* In Chat Mode, add standard tools (excluding sage) so the model can use web_search, web_read, search, etc. */
+  if (!payload.tools) {
+    payload.tools = AGENT_TOOLS.filter((t) => t.function?.name !== "sage");
+    /* Inform the model about available tools via a system message with examples */
+    const toolNames = payload.tools.map(t => t.function.name).join(", ");
+    const toolMsg = "[AVAILABLE TOOLS] You have access to: " + toolNames + 
+      ". You MUST use these tools when they can help.\n" +
+      "Example: User: \"Cerca su internet le ultime notizie su AI\" -> You should use web_search.\n" +
+      "Example: User: \"Cerca nel codice tutti i file con export\" -> You should use search.\n" +
+      "Example: User: \"Leggi il file index.js\" -> You should use read.\n" +
+      "Never say you cannot access the internet. You have web_search and web_read tools.";
+    payload.messages = [{ role: "system", content: toolMsg }, ...payload.messages];
+    /* Set tool_choice to "auto" — model can choose to use tools or not */
+    payload.tool_choice = "auto";
+  }
+
+  payload = maybeAddRetrieveBlobTool(payload);
+
   let res;
   try {
     res = await fetch(`${backendBase()}/v1/chat/completions`, {
@@ -703,7 +796,53 @@ app.post("/api/files/chunked-analyze", asyncHandler(async (req, res) => {
 }));
 
 app.get("/api/rocm/status", asyncHandler(async (_req, res) => {
-  res.json(await readRocmStatusCached());
+  res.json(await readAmdSmiStatusCached());
+}));
+
+function crawlBase() {
+  return `http://${config.crawl.host}:${config.crawl.port}`;
+}
+
+app.all("/api/crawl/*", asyncHandler(async (req, res) => {
+  const target = `${crawlBase()}${req.originalUrl.replace(/^\/api\/crawl/, "")}`;
+  const { signal, cleanup } = abortOnClientDisconnect(req, res);
+  try {
+    const tokenPath = path.join(os.homedir(), ".config", "ds4-studio", "crawl", "token");
+    let token = "";
+    try {
+      token = (await fs.readFile(tokenPath, "utf-8")).trim();
+    } catch { }
+    const body = ["GET", "HEAD"].includes(req.method) ? undefined : JSON.stringify(req.body);
+    const upstream = await fetch(target, {
+      method: req.method,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: token ? `Bearer ${token}` : "",
+        ...(body ? { "Content-Length": String(Buffer.byteLength(body)) } : {})
+      },
+      body,
+      signal
+    });
+    if (req.headers.accept?.includes("text/event-stream") && upstream.headers.get("content-type")?.includes("text/event-stream")) {
+      res.writeHead(upstream.status, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive"
+      });
+      for await (const chunk of upstream.body) {
+        res.write(chunk);
+      }
+      res.end();
+    } else {
+      const data = await upstream.json();
+      res.status(upstream.status).json(data);
+    }
+  } catch (err) {
+    if (!res.headersSent) res.status(502).json({ error: err.message });
+    else res.destroy(err);
+  } finally {
+    cleanup();
+  }
 }));
 
 app.get("/api/profiles", asyncHandler(async (_req, res) => {
@@ -963,6 +1102,13 @@ const AGENT_PROBE_TTL_MS = 60 * 1000;
 const AGENT_READ_GUARD_MODE = (process.env.DS4_AGENT_READ_GUARD_MODE || "exact").toLowerCase() === "strict"
   ? "strict"
   : "exact";
+const headroomHandlers = createHeadroomHandlers({
+  getConfig: () => config,
+  saveConfig: async (next) => {
+    config = await saveConfig(next);
+    return config;
+  }
+});
 
 let _agentProbeResult = null;
 let _agentProbeAt = 0;
@@ -1152,6 +1298,96 @@ app.get("/api/agent/pony", asyncHandler(async (req, res) => {
     active: status.active,
     ponyMode: status.ponyMode || "off",
     message: `Pony mode: ${status.ponyMode || "off"}. Applies only to Agent Mode.`
+  });
+}));
+
+app.get("/api/agent/headroom", asyncHandler(headroomHandlers.status));
+
+app.post("/api/agent/headroom", asyncHandler(headroomHandlers.set));
+
+/* Let the model analyse the user's request and emit the best search query
+ * (and its reasoning), the same way the agent model rewrites queries before
+ * calling the tool. No hardcoded query rules — the model decides everything. */
+async function rewriteSearchQuery(rawQuery) {
+  const today = new Date().toLocaleDateString("it-IT", {
+    weekday: "long", day: "numeric", month: "long", year: "numeric"
+  });
+  const system =
+    "Sei un ottimizzatore di query per la ricerca web (Google e Google News).\n" +
+    "Ragiona su cosa cerca davvero l'utente, poi scrivi la singola query migliore da passare al motore di ricerca.\n" +
+    `Oggi è ${today}: rendi concreti i riferimenti temporali (oggi, ultime, in giornata...); per le notizie recenti puoi usare gli operatori di Google News come when:1d.\n` +
+    "Rispondi SOLO con la query finale, su una riga, senza virgolette né spiegazioni.";
+  const payload = {
+    model: activeRequestDefaults.model,
+    messages: [
+      { role: "system", content: system },
+      { role: "user", content: rawQuery }
+    ],
+    stream: false,
+    temperature: 0.2,
+    max_tokens: 256
+  };
+  const res = await fetch(`${backendBase()}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) throw new Error(`rewrite HTTP ${res.status}`);
+  const { content, reasoning } = await readJsonCompletion(res);
+  const optimized = (content || "").trim().split("\n").map((l) => l.trim()).filter(Boolean).pop() || "";
+  return { query: optimized.replace(/^["'`]|["'`]$/g, "").trim() || rawQuery, reasoning };
+}
+
+app.post("/api/agent/web-search", asyncHandler(async (req, res) => {
+  const query = req.body?.query;
+  if (!query || typeof query !== "string") {
+    return res.status(400).json({ ok: false, error: "query is required" });
+  }
+  try {
+    const { webSearch } = await import("./webSearchTool.mjs");
+    let searchQuery = query;
+    let reasoning = "";
+    try {
+      ({ query: searchQuery, reasoning } = await rewriteSearchQuery(query));
+    } catch (_) {
+      // Rewrite model unavailable — fall back to the raw user query.
+    }
+    const result = await webSearch(searchQuery);
+    res.json({ ok: true, result, query: searchQuery, reasoning });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+}));
+
+app.get("/api/agent/compression-metrics", asyncHandler(async (_req, res) => {
+  /* Try C wrapper first (Agent Mode), fall back to Node-side metrics (Chat Mode). */
+  const backendUrl = backendBase();
+  if (backendUrl) {
+    try {
+      const resp = await fetch(`${backendUrl}/api/agent/compression-metrics`, {
+        headers: { "Accept": "application/json" },
+        signal: AbortSignal.timeout(1000)
+      });
+      const text = await resp.text();
+      res.status(resp.status);
+      res.type(resp.headers.get("content-type") || "application/json");
+      res.send(text);
+      return;
+    } catch (_) {
+      /* Backend not available or not responding — fall through to Node-side metrics */
+    }
+  }
+  /* Return Node-side accumulated metrics */
+  res.json({
+    ok: true,
+    active: false,
+    events: compressionMetricsAccum.events,
+    originalBytes: compressionMetricsAccum.originalBytes,
+    compressedBytes: compressionMetricsAccum.compressedBytes,
+    blobCount: compressionMetricsAccum.blobCount,
+    retrieveCount: compressionMetricsAccum.retrieveCount,
+    lastStrategy: compressionMetricsAccum.lastStrategy,
+    lastBlobId: compressionMetricsAccum.lastBlobId
   });
 }));
 
@@ -1728,12 +1964,23 @@ app.post("/api/native-agent/command", asyncHandler(async (req, res) => {
     const result = ponyCommandPayload(req, ponyCommand);
     return res.status(result.status).json(result.payload);
   }
-  if (!wrapperEnabled()) return res.status(400).json({ error: "wrapper is not enabled" });
+  const crawlOptions = {};
+  if (/^\/crawl(?:\s|$)/i.test(command)) {
+    const tokenPath = path.join(os.homedir(), ".config", "ds4-studio", "crawl", "token");
+    try {
+      crawlOptions.crawlToken = (await fs.readFile(tokenPath, "utf-8")).trim();
+    } catch { }
+    crawlOptions.crawlBaseUrl = crawlBase();
+  }
+  if (!wrapperEnabled() && !crawlOptions.crawlBaseUrl) {
+    return res.status(400).json({ error: "wrapper is not enabled" });
+  }
   const result = await proxyNativeAgentCommand(
     fetch,
     backendBase(),
     command,
-    AbortSignal.timeout(5 * 60 * 1000)
+    AbortSignal.timeout(5 * 60 * 1000),
+    crawlOptions
   );
   if (result.payload.active === false) {
     agentSessions.stop(agentSessionKey(req));
@@ -1950,12 +2197,50 @@ const vite = await createViteServer({
 });
 app.use(vite.middlewares);
 
+let crawlProcess = null;
+
+async function startCrawlService() {
+  const crawlServiceDir = path.join(PROJECT_ROOT, "crawl_service");
+  const defaultPython = path.join(crawlServiceDir, ".venv/bin/python3");
+  const pythonBin = process.env.DS4_CRAWL_PYTHON || defaultPython;
+  const crawlHost = config.crawl.host;
+  const crawlPort = config.crawl.port;
+  const args = ["-m", "ds4_crawl.cli", "serve", "--host", crawlHost, "--port", String(crawlPort)];
+  crawlProcess = spawn(pythonBin, args, {
+    cwd: crawlServiceDir,
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, PYTHONPATH: "src" }
+  });
+  crawlProcess.stdout.on("data", (chunk) => process.stdout.write(`[crawl] ${chunk}`));
+  crawlProcess.stderr.on("data", (chunk) => process.stderr.write(`[crawl] ${chunk}`));
+  crawlProcess.on("exit", (code) => {
+    console.log(`ds4-ui: crawl service exited (code=${code})`);
+    crawlProcess = null;
+  });
+  for (let i = 0; i < 30; i++) {
+    try {
+      const resp = await fetch(`http://${crawlHost}:${crawlPort}/health`);
+      if (resp.ok) { console.log(`ds4-ui: crawl service ready on ${crawlHost}:${crawlPort}`); return; }
+    } catch { }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  console.warn("ds4-ui: crawl service did not become ready in time");
+}
+
+async function stopCrawlService() {
+  if (!crawlProcess) return;
+  crawlProcess.kill("SIGTERM");
+  await new Promise((r) => setTimeout(r, 1000));
+  if (crawlProcess) { crawlProcess.kill("SIGKILL"); crawlProcess = null; }
+}
+
 const server = app.listen(config.control.port, config.control.host, async () => {
   try {
     await manager.start();
   } catch (err) {
     console.error("ds4-ui: failed to start ds4 server:", err);
   }
+  startCrawlService().catch((err) => console.warn("ds4-ui: crawl service start failed:", err.message));
   console.log(`ds4-ui: http://${config.control.host}:${config.control.port}`);
 });
 
@@ -1973,6 +2258,7 @@ async function shutdown() {
   });
   let forceCloseHttp;
   try {
+    await stopCrawlService();
     await manager.stop();
     await vite.close();
     forceCloseHttp = setTimeout(() => {

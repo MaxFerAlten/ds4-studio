@@ -49,10 +49,8 @@ void dynbuf_puts(DynBuf *b, const char *s) {
 
 // No per-buffer init needed — use g_dynbuf_error global instead.
 
-void dynbuf_printf(DynBuf *b, const char *fmt, ...) {
+void dynbuf_vprintf(DynBuf *b, const char *fmt, va_list ap) {
     buf_error_fn err = g_dynbuf_error;
-    va_list ap;
-    va_start(ap, fmt);
     va_list ap2;
     va_copy(ap2, ap);
     int n = vsnprintf(NULL, 0, fmt, ap);
@@ -62,4 +60,11 @@ void dynbuf_printf(DynBuf *b, const char *fmt, ...) {
     vsnprintf(b->ptr + b->len, b->cap - b->len, fmt, ap2);
     va_end(ap2);
     b->len += (size_t)n;
+}
+
+void dynbuf_printf(DynBuf *b, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    dynbuf_vprintf(b, fmt, ap);
+    va_end(ap);
 }

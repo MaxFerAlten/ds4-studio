@@ -85,6 +85,14 @@ export const DEFAULT_CONFIG = Object.freeze({
     modeSwitchTimeoutMs: 120000
   }),
   research: RESEARCH_DEFAULTS,
+  toolBlobs: Object.freeze({
+    dir: "data/tool-blobs",
+    compressEnabled: false
+  }),
+  crawl: Object.freeze({
+    host: "127.0.0.1",
+    port: 9090
+  }),
   callDebug: Object.freeze({
     enabled: true,
     dir: "data/call-debug",
@@ -112,7 +120,7 @@ export const REQUEST_DEFAULTS = Object.freeze({
   min_p: 0,
   seed: 42,
   stream: true,
-  thinking: true,
+  thinking: false,
   reasoning_effort: "high",
   stop: ""
 });

@@ -214,6 +214,12 @@ ds4_rocm_apply_tensor_env() {
     export DS4_HIP_MANAGED_TENSORS=1
   else
     unset DS4_HIP_MANAGED_TENSORS || true
+    # gfx1151/Strix Halo: the device-tensor path stages tensors into device
+    # buffers (chunked copy) and uses no managed/unified memory, so disabling
+    # ROCm SVM here avoids the svm_range_restore_work / userptr-restore kernel
+    # hangs (ROCm/TheRock #2684) without breaking allocation. Only applied on
+    # this path; the managed path above is left untouched. Explicit override wins.
+    export HSA_USE_SVM="${HSA_USE_SVM:-0}"
   fi
 }
 

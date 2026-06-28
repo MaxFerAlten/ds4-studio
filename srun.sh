@@ -67,20 +67,19 @@ configure_rocm_runtime() {
   ds4_rocm_normalize_perflevel_var DS4_SERVER_PERFLEVEL
 
   echo "srun.sh: ROCm FAST_FULL=$DS4_SERVER_FAST_FULL prefill_chunk=${DS4_METAL_PREFILL_CHUNK:-auto}"
-  if [[ -n "${DS4_SERVER_PERFLEVEL:-}" ]] && command -v rocm-smi >/dev/null 2>&1; then
-    echo "srun.sh: setting ROCm perflevel ${DS4_SERVER_PERFLEVEL}"
-    local rocm_smi_bin
+  if [[ -n "${DS4_SERVER_PERFLEVEL:-}" ]] && command -v amd-smi >/dev/null 2>&1; then
+    echo "srun.sh: setting perflevel ${DS4_SERVER_PERFLEVEL}"
     local perflevel_set=0
-    rocm_smi_bin="$(command -v rocm-smi)"
+    local amd_smi_args=(set -g 0 -l "$DS4_SERVER_PERFLEVEL")
     if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
-      "$rocm_smi_bin" --setperflevel "$DS4_SERVER_PERFLEVEL" </dev/null >&2 &&
+      amd-smi "${amd_smi_args[@]}" </dev/null >&2 &&
         perflevel_set=1
     elif command -v sudo >/dev/null 2>&1; then
-      sudo -n -- "$rocm_smi_bin" --setperflevel "$DS4_SERVER_PERFLEVEL" </dev/null >&2 &&
+      sudo -n -- amd-smi "${amd_smi_args[@]}" </dev/null >&2 &&
         perflevel_set=1
     fi
     if [[ "$perflevel_set" != "1" ]]; then
-      echo "srun.sh: warning: unable to set ROCm perflevel ${DS4_SERVER_PERFLEVEL}; continuing" >&2
+      echo "srun.sh: warning: unable to set perflevel ${DS4_SERVER_PERFLEVEL}; continuing" >&2
     fi
   fi
 }

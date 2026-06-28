@@ -27,6 +27,7 @@ import {
   replaceAssistantMessage,
   appendAssistantNotice,
   appendTransientNotice,
+  buildChatMessages,
   parseSseData,
   formatMetric,
   initialExportSettings,
@@ -272,4 +273,71 @@ test("clearStoredSession removes session from window.localStorage", () => {
   clearStoredSession();
   assert.equal(removed, "ds4.session");
   if (prev !== undefined) globalThis.window = prev; else delete globalThis.window;
+});
+
+// ── buildChatMessages ────────────────────────────────────────────────────
+
+test("buildChatMessages prepends a non-empty system message", () => {
+  const out = buildChatMessages(
+    [{ role: "user", content: "ciao" }],
+    { system: "be terse" }
+  );
+  assert.deepEqual(out, [
+    { role: "system", content: "be terse" },
+    { role: "user", content: "ciao" }
+  ]);
+});
+
+test("buildChatMessages omits a blank/whitespace system message", () => {
+  assert.deepEqual(
+    buildChatMessages([{ role: "user", content: "ciao" }], { system: "   " }),
+    [{ role: "user", content: "ciao" }]
+  );
+  assert.deepEqual(
+    buildChatMessages([{ role: "user", content: "ciao" }]),
+    [{ role: "user", content: "ciao" }]
+  );
+});
+
+test("buildChatMessages drops the empty trailing assistant placeholder", () => {
+  const out = buildChatMessages([
+    { role: "user", content: "ciao" },
+    { role: "assistant", content: "" }
+  ]);
+  assert.deepEqual(out, [{ role: "user", content: "ciao" }]);
+});
+
+test("buildChatMessages keeps assistant turns that have content", () => {
+  const out = buildChatMessages([
+    { role: "user", content: "ciao" },
+    { role: "assistant", content: "hello" },
+    { role: "user", content: "again" }
+  ]);
+  assert.deepEqual(out, [
+    { role: "user", content: "ciao" },
+    { role: "assistant", content: "hello" },
+    { role: "user", content: "again" }
+  ]);
+});
+
+test("buildChatMessages excludes transient agentNotice messages (no error echo loop)", () => {
+  const out = buildChatMessages([
+    { role: "user", content: "ciao" },
+    { role: "assistant", content: "Stream failed: wrapper is busy", agentNotice: true },
+    { role: "user", content: "ciao" }
+  ]);
+  // The "Stream failed" banner must NOT be resent into the prompt.
+  assert.deepEqual(out, [
+    { role: "user", content: "ciao" },
+    { role: "user", content: "ciao" }
+  ]);
+});
+
+test("buildChatMessages tolerates null/undefined entries", () => {
+  const out = buildChatMessages([
+    null,
+    { role: "user", content: "ciao" },
+    undefined
+  ]);
+  assert.deepEqual(out, [{ role: "user", content: "ciao" }]);
 });

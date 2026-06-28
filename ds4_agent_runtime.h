@@ -76,4 +76,18 @@ int ds4_agent_runtime_command(ds4_agent_runtime *rt, const char *command,
                               ds4_agent_command_result *result);
 void ds4_agent_command_result_free(ds4_agent_command_result *result);
 
+/* Compression metrics snapshot — thread-safe read from the worker status. */
+typedef struct {
+    uint64_t events;
+    uint64_t original_bytes;
+    uint64_t compressed_bytes;
+    uint64_t blob_count;
+    uint64_t retrieve_count;
+    char last_strategy[64];
+    char last_blob_id[80];
+} ds4_agent_compression_metrics;
+
+void ds4_agent_runtime_get_compression_metrics(ds4_agent_runtime *rt,
+                                               ds4_agent_compression_metrics *out);
+
 #endif

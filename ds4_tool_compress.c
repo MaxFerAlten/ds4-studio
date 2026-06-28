@@ -237,7 +237,7 @@ ds4_tool_content_kind ds4_tool_classify_output(const char *tool_name,
     if (tool_name && !strcmp(tool_name, "retrieve_context_blob"))
         return DS4_TOOL_CONTENT_UNKNOWN;
     if (tool_name && (!strcmp(tool_name, "read") || !strcmp(tool_name, "more") ||
-                      !strcmp(tool_name, "cat")))
+                      !strcmp(tool_name, "cat") || !strcmp(tool_name, "crawl")))
         return DS4_TOOL_CONTENT_FILE;
 
     const char *p = ds4_tc_first_nonspace(text, len);

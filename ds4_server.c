@@ -127,7 +127,7 @@ void buf_reserve(buf *b, size_t add) { dynbuf_reserve((DynBuf *)b, add); }
 void buf_append(buf *b, const void *p, size_t n) { dynbuf_append((DynBuf *)b, p, n); }
 void buf_putc(buf *b, char c) { dynbuf_putc((DynBuf *)b, c); }
 void buf_puts(buf *b, const char *s) { dynbuf_puts((DynBuf *)b, s); }
-void buf_printf(buf *b, const char *fmt, ...) { dynbuf_printf((DynBuf *)b, fmt); }
+void buf_printf(buf *b, const char *fmt, ...) { va_list ap; va_start(ap, fmt); dynbuf_vprintf((DynBuf *)b, fmt, ap); va_end(ap); }
 
 static char *buf_take(buf *b) {
     if (!b->ptr) return xstrdup("");

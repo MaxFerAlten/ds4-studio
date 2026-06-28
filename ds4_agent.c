@@ -3,6 +3,9 @@
 #include "ds4_help.h"
 #include "ds4_kvstore.h"
 #include "ds4_web.h"
+#include "ds4_context_blob.h"
+#include "ds4_tool_compress.h"
+#include "ds4_crawl_grounding.h"
 #include "linenoise.h"
 
 #include <errno.h>
@@ -104,6 +107,15 @@ typedef struct {
     int ctx_size;
     int power_percent;
     char error[256];
+    /* Compression metrics — accumulated over the life of the worker.
+     * Exposed to the API/UI via ds4_agent_runtime_get_compression_metrics(). */
+    uint64_t compression_events;
+    uint64_t compression_original_bytes;
+    uint64_t compression_compressed_bytes;
+    uint64_t compression_blob_count;
+    uint64_t compression_retrieve_count;
+    char last_compression_strategy[64];
+    char last_compression_blob_id[80];
 } agent_status;
 
 typedef struct agent_bash_job agent_bash_job;
@@ -160,6 +172,8 @@ typedef struct {
     int next_bash_job_id;
     bool raw_mode_needs_restore;
 
+
+    char *context_blob_dir;
 
     /* Anti-loop guard: ring buffer of recent tool command fingerprints.
      * Used to detect sterile grep/find/read loops where the same command
@@ -482,6 +496,7 @@ typedef enum {
     AGENT_SLASH_DELETE,
     AGENT_SLASH_STRIP,
     AGENT_SLASH_HISTORY,
+    AGENT_SLASH_CRAWL,
 } agent_slash_command_kind;
 
 typedef struct {
@@ -534,6 +549,7 @@ static DS4_MAYBE_UNUSED bool agent_parse_slash_command(const char *input,
     else if (!strcmp(command, "/del")) out->kind = AGENT_SLASH_DELETE;
     else if (!strcmp(command, "/strip")) out->kind = AGENT_SLASH_STRIP;
     else if (!strcmp(command, "/history")) out->kind = AGENT_SLASH_HISTORY;
+    else if (!strcmp(command, "/crawl")) out->kind = AGENT_SLASH_CRAWL;
     else return false;
 
     if (out->kind == AGENT_SLASH_POWER) {
@@ -546,6 +562,12 @@ static DS4_MAYBE_UNUSED bool agent_parse_slash_command(const char *input,
         }
         return agent_parse_command_number(arg, 1, AGENT_HISTORY_MAX_TURNS,
                                           &out->number);
+    }
+    if (out->kind == AGENT_SLASH_CRAWL) {
+        size_t arg_len = strlen(arg);
+        if (arg_len >= sizeof(out->arg)) return false;
+        if (arg_len) memcpy(out->arg, arg, arg_len + 1);
+        return true;
     }
     if (out->kind == AGENT_SLASH_SWITCH ||
         out->kind == AGENT_SLASH_DELETE ||
@@ -580,7 +602,8 @@ static bool agent_slash_command_known(const char *cmd) {
            agent_slash_command_with_args(cmd, "/switch") ||
            agent_slash_command_with_args(cmd, "/del") ||
            agent_slash_command_with_args(cmd, "/strip") ||
-           agent_slash_command_with_args(cmd, "/history");
+           agent_slash_command_with_args(cmd, "/history") ||
+           agent_slash_command_with_args(cmd, "/crawl");
 }
 
 static uint64_t parse_u64(const char *s, const char *opt) {
@@ -888,7 +911,7 @@ static const char agent_tools_prompt_edit_line[] =
 static const char agent_tools_prompt_after_edit[] =
     "For long-running bash commands, pass refresh_sec. If a bash job is still running, use "
     "bash_status to check it early or bash_stop to terminate it.\n\n"
-    "Use google_search to find web pages. Use visit_page to read a known URL with a visible browser. "
+    "Use google_search to find web pages. Use crawl to fetch a URL and return page content as Markdown. Use visit_page to read a known URL with a visible browser. "
     "The first web call may ask the user for permission to start Chrome.\n\n"
     "### Available Tool Schemas\n\n"
     "{\n"
@@ -1091,6 +1114,20 @@ static const char agent_tools_prompt_after_edit[] =
     "        \"path\": {\"type\": \"string\"}\n"
     "      },\n"
     "      \"required\": [\"path\"]\n"
+    "    }\n"
+    "  }\n"
+    "}\n\n"
+    "{\n"
+    "  \"type\": \"function\",\n"
+    "  \"function\": {\n"
+    "    \"name\": \"crawl\",\n"
+    "    \"description\": \"Crawl a web URL and return the page content as Markdown. Uses Crawl4AI via the ds4-crawl-service. Prefer this over visit_page when you only need the text content without a visible browser.\",\n"
+    "    \"parameters\": {\n"
+    "      \"type\": \"object\",\n"
+    "      \"properties\": {\n"
+    "        \"url\": {\"type\": \"string\", \"description\": \"The URL to crawl\"}\n"
+    "      },\n"
+    "      \"required\": [\"url\"]\n"
     "    }\n"
     "  }\n"
     "}\n"
@@ -2952,6 +2989,7 @@ static const char *agent_tool_viz_prefix(const char *name) {
     if (!strcmp(name, "search")) return "search ";
     if (!strcmp(name, "google_search")) return "google ";
     if (!strcmp(name, "visit_page")) return "visit ";
+    if (!strcmp(name, "crawl")) return "crawl ";
     return NULL;
 }
 
@@ -2961,7 +2999,7 @@ static void agent_tool_viz_tool(agent_stream_renderer *sr, const char *name) {
     if (v->tool_announced && !v->last_output_newline) agent_tool_viz_puts(sr, "\n");
     snprintf(v->tool_name, sizeof(v->tool_name), "%s", name ? name : "tool");
     v->tool_announced = true;
-    v->read_style = !strcmp(v->tool_name, "read");
+    v->read_style = !strcmp(v->tool_name, "read") || !strcmp(v->tool_name, "crawl");
     agent_tool_viz_line_prefix(sr);
     if (v->read_style) {
         renderer_color(sr->renderer, "\x1b[1;37m");
@@ -6404,6 +6442,12 @@ static void test_agent_parse_native_slash_commands(void) {
     AGENT_TEST_ASSERT(parsed.number == AGENT_HISTORY_DEFAULT_TURNS);
     AGENT_TEST_ASSERT(agent_parse_slash_command("/history 10", &parsed));
     AGENT_TEST_ASSERT(parsed.number == 10);
+    AGENT_TEST_ASSERT(agent_parse_slash_command("/crawl", &parsed));
+    AGENT_TEST_ASSERT(parsed.kind == AGENT_SLASH_CRAWL);
+    AGENT_TEST_ASSERT(!parsed.arg[0]);
+    AGENT_TEST_ASSERT(agent_parse_slash_command("/crawl start https://example.com", &parsed));
+    AGENT_TEST_ASSERT(parsed.kind == AGENT_SLASH_CRAWL);
+    AGENT_TEST_ASSERT(!strcmp(parsed.arg, "start https://example.com"));
 }
 
 static void test_agent_rejects_invalid_native_slash_commands(void) {
@@ -7391,40 +7435,31 @@ static char *agent_tool_retrieve_context_blob(agent_worker *w,
         return xstrdup("Tool error: retrieve_context_blob HTTP backend unavailable (FRONTEND_PORT not set)\n");
     }
 
-    char cmd[1024];
-    snprintf(cmd, sizeof(cmd),
-        "curl -s \"http://127.0.0.1:%d/api/tool-blob/%s?offset=%llu&length=%llu\" "
-        "--max-time 30 2>/dev/null",
-        port, id, (unsigned long long)offset, (unsigned long long)length);
-
-    agent_buf result = {0};
-    char buf[4096];
-    FILE *fp = popen(cmd, "r");
-    if (!fp) {
-        return xstrdup("Tool error: retrieve_context_blob HTTP backend unavailable (popen failed)\n");
-    }
-    while (fgets(buf, sizeof(buf), fp)) agent_buf_puts(&result, buf);
-    int status = pclose(fp);
-
-    int exit_code = (status >= 0 && WIFEXITED(status)) ? WEXITSTATUS(status) : -1;
-    if (exit_code != 0 || !result.ptr) {
-        free(result.ptr);
-        return xstrdup("Tool error: retrieve_context_blob HTTP request failed\n");
+    char err[256] = {0};
+    char *range = ds4_context_blob_read_range(w->context_blob_dir, id, offset,
+                                              length, err, sizeof(err));
+    if (!range) {
+        agent_buf b = {0};
+        agent_buf_puts(&b, "Tool error: retrieve_context_blob failed: ");
+        agent_buf_puts(&b, err[0] ? err : "unknown error");
+        agent_buf_puts(&b, "\n");
+        return agent_buf_take(&b);
     }
 
-    /* Wrap the retrieved content in context_blob range markers so the model
-     * sees the same structure as the old local implementation. */
-    size_t got = strlen(result.ptr);
+    /* Track retrieve count for API metrics. */
+    w->status.compression_retrieve_count++;
+
+    size_t got = strlen(range);
     agent_buf out = {0};
     char hdr[256];
     snprintf(hdr, sizeof(hdr),
              "context_blob id=%s offset=%llu bytes=%zu requested_length=%llu\n<context_blob_range>\n",
              id, (unsigned long long)offset, got, (unsigned long long)length);
     agent_buf_puts(&out, hdr);
-    agent_buf_puts(&out, result.ptr);
-    if (got && result.ptr[got - 1] != '\n') agent_buf_puts(&out, "\n");
+    agent_buf_puts(&out, range);
+    if (got && range[got - 1] != '\n') agent_buf_puts(&out, "\n");
     agent_buf_puts(&out, "</context_blob_range>\n");
-    free(result.ptr);
+    free(range);
     return agent_buf_take(&out);
 }
 
@@ -7685,7 +7720,162 @@ static char *agent_tool_sage_via_http(agent_worker *w, const agent_tool_call *ca
     return xstrdup("Tool error: sage HTTP backend error (no output)\n");
 }
 
+static char *agent_tool_crawl(agent_worker *w, const agent_tool_call *call) {
+    const char *url = agent_tool_arg_value(call, "url");
+    if (!url || !url[0]) return xstrdup("Tool error: crawl requires url\n");
+    agent_publishf_system_status(w, "Crawling %s...", url);
 
+    /* Build curl POST to the crawl service */
+    char escaped[8192];
+    char *we = escaped;
+    size_t rem = sizeof(escaped) - 1;
+    for (const char *s = url; *s && rem > 0; s++) {
+        if (*s == '\'') { if (rem < 5) break; memcpy(we, "'\\''", 4); we += 4; rem -= 4; }
+        else { *we++ = *s; rem--; }
+    }
+    *we = '\0';
+    char body[8192];
+    int bn = snprintf(body, sizeof(body), "{\"url\":\"%s\"}", url);
+    if (bn < 0 || (size_t)bn >= sizeof(body))
+        return xstrdup("Tool error: crawl request too large\n");
+    char cmd[12288];
+    snprintf(cmd, sizeof(cmd),
+        "curl -s -X POST http://127.0.0.1:9090/jobs "
+        "-H 'Content-Type: application/json' "
+        "-d '%s' --max-time 120 2>/dev/null",
+        body);
+    char buf[65536];
+    size_t blen = 0;
+    FILE *fp = popen(cmd, "r");
+    if (!fp) return xstrdup("Tool error: crawl service unavailable\n");
+    while (fgets(buf + blen, (int)(sizeof(buf) - blen), fp)) {
+        blen += strlen(buf + blen);
+        if (blen >= sizeof(buf) - 1) break;
+    }
+    int st = pclose(fp);
+    if (st != 0 || blen == 0) return xstrdup("Tool error: crawl request failed\n");
+    buf[blen] = '\0';
+
+    /* Extract job_id */
+    char *job_id = agent_json_extract_string(buf, "job_id");
+    if (!job_id) return xstrdup("Tool error: crawl did not return a job_id\n");
+
+    /* Poll until done */
+    agent_buf result = {0};
+    char *state = NULL;
+    int retries = 180;
+    while (retries-- > 0) {
+        free(state); state = NULL;
+        char path[256];
+        snprintf(path, sizeof(path), "/jobs/%s", job_id);
+        char pcmd[8192];
+        snprintf(pcmd, sizeof(pcmd),
+            "curl -s http://127.0.0.1:9090%s --max-time 30 2>/dev/null", path);
+        char pbuf[65536];
+        size_t plen = 0;
+        FILE *pfp = popen(pcmd, "r");
+        if (!pfp) break;
+        while (fgets(pbuf + plen, (int)(sizeof(pbuf) - plen), pfp)) {
+            plen += strlen(pbuf + plen);
+            if (plen >= sizeof(pbuf) - 1) break;
+        }
+        pclose(pfp);
+        pbuf[plen] = '\0';
+        state = agent_json_extract_string(pbuf, "state");
+        if (!state) break;
+        if (!strcmp(state, "succeeded") || !strcmp(state, "partially_succeeded")) {
+            char *manifest = agent_json_extract_string(pbuf, "result_manifest");
+            if (!manifest) {
+                agent_buf_puts(&result, "Tool error: crawl result missing\n");
+            } else {
+                char *source = NULL;
+                bool truncated = false;
+                char extract_err[256];
+                ds4_crawl_source_status st = ds4_crawl_extract_source(
+                    manifest, (size_t)-1, &source, &truncated,
+                    extract_err, sizeof(extract_err));
+                if (st == DS4_CRAWL_SOURCE_OK && source) {
+                    agent_buf_puts(&result, "Crawl result:\n");
+                    agent_buf_puts(&result, source);
+                    if (truncated)
+                        agent_buf_puts(&result, "\n...[crawl content truncated]");
+                    free(source);
+                } else {
+                    agent_buf_puts(&result, "Crawl result:\n");
+                    agent_buf_puts(&result, manifest);
+                }
+                free(manifest);
+            }
+            free(state);
+            free(job_id);
+            return agent_buf_take(&result);
+        }
+        if (!strcmp(state, "failed")) {
+            agent_buf_puts(&result, "Tool error: crawl failed\n");
+            free(state); free(job_id);
+            return agent_buf_take(&result);
+        }
+        if (!strcmp(state, "cancelled")) {
+            agent_buf_puts(&result, "Tool error: crawl cancelled\n");
+            free(state); free(job_id);
+            return agent_buf_take(&result);
+        }
+        sleep(1);
+    }
+    free(state); free(job_id);
+    return xstrdup("Tool error: crawl timed out\n");
+}
+
+
+static void agent_run_crawl_start_command(agent_worker *worker, const char *url) {
+    agent_tool_call call = {0};
+    call.name = xstrdup("crawl");
+    agent_tool_call_add_arg(&call, "url", url, strlen(url), true);
+    char *result = agent_tool_crawl(worker, &call);
+    if (result) {
+        fputs(result, stdout);
+        if (result[0] && result[strlen(result) - 1] != '\n') fputc('\n', stdout);
+        free(result);
+    }
+    agent_tool_call_free(&call);
+}
+
+static int agent_crawl_http_request(const char *method, const char *path,
+                                    const char *body, char *out,
+                                    size_t out_len) {
+    char cmd[8192];
+    int n;
+    if (body && body[0]) {
+        n = snprintf(cmd, sizeof(cmd),
+                     "curl -s -X %s http://127.0.0.1:9090%s "
+                     "-H 'Content-Type: application/json' "
+                     "-d '%s' --max-time 30 2>/dev/null",
+                     method, path, body);
+    } else {
+        n = snprintf(cmd, sizeof(cmd),
+                     "curl -s -X %s http://127.0.0.1:9090%s --max-time 30 2>/dev/null",
+                     method, path);
+    }
+    if (n < 0 || (size_t)n >= sizeof(cmd)) return 1;
+
+    char buf[65536];
+    size_t blen = 0;
+    FILE *fp = popen(cmd, "r");
+    if (!fp) return 1;
+    while (fgets(buf + blen, (int)(sizeof(buf) - blen), fp)) {
+        blen += strlen(buf + blen);
+        if (blen >= sizeof(buf) - 1) break;
+    }
+    int st = pclose(fp);
+    if (st != 0 || blen == 0) return 1;
+    buf[blen] = '\0';
+
+    size_t copy = strlen(buf);
+    if (copy >= out_len) copy = out_len - 1;
+    memcpy(out, buf, copy);
+    out[copy] = '\0';
+    return 0;
+}
 
 /* ============================================================================
  * Tool Dispatch
@@ -7708,6 +7898,7 @@ static char *agent_execute_tool_call(agent_worker *w, const agent_tool_call *cal
     if (!strcmp(call->name, "retrieve_context_blob")) return agent_tool_retrieve_context_blob(w, call);
     if (!strcmp(call->name, "google_search")) return agent_tool_google_search(w, call);
     if (!strcmp(call->name, "visit_page")) return agent_tool_visit_page(w, call);
+    if (!strcmp(call->name, "crawl")) return agent_tool_crawl(w, call);
     if (!strcmp(call->name, "sage")) return agent_tool_sage_via_http(w, call);
 
     if (!strcmp(call->name, "bash")) {
@@ -8237,7 +8428,7 @@ static bool agent_loop_guard_record(agent_worker *w, const char *fingerprint) {
         {
             w->loop_guard_consecutive_similar++;
             /* Record the fingerprint at current position */
-            strncpy(w->loop_guard_ring[pos], fingerprint, sizeof(w->loop_guard_ring[pos]) - 1);
+            memcpy(w->loop_guard_ring[pos], fingerprint, sizeof(w->loop_guard_ring[pos]) - 1);
             w->loop_guard_ring[pos][sizeof(w->loop_guard_ring[pos]) - 1] = '\0';
             w->loop_guard_ring_pos++;
             return true;
@@ -8245,10 +8436,72 @@ static bool agent_loop_guard_record(agent_worker *w, const char *fingerprint) {
     }
     /* New fingerprint — reset similar counter */
     w->loop_guard_consecutive_similar = 0;
-    strncpy(w->loop_guard_ring[pos], fingerprint, sizeof(w->loop_guard_ring[pos]) - 1);
+    memcpy(w->loop_guard_ring[pos], fingerprint, sizeof(w->loop_guard_ring[pos]) - 1);
     w->loop_guard_ring[pos][sizeof(w->loop_guard_ring[pos]) - 1] = '\0';
     w->loop_guard_ring_pos++;
     return false;
+}
+
+static const char *agent_tool_calls_compression_name(const agent_tool_calls *calls) {
+    if (!calls || calls->len <= 0) return "tool_result";
+    for (int i = 0; i < calls->len; i++) {
+        if (calls->v[i].name && !strcmp(calls->v[i].name, "retrieve_context_blob"))
+            return "retrieve_context_blob";
+    }
+    if (calls->len != 1 || !calls->v[0].name) return "tool_result";
+    return calls->v[0].name;
+}
+
+static char *agent_maybe_compress_tool_result(agent_worker *w,
+                                              const agent_tool_calls *calls,
+                                              const char *tool_result) {
+    if (!tool_result) return NULL;
+    ds4_tool_compress_result compressed = {0};
+    char err[256] = {0};
+    const char *tool_name = agent_tool_calls_compression_name(calls);
+    bool ok = ds4_tool_compress_result_text(tool_name,
+                                            tool_result,
+                                            strlen(tool_result),
+                                            w->context_blob_dir,
+                                            &compressed,
+                                            err,
+                                            sizeof(err));
+    if (!ok) {
+        agent_trace(w, "tool compression skipped error=%s",
+                    err[0] ? err : "unknown");
+        ds4_tool_compress_result_free(&compressed);
+        return NULL;
+    }
+    if (!compressed.changed || !compressed.text) {
+        ds4_tool_compress_result_free(&compressed);
+        return NULL;
+    }
+
+    char *text = compressed.text;
+    compressed.text = NULL;
+
+    /* Accumulate compression metrics into worker status counters. */
+    w->status.compression_events++;
+    w->status.compression_original_bytes += compressed.original_bytes;
+    w->status.compression_compressed_bytes += compressed.compressed_bytes;
+    if (compressed.original_saved) w->status.compression_blob_count++;
+    strncpy(w->status.last_compression_strategy, compressed.strategy,
+            sizeof(w->status.last_compression_strategy) - 1);
+    w->status.last_compression_strategy[sizeof(w->status.last_compression_strategy) - 1] = '\0';
+    strncpy(w->status.last_compression_blob_id, compressed.blob_id,
+            sizeof(w->status.last_compression_blob_id) - 1);
+    w->status.last_compression_blob_id[sizeof(w->status.last_compression_blob_id) - 1] = '\0';
+
+    agent_trace(w,
+                "tool compression strategy=%s kind=%s original=%llu compressed=%llu blob=%s omitted_lines=%llu",
+                compressed.strategy,
+                ds4_tool_content_kind_name(compressed.kind),
+                (unsigned long long)compressed.original_bytes,
+                (unsigned long long)compressed.compressed_bytes,
+                compressed.blob_id,
+                (unsigned long long)compressed.omitted_lines);
+    ds4_tool_compress_result_free(&compressed);
+    return text;
 }
 
 static void worker_set_greedy_sampling(agent_worker *w, bool greedy) {
@@ -8561,7 +8814,9 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
         } else {
             tool_result = agent_execute_tool_calls(w, &dsml.calls);
         }
-        const char *append_result = tool_result;
+        char *compressed_result = agent_maybe_compress_tool_result(w, &dsml.calls,
+                                                                   tool_result);
+        const char *append_result = compressed_result ? compressed_result : tool_result;
         int projected_tokens = 0;
         if (!agent_tool_result_fits_context(w, append_result,
                                             AGENT_TOOL_RESULT_RESERVE_TOKENS,
@@ -8570,6 +8825,7 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
             if (!agent_worker_compact(w, "tool result would exceed context",
                                       compact_err, sizeof(compact_err)))
             {
+                free(compressed_result);
                 free(tool_result);
                 agent_dsml_parser_free(&dsml);
                 if (agent_err_is_interrupted(compact_err)) {
@@ -8584,6 +8840,7 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
                                                 AGENT_TOOL_RESULT_RESERVE_TOKENS,
                                                 &projected_tokens))
             {
+                free(compressed_result);
                 free(tool_result);
                 agent_buf b = {0};
                 char msg[256];
@@ -8605,6 +8862,7 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
             }
         }
         ds4_chat_append_message(w->engine, &w->transcript, "tool", append_result);
+        free(compressed_result);
 
         /* Anti-loop guard: fingerprint the command and check for sterile loops.
          * If the tool result is empty or very small, increment empty counter.
@@ -10175,6 +10433,7 @@ static int agent_worker_init(agent_worker *w, ds4_engine *engine, agent_config *
     };
     w->web = ds4_web_create(&web_cfg);
     w->sysprompt_path = ds4_kvstore_path_join(w->cache_dir, "sysprompt.kv");
+    w->context_blob_dir = ds4_kvstore_path_join(w->cache_dir, "context-blobs");
     if (cfg->gen.trace_path && cfg->gen.trace_path[0]) {
         w->trace = fopen(cfg->gen.trace_path, "ab");
         if (!w->trace) {
@@ -10198,6 +10457,7 @@ static void agent_worker_free(agent_worker *w) {
     ds4_tokens_free(&w->transcript);
     free(w->cache_dir);
     free(w->sysprompt_path);
+    free(w->context_blob_dir);
     free(w->session_title);
     free(w->legacy_session_path_to_delete);
     free(w->queued_user_drain_text);
@@ -10866,7 +11126,7 @@ static int run_agent(ds4_engine *engine, agent_config *cfg) {
                         else
                             printf("strip failed: %s\n", err);
                     }
-                } else if (!strncmp(cmd, "/history", 8) &&
+                                } else if (!strncmp(cmd, "/history", 8) &&
                            (cmd[8] == '\0' || cmd[8] == ' ' || cmd[8] == '\t')) {
                     char *arg = cmd + 8;
                     while (*arg == ' ' || *arg == '\t') arg++;
@@ -10878,7 +11138,54 @@ static int run_agent(ds4_engine *engine, agent_config *cfg) {
                     if (!agent_worker_show_history(&worker, history_turns,
                                                    err, sizeof(err)))
                         printf("history failed: %s\n", err);
+                } else if (!strncmp(cmd, "/crawl", 6) &&
+                           (cmd[6] == '\0' || cmd[6] == ' ' || cmd[6] == '\t')) {
+                    char *arg = cmd + 6;
+                    while (*arg == ' ' || *arg == '\t') arg++;
+                    if (!strncmp(arg, "start", 5) &&
+                        (arg[5] == '\0' || arg[5] == ' ' || arg[5] == '\t')) {
+                        char *url = arg + 5;
+                        while (*url == ' ' || *url == '\t') url++;
+                        if (!url[0]) {
+                            printf("usage: /crawl start <url>\n");
+                        } else {
+                            agent_run_crawl_start_command(&worker, url);
+                        }
+                    } else if (!strncmp(arg, "status", 6) &&
+                               (arg[6] == '\0' || arg[6] == ' ' || arg[6] == '\t')) {
+                        char *job_id = arg + 6;
+                        while (*job_id == ' ' || *job_id == '\t') job_id++;
+                        if (!job_id[0]) {
+                            printf("usage: /crawl status <job_id>\n");
+                        } else {
+                            char path[256], result[65536];
+                            snprintf(path, sizeof(path), "/jobs/%s", job_id);
+                            if (agent_crawl_http_request("GET", path, NULL,
+                                                         result, sizeof(result)) != 0)
+                                printf("crawl status failed\n");
+                            else
+                                puts(result);
+                        }
+                    } else if (!strncmp(arg, "cancel", 6) &&
+                               (arg[6] == '\0' || arg[6] == ' ' || arg[6] == '\t')) {
+                        char *job_id = arg + 6;
+                        while (*job_id == ' ' || *job_id == '\t') job_id++;
+                        if (!job_id[0]) {
+                            printf("usage: /crawl cancel <job_id>\n");
+                        } else {
+                            char path[256], result[65536];
+                            snprintf(path, sizeof(path), "/jobs/%s", job_id);
+                            if (agent_crawl_http_request("POST", path, "",
+                                                         result, sizeof(result)) != 0)
+                                printf("crawl cancel failed\n");
+                            else
+                                puts(result);
+                        }
+                    } else {
+                        printf("usage: /crawl start <url> | status <job_id> | cancel <job_id>\n");
+                    }
                 } else if (busy) {
+
                     agent_prompt_queue_push(&queue, cmd);
                 } else {
                     linenoiseHistoryAdd(cmd);

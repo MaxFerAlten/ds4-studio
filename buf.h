@@ -9,6 +9,7 @@
 #ifndef BUF_H
 #define BUF_H
 
+#include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -42,5 +43,8 @@ void dynbuf_printf(DynBuf *b, const char *fmt, ...);
 
 // Initialize a DynBuf with a custom error handler (or NULL for default).
 void dynbuf_init(DynBuf *b, buf_error_fn on_error);
+
+// Append printf-formatted output using a va_list (null-terminated).
+void dynbuf_vprintf(DynBuf *b, const char *fmt, va_list ap);
 
 #endif
