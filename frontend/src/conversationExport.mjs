@@ -132,7 +132,9 @@ function buildConversationMarkdown(messages, { includeReasoning = false, metadat
     // Client-side notices (agent mode toggles, error banners) are UI-only and
     // must not be serialised as assistant turns: they would corrupt the
     // transcript if it were ever re-injected into a backend conversation.
-    if (message.agentNotice) continue;
+    // Exception: notices flagged `exportable` (e.g. /crawl results) carry real
+    // content the user wants in the export.
+    if (message.agentNotice && !message.exportable) continue;
 
     const content = renderContent(message, "content", mode);
     const reasoning = renderContent(message, "reasoning", mode);

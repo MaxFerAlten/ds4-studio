@@ -26,14 +26,22 @@ const CHROME_PATH = "/usr/bin/google-chrome";
 // exercises the actual dynamic import + webSearch path.
 function webSearchHandler() {
   return async (req, res) => {
-    const query = req.body?.query;
-    if (!query || typeof query !== "string") {
-      return res.status(400).json({ ok: false, error: "query is required" });
+    const { validateSearchQuery } = await import("./searchQueryGuard.mjs");
+    const validation = validateSearchQuery(req.body?.query);
+
+    if (!validation.ok) {
+      return res.status(400).json({
+        ok: false,
+        error: "invalid search query",
+        reason: validation.reason,
+        query: validation.query
+      });
     }
+
     try {
       const { webSearch } = await import("./webSearchTool.mjs");
-      const result = await webSearch(query);
-      res.json({ ok: true, result });
+      const result = await webSearch(validation.query);
+      res.json({ ok: true, result, query: validation.query });
     } catch (err) {
       res.status(500).json({ ok: false, error: err.message });
     }
@@ -103,6 +111,17 @@ test("injectSearchResults feeds the results into the user turn the model sees", 
   assert.match(userMsg.content, /Live web search results/);
   assert.match(userMsg.content, /do not invent/);
   assert.match(userMsg.content, /Big headline today/);
+});
+
+// --- Stage 2b: search query guard blocks reasoning before browser search ----
+
+test("web search route rejects reasoning/metatext query before browser search", async () => {
+  const { status, json } = await withServer({ query: "We need to understand what the user is asking" });
+
+  assert.equal(status, 400);
+  assert.equal(json.ok, false);
+  assert.equal(json.error, "invalid search query");
+  assert.match(json.reason, /reasoning|metatext/i);
 });
 
 // --- Stage 3: real Chrome launch via puppeteer-core (e2e) ------------------

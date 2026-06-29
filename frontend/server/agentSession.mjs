@@ -247,6 +247,52 @@ const AGENT_TOOLS = [
         required: ["url"]
       }
     }
+  },
+  {
+    type: "function",
+    function: {
+      name: "crawl",
+      description: "Fetch and extract the readable content of a web page via the crawl service. Prefer this over web_read to open links you found but have not yet read — especially when the user asks you to crawl/open links, call this tool yourself for each URL rather than telling the user to run /crawl. Returns extracted text per page. Produces large output suitable for compression.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "URL of the page to crawl (http or https)." }
+        },
+        required: ["url"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "research_discover",
+      description: "Find, dedupe, rank, and (when configured) enrich web sources for a research question. Prefer this over raw web_search for non-trivial research needing multiple sources, comparison, or primary sources. Falls back to web_search if the research service is not configured. Produces large output suitable for compression.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Research question or topic." },
+          depth: { type: "string", enum: ["shallow", "normal", "deep"], description: "How many ranked sources to return. Default normal." },
+          requirePrimarySources: { type: "boolean", description: "If true, prefer primary/citable sources." }
+        },
+        required: ["query"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "chat_history_search",
+      description: "Search this conversation's own history for links, pending actions, prior tool results, or claims. Use this to recover things already mentioned (e.g. links you found but didn't open) instead of asking the user to repeat them.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Optional keyword to filter history." },
+          kind: { type: "string", enum: ["all", "links", "pending_actions", "tool_results", "claims"], description: "What to look for. Default all." },
+          max_results: { type: "number", description: "Max items to return. Default 10." }
+        },
+        required: []
+      }
+    }
   }
 ];
 

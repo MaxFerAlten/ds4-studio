@@ -15,7 +15,12 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { compressToolOutput, ContentKind } from "./toolOutputCompressor.mjs";
+import { validateSearchQuery } from "./searchQueryGuard.mjs";
 import { webSearch, webReadPage } from "./webSearchTool.mjs";
+import { crawlUrl } from "./crawlClient.mjs";
+import { summarizeCrawlManifest } from "./crawlSummarizer.mjs";
+import { formatResearchSources } from "./researchFormatter.mjs";
+import { searchChatHistory, formatHistoryResults } from "./historyTool.mjs";
 
 const DEFAULT_TIMEOUT_SEC = 30;
 const DEFAULT_MAX_LINES = 500;
@@ -223,6 +228,12 @@ export async function executeTool(name, args = {}, options = {}) {
         return await toolWebSearch(args, options);
       case "web_read":
         return await toolWebRead(args, options);
+      case "crawl":
+        return await toolCrawl(args, options);
+      case "research_discover":
+        return await toolResearchDiscover(args, options);
+      case "chat_history_search":
+        return toolHistory(args, options);
       default:
         return { content: `Unknown tool: ${name}`, isError: true };
     }
@@ -1111,14 +1122,28 @@ if __ds4_result__ is not __ds4_sentinel__ and __ds4_result__ is not None:
 // ---------------------------------------------------------------------------
 
 async function toolWebSearch(args, options) {
-  const query = args.query;
-  if (!query) return { content: "web_search: query is required", isError: true };
+  const validation = validateSearchQuery(args.query);
+
+  if (!validation.ok) {
+    return {
+      content: `web_search blocked: ${validation.reason}`,
+      isError: true,
+      raw: {
+        query: validation.query,
+        reason: validation.reason
+      }
+    };
+  }
+
   const maxResults = Number(args.max_results) || 10;
-  const signal = options.signal;
 
   try {
-    const content = await webSearch(query, maxResults);
-    return { content, isError: false };
+    const content = await webSearch(validation.query, maxResults);
+    return {
+      content,
+      isError: false,
+      raw: { query: validation.query }
+    };
   } catch (err) {
     return { content: `web_search error: ${err.message}`, isError: true };
   }
@@ -1135,6 +1160,80 @@ async function toolWebRead(args, options) {
   } catch (err) {
     return { content: `web_read error: ${err.message}`, isError: true };
   }
+}
+
+async function toolCrawl(args, options) {
+  const url = args.url;
+  if (!url) return { content: "crawl: url is required", isError: true };
+  if (!options.crawlBaseUrl) {
+    return { content: "crawl error: crawl service is not configured", isError: true };
+  }
+  try {
+    const res = await crawlUrl(fetch, {
+      baseUrl: options.crawlBaseUrl,
+      token: options.crawlToken,
+      url,
+      signal: options.signal
+    });
+    if (!res.ok) return { content: `crawl error: ${res.message}`, isError: true };
+    return { content: summarizeCrawlManifest(res.manifest), isError: false, raw: { url, manifest: res.manifest } };
+  } catch (err) {
+    return { content: `crawl error: ${err.message}`, isError: true };
+  }
+}
+
+async function toolResearchDiscover(args, options) {
+  const validation = validateSearchQuery(args.query);
+  if (!validation.ok) {
+    return {
+      content: `research_discover blocked: ${validation.reason}`,
+      isError: true,
+      raw: { query: validation.query, reason: validation.reason }
+    };
+  }
+
+  const service = options.researchService;
+  if (!service || !service.enabled()) {
+    // No research providers configured — degrade to plain web_search.
+    try {
+      const content = await webSearch(validation.query, 10);
+      return {
+        content: `(research service not configured — fell back to web_search)\n\n${content}`,
+        isError: false,
+        raw: { query: validation.query, fallback: true }
+      };
+    } catch (err) {
+      return { content: `research_discover error: ${err.message}`, isError: true };
+    }
+  }
+
+  try {
+    const sources = await service.gather([validation.query], { signal: options.signal });
+    return {
+      content: formatResearchSources(sources, {
+        depth: args.depth,
+        requirePrimarySources: Boolean(args.requirePrimarySources)
+      }),
+      isError: false,
+      raw: { query: validation.query, count: sources.length }
+    };
+  } catch (err) {
+    return { content: `research_discover error: ${err.message}`, isError: true };
+  }
+}
+
+function toolHistory(args, options) {
+  const messages = Array.isArray(options.history) ? options.history : [];
+  const rows = searchChatHistory(messages, {
+    query: args.query,
+    kind: args.kind,
+    maxResults: Number(args.max_results) || 10
+  });
+  return {
+    content: formatHistoryResults(rows, { query: args.query }),
+    isError: false,
+    raw: { count: rows.length }
+  };
 }
 
 export function checkBashFileReadFallback(input, afterReadGuardBlock = false) {

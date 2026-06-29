@@ -1314,6 +1314,14 @@ static char *web_run_page_js(ds4_web *web, const char *url, const char *js,
         web_tab_free(&tab);
         return NULL;
     }
+    /* Wait for JS rendering (e.g. Google AI Overview) before extracting content */
+    if (!web_sleep_ms(web, 3000)) {
+        web_set_err(err, err_len, "interrupted");
+        web_ws_close(&ws);
+        web_close_tab(web, &tab);
+        web_tab_free(&tab);
+        return NULL;
+    }
     char *out = web_cdp_eval_string(&ws, js, err, err_len);
     web_ws_close(&ws);
     web_close_tab(web, &tab);
