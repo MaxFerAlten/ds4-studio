@@ -54,6 +54,14 @@ import { readAmdSmiStatusCached } from "./amdSmi.mjs";
 import { AgentSessionStore, AGENT_SYSTEM_PROMPT, AGENT_TOOLS } from "./agentSession.mjs";
 import { appendPonyPolicy, buildPonyPolicy, normalizePonyMode, ponyCommandMessage } from "./agentPonyPolicy.mjs";
 import { checkBashFileReadFallback, executeTool, sageSessionDir, toolSage } from "./agentTools.mjs";
+import { planTools } from "./toolPlanner.mjs";
+import { createTaskState } from "./agentTaskState.mjs";
+import { buildSearchService } from "./research/researchSearchService.mjs";
+import { evidenceFromCrawlManifest } from "./evidenceStore.mjs";
+import { buildSynthesisBrief } from "./synthesisEngine.mjs";
+import { getAgentCapabilities, capabilitiesPromptSection } from "./agentCapabilities.mjs";
+import { autonomyPromptSection } from "./agentAutonomy.mjs";
+import { agentCoreRulesSection } from "./agentRuntimeRules.mjs";
 import { createHeadroomHandlers } from "./headroomControl.mjs";
 import { ToolBlobStore } from "./toolBlobStore.mjs";
 import { compressToolOutput } from "./toolOutputCompressor.mjs";
@@ -803,6 +811,35 @@ function crawlBase() {
   return `http://${config.crawl.host}:${config.crawl.port}`;
 }
 
+async function readCrawlToken() {
+  const tokenPath = path.join(os.homedir(), ".config", "ds4-studio", "crawl", "token");
+  try {
+    return (await fs.readFile(tokenPath, "utf-8")).trim();
+  } catch {
+    return "";
+  }
+}
+
+// Built once. Null unless research.search is enabled, so disabled deployments
+// pay no SourceCache/provider construction cost; the research_discover tool
+// falls back to web_search when this is null or not enabled().
+let agentResearchService = null;
+try {
+  if (config.research?.search?.enabled) {
+    agentResearchService = buildSearchService(config.research.search, { fetchImpl: fetch, logger: console });
+  }
+} catch (err) {
+  console.warn("ds4-ui: research service init failed:", err.message);
+}
+
+const agentCapabilities = getAgentCapabilities(config);
+const AGENT_SYSTEM_PROMPT_WITH_CAPS = [
+  AGENT_SYSTEM_PROMPT,
+  capabilitiesPromptSection(agentCapabilities),
+  autonomyPromptSection(),
+  agentCoreRulesSection()
+].filter(Boolean).join("\n\n");
+
 app.all("/api/crawl/*", asyncHandler(async (req, res) => {
   const target = `${crawlBase()}${req.originalUrl.replace(/^\/api\/crawl/, "")}`;
   const { signal, cleanup } = abortOnClientDisconnect(req, res);
@@ -1339,21 +1376,27 @@ async function rewriteSearchQuery(rawQuery) {
 }
 
 app.post("/api/agent/web-search", asyncHandler(async (req, res) => {
-  const query = req.body?.query;
-  if (!query || typeof query !== "string") {
-    return res.status(400).json({ ok: false, error: "query is required" });
+  const { validateSearchQuery } = await import("./searchQueryGuard.mjs");
+  const validation = validateSearchQuery(req.body?.query);
+
+  if (!validation.ok) {
+    return res.status(400).json({
+      ok: false,
+      error: "invalid search query",
+      reason: validation.reason,
+      query: validation.query
+    });
   }
+
   try {
     const { webSearch } = await import("./webSearchTool.mjs");
-    let searchQuery = query;
-    let reasoning = "";
-    try {
-      ({ query: searchQuery, reasoning } = await rewriteSearchQuery(query));
-    } catch (_) {
-      // Rewrite model unavailable — fall back to the raw user query.
-    }
-    const result = await webSearch(searchQuery);
-    res.json({ ok: true, result, query: searchQuery, reasoning });
+    const result = await webSearch(validation.query);
+
+    res.json({
+      ok: true,
+      result,
+      query: validation.query
+    });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -1599,7 +1642,7 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
   let fullMessages = agentSession.messages();
   if (!fullMessages.length) {
     fullMessages = [
-      { role: "system", content: appendPonyPolicy(AGENT_SYSTEM_PROMPT, agentSession.ponyMode) },
+      { role: "system", content: appendPonyPolicy(AGENT_SYSTEM_PROMPT_WITH_CAPS, agentSession.ponyMode) },
       ...normalizeAgentMessages(conversationMessages)
     ];
   }
@@ -1633,6 +1676,64 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
   }
 
   try {
+    // Deterministic tool planner: when the user explicitly asks to crawl/open
+    // links, run the crawls ourselves and feed the results into the transcript
+    // instead of leaving it to the model (which used to tell the user to run
+    // /crawl). No-op when no crawl intent is detected. Capped to avoid runaway.
+    const MAX_PLANNED_CRAWLS = 10; // ponytail: cap; raise if real tasks need more
+    const MAX_FOLLOWUP_CRAWLS = 5; // §16.3: crawl only a few of a hub's links
+    const plannedCrawls = planTools({
+      userText: userMessage,
+      taskState: createTaskState(fullMessages),
+      capabilities: agentCapabilities
+    }).filter((a) => a.tool === "crawl" && a.args?.url).slice(0, MAX_PLANNED_CRAWLS);
+    if (plannedCrawls.length) {
+      const crawlBaseUrl = crawlBase();
+      const crawlToken = await readCrawlToken();
+      let round = 0;
+      // Run a batch of crawls as one synthetic tool turn; return their manifests.
+      const crawlRound = async (urls) => {
+        round += 1;
+        const calls = urls.map((url, i) => ({ id: `plan_crawl_${Date.now()}_r${round}_${i}`, url }));
+        fullMessages.push({
+          role: "assistant",
+          content: null,
+          tool_calls: calls.map((c) => ({
+            id: c.id,
+            type: "function",
+            function: { name: "crawl", arguments: JSON.stringify({ url: c.url }) }
+          }))
+        });
+        const manifests = [];
+        for (const c of calls) {
+          if (controller.signal.aborted) break;
+          writeAgentSse("agent_tool_call", { id: c.id, name: "crawl", arguments: { url: c.url } });
+          const result = await executeTool("crawl", { url: c.url }, { signal: controller.signal, crawlBaseUrl, crawlToken });
+          writeAgentSse("agent_tool_result", { id: c.id, name: "crawl", content: result.content, isError: result.isError, guarded: false });
+          fullMessages.push({ role: "tool", tool_call_id: c.id, content: result.content });
+          if (result.raw?.manifest) manifests.push(result.raw.manifest);
+        }
+        return manifests;
+      };
+
+      const crawled = new Set(plannedCrawls.map((a) => a.args.url));
+      let evidence = (await crawlRound([...crawled])).flatMap(evidenceFromCrawlManifest);
+
+      // Fase 13: a crawled page may be a link hub (calendar/listing). Follow up
+      // on a few of its links once, then synthesize — do not recurse.
+      const followUps = [...new Set(evidence.filter((e) => e.sourceType === "LINK_HUB").flatMap((e) => e.nextLinks))]
+        .filter((u) => !crawled.has(u))
+        .slice(0, MAX_FOLLOWUP_CRAWLS);
+      if (followUps.length && !controller.signal.aborted) {
+        evidence = evidence.concat((await crawlRound(followUps)).flatMap(evidenceFromCrawlManifest));
+      }
+
+      // Mandatory synthesis: crawled content is internal evidence, not the answer.
+      if (evidence.length) {
+        fullMessages.push({ role: "system", content: buildSynthesisBrief(evidence, { question: userMessage }) });
+      }
+    }
+
     let iteration = 0;
 
     while (iteration < AGENT_MAX_ITERATIONS) {
@@ -1879,6 +1980,10 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
 
         const opts = {
           signal: controller.signal,
+          crawlBaseUrl: tc.name === "crawl" ? crawlBase() : undefined,
+          crawlToken: tc.name === "crawl" ? await readCrawlToken() : undefined,
+          researchService: tc.name === "research_discover" ? agentResearchService : undefined,
+          history: tc.name === "chat_history_search" ? fullMessages : undefined,
           onProgress: tc.name === "bash"
             ? (chunk) => writeAgentSse("agent_tool_progress", { id: tc.id, name: tc.name, chunk })
             : undefined,

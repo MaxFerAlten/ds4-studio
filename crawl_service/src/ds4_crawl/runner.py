@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -31,6 +32,17 @@ def _first_text(*values: Any) -> str:
         if s:
             return s
     return ""
+
+
+ARXIV_PDF_RE = re.compile(r"^https?://arxiv\.org/pdf/(.+?)(?:\.pdf)?$")
+
+
+def _normalize_url(url: str) -> str:
+    """Normalize URLs that are hard to crawl (PDFs, binaries) to their HTML equivalents."""
+    m = ARXIV_PDF_RE.match(url)
+    if m:
+        return f"https://arxiv.org/abs/{m.group(1)}"
+    return url
 
 
 def _crawl_result_to_dict(result: Any) -> dict[str, Any]:
@@ -133,6 +145,7 @@ class CrawlRunner:
             urls = [str(request["url"])]
         elif request.get("urls"):
             urls = [str(u) for u in request["urls"]]
+        urls = [_normalize_url(u) for u in urls]
 
         all_succeeded = True
 
@@ -205,7 +218,20 @@ class CrawlRunner:
 
         browser_cfg = build_browser_config(request.get("browser_config"))
         crawler_cfg = build_crawler_config(request.get("crawler_config"))
+        # Populate fit_markdown (boilerplate/nav pruned) so downstream gets the
+        # cleaned article text instead of the raw page with menus. CrawlerRunConfig
+        # ships a default markdown generator without a content filter, so attach
+        # one when none was requested; _normalize_result prefers fit_markdown.
+        from crawl4ai import DefaultMarkdownGenerator, PruningContentFilter
+
+        mg = getattr(crawler_cfg, "markdown_generator", None)
+        if mg is None:
+            crawler_cfg.markdown_generator = DefaultMarkdownGenerator(content_filter=PruningContentFilter())
+        elif getattr(mg, "content_filter", None) is None:
+            mg.content_filter = PruningContentFilter()
         async with AsyncWebCrawler(config=browser_cfg) as crawler:
+            # Extra delay so Google AI Overview JS renders after DOM is ready
+            crawler_cfg.delay_before_return_html = 3.0
             result = await crawler.arun(url=url, config=crawler_cfg)
             if result is None:
                 raise RuntimeError("crawl4ai returned None")

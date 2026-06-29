@@ -284,6 +284,20 @@ test("sage tool executes multi-statement Sage scripts and renders result", { ski
   });
 });
 
+// ── web_search guard ──────────────────────────────────────────────────────
+
+test("web_search blocks model reasoning before calling browser search", async () => {
+  const result = await executeTool(
+    "web_search",
+    { query: "L'utente ha scritto si quindi devo cercare conferenze AI" },
+    { cwd: process.cwd() }
+  );
+
+  assert.equal(result.isError, true);
+  assert.match(result.content, /web_search blocked/);
+  assert.match(result.content, /reasoning|metatext/i);
+});
+
 // ── per-session sage working directory ───────────────────────────────────
 
 test("sanitizeSessionId keeps safe chars, collapses the rest, and bounds length", () => {

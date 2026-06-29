@@ -14,7 +14,7 @@ import { listResearchSessions } from "./research/researchApi.mjs";
 import {
   AGENT_HEADERS, AGENT_COMMANDS, ENV_FIELDS,
   appendAssistantDelta, replaceAssistantMessage,
-  appendAssistantNotice, appendTransientNotice, buildChatMessages, injectSearchResults,
+  appendAssistantNotice, appendTransientNotice, buildChatMessages, injectSearchResults, searchResultsBlock,
   parseSseData, formatMetric, initialExportSettings,
   readStoredSession, writeStoredSession, clearStoredSession
 } from "./appLogic.mjs";
@@ -1141,7 +1141,9 @@ export default function App() {
         {
           role: "assistant",
           content: formatNativeAgentNotice(command, payload, res.status),
-          agentNotice: true
+          agentNotice: true,
+          // /crawl results carry real content the user wants kept in exports.
+          exportable: payload.command === "crawl" && payload.ok === true
         }
       ]);
     } catch (err) {
@@ -1333,7 +1335,7 @@ export default function App() {
     }
   }
 
-  async function sendAgentMessage(text) {
+  async function sendAgentMessage(text, searchResult = null) {
     handleInputChange("");
     setError("");
     const nextMessages = [
@@ -1398,6 +1400,12 @@ export default function App() {
     if (agentPrimingPendingRef.current) {
       outboundMessage = withAgentPriming(messages, text);
       agentPrimingPendingRef.current = false;
+    }
+    // Web search mode: fold the live results into the outbound message so the agent
+    // model sees them. The native runtime only reads `message`; the locally rendered
+    // user turn stays clean (results are transient, like agent priming above).
+    if (searchResult) {
+      outboundMessage = `${outboundMessage}${searchResultsBlock(searchResult)}`;
     }
 
     try {
@@ -1572,6 +1580,23 @@ export default function App() {
     }, 10);
   };
 
+  // Runs the web-search backend for `query`, returning the compact results string
+  // (or null on failure/empty). Shared by the chat and agent send paths.
+  async function runWebSearch(query) {
+    try {
+      const res = await fetch("/api/agent/web-search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query })
+      });
+      const data = await res.json();
+      if (res.ok) return data.result || null;
+    } catch {
+      /* network/parse failure → treat as no results so the caller can proceed */
+    }
+    return null;
+  }
+
   async function sendMessage() {
     const text = input.trim();
     const lastMessage = messages[messages.length - 1];
@@ -1604,8 +1629,15 @@ export default function App() {
       return callNativeAgentCommand(agentInput.command);
     }
 
+    // Run a web search when webSearchMode is enabled. The result is injected
+    // into the user message so the model sees fresh context.
+    let searchResult = null;
+    if (webSearchMode) {
+      searchResult = await runWebSearch(text);
+    }
+
     if (agentMode) {
-      return sendAgentMessage(text);
+      return sendAgentMessage(text, searchResult);
     }
 
     if (attachedDoc && searchStrategy === "D") {
@@ -1643,30 +1675,6 @@ export default function App() {
     });
 
     try {
-      /* If web search mode is active, intercept the user message and search automatically */
-      let searchResult = null;
-      if (webSearchMode && !pendingDoc) {
-        const res = await fetch("/api/agent/web-search", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query: text })
-        });
-        const data = await res.json();
-        if (res.ok) {
-          searchResult = data.result || null;
-        }
-      }
-      if (searchResult) {
-        // Compact notice only: the model presents the results below (they are fed
-        // into the prompt via injectSearchResults). Dumping the raw results here too
-        // would show every hit twice.
-        setMessages((prev) => [
-          ...prev,
-          { role: "assistant", content: `🔍 Searched the web for "${text}".`, agentNotice: true }
-        ]);
-      }
-      // injectSearchResults feeds the raw results into the user turn so the model
-      // sees them (agentNotice above is display-only and dropped from the prompt).
       const chatMessages = buildChatMessages(
         injectSearchResults(nextMessages, searchResult),
         { system: request.system }

@@ -356,6 +356,18 @@ test("exportConversationMarkdownRaw skips agentNotice messages", () => {
   assert.doesNotMatch(raw, /notice/);
 });
 
+test("agentNotice messages flagged exportable ARE included (e.g. /crawl results)", () => {
+  const messages = [
+    { role: "assistant", content: "real" },
+    { role: "assistant", content: "ui-only notice", agentNotice: true },
+    { role: "assistant", content: "crawl summary text", agentNotice: true, exportable: true }
+  ];
+  for (const md of [exportConversationMarkdown(messages), exportConversationMarkdownRaw(messages)]) {
+    assert.match(md, /crawl summary text/, "exportable notice kept");
+    assert.doesNotMatch(md, /ui-only notice/, "plain notice still skipped");
+  }
+});
+
 test("parseConversationMarkdown marks messages as archive", () => {
   const markdown = exportConversationMarkdown([
     { role: "user", content: "hello" },

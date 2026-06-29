@@ -37,8 +37,8 @@ ds4_rocm_apply_fast_full_defaults() {
   # ds4_cuda.cu), so peak RAM stays ~1x model_size even for the 80 GiB model on
   # this 128 GiB unified-memory box. Set either knob to 0 for the managed-tensor,
   # no-copy path.
-  export DS4_SERVER_DEVICE_TENSORS="${DS4_SERVER_DEVICE_TENSORS:-1}"
-  export DS4_SERVER_COPY_MODEL="${DS4_SERVER_COPY_MODEL:-1}"
+  export DS4_SERVER_DEVICE_TENSORS="${DS4_SERVER_DEVICE_TENSORS:-0}"
+  export DS4_SERVER_COPY_MODEL="${DS4_SERVER_COPY_MODEL:-0}"
   export DS4_SERVER_COPY_MODEL_CHUNK_MB="${DS4_SERVER_COPY_MODEL_CHUNK_MB:-}"
 
   export DS4_SERVER_PREFILL_RAW_FAST="${DS4_SERVER_PREFILL_RAW_FAST:-1}"

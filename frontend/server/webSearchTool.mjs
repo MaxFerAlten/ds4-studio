@@ -153,6 +153,14 @@ function extractSearchResults() {
   return lines.join("\n");
 }
 
+// Only news-intent queries want the Google News block. Applying it to every query
+// poisoned ordinary searches: News RSS is "most recent first", so it changed on
+// every call (the answer looked fabricated / "always different") and injected
+// irrelevant recent news for non-news queries like "best sites to publish papers".
+export function isNewsQuery(query = "") {
+  return /\b(news|notizi[ae]|headline|breaking|cronaca)\b|\b(ultim[aeio]|latest|recent|today|oggi|stamani|stasera|aggiornament|updates?)\b/i.test(query);
+}
+
 /**
  * Real, dated news headlines from Google News RSS (plain fetch, no browser).
  * The Google SERP for a news query returns only news-site homepages, so the
@@ -217,12 +225,19 @@ async function dismissGoogleConsent(page) {
  * @returns {Promise<string>} Formatted Markdown result string
  */
 export async function webSearch(query) {
-  if (!query || typeof query !== "string") return "web_search: query is required";
+  const { validateSearchQuery } = await import("./searchQueryGuard.mjs");
+  const validation = validateSearchQuery(query);
 
-  // Real dated headlines first (Google News RSS, plain fetch); the browser SERP
-  // for a news query only yields news-site homepages and the model can't list
-  // the actual news from those.
-  const news = await fetchNewsHeadlines(query, 10);
+  if (!validation.ok) {
+    return `web_search blocked: ${validation.reason}`;
+  }
+
+  query = validation.query;
+
+  // News-intent queries only: dated headlines first (Google News RSS, plain fetch),
+  // since the browser SERP for a news query just yields news-site homepages. For
+  // ordinary queries the changing RSS feed is noise, so skip it.
+  const news = isNewsQuery(query) ? await fetchNewsHeadlines(query, 10) : [];
 
   const browser = await getBrowser();
   const page = await browser.newPage();

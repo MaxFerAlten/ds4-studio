@@ -324,6 +324,21 @@ export function appendTransientNotice(notice) {
   ];
 }
 
+// Grounding directive + results, appended to whatever turn carries the user's
+// message to the model: the user turn in chat mode (injectSearchResults) or the
+// outbound `message` string in agent mode (sendAgentMessage). Without an explicit
+// directive, models treat the dump as ambient text and fabricate (invented
+// headlines/dates), so the directive is mandatory wherever results are fed in.
+export function searchResultsBlock(searchResult = "") {
+  return (
+    `\n\n---\n` +
+    `Live web search results are below. Answer using ONLY these results: ` +
+    `cite the titles and URLs, and do not invent news, facts, or dates. ` +
+    `If the results are only links or site descriptions, list them and tell ` +
+    `the user to open the URLs for the full articles.\n\n${searchResult}`
+  );
+}
+
 // Web search results are pushed to the chat as agentNotice (display-only), which
 // buildChatMessages drops from the prompt. Inject them into the latest user turn
 // so the model actually sees them — otherwise it answers blind and hallucinates.
@@ -332,19 +347,9 @@ export function injectSearchResults(messages = [], searchResult = "") {
   if (!searchResult) return messages;
   const userIdx = messages.length - 2;
   if (userIdx < 0 || messages[userIdx]?.role !== "user") return messages;
-  // Ground the model in the results: without an explicit directive, models treat
-  // the dump as ambient text and fabricate (e.g. invented headlines/dates).
   return messages.map((m, i) =>
     i === userIdx
-      ? {
-          ...m,
-          content:
-            `${m.content}\n\n---\n` +
-            `Live web search results are below. Answer using ONLY these results: ` +
-            `cite the titles and URLs, and do not invent news, facts, or dates. ` +
-            `If the results are only links or site descriptions, list them and tell ` +
-            `the user to open the URLs for the full articles.\n\n${searchResult}`
-        }
+      ? { ...m, content: `${m.content}${searchResultsBlock(searchResult)}` }
       : m
   );
 }
