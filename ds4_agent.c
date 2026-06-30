@@ -5774,6 +5774,20 @@ static int agent_read_file_bytes(const char *path, char **data, size_t *len,
         snprintf(err, errlen, "open %s: %s", path, strerror(errno));
         return -1;
     }
+
+    /* Use fstat to get the file size before reading, preventing race
+     * conditions where the file grows during read and exceeds the limit. */
+    int fd = fileno(fp);
+    struct stat st;
+    if (fd >= 0 && fstat(fd, &st) == 0) {
+        if (st.st_size > AGENT_FILE_MAX_BYTES) {
+            fclose(fp);
+            snprintf(err, errlen, "file too large: %s exceeds %d bytes",
+                     path, AGENT_FILE_MAX_BYTES);
+            return -1;
+        }
+    }
+
     char *buf = NULL;
     size_t used = 0, cap = 0;
     char tmp[8192];
@@ -6001,6 +6015,7 @@ static char *agent_tool_write(agent_worker *w, const agent_tool_call *call) {
     const char *content = agent_tool_arg_value(call, "content");
     if (!path || !path[0]) return xstrdup("Tool error: write requires path\n");
     if (!content) return xstrdup("Tool error: write requires content\n");
+    if (!content[0]) return xstrdup("Tool error: write requires non-empty content\n");
     FILE *fp = fopen(path, "wb");
     if (!fp) {
         agent_buf b = {0};
@@ -6537,6 +6552,9 @@ static char *agent_apply_file_splice(const char *path,
     char err[256];
     if (!insert) insert = "";
     size_t insert_len = strlen(insert);
+    /* Prevent arithmetic underflow: if remove_len exceeds the available
+     * data after offset, clamp it to the remaining bytes. */
+    if (remove_len > len - offset) remove_len = len - offset;
     size_t out_len = offset + insert_len + (len - offset - remove_len);
     char *out = xmalloc(out_len + 1);
     memcpy(out, data, offset);
@@ -6776,13 +6794,12 @@ static char *agent_tool_search(agent_worker *w, const agent_tool_call *call) {
         snprintf(hdr, sizeof(hdr), "%d match%s shown\n\n",
                  ctx.results, ctx.results == 1 ? "" : "es");
         size_t hdr_len = strlen(hdr);
-        if (ctx.out.len + hdr_len + 1 > ctx.out.cap) {
-            ctx.out.cap = ctx.out.len + hdr_len + 1;
-            ctx.out.ptr = xrealloc(ctx.out.ptr, ctx.out.cap);
-        }
-        memmove(ctx.out.ptr + hdr_len, ctx.out.ptr, ctx.out.len + 1);
-        memcpy(ctx.out.ptr, hdr, hdr_len);
-        ctx.out.len += hdr_len;
+        /* Prepend header using agent_buf API to avoid manual memmove corruption */
+        agent_buf prepended = {0};
+        agent_buf_append(&prepended, hdr, hdr_len);
+        agent_buf_append(&prepended, ctx.out.ptr, ctx.out.len);
+        free(ctx.out.ptr);
+        ctx.out = prepended;
     }
     return agent_buf_take(&ctx.out);
 }
@@ -6988,9 +7005,20 @@ static void agent_bash_note_output(agent_bash_job *job, const char *s, size_t n)
 static void agent_bash_job_free(agent_bash_job *job) {
     if (!job) return;
     if (job->running && job->pid > 0) {
-        kill(-job->pid, SIGKILL);
-        kill(job->pid, SIGKILL);
-        waitpid(job->pid, NULL, 0);
+        /* Check if process already exited before killing the process group.
+         * If already gone, skip kill(-pgid) to avoid targeting a recycled PGID. */
+        int wstatus;
+        pid_t waited = waitpid(job->pid, &wstatus, WNOHANG);
+        if (waited == 0) {
+            /* Process still running — kill the process group */
+            kill(-job->pid, SIGKILL);
+            kill(job->pid, SIGKILL);
+            waitpid(job->pid, NULL, 0);
+        } else if (waited > 0) {
+            /* Process already reaped — do not kill(-pgid) */
+            job->exit_status = WEXITSTATUS(wstatus);
+        }
+        /* If waited < 0 (error), fall through and close fds */
     }
     if (job->pipe_fd >= 0) close(job->pipe_fd);
     if (job->tmp_fd >= 0) close(job->tmp_fd);
@@ -7762,6 +7790,9 @@ static char *agent_tool_crawl(agent_worker *w, const agent_tool_call *call) {
     agent_publishf_system_status(w, "Crawling %s...", url);
 
     /* Build curl POST to the crawl service */
+    /* Validate URL length before escaping to prevent buffer overflow */
+    size_t url_len = strlen(url);
+    if (url_len > 4096) return xstrdup("Tool error: crawl URL too long\n");
     char escaped[8192];
     char *we = escaped;
     size_t rem = sizeof(escaped) - 1;
@@ -10592,6 +10623,9 @@ static void agent_worker_free(agent_worker *w) {
     if (w->trace) fclose(w->trace);
     free(w->cmd_text);
     free(w->out);
+    /* NOTE: w->more_path is a fixed-size char[PATH_MAX] embedded in the
+     * struct, not a heap allocation.  No free() needed here, but if it is
+     * ever changed to a heap-allocated string, add free(w->more_path). */
     pthread_cond_destroy(&w->cond);
     pthread_mutex_destroy(&w->mu);
 }
