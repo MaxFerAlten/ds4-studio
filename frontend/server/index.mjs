@@ -63,6 +63,7 @@ import { getAgentCapabilities, capabilitiesPromptSection } from "./agentCapabili
 import { autonomyPromptSection } from "./agentAutonomy.mjs";
 import { agentCoreRulesSection } from "./agentRuntimeRules.mjs";
 import { createHeadroomHandlers } from "./headroomControl.mjs";
+import { buildGitnexusPolicy } from "./agentGitnexusPolicy.mjs";
 import { ToolBlobStore } from "./toolBlobStore.mjs";
 import { compressToolOutput } from "./toolOutputCompressor.mjs";
 import {
@@ -1342,9 +1343,26 @@ app.get("/api/agent/headroom", asyncHandler(headroomHandlers.status));
 
 app.post("/api/agent/headroom", asyncHandler(headroomHandlers.set));
 
-/* Let the model analyse the user's request and emit the best search query
- * (and its reasoning), the same way the agent model rewrites queries before
- * calling the tool. No hardcoded query rules — the model decides everything. */
+/** Look up the active agent session for the given request. */
+function lookupAgentSession(req) {
+  return agentSessions.get(agentSessionKey(req));
+}
+
+app.get("/api/agent/gitnexus", asyncHandler(async (req, res) => {
+  const session = lookupAgentSession(req);
+  if (!session) return res.json({ ok: false, enabled: false, message: "No active agent session." });
+  res.json({ ok: true, enabled: session.gitnexusEnabled || false, message: `GitNexus mode: ${session.gitnexusEnabled ? "ON" : "OFF"}.` });
+}));
+
+app.post("/api/agent/gitnexus", asyncHandler(async (req, res) => {
+  const session = lookupAgentSession(req);
+  if (!session) return res.json({ ok: false, error: "No active agent session." });
+  const enabled = Boolean(req.body?.enabled);
+  session.gitnexusEnabled = enabled;
+  if (session.active) session.reset(`gitnexus mode set to ${enabled ? "ON" : "OFF"}; session reset`);
+  res.json({ ok: true, enabled, message: `GitNexus mode ${enabled ? "enabled" : "disabled"}.` });
+}));
+
 async function rewriteSearchQuery(rawQuery) {
   const today = new Date().toLocaleDateString("it-IT", {
     weekday: "long", day: "numeric", month: "long", year: "numeric"
@@ -1577,8 +1595,10 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
     }
 
     const ponyPolicy = buildPonyPolicy(nativeAgentSession.ponyMode);
-    const outboundMessage = ponyPolicy
-      ? `${ponyPolicy}\n\nUser request:\n${message}`
+    const gitnexusPolicy = buildGitnexusPolicy(nativeAgentSession.gitnexusEnabled);
+    const combinedPolicy = [ponyPolicy, gitnexusPolicy].filter(Boolean).join("\n\n");
+    const outboundMessage = combinedPolicy
+      ? `${combinedPolicy}\n\nUser request:\n${message}`
       : message;
 
     // Forward request params (max_tokens, temperature, etc.) to the native agent
@@ -1601,13 +1621,15 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
 
     // Simple timeout guard for the native agent stream
     const nativeStartedAt = Date.now();
-    const nativeMaxMs = config.agent?.nativeChatTimeoutMs || 480000;
+    const nativeMaxMs = config.agent?.nativeChatTimeoutMs;
+    const nativeMaxMsFinal = (nativeMaxMs === undefined || nativeMaxMs === null || nativeMaxMs === 0)
+        ? Infinity : nativeMaxMs;
 
     res.status(up.status);
     up.headers.forEach((value, key) => res.setHeader(key, value));
     if (up.body) {
       for await (const chunk of up.body) {
-        if (Date.now() - nativeStartedAt > nativeMaxMs) {
+        if (Date.now() - nativeStartedAt > nativeMaxMsFinal) {
           res.write(`event: agent_error\ndata: ${JSON.stringify({ error: "Native agent timeout" })}\n\n`);
           break;
         }

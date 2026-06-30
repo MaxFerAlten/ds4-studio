@@ -319,6 +319,7 @@ export class AgentSessionManager {
     this.lastMode = "none";
     this.lastReason = "not started";
     this.ponyMode = "off";
+    this.gitnexusEnabled = false;
     this.readGuard = new ReadGuard();
     this.usageTotals = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
   }
@@ -334,6 +335,7 @@ export class AgentSessionManager {
     };
     this.active = true;
     this.ponyMode = "off";
+    this.gitnexusEnabled = false;
     this.lastMode = "none";
     this.lastReason = "agent started";
     return this.status();
@@ -344,6 +346,7 @@ export class AgentSessionManager {
     this.state = null;
     this.active = false;
     this.ponyMode = "off";
+    this.gitnexusEnabled = false;
     this.lastMode = "none";
     this.lastReason = "agent stopped";
     this.readGuard.clearAll();

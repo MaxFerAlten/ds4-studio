@@ -284,6 +284,15 @@ export function parseAgentInput(text, agentMode) {
     return { type: "sageControl", action: sageControl[1].toLowerCase() };
   }
 
+  const gitnexus = trimmed.match(/^\/gitnexus\s+(start|stop|status)\s*$/i);
+  if (gitnexus) {
+    if (!agentMode) return { type: "gitnexus", action: "inactive" };
+    const action = gitnexus[1].toLowerCase();
+    if (action === "status") return { type: "gitnexus", action: "status" };
+    if (action === "start") return { type: "gitnexus", action: "set", enabled: true };
+    if (action === "stop")  return { type: "gitnexus", action: "set", enabled: false };
+  }
+
   const alias = trimmed.match(/^\/agent\s+(\S+)(?:\s+([\s\S]*))?$/i);
   if (alias) {
     const name = alias[1].toLowerCase();

@@ -1288,6 +1288,38 @@ export default function App() {
     }
   }
 
+  async function callGitnexusControl(agentInput) {
+    if (agentInput.action === "inactive") {
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: "GitNexus mode applies only in Agent Mode. Run /agent start first.", agentNotice: true }
+      ]);
+      return;
+    }
+    try {
+      const options = agentInput.action === "status"
+        ? { method: "GET", headers: AGENT_HEADERS }
+        : {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...AGENT_HEADERS },
+            body: JSON.stringify({ enabled: agentInput.enabled })
+          };
+      const res = await fetch("/api/agent/gitnexus", options);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      setAgentStatus((prev) => ({ ...prev, ...data, gitnexusEnabled: data.enabled }));
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: data.message || `GitNexus mode: ${data.enabled ? "ON" : "OFF"}.`, agentNotice: true }
+      ]);
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: `Failed /gitnexus: ${err.message}`, agentNotice: true }
+      ]);
+    }
+  }
+
   // Web search mode is client-only state: the search endpoint (/api/agent/web-search)
   // is stateless and takes the query directly, so no server round-trip is needed.
   function callWebSearchModeControl(agentInput) {
@@ -1625,6 +1657,9 @@ export default function App() {
       }
       if (agentInput.type === "sageControl") {
         return callSageControl(agentInput.action);
+      }
+      if (agentInput.type === "gitnexus") {
+        return callGitnexusControl(agentInput);
       }
       return callNativeAgentCommand(agentInput.command);
     }
