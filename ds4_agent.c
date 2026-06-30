@@ -172,6 +172,9 @@ typedef struct {
     int next_bash_job_id;
     bool raw_mode_needs_restore;
 
+    /* GitNexus integration: enabled by /gitnexus start */
+    bool gitnexus_enabled;
+    char gitnexus_path[PATH_MAX];
 
     char *context_blob_dir;
 
@@ -182,8 +185,14 @@ typedef struct {
     char loop_guard_ring[AGENT_LOOP_GUARD_RING_SIZE][128];
     int loop_guard_ring_pos;
     int loop_guard_consecutive_empty;
-    int loop_guard_consecutive_similar;
+    int loop_guard_consecutive_identical;
     int loop_guard_max_tool_rounds;
+
+    /* Loop guard user confirmation: when the guard triggers, the worker
+     * asks the user whether to continue waiting or stop. */
+    bool loop_guard_awaiting_user;
+    bool loop_guard_awaiting_user_answered;
+    bool loop_guard_awaiting_user_continue;
 
     /* Wrapper embedding hook: when set, agent_publish() forwards published
      * bytes to this callback on the worker thread (before locking w->mu) so the
@@ -603,7 +612,8 @@ static bool agent_slash_command_known(const char *cmd) {
            agent_slash_command_with_args(cmd, "/del") ||
            agent_slash_command_with_args(cmd, "/strip") ||
            agent_slash_command_with_args(cmd, "/history") ||
-           agent_slash_command_with_args(cmd, "/crawl");
+           agent_slash_command_with_args(cmd, "/crawl") ||
+           agent_slash_command_with_args(cmd, "/gitnexus");
 }
 
 static uint64_t parse_u64(const char *s, const char *opt) {
@@ -4310,6 +4320,26 @@ static bool worker_take_web_approval_request(agent_worker *w,
     return pending;
 }
 
+/* Worker → UI: check if the loop guard is asking for user confirmation.
+ * Returns true if a request is pending. */
+static bool worker_take_loop_guard_request(agent_worker *w) {
+    pthread_mutex_lock(&w->mu);
+    bool pending = w->loop_guard_awaiting_user;
+    pthread_mutex_unlock(&w->mu);
+    return pending;
+}
+
+/* UI → Worker: answer the loop guard confirmation.
+ * continue_flag: true = user wants to continue, false = user wants to stop. */
+static void worker_answer_loop_guard(agent_worker *w, bool continue_flag) {
+    pthread_mutex_lock(&w->mu);
+    w->loop_guard_awaiting_user_continue = continue_flag;
+    w->loop_guard_awaiting_user_answered = true;
+    pthread_cond_signal(&w->cond);
+    agent_wake_locked(w);
+    pthread_mutex_unlock(&w->mu);
+}
+
 static void worker_answer_web_approval(agent_worker *w, bool allow,
                                        const char *deny_error) {
     pthread_mutex_lock(&w->mu);
@@ -7888,6 +7918,41 @@ static int agent_crawl_http_request(const char *method, const char *path,
  * ============================================================================
  */
 
+/* If GitNexus is enabled, run impact analysis on the file being modified.
+ * Extracts the basename without extension as a best-effort symbol name.
+ * Reports results via agent_publish so the user sees them. */
+static void agent_gitnexus_impact_file(agent_worker *w, const char *filepath) {
+    if (!w || !w->gitnexus_enabled || !filepath || !filepath[0]) return;
+
+    /* Extract basename without extension */
+    const char *base = strrchr(filepath, '/');
+    base = base ? base + 1 : filepath;
+    char symbol[256];
+    size_t len = strlen(base);
+    const char *dot = strrchr(base, '.');
+    size_t sym_len = (dot && dot > base) ? (size_t)(dot - base) : len;
+    if (sym_len >= sizeof(symbol)) sym_len = sizeof(symbol) - 1;
+    memcpy(symbol, base, sym_len);
+    symbol[sym_len] = '\0';
+    if (!symbol[0]) return;
+
+    /* Build and run gitnexus impact command */
+    char cmd[PATH_MAX + 64];
+    snprintf(cmd, sizeof(cmd), "gitnexus impact -d upstream --depth 2 -r \"ds4-studio\" \"%s\" 2>&1",
+             symbol);
+    FILE *fp = popen(cmd, "r");
+    if (!fp) return;
+    char buf[4096];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, fp);
+    buf[n] = '\0';
+    int rc = pclose(fp);
+    if (n > 0 && rc == 0) {
+        agent_publish(w, "\n[gitnexus:impact] ", 19);
+        agent_publish(w, buf, n);
+        agent_publish(w, "\n", 1);
+    }
+}
+
 /* Execute one parsed DSML tool call and return the text that will be appended as
  * the tool-role result.  UI visualization already happened while streaming; this
  * function is only about side effects and the model-visible observation. */
@@ -7897,9 +7962,19 @@ static char *agent_execute_tool_call(agent_worker *w, const agent_tool_call *cal
 
     if (!strcmp(call->name, "read")) return agent_tool_read(w, call);
     if (!strcmp(call->name, "more")) return agent_tool_more(w, call);
-    if (!strcmp(call->name, "write")) return agent_tool_write(w, call);
+    if (!strcmp(call->name, "write")) {
+        /* Automatic GitNexus impact analysis before write */
+        const char *path = agent_tool_arg_value(call, "path");
+        if (path) agent_gitnexus_impact_file(w, path);
+        return agent_tool_write(w, call);
+    }
     if (!strcmp(call->name, "list")) return agent_tool_list(call);
-    if (!strcmp(call->name, "edit")) return agent_tool_edit(w, call);
+    if (!strcmp(call->name, "edit")) {
+        /* Automatic GitNexus impact analysis before edit */
+        const char *path = agent_tool_arg_value(call, "path");
+        if (path) agent_gitnexus_impact_file(w, path);
+        return agent_tool_edit(w, call);
+    }
     if (!strcmp(call->name, "search")) return agent_tool_search(w, call);
     if (!strcmp(call->name, "retrieve_context_blob")) return agent_tool_retrieve_context_blob(w, call);
     if (!strcmp(call->name, "google_search")) return agent_tool_google_search(w, call);
@@ -8432,7 +8507,7 @@ static bool agent_loop_guard_record(agent_worker *w, const char *fingerprint) {
         if (w->loop_guard_ring[idx][0] &&
             !strcmp(w->loop_guard_ring[idx], fingerprint))
         {
-            w->loop_guard_consecutive_similar++;
+            w->loop_guard_consecutive_identical++;
             /* Record the fingerprint at current position */
             memcpy(w->loop_guard_ring[pos], fingerprint, sizeof(w->loop_guard_ring[pos]) - 1);
             w->loop_guard_ring[pos][sizeof(w->loop_guard_ring[pos]) - 1] = '\0';
@@ -8441,7 +8516,7 @@ static bool agent_loop_guard_record(agent_worker *w, const char *fingerprint) {
         }
     }
     /* New fingerprint — reset similar counter */
-    w->loop_guard_consecutive_similar = 0;
+    w->loop_guard_consecutive_identical = 0;
     memcpy(w->loop_guard_ring[pos], fingerprint, sizeof(w->loop_guard_ring[pos]) - 1);
     w->loop_guard_ring[pos][sizeof(w->loop_guard_ring[pos]) - 1] = '\0';
     w->loop_guard_ring_pos++;
@@ -8579,7 +8654,7 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
      * Anti-loop guard: limit tool rounds to prevent sterile grep/find loops
      * where the same command repeats with no progress. */
     w->loop_guard_consecutive_empty = 0;
-    w->loop_guard_consecutive_similar = 0;
+    w->loop_guard_consecutive_identical = 0;
     w->loop_guard_ring_pos = 0;
     for (int tool_round = 0; ; tool_round++) {
         if (tool_round >= w->loop_guard_max_tool_rounds) {
@@ -8901,24 +8976,69 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
                 w->loop_guard_consecutive_empty = 0;
             }
 
-            /* Stop if N consecutive empty results or N consecutive similar commands */
+            /* Stop if N consecutive empty results or N consecutive identical commands */
             if (w->loop_guard_consecutive_empty >= 5 ||
-                w->loop_guard_consecutive_similar >= 4)
+                w->loop_guard_consecutive_identical >= 4)
             {
-                agent_buf b = {0};
-                agent_buf_puts(&b, "Tool error: loop detected — ");
-                if (w->loop_guard_consecutive_empty >= 5)
-                    agent_buf_puts(&b, "tool results are empty. ");
-                else
-                    agent_buf_puts(&b, "similar commands repeat without progress. ");
-                agent_buf_puts(&b, "Please provide a final answer.\n");
-                char *loop_err = agent_buf_take(&b);
-                ds4_chat_append_message(w->engine, &w->transcript, "tool", loop_err);
-                free(loop_err);
-                free(tool_result);
-                agent_dsml_parser_free(&dsml);
-                agent_set_status(w, AGENT_WORKER_IDLE);
-                return 0;
+                /* Instead of immediately stopping, ask the user whether to
+                 * continue waiting or interrupt.  This handles cases where
+                 * machine slowness causes repeated identical commands that
+                 * are not actually a sterile loop. */
+                if (w->cfg->non_interactive) {
+                    /* Non-interactive mode: stop immediately */
+                    agent_buf b = {0};
+                    agent_buf_puts(&b, "Tool error: loop detected — ");
+                    if (w->loop_guard_consecutive_empty >= 5)
+                        agent_buf_puts(&b, "tool results are empty. ");
+                    else
+                        agent_buf_puts(&b, "identical commands repeat without progress. ");
+                    agent_buf_puts(&b, "Please provide a final answer.\n");
+                    char *loop_err = agent_buf_take(&b);
+                    ds4_chat_append_message(w->engine, &w->transcript, "tool", loop_err);
+                    free(loop_err);
+                    free(tool_result);
+                    agent_dsml_parser_free(&dsml);
+                    agent_set_status(w, AGENT_WORKER_IDLE);
+                    return 0;
+                }
+
+                /* Interactive mode: ask the user */
+                pthread_mutex_lock(&w->mu);
+                w->loop_guard_awaiting_user = true;
+                w->loop_guard_awaiting_user_answered = false;
+                w->loop_guard_awaiting_user_continue = false;
+                agent_wake_locked(w);
+                /* Wait for the main thread to prompt the user */
+                while (!w->stop && !w->interrupt && !w->loop_guard_awaiting_user_answered)
+                    pthread_cond_wait(&w->cond, &w->mu);
+                bool user_continues = w->loop_guard_awaiting_user_continue;
+                w->loop_guard_awaiting_user = false;
+                pthread_mutex_unlock(&w->mu);
+
+                if (w->stop || w->interrupt || !user_continues) {
+                    /* User chose to stop, or was interrupted */
+                    agent_buf b = {0};
+                    agent_buf_puts(&b, "Tool error: loop detected — ");
+                    if (w->loop_guard_consecutive_empty >= 5)
+                        agent_buf_puts(&b, "tool results are empty. ");
+                    else
+                        agent_buf_puts(&b, "identical commands repeat without progress. ");
+                    agent_buf_puts(&b, user_continues ? "" : "User interrupted.\n");
+                    char *loop_err = agent_buf_take(&b);
+                    ds4_chat_append_message(w->engine, &w->transcript, "tool", loop_err);
+                    free(loop_err);
+                    free(tool_result);
+                    agent_dsml_parser_free(&dsml);
+                    agent_set_status(w, AGENT_WORKER_IDLE);
+                    return 0;
+                }
+
+                /* User chose to continue — reset counters and proceed */
+                w->loop_guard_consecutive_empty = 0;
+                w->loop_guard_consecutive_identical = 0;
+                w->loop_guard_ring_pos = 0;
+                /* Publish a note so the user sees we resumed */
+                agent_publish(w, "\n[loop-guard] User chose to continue, resetting guard.\n", 56);
             }
         }
 
@@ -10931,6 +11051,35 @@ static int run_agent(ds4_engine *engine, agent_config *cfg) {
             continue;
         }
 
+        /* Loop guard user confirmation: if the worker detected repeated
+         * identical commands, ask the user whether to continue or stop. */
+        if (worker_take_loop_guard_request(&worker)) {
+            char *saved_input = NULL;
+            if (editor.active && editor.edit.buf && editor.edit.len)
+                saved_input = xstrndup(editor.edit.buf, editor.edit.len);
+            editor_stop(&editor);
+            editor_restore_terminal_layout(&editor);
+            printf("\n⚠️  Loop guard triggered: the model issued %d identical "
+                   "commands in a row.\n", AGENT_LOOP_GUARD_RING_SIZE);
+            printf("   This may indicate machine slowness rather than a real loop.\n");
+            agent_yes_no_options loop_opts = {
+                .timeout_sec = 30,
+                .timeout_answer = AGENT_YES_NO_AUTO_NO,
+            };
+            bool timed_out = false;
+            bool continue_loop = agent_prompt_yes_no_ex(
+                "Continue waiting? (y) or stop the turn? (n) ",
+                &loop_opts, &timed_out);
+            worker_answer_loop_guard(&worker, continue_loop);
+            worker_get_status(&worker, &st);
+            build_prompt_text(&st, prompt, sizeof(prompt));
+            int restart_cols = editor.edit.cols > 0 ? (int)editor.edit.cols : 80;
+            build_footer_text(&st, &queue, restart_cols, statusline, sizeof(statusline));
+            editor_start(&editor, prompt, statusline, saved_input);
+            free(saved_input);
+            continue;
+        }
+
         if (initial_pending && worker_is_idle(&worker)) {
             if (worker_submit(&worker, initial_pending)) {
                 free(initial_pending);
@@ -11037,6 +11186,35 @@ static int run_agent(ds4_engine *engine, agent_config *cfg) {
                         } else {
                             worker_request_power(&worker, power);
                         }
+                    }
+                } else if (!strncmp(cmd, "/gitnexus", 9) &&
+                           (cmd[9] == '\0' || cmd[9] == ' ' || cmd[9] == '\t')) {
+                    char *arg = cmd + 9;
+                    while (*arg == ' ' || *arg == '\t') arg++;
+                    if (!strncmp(arg, "start", 5) &&
+                        (arg[5] == '\0' || arg[5] == ' ' || arg[5] == '\t')) {
+                        /* Detect GitNexus installation */
+                        char path[PATH_MAX];
+                        FILE *fp = popen("which gitnexus 2>/dev/null", "r");
+                        if (fp) {
+                            size_t len = fread(path, 1, sizeof(path) - 1, fp);
+                            path[len] = '\0';
+                            while (len > 0 && (path[len-1] == '\n' || path[len-1] == '\r'))
+                                path[--len] = '\0';
+                            int rc = pclose(fp);
+                            if (len > 0 && rc == 0) {
+                                worker.gitnexus_enabled = true;
+                                strncpy(worker.gitnexus_path, path, sizeof(worker.gitnexus_path) - 1);
+                                worker.gitnexus_path[sizeof(worker.gitnexus_path) - 1] = '\0';
+                                printf("GitNexus enabled: %s\n", worker.gitnexus_path);
+                            } else {
+                                printf("GitNexus not found. Install it first.\n");
+                            }
+                        } else {
+                            printf("GitNexus not found. Install it first.\n");
+                        }
+                    } else {
+                        printf("usage: /gitnexus start\n");
                     }
                 } else if (cmd[0] == '/' && !agent_slash_command_known(cmd)) {
                     ssize_t ignored = write(STDOUT_FILENO, "\a", 1);

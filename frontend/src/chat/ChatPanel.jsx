@@ -61,9 +61,9 @@ export function ChatPanel({
           </button>
         ) : null}
         {agentMode && (
-          <div className="agent-badge" title={`Agent Mode Active - Iteration ${agentStatus?.iteration || 0} · Pony ${agentStatus?.ponyMode || "off"} · Headroom ${headroomEnabled ? "on" : "off"}`}>
+          <div className="agent-badge" title={`Agent Mode Active - Iteration ${agentStatus?.iteration || 0} · Pony ${agentStatus?.ponyMode || "off"} · Headroom ${headroomEnabled ? "on" : "off"} · GitNexus ${agentStatus?.gitnexusEnabled ? "on" : "off"}`}>
             <div className="agent-indicator"></div>
-            <span>Agent Active · Pony: {agentStatus?.ponyMode || "off"} · Headroom: {headroomEnabled ? "ON" : "OFF"}</span>
+            <span>Agent Active · Pony: {agentStatus?.ponyMode || "off"} · Headroom: {headroomEnabled ? "ON" : "OFF"} · GitNexus: {agentStatus?.gitnexusEnabled ? "ON" : "OFF"}</span>
             <button
               type="button"
               className="agent-stop-btn"
