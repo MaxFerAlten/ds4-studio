@@ -694,6 +694,7 @@ static void ds4_alloc_guard_check(const char *op, size_t size) {
 }
 
 static void *xcalloc(size_t n, size_t size) {
+    if (size != 0 && n > SIZE_MAX / size) ds4_die("allocation size overflow");
     ds4_alloc_guard_check("calloc", n * size);
     void *p = calloc(n, size);
     if (!p) ds4_die("out of memory");

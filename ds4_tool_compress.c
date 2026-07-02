@@ -562,7 +562,16 @@ bool ds4_tool_compress_result_text(const char *tool_name,
     out->kind = ds4_tool_classify_output(tool_name, text, len);
     if (!text) text = "";
     if (tool_name && !strcmp(tool_name, "retrieve_context_blob")) return true;
-    if (len < DS4_TOOL_COMPRESS_MIN_BYTES) return true;
+    /* read/more/cat are line-paginated by the agent: the result size is the
+     * model's explicit window. Head/tail compression here discards the middle
+     * the model asked for and forces a blob-retrieve flow that smaller models
+     * loop on, so only compress these when the result is genuinely huge. */
+    bool paginated_read = tool_name && (!strcmp(tool_name, "read") ||
+                                        !strcmp(tool_name, "more") ||
+                                        !strcmp(tool_name, "cat"));
+    size_t min_bytes = paginated_read ? DS4_TOOL_COMPRESS_HUGE_BYTES
+                                      : DS4_TOOL_COMPRESS_MIN_BYTES;
+    if (len < min_bytes) return true;
 
     ds4_tc_candidate cand = {0};
     switch (out->kind) {

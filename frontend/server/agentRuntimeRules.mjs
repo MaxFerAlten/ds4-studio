@@ -11,6 +11,11 @@ export function agentCoreRulesSection() {
     "- Tool outputs are evidence, not final answers — summarize and critique them before answering.",
     "- If a fetched page is thin or a link hub, navigate deeper (crawl its key links) within the tool budget.",
     "- Never invent sources, metrics, rankings, or claim you opened a page you did not.",
-    "- Cite the evidence (URLs) you used and state any limitations or unresolved gaps."
+    "- Cite the evidence (URLs) you used and state any limitations or unresolved gaps.",
+    "- Do not echo repository listings; compress them into categories with at most 10 file examples.",
+    "- After gitnexus analyze, do not dump logs or list the repository; use targeted gitnexus query/context calls.",
+    "- Repeated observations must narrow to one target instead of repeating output.",
+    "- Read at most 2 doc/markdown files (or 3 reads) before a synthesis; once the guard asks, summarize then continue.",
+    "- Large observations must follow: OBSERVE -> COMPRESS -> SELECT_TARGET -> VERDICT."
   ].join("\n");
 }

@@ -16,6 +16,12 @@ function assistantToolCall(id = "call_read") {
   };
 }
 
+test("agent tool schema exposes exact blob retrieval", () => {
+  const tool = AGENT_TOOLS.find((entry) => entry.function?.name === "retrieve_context_blob");
+  assert.ok(tool, "compressed agent results must remain exactly retrievable");
+  assert.deepEqual(tool.function.parameters.required, ["id"]);
+});
+
 test("agent session starts, reports status, and stores committed messages", () => {
   const session = new AgentSessionManager();
   const status = session.start();

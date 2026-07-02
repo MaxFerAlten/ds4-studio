@@ -93,6 +93,27 @@ test("write and edit update files under the workspace root", async () => {
   });
 });
 
+test("retrieve_context_blob returns an exact stored byte range", async () => {
+  const calls = [];
+  const toolBlobStore = {
+    async get(id, offset, length) {
+      calls.push({ id, offset, length });
+      return "exact bytes";
+    }
+  };
+
+  const result = await executeTool(
+    "retrieve_context_blob",
+    { id: `sha256:${"a".repeat(64)}`, offset: 7, length: 11 },
+    { toolBlobStore }
+  );
+
+  assert.equal(result.isError, false);
+  assert.match(result.content, /<context_blob_range>/);
+  assert.match(result.content, /exact bytes/);
+  assert.deepEqual(calls, [{ id: `sha256:${"a".repeat(64)}`, offset: 7, length: 11 }]);
+});
+
 test("search and list use the configured workspace root", async () => {
   await withTmpWorkspace(async (cwd) => {
     await writeFile(path.join(cwd, "a.txt"), "needle\n", "utf8");

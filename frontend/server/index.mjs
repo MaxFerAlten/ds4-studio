@@ -63,9 +63,15 @@ import { getAgentCapabilities, capabilitiesPromptSection } from "./agentCapabili
 import { autonomyPromptSection } from "./agentAutonomy.mjs";
 import { agentCoreRulesSection } from "./agentRuntimeRules.mjs";
 import { createHeadroomHandlers } from "./headroomControl.mjs";
-import { buildGitnexusPolicy } from "./agentGitnexusPolicy.mjs";
+import {
+  buildGitnexusPolicy,
+  checkPostGitnexusAnalyzeAction,
+  recordGitnexusAnalyzeResult
+} from "./agentGitnexusPolicy.mjs";
 import { ToolBlobStore } from "./toolBlobStore.mjs";
-import { compressToolOutput } from "./toolOutputCompressor.mjs";
+import { compressToolOutput, compressToolResultForModel } from "./toolOutputCompressor.mjs";
+import { guardAssistantDelta, hasStructuredSynthesis } from "./agentLoopGuard.mjs";
+import { checkVerifiedClaim } from "./claimGuard.mjs";
 import {
   canonicalLegacyCommand,
   isAgentSlashCommand,
@@ -1669,6 +1675,8 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
     ];
   }
   if (userMessage) fullMessages.push({ role: "user", content: String(userMessage) });
+  const turnEvidence = [];
+  const policyState = { gitnexusAnalyzeSeen: false };
 
   const agentTokenBudget = maxAgentTotalTokens(process.env);
   const initialBudgetStatus = agentBudgetStatus(fullMessages, agentSession.usageTotals, agentTokenBudget);
@@ -1730,7 +1738,13 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
         for (const c of calls) {
           if (controller.signal.aborted) break;
           writeAgentSse("agent_tool_call", { id: c.id, name: "crawl", arguments: { url: c.url } });
-          const result = await executeTool("crawl", { url: c.url }, { signal: controller.signal, crawlBaseUrl, crawlToken });
+          const rawResult = await executeTool("crawl", { url: c.url }, { signal: controller.signal, crawlBaseUrl, crawlToken });
+          const result = rawResult?.isError
+            ? rawResult
+            : await compressToolResultForModel("crawl", rawResult, toolBlobStore);
+          if (result.compressed) {
+            agentSession.loopGuard.recordCompressedObservation();
+          }
           writeAgentSse("agent_tool_result", { id: c.id, name: "crawl", content: result.content, isError: result.isError, guarded: false });
           fullMessages.push({ role: "tool", tool_call_id: c.id, content: result.content });
           if (result.raw?.manifest) manifests.push(result.raw.manifest);
@@ -1755,6 +1769,10 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
         fullMessages.push({ role: "system", content: buildSynthesisBrief(evidence, { question: userMessage }) });
       }
     }
+
+    // Loop guard counts persist across iterations within this turn (detect the
+    // agent repeating the same intent/action/result); reset once per turn.
+    agentSession.loopGuard.beginTurn();
 
     let iteration = 0;
 
@@ -1852,6 +1870,7 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
       let toolCalls = [];
       let currentToolCalls = new Map();
       let finishReason = null;
+      let streamGuardBlocked = false;
 
       for (;;) {
         if (controller.signal.aborted) break;
@@ -1887,8 +1906,29 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
 
           // Text content
           if (delta.content) {
-            assistantContent += delta.content;
-            writeAgentSse("agent_text", { content: delta.content });
+            const guarded = guardAssistantDelta(assistantContent, delta.content, agentSession.loopGuard);
+            if (guarded.decision?.warn) {
+              writeAgentSse("agent_warning", {
+                type: guarded.decision.type,
+                warning: `${guarded.decision.reason}\n${guarded.decision.guidance}`
+              });
+            }
+            if (!guarded.accepted) {
+              streamGuardBlocked = true;
+              writeAgentSse("agent_error", {
+                error: `[${guarded.decision.type}] ${guarded.decision.reason}\n${guarded.decision.guidance}`
+              });
+              writeAgentSse("agent_done", {
+                iterations: iteration,
+                finish_reason: "loop_guard",
+                totals: agentSession.usageTotals
+              });
+              controller.abort();
+              break;
+            }
+            const acceptedDelta = guarded.content.slice(assistantContent.length);
+            assistantContent = guarded.content;
+            if (acceptedDelta) writeAgentSse("agent_text", { content: acceptedDelta });
           }
 
           // Reasoning
@@ -1915,6 +1955,8 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
         }
       }
 
+      if (streamGuardBlocked) break;
+
       // Finalize tool calls
       toolCalls = Array.from(currentToolCalls.values()).map((tc) => {
         let parsedArgs = {};
@@ -1936,8 +1978,39 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
         }));
       }
 
-      // Commit the conversation state. After a forced reset the pending
-      // metadata still describes the actual payload sent on the wire.
+      // Validate the completed response before committing it to continuation state.
+      const claimDecision = checkVerifiedClaim(
+        assistantContent,
+        turnEvidence.join("\n"),
+        { mode: "warn" }
+      );
+      if (claimDecision?.warn) {
+        writeAgentSse("agent_warning", {
+          type: claimDecision.type,
+          warning: `${claimDecision.reason}\n${claimDecision.guidance}`
+        });
+      }
+      const intentDecision = agentSession.loopGuard.checkAssistantText(assistantContent);
+      if (intentDecision?.warn) {
+        writeAgentSse("agent_warning", {
+          type: intentDecision.type,
+          warning: `${intentDecision.reason}\n${intentDecision.guidance}`
+        });
+      }
+      if (intentDecision?.block) {
+        writeAgentSse("agent_error", {
+          error: `[${intentDecision.type}] ${intentDecision.reason}\n${intentDecision.guidance}`
+        });
+        writeAgentSse("agent_done", { iterations: iteration, finish_reason: "loop_guard", totals: agentSession.usageTotals });
+        break;
+      }
+
+      // Only a complete ordered synthesis releases the read-batch budget.
+      if (hasStructuredSynthesis(assistantContent)) {
+        agentSession.readGuard.markSummaryProduced();
+      }
+
+      // Commit only a response accepted by the loop guard.
       agentSession.commit(modeChoice.pending, assistantMessage);
       fullMessages = agentSession.messages();
 
@@ -1978,12 +2051,33 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
           arguments: tc.arguments
         });
 
+        const policyDecision = checkPostGitnexusAnalyzeAction({
+          tool: tc.name,
+          target: tc.arguments?.path || "",
+          args: tc.arguments
+        }, policyState);
+        if (policyDecision?.block) {
+          return {
+            id: tc.id,
+            name: tc.name,
+            content: `[${policyDecision.type}]\n${policyDecision.reason}\n${policyDecision.guidance}`,
+            isError: true,
+            guarded: true
+          };
+        }
+
         // Read-guard: short-circuit duplicate/covered reads with a synthetic
         // tool result so the model receives clear guidance instead of the
         // same content twice.
         if (tc.name === "read") {
           const decision = agentSession.readGuard.checkRead(tc.arguments, AGENT_READ_GUARD_MODE);
           if (decision?.block) {
+            // Progress-guidance blocks (read-batch budget spent) are not errors:
+            // they ask the model to synthesize. Surface as a normal tool result
+            // so the native loop guard does not count it as an empty result.
+            if (decision.progressGuidance) {
+              return { id: tc.id, name: tc.name, content: `[${decision.type}]\n${decision.guidance}`, isError: false, guarded: true };
+            }
             return { id: tc.id, name: tc.name, content: decision.reason, isError: true, guarded: true };
           }
         }
@@ -2000,6 +2094,18 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
           }
         }
 
+        // Loop guard: block repeated identical actions (same tool+target+args).
+        {
+          const decision = agentSession.loopGuard.checkAction({
+            tool: tc.name,
+            target: tc.arguments?.path || tc.arguments?.query || tc.arguments?.command || tc.arguments?.url || "",
+            args: tc.arguments
+          });
+          if (decision?.block) {
+            return { id: tc.id, name: tc.name, content: `${decision.reason}\n${decision.guidance}`, isError: true, guarded: true };
+          }
+        }
+
         const opts = {
           signal: controller.signal,
           crawlBaseUrl: tc.name === "crawl" ? crawlBase() : undefined,
@@ -2010,18 +2116,58 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
             ? (chunk) => writeAgentSse("agent_tool_progress", { id: tc.id, name: tc.name, chunk })
             : undefined,
           sageCallLog: tc.name === "sage" ? sageCallLog : undefined,
-          toolBlobStore: tc.name === "sage" ? toolBlobStore : undefined,
+          toolBlobStore: tc.name === "sage" || tc.name === "retrieve_context_blob"
+            ? toolBlobStore
+            : undefined,
           // Keep sage-generated files (.sage.py, plots, …) out of the project
           // tree: run sage in a per-session dir under the workspace that holds
           // history/sessions.
           sageWorkdir: tc.name === "sage" ? sageSessionDir(fileWorkspace.root, sessionKey) : undefined
         };
-        const result = await executeTool(tc.name, tc.arguments, opts);
+        const rawResult = await executeTool(tc.name, tc.arguments, opts);
+        recordGitnexusAnalyzeResult(
+          { tool: tc.name, args: tc.arguments },
+          rawResult,
+          policyState
+        );
+        if (!rawResult?.isError) {
+          turnEvidence.push([
+            `tool: ${tc.name}`,
+            `arguments: ${JSON.stringify(tc.arguments || {})}`,
+            String(rawResult?.content || "").slice(0, 4000)
+          ].join("\n"));
+        }
 
-        if (tc.name === "read" && !result.isError) {
-          agentSession.readGuard.rememberRead(tc.arguments, result.raw);
-        } else if ((tc.name === "write" || tc.name === "edit") && !result.isError) {
+        // Loop guard: stop if repeated steps yield no new observation.
+        const progress = agentSession.loopGuard.recordProgress("tool-result", {
+          tool: tc.name,
+          target: tc.arguments?.path || tc.arguments?.query || tc.arguments?.command || tc.arguments?.url || "",
+          content: String(rawResult.content || "")
+        });
+        if (progress?.block) {
+          return { id: tc.id, name: tc.name, content: `${progress.reason}\n${progress.guidance}`, isError: true, guarded: true };
+        }
+
+        if (tc.name === "read" && !rawResult.isError) {
+          agentSession.readGuard.rememberRead(tc.arguments, rawResult.raw, rawResult.content);
+        } else if ((tc.name === "write" || tc.name === "edit") && !rawResult.isError) {
           agentSession.readGuard.invalidatePath(tc.arguments?.path);
+        }
+
+        let result = rawResult;
+        const guardResult = rawResult?.guarded ||
+          /^\[(READ_BATCH_SUMMARY_REQUIRED|DOC_READ_SUMMARY_REQUIRED|RAW_DOC_CONTEXT_SUMMARY_REQUIRED)\]/.test(
+            String(rawResult?.content || "")
+          );
+        if (!rawResult?.isError && !guardResult) {
+          result = await compressToolResultForModel(
+            tc.name,
+            rawResult,
+            toolBlobStore
+          );
+          if (result.compressed) {
+            agentSession.loopGuard.recordCompressedObservation();
+          }
         }
 
         return { id: tc.id, name: tc.name, content: result.content, isError: result.isError };

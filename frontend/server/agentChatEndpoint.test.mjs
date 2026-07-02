@@ -3,6 +3,7 @@
 // by mocking the Express handler's dependencies.
 
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { AgentSessionStore } from "./agentSession.mjs";
 
@@ -153,4 +154,73 @@ test("pony policy preserves message content", () => {
   assert.match(body.message, /^<ponyPolicy>\nFocus on code\.\n\nUser request:\nCiao/);
   // Request params must survive
   assert.deepEqual(body.request, requestParams);
+});
+
+test("JS agent stream guards cumulative text before emitting SSE", async () => {
+  const source = await readFile(new URL("./index.mjs", import.meta.url), "utf8");
+
+  assert.match(
+    source,
+    /guardAssistantDelta\(assistantContent, delta\.content, agentSession\.loopGuard\)/
+  );
+  assert.match(source, /const acceptedDelta = guarded\.content\.slice\(assistantContent\.length\)/);
+  assert.doesNotMatch(
+    source,
+    /assistantContent\s*\+=\s*delta\.content;\s*writeAgentSse\("agent_text", \{ content: delta\.content \}\)/
+  );
+});
+
+test("JS agent compresses tool results and activates observation flow before exposure", async () => {
+  const source = await readFile(new URL("./index.mjs", import.meta.url), "utf8");
+
+  assert.match(source, /const rawResult = await executeTool\(tc\.name, tc\.arguments, opts\)/);
+  assert.match(
+    source,
+    /compressToolResultForModel\(\s*tc\.name,\s*rawResult,\s*toolBlobStore\s*\)/
+  );
+  assert.match(source, /if \(result\.compressed\) \{\s*agentSession\.loopGuard\.recordCompressedObservation\(\)/);
+});
+
+test("JS agent compresses crawl results before SSE and model context exposure", async () => {
+  const source = await readFile(new URL("./index.mjs", import.meta.url), "utf8");
+
+  assert.match(
+    source,
+    /const rawResult = await executeTool\("crawl",[\s\S]*?compressToolResultForModel\(\s*"crawl",\s*rawResult,\s*toolBlobStore\s*\)/
+  );
+  assert.match(
+    source,
+    /compressToolResultForModel\(\s*"crawl",[\s\S]*?writeAgentSse\("agent_tool_result", \{[^}]*content: result\.content[\s\S]*?fullMessages\.push\(\{ role: "tool", tool_call_id: c\.id, content: result\.content \}\)/
+  );
+});
+
+test("JS agent warns on unsupported verified claims using current-turn evidence", async () => {
+  const source = await readFile(new URL("./index.mjs", import.meta.url), "utf8");
+
+  assert.match(source, /import \{ checkVerifiedClaim \} from "\.\/claimGuard\.mjs"/);
+  assert.match(source, /const turnEvidence = \[\]/);
+  assert.match(source, /turnEvidence\.push\(/);
+  assert.match(
+    source,
+    /checkVerifiedClaim\(\s*assistantContent,\s*turnEvidence\.join\("\\n"\),\s*\{ mode: "warn" \}\s*\)/
+  );
+  assert.match(source, /type: claimDecision\.type/);
+});
+
+test("JS agent enforces post-GitNexus analyze policy in the current turn", async () => {
+  const source = await readFile(new URL("./index.mjs", import.meta.url), "utf8");
+
+  assert.match(
+    source,
+    /import \{[^}]*checkPostGitnexusAnalyzeAction[^}]*recordGitnexusAnalyzeResult[^}]*\} from "\.\/agentGitnexusPolicy\.mjs"/s
+  );
+  assert.match(source, /const policyState = \{ gitnexusAnalyzeSeen: false \}/);
+  assert.match(
+    source,
+    /checkPostGitnexusAnalyzeAction\(\s*\{[\s\S]*?tool: tc\.name,[\s\S]*?args: tc\.arguments[\s\S]*?\},\s*policyState\s*\)/
+  );
+  assert.match(
+    source,
+    /recordGitnexusAnalyzeResult\(\s*\{ tool: tc\.name, args: tc\.arguments \},\s*rawResult,\s*policyState\s*\)/
+  );
 });

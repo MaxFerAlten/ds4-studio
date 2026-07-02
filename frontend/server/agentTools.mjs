@@ -232,6 +232,8 @@ export async function executeTool(name, args = {}, options = {}) {
         return await toolCrawl(args, options);
       case "research_discover":
         return await toolResearchDiscover(args, options);
+      case "retrieve_context_blob":
+        return await toolRetrieveContextBlob(args, options);
       case "chat_history_search":
         return toolHistory(args, options);
       default:
@@ -240,6 +242,34 @@ export async function executeTool(name, args = {}, options = {}) {
   } catch (err) {
     return { content: `Tool ${name} error: ${err.message}`, isError: true };
   }
+}
+
+async function toolRetrieveContextBlob(args, options) {
+  const store = options?.toolBlobStore;
+  if (!store || typeof store.get !== "function") {
+    return { content: "retrieve_context_blob: blob store is unavailable", isError: true };
+  }
+  const id = typeof args?.id === "string" ? args.id : "";
+  const offset = Math.max(0, Math.trunc(Number(args?.offset) || 0));
+  const requestedLength = Math.trunc(Number(args?.length) || 20_000);
+  if (!id || requestedLength < 1 || requestedLength > 200_000) {
+    return { content: "retrieve_context_blob: valid id and length 1..200000 are required", isError: true };
+  }
+
+  const content = await store.get(id, offset, requestedLength);
+  if (content === null) {
+    return { content: `retrieve_context_blob: blob not found or invalid id: ${id}`, isError: true };
+  }
+  return {
+    content: [
+      `context_blob id=${id} offset=${offset} bytes=${Buffer.byteLength(content, "utf8")} requested_length=${requestedLength}`,
+      "<context_blob_range>",
+      content,
+      "</context_blob_range>"
+    ].join("\n"),
+    isError: false,
+    raw: { id, offset, length: requestedLength }
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -632,6 +662,16 @@ function rangeEnd(range) {
   return range.limit === "all" ? Number.POSITIVE_INFINITY : range.offset + range.limit - 1;
 }
 
+// Near-duplicate read detection: a "monotonic drift" loop (read 55-84, then
+// 56-85, …) is not caught by exact/covered checks but is still a loop.
+const NEAR_DUPLICATE_READ_RATIO = 0.8;
+
+function overlapRatio(aStart, aEnd, bStart, bEnd) {
+  const overlap = Math.max(0, Math.min(aEnd, bEnd) - Math.max(aStart, bStart) + 1);
+  const shortest = Math.max(1, Math.min(aEnd - aStart + 1, bEnd - bStart + 1));
+  return overlap / shortest;
+}
+
 export class ReadGuard {
   constructor() {
     /** @type {Map<string, SeenReadRange>} */
@@ -639,16 +679,35 @@ export class ReadGuard {
     /** @type {Map<string, number>} */
     this.blockedThisTurn = new Map();
     this.lastSummary = "no read guard blocks yet";
+    // Read-batch progress budget: after a small batch of reads without a
+    // structured synthesis the guard forces the model to summarize, so it
+    // anticipates the native "tool results are empty" loop guard instead of
+    // letting it fire as an emergency brake. Counters persist across turns and
+    // reset only on a real synthesis (markSummaryProduced) or clearAll.
+    this.readCount = 0;
+    this.docReadCount = 0;
+    this.rawChars = 0;
+    this.maxReadsBeforeSummary = Number(process.env.DS4_AGENT_READ_BATCH_LIMIT) || 3;
+    this.maxDocReadsBeforeSummary = Number(process.env.DS4_AGENT_DOC_READ_BATCH_LIMIT) || 2;
+    this.maxRawCharsBeforeSummary = Number(process.env.DS4_AGENT_RAW_DOC_CHARS_LIMIT) || 12000;
   }
 
   beginTurn() {
     this.blockedThisTurn.clear();
   }
 
+  /** A structured synthesis was emitted — release the read-batch budget. */
+  markSummaryProduced() {
+    this.readCount = 0;
+    this.docReadCount = 0;
+    this.rawChars = 0;
+  }
+
   clearAll() {
     this.seen.clear();
     this.blockedThisTurn.clear();
     this.lastSummary = "no read guard blocks yet";
+    this.markSummaryProduced();
   }
 
   /** Returns true when any read on this file was blocked earlier in the turn. */
@@ -685,6 +744,17 @@ export class ReadGuard {
       this.lastSummary = `blocked covered ${range.label}`;
       return { block: true, reason };
     }
+    const near = this._nearDuplicate(range);
+    if (near) {
+      this._bump(range.path);
+      const reason = `Near-duplicate read blocked: ${range.label} substantially overlaps earlier read ${near.label}. Do not retry with slightly shifted line numbers. Use the previous result, jump to a non-overlapping range, or stop with a verdict.`;
+      this.lastSummary = `blocked near-duplicate ${range.label}`;
+      return { block: true, reason };
+    }
+    // This is a novel read (not duplicate/covered/near-duplicate). Once the
+    // per-batch budget of novel reads is spent, force a synthesis instead.
+    const batch = this._checkBatchBudget(range);
+    if (batch) return batch;
     if (mode === "strict" && (this.blockedThisTurn.get(range.path) || 0) > 0) {
       this._bump(range.path);
       const reason = `Strict read guard: further read of ${range.label} blocked because an earlier read of this file was already blocked this turn. Answer from existing context or use grep/search for the missing fact.`;
@@ -695,9 +765,15 @@ export class ReadGuard {
   }
 
   /** Remember a successful read so future duplicate ranges get blocked. */
-  rememberRead(input, raw) {
+  rememberRead(input, raw, content = "") {
     const range = readRangeOf(input);
     if (!range) return;
+    // Account this read against the per-batch progress budget.
+    this.readCount += 1;
+    if (this._isDocPath(range.path)) this.docReadCount += 1;
+    const lines = typeof range.limit === "number" ? range.limit : DEFAULT_MAX_LINES;
+    const actualChars = String(content || "").length;
+    this.rawChars += actualChars > 0 ? actualChars : lines * 50;
     const existing = this.seen.get(range.key);
     const nextOffset = raw && typeof raw.next_offset === "number" ? raw.next_offset : null;
     const actualLimit = range.limit === "all" && nextOffset && nextOffset > range.offset
@@ -720,6 +796,45 @@ export class ReadGuard {
     }
   }
 
+  _isDocPath(p) {
+    return typeof p === "string" && (/\.(md|markdown|txt|rst|adoc)$/i.test(p) || /(^|\/)docs?\//i.test(p));
+  }
+
+  /**
+   * Block a read when the per-batch budget is spent, returning a structured
+   * progress-guidance result (distinct from duplicate blocks: the caller
+   * surfaces it as a non-error tool result).  Doc budget is checked first so a
+   * doc-heavy batch trips the tighter doc threshold before the general one.
+   */
+  _checkBatchBudget(range) {
+    if (this._isDocPath(range.path) && this.docReadCount >= this.maxDocReadsBeforeSummary) {
+      return this._progressBlock("DOC_READ_SUMMARY_REQUIRED",
+        `Already read ${this.docReadCount} doc/markdown file(s) this batch without a synthesis.`);
+    }
+    if (this.readCount >= this.maxReadsBeforeSummary) {
+      return this._progressBlock("READ_BATCH_SUMMARY_REQUIRED",
+        `Already performed ${this.readCount} reads this batch without a synthesis.`);
+    }
+    if (this.rawChars >= this.maxRawCharsBeforeSummary) {
+      return this._progressBlock("RAW_DOC_CONTEXT_SUMMARY_REQUIRED",
+        `Already pulled ~${this.rawChars} chars of file context this batch without a synthesis.`);
+    }
+    return undefined;
+  }
+
+  _progressBlock(type, reason) {
+    this.lastSummary = `progress guard: ${type}`;
+    const guidance = [
+      reason,
+      "Stop reading now. Produce a partial analysis from what you already have:",
+      "[OBSERVATION] what was learned so far",
+      "[COMPRESSED] <= 10 lines",
+      "[TARGET_SELECTED] the single next thing to read, if any",
+      "[VERDICT] GO / STOP / RETEST"
+    ].join("\n");
+    return { block: true, progressGuidance: true, type, reason, guidance };
+  }
+
   _bump(p) {
     this.blockedThisTurn.set(p, (this.blockedThisTurn.get(p) ?? 0) + 1);
   }
@@ -733,6 +848,16 @@ export class ReadGuard {
   _covering(range) {
     const end = rangeEnd(range);
     return this._rangesForPath(range.path).find((seen) => seen.offset <= range.offset && rangeEnd(seen) >= end);
+  }
+
+  _nearDuplicate(range) {
+    const end = rangeEnd(range);
+    if (!Number.isFinite(end)) return undefined; // whole-file reads handled by _covering
+    return this._rangesForPath(range.path).find((seen) => {
+      const seenEnd = rangeEnd(seen);
+      if (!Number.isFinite(seenEnd)) return false;
+      return overlapRatio(seen.offset, seenEnd, range.offset, end) >= NEAR_DUPLICATE_READ_RATIO;
+    });
   }
 }
 
