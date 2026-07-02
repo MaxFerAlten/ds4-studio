@@ -26,6 +26,21 @@ else
     echo "   ✅ Old name loop_guard_consecutive_similar removed"
 fi
 
+echo ""
+echo "1b. Checking structured progress guidance..."
+if grep -Fq "READ_BATCH_SUMMARY_REQUIRED" ds4_agent.c; then
+    echo "   ✅ Structured read guidance is recognized"
+else
+    echo "   ❌ Missing READ_BATCH_SUMMARY_REQUIRED recognition"
+    exit 1
+fi
+if grep -Fq "Stop reading. Produce a partial analysis now" ds4_agent.c; then
+    echo "   ✅ Loop guard requests structured partial analysis"
+else
+    echo "   ❌ Missing structured loop-guard message"
+    exit 1
+fi
+
 # Step 2: Verify user confirmation fields exist
 echo ""
 echo "2. Checking user confirmation fields..."

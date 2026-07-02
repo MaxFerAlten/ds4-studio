@@ -14,6 +14,85 @@ const MAX_INLINE_BYTES = 12_000;
 const MIN_RATIO_NUM = 4;
 const MIN_RATIO_DEN = 5;
 
+const FILE_TOKEN_RE =
+  /(?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+\.(?:c|h|cu|cuh|m|mm|metal|js|mjs|jsx|ts|tsx|py|md|txt|json|inc|sh)\b/g;
+
+export function extractFileTokens(text) {
+  return String(text || "").match(FILE_TOKEN_RE) || [];
+}
+
+function fileBucket(file) {
+  if (/^ds4\.(?:c|h)$/.test(file) || /^ds4_(?:eval|bench|cli|help)\.(?:c|h)$/.test(file)) {
+    return "inference_core";
+  }
+  if (/^rocm\//.test(file) || /^ds4_rocm/.test(file) || /\.cuh$/.test(file)) {
+    return "rocm_kernels";
+  }
+  if (/\.(?:cu|metal|m)$/.test(file) || /^ds4_(?:cuda|gpu|metal)/.test(file)) {
+    return "gpu_backends";
+  }
+  if (/agent|tool|runtime|session|loop|history/i.test(file)) return "agent_runtime";
+  if (/server|wrapper|http|config|metrics|state|proxy/i.test(file)) return "server_wrapper";
+  if (/test|bench|cert|simulate|regression|matrix/i.test(file)) return "tests_bench";
+  if (/\.(?:md|sh|txt|json)$/.test(file)) return "docs_scripts";
+  return "other";
+}
+
+export function summarizeFileListOutput(text, {
+  maxExamples = 10,
+  maxRawFileTokens = 40,
+  maxSameFile = 3,
+  maxOutputChars = 6000
+} = {}) {
+  const content = String(text || "");
+  const files = extractFileTokens(content);
+  const counts = new Map();
+  for (const file of files) counts.set(file, (counts.get(file) || 0) + 1);
+
+  const repeated = [...counts.entries()].filter(([, count]) => count > maxSameFile);
+  const tooManyFiles = files.length > maxRawFileTokens;
+  const longFileListing = content.length > maxOutputChars && files.length >= 10;
+  if (!tooManyFiles && !repeated.length && !longFileListing) {
+    return { compressed: false, content };
+  }
+
+  const uniqueFiles = [...counts.keys()];
+  const buckets = new Map();
+  for (const file of uniqueFiles) {
+    const bucket = fileBucket(file);
+    buckets.set(bucket, (buckets.get(bucket) || 0) + 1);
+  }
+  const categoryLines = [...buckets.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, count]) => `- ${name}: ${count} file(s)`);
+  const examples = uniqueFiles.slice(0, Math.max(0, maxExamples));
+  const reason = repeated.length
+    ? "repeated_file_names"
+    : tooManyFiles
+      ? "file_token_limit"
+      : "long_file_listing";
+
+  return {
+    compressed: true,
+    reason,
+    fileCount: uniqueFiles.length,
+    fileTokenCount: files.length,
+    content: [
+      "[TOOL_OUTPUT_COMPRESSED]",
+      "Large repository/file listing suppressed.",
+      `Raw file tokens: ${files.length}; unique files: ${uniqueFiles.length}.`,
+      "",
+      "Categories:",
+      ...categoryLines,
+      "",
+      `Examples: ${examples.join(", ")}`,
+      "",
+      "Required behavior: Do not repeat the full file list.",
+      "Next step: choose one concrete target or run a targeted search."
+    ].join("\n")
+  };
+}
+
 /** Content kind enum matching ds4_tool_content_kind */
 export const ContentKind = Object.freeze({
   UNKNOWN: "unknown",
@@ -24,6 +103,22 @@ export const ContentKind = Object.freeze({
   FILE: "file",
   TRACE: "trace"
 });
+
+export function shouldPreferFileListCompression(toolName, kind, text) {
+  if (toolName === "retrieve_context_blob") return false;
+  if (toolName === "list") return true;
+
+  const files = extractFileTokens(text);
+  if (files.length > 40) return true;
+
+  const counts = new Map();
+  for (const file of files) counts.set(file, (counts.get(file) || 0) + 1);
+  if ([...counts.values()].some((count) => count > 3)) return true;
+
+  if (kind === ContentKind.SEARCH && files.length > 20) return true;
+  if (kind === ContentKind.LOG && files.length > 20) return true;
+  return kind === ContentKind.UNKNOWN;
+}
 
 /** Important keywords (case-insensitive) — lines containing these are always kept */
 const IMPORTANT_NEEDLES = [
@@ -129,11 +224,34 @@ export function classifyOutput(toolName, text, len) {
 export async function compressToolOutput(toolName, text, len, blobStore) {
   if (!text) text = "";
   if (toolName === "retrieve_context_blob") return null;
-  if (len < MIN_BYTES) return null;
 
   const kind = classifyOutput(toolName, text, len);
-  let cand = null;
+  const fileList = summarizeFileListOutput(text);
+  if (fileList.compressed && shouldPreferFileListCompression(toolName, kind, text)) {
+    if (!blobStore) return null;
+    const blobResult = await blobStore.put(text);
+    if (!blobResult?.id) return null;
+    const body = [
+      fileList.content,
+      "",
+      `Raw output stored as blob: ${blobResult.id}`,
+      `retrieve: retrieve_context_blob id=${blobResult.id} offset=0 length=20000`
+    ].join("\n");
+    return {
+      changed: true,
+      text: body,
+      kind: ContentKind.FILE,
+      strategy: "file_list_compressor",
+      originalBytes: len,
+      compressedBytes: Buffer.byteLength(body, "utf8"),
+      blobId: blobResult.id,
+      omittedLines: Math.max(0, text.split("\n").length - 1)
+    };
+  }
 
+  if (len < MIN_BYTES) return null;
+
+  let cand = null;
   switch (kind) {
     case ContentKind.SEARCH:
       cand = compressSearch(text, len);
@@ -189,6 +307,26 @@ export async function compressToolOutput(toolName, text, len, blobStore) {
     compressedBytes: markerLen,
     blobId: blobResult.id,
     omittedLines: cand.omittedLines
+  };
+}
+
+export async function compressToolResultForModel(toolName, result, blobStore) {
+  const original = result && typeof result === "object" ? result : {};
+  const content = String(original.content || "");
+  const compression = await compressToolOutput(
+    toolName,
+    content,
+    Buffer.byteLength(content, "utf8"),
+    blobStore
+  );
+  if (!compression?.changed || !compression.text) {
+    return { ...original, compressed: false };
+  }
+  return {
+    ...original,
+    content: compression.text,
+    compressed: true,
+    compression
   };
 }
 

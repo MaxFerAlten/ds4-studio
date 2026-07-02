@@ -600,6 +600,7 @@ static const char *runtime_command_name(agent_slash_command_kind kind) {
     case AGENT_SLASH_STRIP:   return "strip";
     case AGENT_SLASH_HISTORY: return "history";
     case AGENT_SLASH_CRAWL:   return "crawl";
+    case AGENT_SLASH_METACOGNITION: return "metacognition";
     default:                  return "unknown";
     }
 }
@@ -962,6 +963,7 @@ int ds4_agent_runtime_command(ds4_agent_runtime *rt, const char *command,
             "  /history [N] Show N recent user turns from the current session.\n"
             "  /power N     Set GPU duty cycle percentage, 1..100.\n"
             "  /new         Start a fresh session from the system prompt.\n"
+            "  /metacognition start|stop  Inject or remove the metacognition skill.\n"
             "  /quit, /exit Save if needed and return to server mode.");
         break;
 
@@ -1094,6 +1096,41 @@ int ds4_agent_runtime_command(ds4_agent_runtime *rt, const char *command,
         runtime_command_set_message(result, "GPU duty cycle set to %d%%.",
                                     parsed.number);
         break;
+
+    case AGENT_SLASH_METACOGNITION: {
+        char *arg = parsed.arg;
+        while (*arg == ' ' || *arg == '\t') arg++;
+        if (!strncmp(arg, "start", 5) &&
+            (arg[5] == '\0' || arg[5] == ' ' || arg[5] == '\t')) {
+            char rerr[256] = {0};
+            char *content = agent_read_metacognition_skill(rerr, sizeof(rerr));
+            if (!content)
+                return runtime_command_fail(result, 404, "%s", rerr);
+            free(rt->worker.metacognition_prompt);
+            rt->worker.metacognition_prompt = content;
+            if (!runtime_command_save_if_dirty(rt, result)) return -1;
+            if (ds4_agent_runtime_new(rt, rerr, sizeof(rerr)) != 0)
+                return runtime_command_fail(result, 500, "session reset failed: %s",
+                                            rerr[0] ? rerr : "unknown error");
+            runtime_command_set_message(result, "Metacognition skill activated.");
+        } else if (!strncmp(arg, "stop", 4) &&
+                   (arg[4] == '\0' || arg[4] == ' ' || arg[4] == '\t')) {
+            if (!rt->worker.metacognition_prompt)
+                return runtime_command_fail(result, 400,
+                                            "Metacognition skill is not active.");
+            free(rt->worker.metacognition_prompt);
+            rt->worker.metacognition_prompt = NULL;
+            if (!runtime_command_save_if_dirty(rt, result)) return -1;
+            if (ds4_agent_runtime_new(rt, err, sizeof(err)) != 0)
+                return runtime_command_fail(result, 500, "session reset failed: %s",
+                                            err[0] ? err : "unknown error");
+            runtime_command_set_message(result, "Metacognition skill deactivated.");
+        } else {
+            return runtime_command_fail(result, 400,
+                                        "usage: /metacognition start|stop");
+        }
+        break;
+    }
 
     case AGENT_SLASH_NEW:
         if (!runtime_command_save_if_dirty(rt, result)) return -1;

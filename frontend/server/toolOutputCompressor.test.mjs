@@ -1,6 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { classifyOutput, compressToolOutput, ContentKind } from "./toolOutputCompressor.mjs";
+import {
+  classifyOutput,
+  compressToolOutput,
+  compressToolResultForModel,
+  ContentKind,
+  extractFileTokens,
+  summarizeFileListOutput
+} from "./toolOutputCompressor.mjs";
+import * as compressorModule from "./toolOutputCompressor.mjs";
 import { ToolBlobStore } from "./toolBlobStore.mjs";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -78,6 +86,44 @@ test("classifyOutput returns LOG for bash tool output regardless of content", ()
   assert.equal(classifyOutput("bash", "hello", 5), ContentKind.LOG);
 });
 
+test("extractFileTokens preserves repository-relative paths", () => {
+  assert.deepEqual(
+    extractFileTokens("ds4.c frontend/server/agentLoopGuard.mjs rocm/kernels/reduce.cuh"),
+    ["ds4.c", "frontend/server/agentLoopGuard.mjs", "rocm/kernels/reduce.cuh"]
+  );
+});
+
+test("summarizeFileListOutput compresses large file listings to at most ten examples", () => {
+  const files = Array.from({ length: 100 }, (_, i) => `src/file_${i}.c`).join("\n");
+  const out = summarizeFileListOutput(files);
+
+  assert.equal(out.compressed, true);
+  assert.equal(out.fileTokenCount, 100);
+  assert.match(out.content, /\[TOOL_OUTPUT_COMPRESSED\]/);
+  assert.match(out.content, /Do not repeat the full file list/);
+  assert.ok(extractFileTokens(out.content).length <= 10);
+});
+
+test("summarizeFileListOutput compresses repeated filenames even below forty tokens", () => {
+  const repeated = Array.from({ length: 4 }, () =>
+    "ds4.c ds4.h frontend/server/agentSession.mjs"
+  ).join(" ");
+  const out = summarizeFileListOutput(repeated);
+
+  assert.equal(out.compressed, true);
+  assert.equal(out.reason, "repeated_file_names");
+});
+
+test("summarizeFileListOutput leaves short useful file examples unchanged", () => {
+  const text = "Targets: ds4.c, frontend/server/agentLoopGuard.mjs";
+  assert.deepEqual(summarizeFileListOutput(text), { compressed: false, content: text });
+});
+
+test("summarizeFileListOutput does not misclassify long prose without files", () => {
+  const text = "ordinary prose ".repeat(700);
+  assert.deepEqual(summarizeFileListOutput(text), { compressed: false, content: text });
+});
+
 // ---------------------------------------------------------------------------
 // compressToolOutput tests
 // ---------------------------------------------------------------------------
@@ -118,10 +164,11 @@ test("compressToolOutput compresses log output with head/tail/important lines", 
 
 test("compressToolOutput compresses search output with per-file stats", async () => {
   await withTempBlob(async (tmp, store) => {
-    // 600 lines, 3 files, ~200 lines per file. Top 5 shown per file = 15 + 40 head ≈ 55 shown out of 600 = good ratio
+    // No recognized file extensions: exercise the generic search compressor,
+    // not the file-list policy.
     const lines = [];
     for (let i = 0; i < 600; i++) {
-      lines.push(`/path/file${Math.floor(i / 200)}.c:${i * 10}: match content ${i}`);
+      lines.push(`/path/symbol${Math.floor(i / 200)}:${i * 10}: match content ${i}`);
     }
     const text = lines.join("\n") + "\nmatches shown\n";
     const result = await compressToolOutput("search", text, len(text), store);
@@ -130,6 +177,50 @@ test("compressToolOutput compresses search output with per-file stats", async ()
     assert.ok(result.text.includes("[search output compressed]"));
     assert.ok(result.text.includes("matches_by_file"));
     assert.ok(result.blobId);
+  });
+});
+
+test("compresses large file listings produced by bash/log output", async () => {
+  await withTempBlob(async (_tmp, store) => {
+    const original = [
+      "Repository indexed successfully",
+      ...Array.from({ length: 80 }, (_, i) => `src/file_${i}.c`)
+    ].join("\n");
+
+    const result = await compressToolOutput("bash", original, len(original), store);
+
+    assert.ok(result?.changed);
+    assert.equal(result.strategy, "file_list_compressor");
+    assert.match(result.text, /\[TOOL_OUTPUT_COMPRESSED\]/);
+    assert.ok(extractFileTokens(result.text).length <= 10);
+  });
+});
+
+test("prefers file-list compression for log output above twenty file tokens", () => {
+  const original = Array.from(
+    { length: 25 },
+    (_, i) => `src/file_${i}.c ${"x".repeat(250)}`
+  ).join("\n");
+
+  assert.equal(typeof compressorModule.shouldPreferFileListCompression, "function");
+  assert.equal(
+    compressorModule.shouldPreferFileListCompression("bash", ContentKind.LOG, original),
+    true
+  );
+});
+
+test("compresses search output when it is primarily a large file listing", async () => {
+  await withTempBlob(async (_tmp, store) => {
+    const original = Array.from(
+      { length: 80 },
+      (_, i) => `src/file_${i}.c:${i + 1}: match`
+    ).join("\n");
+
+    const result = await compressToolOutput("search", original, len(original), store);
+
+    assert.ok(result?.changed);
+    assert.equal(result.strategy, "file_list_compressor");
+    assert.ok(extractFileTokens(result.text).length <= 10);
   });
 });
 
@@ -231,4 +322,30 @@ test("compressToolOutput returns null without a blob store", async () => {
   const text = "error: critical\n".repeat(100);
   const result = await compressToolOutput("bash", text, len(text), null);
   assert.equal(result, null);
+});
+
+test("compressToolOutput compresses a sub-4KB repository listing and preserves its blob", async () => {
+  await withTempBlob(async (tmp, store) => {
+    const original = Array.from({ length: 80 }, (_, i) => `src/file_${i}.c`).join("\n");
+    assert.ok(len(original) < 4096, "fixture must exercise the file-token threshold");
+    const result = await compressToolOutput("list", original, len(original), store);
+
+    assert.ok(result?.changed);
+    assert.equal(result.strategy, "file_list_compressor");
+    assert.match(result.text, /\[TOOL_OUTPUT_COMPRESSED\]/);
+    assert.ok(extractFileTokens(result.text).length <= 10);
+    assert.equal(await store.get(result.blobId, 0, len(original)), original);
+  });
+});
+
+test("compressToolResultForModel exposes compressed content and metadata to the agent loop", async () => {
+  await withTempBlob(async (tmp, store) => {
+    const original = Array.from({ length: 80 }, (_, i) => `src/file_${i}.c`).join("\n");
+    const result = await compressToolResultForModel("list", { content: original, isError: false }, store);
+
+    assert.equal(result.compressed, true);
+    assert.equal(result.isError, false);
+    assert.match(result.content, /\[TOOL_OUTPUT_COMPRESSED\]/);
+    assert.equal(result.compression.strategy, "file_list_compressor");
+  });
 });

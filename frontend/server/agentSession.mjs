@@ -14,6 +14,7 @@
 
 import { createHash } from "node:crypto";
 import { ReadGuard } from "./agentTools.mjs";
+import { AgentLoopGuard } from "./agentLoopGuard.mjs";
 import { normalizePonyMode } from "./agentPonyPolicy.mjs";
 
 /** Recursively convert any value into a key-sorted, stable representation. */
@@ -207,6 +208,27 @@ const AGENT_TOOLS = [
   {
     type: "function",
     function: {
+      name: "retrieve_context_blob",
+      description: "Retrieve an exact byte range from a compressed tool-output blob.",
+      parameters: {
+        type: "object",
+        properties: {
+          id: { type: "string", description: "Blob id from a compressed tool result." },
+          offset: { type: "integer", minimum: 0, description: "Byte offset. Default 0." },
+          length: {
+            type: "integer",
+            minimum: 1,
+            maximum: 200000,
+            description: "Bytes to retrieve. Default 20000."
+          }
+        },
+        required: ["id"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
       name: "sage",
       description: "**PREFERRED tool for ALL mathematical computations.** Execute SageMath and return LaTeX + plain text. Use for: calculus (derivatives, integrals, limits), algebra (factor, solve, expand), number theory, linear algebra (matrices, eigenvalues), symbolic computation, plotting. Returns LaTeX ready for KaTeX rendering. MUCH BETTER than using bash to call sage manually.", 
       parameters: {
@@ -321,6 +343,13 @@ export class AgentSessionManager {
     this.ponyMode = "off";
     this.gitnexusEnabled = false;
     this.readGuard = new ReadGuard();
+    this.loopGuard = new AgentLoopGuard({
+      maxSameIntent: Number(process.env.DS4_AGENT_MAX_SAME_INTENT || 2),
+      maxSameAction: Number(process.env.DS4_AGENT_MAX_SAME_ACTION || 1),
+      maxNoProgress: Number(process.env.DS4_AGENT_MAX_NO_PROGRESS || 3),
+      loopMode: process.env.DS4_AGENT_LOOP_GUARD || "block",
+      outputEchoMode: process.env.DS4_AGENT_OUTPUT_ECHO_GUARD || "block"
+    });
     this.usageTotals = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
   }
 

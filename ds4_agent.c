@@ -176,6 +176,9 @@ typedef struct {
     bool gitnexus_enabled;
     char gitnexus_path[PATH_MAX];
 
+    /* Metacognition skill: content injected via /metacognition start */
+    char *metacognition_prompt;
+
     char *context_blob_dir;
 
     /* Anti-loop guard: ring buffer of recent tool command fingerprints.
@@ -186,6 +189,7 @@ typedef struct {
     int loop_guard_ring_pos;
     int loop_guard_consecutive_empty;
     int loop_guard_consecutive_identical;
+    int loop_guard_consecutive_malformed;
     int loop_guard_max_tool_rounds;
 
     /* Loop guard user confirmation: when the guard triggers, the worker
@@ -506,6 +510,7 @@ typedef enum {
     AGENT_SLASH_STRIP,
     AGENT_SLASH_HISTORY,
     AGENT_SLASH_CRAWL,
+    AGENT_SLASH_METACOGNITION,
 } agent_slash_command_kind;
 
 typedef struct {
@@ -559,6 +564,13 @@ static DS4_MAYBE_UNUSED bool agent_parse_slash_command(const char *input,
     else if (!strcmp(command, "/strip")) out->kind = AGENT_SLASH_STRIP;
     else if (!strcmp(command, "/history")) out->kind = AGENT_SLASH_HISTORY;
     else if (!strcmp(command, "/crawl")) out->kind = AGENT_SLASH_CRAWL;
+    else if (!strcmp(command, "/metacognition")) {
+        out->kind = AGENT_SLASH_METACOGNITION;
+        size_t arg_len = strlen(arg);
+        if (arg_len >= sizeof(out->arg)) return false;
+        if (arg_len) memcpy(out->arg, arg, arg_len + 1);
+        return true;
+    }
     else return false;
 
     if (out->kind == AGENT_SLASH_POWER) {
@@ -613,7 +625,8 @@ static bool agent_slash_command_known(const char *cmd) {
            agent_slash_command_with_args(cmd, "/strip") ||
            agent_slash_command_with_args(cmd, "/history") ||
            agent_slash_command_with_args(cmd, "/crawl") ||
-           agent_slash_command_with_args(cmd, "/gitnexus");
+           agent_slash_command_with_args(cmd, "/gitnexus") ||
+           agent_slash_command_with_args(cmd, "/metacognition");
 }
 
 static uint64_t parse_u64(const char *s, const char *opt) {
@@ -1312,6 +1325,7 @@ static void agent_publish(agent_worker *w, const char *s, size_t n) {
         while (cap < w->out_len + n + 1) cap *= 2;
         char *p = realloc(w->out, cap);
         if (!p) {
+            /* realloc failed — keep old buffer, skip this publish */
             pthread_mutex_unlock(&w->mu);
             return;
         }
@@ -4221,16 +4235,49 @@ static bool agent_kv_save_path(agent_worker *w, const char *path,
     return ok;
 }
 
+/* Forward declaration — agent_read_file_bytes is defined later in this file. */
+static int agent_read_file_bytes(const char *path, char **data, size_t *len,
+                                 char *err, size_t errlen);
+
+static char *agent_read_metacognition_skill(char *err, size_t err_len) {
+    const char *path = "skills/metacognition/SKILL.md";
+    char *data = NULL;
+    size_t len = 0;
+    if (agent_read_file_bytes(path, &data, &len, err, err_len) == 0 && data) {
+        return data;
+    }
+    snprintf(err, err_len, "metacognition skill file not found at %s", path);
+    return NULL;
+}
+
 static void agent_worker_build_system_tokens(agent_worker *w, ds4_tokens *out) {
     ds4_chat_begin(w->engine, out);
     if (w->cfg->gen.think_mode == DS4_THINK_MAX &&
         effective_think_mode(w->cfg) == DS4_THINK_MAX)
         ds4_chat_append_max_effort_prefix(w->engine, out);
-    agent_append_system_prompt(w->engine, out, w->cfg->gen.system);
+    if (w->metacognition_prompt) {
+        size_t extra_len = strlen(w->cfg->gen.system ? w->cfg->gen.system : "");
+        size_t meta_len = strlen(w->metacognition_prompt);
+        char *combined = xmalloc(extra_len + meta_len + 1);
+        combined[0] = '\0';
+        if (w->cfg->gen.system) memcpy(combined, w->cfg->gen.system, extra_len + 1);
+        memcpy(combined + extra_len, w->metacognition_prompt, meta_len + 1);
+        agent_append_system_prompt(w->engine, out, combined);
+        free(combined);
+    } else {
+        agent_append_system_prompt(w->engine, out, w->cfg->gen.system);
+    }
 }
 
 static void agent_publish_system_status(agent_worker *w, const char *msg) {
-    if (w->cfg->non_interactive) return;
+    if (w->cfg->non_interactive) {
+        /* In non-interactive mode, publish via agent_publish directly so the
+         * wrapper/HTTP runtime can forward the status to the client. */
+        agent_publish(w, "✦ ", 3);
+        agent_publish(w, msg, strlen(msg));
+        agent_publish(w, "\n", 1);
+        return;
+    }
     if (isatty(STDOUT_FILENO)) {
         static const char marker[] = "\x1b[33m✦ \x1b[38;5;218m";
         agent_publish(w, marker, sizeof(marker) - 1);
@@ -6517,6 +6564,81 @@ static void test_agent_rejects_invalid_native_slash_commands(void) {
     AGENT_TEST_ASSERT(!agent_parse_slash_command("/unknown", &parsed));
     AGENT_TEST_ASSERT(!agent_parse_slash_command("hello", &parsed));
 }
+
+static void test_agent_loop_guard_publishes_warning(void) {
+    /* Verify that agent_publish() correctly writes the guardrail warning
+     * to the worker output buffer before the loop guard stops. */
+    agent_worker w;
+    memset(&w, 0, sizeof(w));
+    pthread_mutex_init(&w.mu, NULL);
+    w.out = NULL;
+    w.out_len = 0;
+    w.out_cap = 0;
+
+    const char *msg = "\x1b[33m✦ \x1b[38;5;218mLoop guard: tool calls ripetuti senza progresso — arresto.\x1b[0m\n";
+    size_t msg_len = strlen(msg);
+
+    agent_publish(&w, msg, msg_len);
+    AGENT_TEST_ASSERT(w.out != NULL);
+    AGENT_TEST_ASSERT(w.out_len == msg_len);
+    AGENT_TEST_ASSERT(w.out_cap >= msg_len + 1);
+    AGENT_TEST_ASSERT(strcmp(w.out, msg) == 0);
+
+    /* Verify the ANSI marker prefix is present */
+    AGENT_TEST_ASSERT(strstr(w.out, "\x1b[33m✦ ") != NULL);
+    AGENT_TEST_ASSERT(strstr(w.out, "Loop guard:") != NULL);
+    AGENT_TEST_ASSERT(strstr(w.out, "arresto") != NULL);
+
+    free(w.out);
+    pthread_mutex_destroy(&w.mu);
+}
+
+static char *test_tc_make_lines(size_t target_bytes) {
+    agent_buf b = {0};
+    int n = 0;
+    while (b.len < target_bytes) {
+        char line[80];
+        snprintf(line, sizeof(line),
+                 "line %05d: lorem ipsum dolor sit amet consectetur adipiscing\n", n++);
+        agent_buf_puts(&b, line);
+    }
+    return agent_buf_take(&b);
+}
+
+/* Regression: a paginated read result below HUGE_BYTES must be shown in full
+ * (not head/tail-compressed into a blob the model then loops trying to fetch),
+ * while a genuinely huge read still compresses so context cannot blow. */
+static void test_tool_compress_read_passthrough(void) {
+    char tmpl[] = "/tmp/ds4_tc_testXXXXXX";
+    char *dir = mkdtemp(tmpl);
+    AGENT_TEST_ASSERT(dir != NULL);
+    char err[256] = {0};
+
+    char *small = test_tc_make_lines(20000);
+    ds4_tool_compress_result r1 = {0};
+    AGENT_TEST_ASSERT(ds4_tool_compress_result_text("read", small, strlen(small),
+                                                    dir, &r1, err, sizeof(err)));
+    AGENT_TEST_ASSERT(!r1.changed);
+    ds4_tool_compress_result_free(&r1);
+    free(small);
+
+    char *huge = test_tc_make_lines(48000);
+    ds4_tool_compress_result r2 = {0};
+    AGENT_TEST_ASSERT(ds4_tool_compress_result_text("read", huge, strlen(huge),
+                                                    dir, &r2, err, sizeof(err)));
+    AGENT_TEST_ASSERT(r2.changed);
+    ds4_tool_compress_result_free(&r2);
+    free(huge);
+}
+
+static void ds4_agent_unit_tests_run(void) {
+    test_agent_edit_upto_tail_newline_is_not_part_of_anchor();
+    test_agent_edit_upto_requires_tail_after_newline_strip();
+    test_agent_parse_native_slash_commands();
+    test_agent_rejects_invalid_native_slash_commands();
+    test_agent_loop_guard_publishes_warning();
+    test_tool_compress_read_passthrough();
+}
 #endif
 
 static bool agent_preflight_edit_old(agent_worker *w, const agent_tool_call *call,
@@ -6788,7 +6910,7 @@ static char *agent_tool_search(agent_worker *w, const agent_tool_call *call) {
     }
     agent_search_path(&ctx, path, 0);
     if (ctx.regex_ready) regfree(&ctx.regex);
-    if (!ctx.out.ptr) agent_buf_puts(&ctx.out, "No matches\n");
+    if (!ctx.out.ptr) agent_buf_puts(&ctx.out, "search: no matches found for pattern.\n");
     else {
         char hdr[96];
         snprintf(hdr, sizeof(hdr), "%d match%s shown\n\n",
@@ -8554,6 +8676,21 @@ static bool agent_loop_guard_record(agent_worker *w, const char *fingerprint) {
     return false;
 }
 
+/* A structured progress-guidance result (the runtime asking the model to
+ * synthesize, e.g. a read-batch guard) is not an empty/sterile result: it is
+ * forward progress. Recognising it stops the empty-result loop guard from
+ * misfiring on the very mechanism meant to break a read loop. */
+static bool agent_tool_result_is_progress_guidance(const char *result) {
+    if (!result || !result[0]) return false;
+    return strstr(result, "READ_BATCH_SUMMARY_REQUIRED") ||
+           strstr(result, "DOC_READ_SUMMARY_REQUIRED") ||
+           strstr(result, "RAW_DOC_CONTEXT_SUMMARY_REQUIRED") ||
+           strstr(result, "[OBSERVATION]") ||
+           strstr(result, "[COMPRESSED]") ||
+           strstr(result, "[TARGET_SELECTED]") ||
+           strstr(result, "[VERDICT]");
+}
+
 static const char *agent_tool_calls_compression_name(const agent_tool_calls *calls) {
     if (!calls || calls->len <= 0) return "tool_result";
     for (int i = 0; i < calls->len; i++) {
@@ -8686,12 +8823,16 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
      * where the same command repeats with no progress. */
     w->loop_guard_consecutive_empty = 0;
     w->loop_guard_consecutive_identical = 0;
+    w->loop_guard_consecutive_malformed = 0;
     w->loop_guard_ring_pos = 0;
     for (int tool_round = 0; ; tool_round++) {
         if (tool_round >= w->loop_guard_max_tool_rounds) {
             agent_buf b = {0};
             agent_buf_puts(&b, "Tool error: too many tool rounds without finishing. ");
-            agent_buf_puts(&b, "The model may be looping. Please provide a final answer.\n");
+            agent_buf_puts(&b,
+                "The model may be looping. Stop reading. Produce a partial analysis now using:\n"
+                "[OBSERVATION]\n[COMPRESSED]\n[TARGET_SELECTED]\n"
+                "[VERDICT] GO / STOP / RETEST\n");
             char *err_result = agent_buf_take(&b);
             ds4_chat_append_message(w->engine, &w->transcript, "tool", err_result);
             free(err_result);
@@ -8916,6 +9057,7 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
                            "edit old selector failed before new was generated");
             agent_buf_puts(&b, "\n");
             tool_result = agent_buf_take(&b);
+            w->loop_guard_consecutive_malformed++;
         } else if (malformed_tool) {
             agent_buf b = {0};
             agent_buf_puts(&b, "Tool error: invalid DSML tool call: ");
@@ -8923,8 +9065,13 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
             agent_buf_puts(&b, "\n");
             agent_buf_puts(&b, agent_dsml_syntax_reminder);
             tool_result = agent_buf_take(&b);
+            /* Malformed/incomplete DSML produces no valid call (calls.len == 0)
+             * and so bypasses the command/empty loop guards below. Count these
+             * rounds so a model stuck emitting bad tool calls stops early. */
+            w->loop_guard_consecutive_malformed++;
         } else {
             tool_result = agent_execute_tool_calls(w, &dsml.calls);
+            w->loop_guard_consecutive_malformed = 0;
         }
         char *compressed_result = agent_maybe_compress_tool_result(w, &dsml.calls,
                                                                    tool_result);
@@ -8976,6 +9123,30 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
         ds4_chat_append_message(w->engine, &w->transcript, "tool", append_result);
         free(compressed_result);
 
+        /* Malformed-DSML loop guard. Runs every round, including the
+         * calls.len == 0 rounds (malformed/incomplete tool calls) that the
+         * command/empty guards below skip. A model confused by unreadable tool
+         * output keeps emitting bad DSML and would otherwise loop until
+         * loop_guard_max_tool_rounds; stop it early with a synthesis prompt. */
+        if (w->loop_guard_consecutive_malformed >= 4) {
+            agent_buf b = {0};
+            agent_buf_puts(&b,
+                "Tool error: loop detected — repeated malformed tool calls without progress. "
+                "Stop calling tools and answer directly using:\n"
+                "[OBSERVATION] what was learned so far\n"
+                "[COMPRESSED] <= 10 lines\n"
+                "[TARGET_SELECTED] the single next thing to try, if any\n"
+                "[VERDICT] GO / STOP / RETEST\n");
+            char *loop_err = agent_buf_take(&b);
+            agent_publish_system_status(w, "Loop guard: malformed tool calls ripetuti senza progresso — arresto.");
+            ds4_chat_append_message(w->engine, &w->transcript, "tool", loop_err);
+            free(loop_err);
+            free(tool_result);
+            agent_dsml_parser_free(&dsml);
+            agent_set_status(w, AGENT_WORKER_IDLE);
+            return 0;
+        }
+
         /* Anti-loop guard: fingerprint the command and check for sterile loops.
          * If the tool result is empty or very small, increment empty counter.
          * If N consecutive commands are similar or empty, inject an error. */
@@ -8999,16 +9170,23 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
                 (void)is_repeat;
             }
 
-            /* Check if tool result is empty or trivially small */
+            /* Check if tool result is empty or trivially small.  A structured
+             * progress-guidance result is forward progress, not an empty loop:
+             * never let it count toward the empty-result stop. */
             size_t result_len = strlen(append_result);
-            if (result_len < 16) {
+            if (agent_tool_result_is_progress_guidance(append_result)) {
+                w->loop_guard_consecutive_empty = 0;
+                w->loop_guard_consecutive_identical = 0;
+            } else if (result_len < 16) {
+                fprintf(stderr, "[LOOP_GUARD_EMPTY] tool=%s result_len=%zu tool_round=%d\n",
+                        dsml.calls.v[0].name, result_len, w->loop_guard_ring_pos);
                 w->loop_guard_consecutive_empty++;
             } else {
                 w->loop_guard_consecutive_empty = 0;
             }
 
             /* Stop if N consecutive empty results or N consecutive identical commands */
-            if (w->loop_guard_consecutive_empty >= 5 ||
+            if (w->loop_guard_consecutive_empty >= 10 ||
                 w->loop_guard_consecutive_identical >= 4)
             {
                 /* Instead of immediately stopping, ask the user whether to
@@ -9019,12 +9197,25 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
                     /* Non-interactive mode: stop immediately */
                     agent_buf b = {0};
                     agent_buf_puts(&b, "Tool error: loop detected — ");
-                    if (w->loop_guard_consecutive_empty >= 5)
+                    if (w->loop_guard_consecutive_empty >= 10)
                         agent_buf_puts(&b, "tool results are empty. ");
                     else
                         agent_buf_puts(&b, "identical commands repeat without progress. ");
-                    agent_buf_puts(&b, "Please provide a final answer.\n");
+                    agent_buf_puts(&b,
+                        "Stop reading. Produce a partial analysis now using:\n"
+                        "[OBSERVATION] what was learned so far\n"
+                        "[COMPRESSED] <= 10 lines\n"
+                        "[TARGET_SELECTED] the single next thing to try, if any\n"
+                        "[VERDICT] GO / STOP / RETEST\n");
                     char *loop_err = agent_buf_take(&b);
+                    /* Publish warning before stopping */
+                    agent_publish(w, "\x1b[33m✦ \x1b[38;5;218m", 27);
+                    agent_publish(w, "Loop guard: ", 12);
+                    if (w->loop_guard_consecutive_empty >= 10)
+                        agent_publish(w, "tool results are empty", 22);
+                    else
+                        agent_publish(w, "identical commands repeat without progress", 42);
+                    agent_publish(w, " — arresto.\x1b[0m\n", 17);
                     ds4_chat_append_message(w->engine, &w->transcript, "tool", loop_err);
                     free(loop_err);
                     free(tool_result);
@@ -9050,12 +9241,14 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
                     /* User chose to stop, or was interrupted */
                     agent_buf b = {0};
                     agent_buf_puts(&b, "Tool error: loop detected — ");
-                    if (w->loop_guard_consecutive_empty >= 5)
+                    if (w->loop_guard_consecutive_empty >= 10)
                         agent_buf_puts(&b, "tool results are empty. ");
                     else
                         agent_buf_puts(&b, "identical commands repeat without progress. ");
                     agent_buf_puts(&b, user_continues ? "" : "User interrupted.\n");
                     char *loop_err = agent_buf_take(&b);
+                    /* Publish warning before stopping */
+                    agent_publish_system_status(w, "Loop guard: tool calls ripetuti senza progresso — arresto.");
                     ds4_chat_append_message(w->engine, &w->transcript, "tool", loop_err);
                     free(loop_err);
                     free(tool_result);
@@ -9067,6 +9260,7 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
                 /* User chose to continue — reset counters and proceed */
                 w->loop_guard_consecutive_empty = 0;
                 w->loop_guard_consecutive_identical = 0;
+                w->loop_guard_consecutive_malformed = 0;
                 w->loop_guard_ring_pos = 0;
                 /* Publish a note so the user sees we resumed */
                 agent_publish(w, "\n[loop-guard] User chose to continue, resetting guard.\n", 56);
@@ -10618,6 +10812,7 @@ static void agent_worker_free(agent_worker *w) {
     free(w->session_title);
     free(w->legacy_session_path_to_delete);
     free(w->queued_user_drain_text);
+    free(w->metacognition_prompt);
     if (w->wake_fd[0] >= 0) close(w->wake_fd[0]);
     if (w->wake_fd[1] >= 0) close(w->wake_fd[1]);
     if (w->trace) fclose(w->trace);
@@ -11249,6 +11444,51 @@ static int run_agent(ds4_engine *engine, agent_config *cfg) {
                         }
                     } else {
                         printf("usage: /gitnexus start\n");
+                    }
+                } else if (!strncmp(cmd, "/metacognition", 14) &&
+                           (cmd[14] == '\0' || cmd[14] == ' ' || cmd[14] == '\t')) {
+                    char *arg = cmd + 14;
+                    while (*arg == ' ' || *arg == '\t') arg++;
+                    if (!strncmp(arg, "start", 5) &&
+                        (arg[5] == '\0' || arg[5] == ' ' || arg[5] == '\t')) {
+                        char err[256] = {0};
+                        char *content = agent_read_metacognition_skill(err, sizeof(err));
+                        if (!content) {
+                            printf("metacognition: %s\n", err);
+                        } else {
+                            free(worker.metacognition_prompt);
+                            worker.metacognition_prompt = content;
+                            editor_restore_terminal_layout(&editor);
+                            if (agent_maybe_save_before_leaving_session(&worker)) {
+                                char rerr[160] = {0};
+                                if (!agent_worker_reset_to_sysprompt(&worker, rerr, sizeof(rerr))) {
+                                    printf("metacognition: session reset failed: %s\n", rerr);
+                                } else {
+                                    show_welcome_after_restart = true;
+                                    printf("Metacognition skill activated.\n");
+                                }
+                            }
+                        }
+                    } else if (!strncmp(arg, "stop", 4) &&
+                               (arg[4] == '\0' || arg[4] == ' ' || arg[4] == '\t')) {
+                        if (!worker.metacognition_prompt) {
+                            printf("Metacognition skill is not active.\n");
+                        } else {
+                            free(worker.metacognition_prompt);
+                            worker.metacognition_prompt = NULL;
+                            editor_restore_terminal_layout(&editor);
+                            if (agent_maybe_save_before_leaving_session(&worker)) {
+                                char rerr[160] = {0};
+                                if (!agent_worker_reset_to_sysprompt(&worker, rerr, sizeof(rerr))) {
+                                    printf("metacognition: session reset failed: %s\n", rerr);
+                                } else {
+                                    show_welcome_after_restart = true;
+                                    printf("Metacognition skill deactivated.\n");
+                                }
+                            }
+                        }
+                    } else {
+                        printf("usage: /metacognition start|stop\n");
                     }
                 } else if (cmd[0] == '/' && !agent_slash_command_known(cmd)) {
                     ssize_t ignored = write(STDOUT_FILENO, "\a", 1);

@@ -5,7 +5,7 @@ Prima di modificare `Makefile`, `srun.sh` o qualsiasi file di build, **leggi** `
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **ds4-studio** (11764 symbols, 21193 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **ds4-studio** (11801 symbols, 21628 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 
@@ -45,3 +45,29 @@ This project is indexed by GitNexus as **ds4-studio** (11764 symbols, 21193 rela
 | Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
 
 <!-- gitnexus:end -->
+
+<!-- metacognition:start -->
+# Metacognition — Decision Making Under Uncertainty
+
+## Always Do
+
+- **If uncertain after 3 internal reasoning steps, ASK the user.** Never speculate for more than 3 tokens about ambiguous intent. Use `question()` with 2-3 clear options.
+- **If loop guard fires repeatedly, change strategy or ask for help.** Don't keep doing the same thing.
+- **If internal reasoning contains phrases like "perhaps", "maybe", "the user said... but...", stop and ask.** That's a sign of unresolvable ambiguity.
+- **If search returns empty but you expected results, retry with `bash grep` immediately.**
+- **Use GitNexus before grep/search on project code.** Only fall back to grep if GitNexus is unavailable or returns nothing.
+
+## Never Do
+
+- NEVER spend >3 reasoning cycles on the same ambiguity without asking the user.
+- NEVER skip GitNexus with rationalizations like "we're not modifying so we don't need it" — GitNexus is for understanding too.
+- NEVER trust `search` tool results without verification — it can return false negatives on large files or complex patterns.
+
+## Resources
+
+| When | Read this |
+|------|-----------|
+| Full metacognition directives | `doc/improve-metacognition.md` |
+| Metacognition skill (trigger: `/metacognition`) | `skills/metacognition/SKILL.md` |
+
+<!-- metacognition:end -->

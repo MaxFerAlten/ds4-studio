@@ -4,11 +4,17 @@
 // Mirrors the 3-turn scenario from the plan without spinning the HTTP server.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { executeTool } from "./agentTools.mjs";
 import { planTools } from "./toolPlanner.mjs";
 import { createTaskState } from "./agentTaskState.mjs";
 import { evidenceFromCrawlManifest, EvidenceStore } from "./evidenceStore.mjs";
 import { buildSynthesisBrief } from "./synthesisEngine.mjs";
+import { AgentSessionManager } from "./agentSession.mjs";
+import { ToolBlobStore } from "./toolBlobStore.mjs";
+import { compressToolResultForModel } from "./toolOutputCompressor.mjs";
 
 // --- fixtures: per-URL crawl content driving source classification ----------
 const PAGE_CONTENT = {
@@ -95,4 +101,40 @@ test("turn 2: 'crawl every LINK_FOUND_NOT_OPENED' → one crawl per unresolved l
   assert.match(brief, /flag SECONDARY_EDITORIAL/);
   assert.match(brief, /someconf\.org/); // primary source carried into the brief
   assert.match(brief, /adesso dimmi i 5 migliori/);
+});
+
+test("large list result forces observe-compress-target-verdict before further analysis", async () => {
+  const tmp = await mkdtemp(path.join(os.tmpdir(), "ds4-agent-flow-"));
+  try {
+    const blobStore = new ToolBlobStore(tmp);
+    const session = new AgentSessionManager();
+    session.start();
+    const original = Array.from({ length: 100 }, (_, i) => `src/file_${i}.c`).join("\n");
+
+    const result = await compressToolResultForModel(
+      "list",
+      { content: original, isError: false },
+      blobStore
+    );
+
+    assert.equal(result.compressed, true);
+    assert.match(result.content, /\[TOOL_OUTPUT_COMPRESSED\]/);
+    assert.equal(await blobStore.get(result.compression.blobId, 0, original.length), original);
+
+    session.loopGuard.recordCompressedObservation();
+    const bad = session.loopGuard.checkAssistantText("I will keep reading more files.");
+    assert.equal(bad?.type, "STOP_MISSING_OBSERVATION_FLOW");
+
+    session.loopGuard.recordCompressedObservation();
+    const good = [
+      "[OBSERVATION] the listing is broad and repetitive.",
+      "[COMPRESSED] the relevant files are concentrated under frontend/server.",
+      "[TARGET_SELECTED] inspect the agent loop guard next.",
+      "[VERDICT] enough evidence is available to continue."
+    ].join("\n");
+    assert.equal(session.loopGuard.checkAssistantText(good), undefined);
+    assert.equal(session.loopGuard.requiresStructuredObservation(), false);
+  } finally {
+    await rm(tmp, { recursive: true, force: true });
+  }
 });

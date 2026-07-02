@@ -14,3 +14,42 @@ export function buildGitnexusPolicy(enabled) {
     "Never skip GitNexus analysis. Never simplify away the impact/detect_changes workflow."
   ].join("\n");
 }
+
+export function checkPostGitnexusAnalyzeAction(action, state = {}) {
+  if (!state.gitnexusAnalyzeSeen) return undefined;
+
+  const tool = String(action?.tool || "");
+  const command = String(action?.args?.command || "");
+  const target = String(action?.target || action?.args?.path || "");
+  const bad =
+    /cat\s+\/tmp\/ds4_agent_output_/i.test(command) ||
+    /tail\s+.*\/tmp\/ds4_agent_output_/i.test(command) ||
+    /\bls\s+-R\b/.test(command) ||
+    /\btree\b/.test(command) ||
+    (tool === "list" && /\/mnt\/samsung_ai\/COPARATOR\/ds4-studio\/?$/.test(target));
+
+  if (!bad) return undefined;
+
+  return {
+    block: true,
+    type: "STOP_POST_GITNEXUS_DUMP",
+    reason: "After gitnexus analyze, dumping logs or listing the whole repository is forbidden.",
+    guidance: "Use targeted gitnexus query/context or a narrow grep/read."
+  };
+}
+
+export function recordGitnexusAnalyzeResult(action, result, state = {}) {
+  if (result?.isError) return state;
+
+  const command = String(action?.args?.command || "");
+  const output = String(result?.content || "");
+  const analyzeCommand = /\bgitnexus\s+analyze\b/i.test(command);
+  const completed =
+    /Repository indexed successfully/i.test(output) ||
+    (/\bnodes?\b/i.test(output) && /\bedges?\b/i.test(output) && /\bflows?\b/i.test(output));
+
+  if (analyzeCommand && completed) {
+    state.gitnexusAnalyzeSeen = true;
+  }
+  return state;
+}

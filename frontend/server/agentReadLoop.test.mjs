@@ -88,26 +88,80 @@ test("a revisiting read loop (A,B,A,B,A) is caught once any range repeats", () =
   assert.equal(blockedCount(events), 3, "every revisit is blocked");
 });
 
-test("GAP: a monotonic drift loop (start_line +1 each step) is NOT caught in exact mode", () => {
+test("a monotonic drift loop (start_line +1 each step) is now caught as near-duplicate", () => {
   const guard = new ReadGuard();
-  // An agent that nudges start_line by 1 every call produces a fresh key each
-  // time; neither the duplicate nor the covered check fires (56-85 is not fully
-  // covered by 55-84, etc.), so every read reaches disk.
+  // An agent that nudges start_line by 1 every call: 56-85 overlaps 55-84 by
+  // 96%, and every later step still overlaps the first read by >=83%, so the
+  // near-duplicate check blocks everything after the first read.
   const seq = Array.from({ length: 6 }, (_, i) => ({ path: "forms.py", start_line: 55 + i, max_lines: 30 }));
 
   const events = simulateAgentReadLoop(guard, seq, "exact");
 
-  assert.equal(executedCount(events), 6, "exact mode lets every drifting read through — residual loop risk");
+  assert.equal(executedCount(events), 1, "only the first read executes; the drift is blocked");
 });
 
-test("GAP: strict mode also fails to catch a purely monotonic drift loop", () => {
+test("strict mode also catches the monotonic drift loop", () => {
   const guard = new ReadGuard();
   const seq = Array.from({ length: 6 }, (_, i) => ({ path: "forms.py", start_line: 55 + i, max_lines: 30 }));
 
   const events = simulateAgentReadLoop(guard, seq, "strict");
 
-  // Strict mode only escalates after a duplicate/covered block has happened on
-  // the path; a never-repeating drift never produces that first block, so strict
-  // is no stronger than exact here.
-  assert.equal(executedCount(events), 6);
+  assert.equal(executedCount(events), 1);
+});
+
+test("a large non-overlapping forward scan is allowed until the read-batch budget forces a synthesis", () => {
+  const guard = new ReadGuard();
+  // Sequential paging through a file (no overlap) is legitimate, but after the
+  // read-batch budget is spent the guard pauses reads and asks for a synthesis
+  // rather than letting an unbounded scan starve the native loop guard.
+  const seq = Array.from({ length: 6 }, (_, i) => ({ path: "big.py", start_line: 1 + i * 100, max_lines: 100 }));
+
+  const events = simulateAgentReadLoop(guard, seq, "exact");
+
+  const blocked = events.find((e) => e.blocked);
+  assert.ok(blocked, "the budget eventually pauses the scan");
+  assert.ok(executedCount(events) >= 1 && executedCount(events) < 6, "some pages read, then a synthesis is required");
+});
+
+test("read-batch guard blocks once the budget is spent, and a synthesis releases it", () => {
+  const guard = new ReadGuard();
+  guard.beginTurn();
+  // Three distinct in-budget reads (default read-count budget is 3).
+  for (let i = 0; i < 3; i++) {
+    const args = { path: "src.js", start_line: 1 + i * 50, max_lines: 50 };
+    assert.equal(guard.checkRead(args), undefined, "reads within budget are allowed");
+    guard.rememberRead(args, { next_offset: null });
+  }
+  const blocked = guard.checkRead({ path: "src.js", start_line: 9000, max_lines: 50 });
+  assert.ok(blocked?.block && blocked.progressGuidance, "budget spent -> structured progress guidance");
+  assert.match(blocked.type, /SUMMARY_REQUIRED/);
+  assert.match(blocked.guidance, /\[VERDICT\]/);
+  // A structured synthesis resets the budget so investigation can continue.
+  guard.markSummaryProduced();
+  assert.equal(guard.checkRead({ path: "src.js", start_line: 9000, max_lines: 50 }), undefined,
+    "after a synthesis the model may read again");
+});
+
+test("doc/markdown reads trip the tighter DOC budget (default 2) before the general one", () => {
+  const guard = new ReadGuard();
+  guard.beginTurn();
+  for (const path of ["doc/a.md", "doc/b.md"]) {
+    const args = { path, start_line: 1, max_lines: 40 };
+    assert.equal(guard.checkRead(args), undefined);
+    guard.rememberRead(args, { next_offset: null });
+  }
+  const blocked = guard.checkRead({ path: "doc/c.md", start_line: 1, max_lines: 40 });
+  assert.equal(blocked?.type, "DOC_READ_SUMMARY_REQUIRED", "the 3rd doc read is blocked by the doc budget");
+});
+
+test("raw char budget uses actual read content length when provided", () => {
+  const guard = new ReadGuard();
+  guard.beginTurn();
+
+  const args = { path: "doc/huge.md", start_line: 1, max_lines: 40 };
+  assert.equal(guard.checkRead(args), undefined);
+  guard.rememberRead(args, { next_offset: 41 }, "x".repeat(13000));
+
+  const blocked = guard.checkRead({ path: "src/next.js", start_line: 1, max_lines: 20 });
+  assert.equal(blocked?.type, "RAW_DOC_CONTEXT_SUMMARY_REQUIRED");
 });
