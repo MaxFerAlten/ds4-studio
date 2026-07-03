@@ -102,6 +102,26 @@ export const DEFAULT_CONFIG = Object.freeze({
     // Health/metrics polls fire every second and would evict real model/provider
     // calls from the ring; skip recording them.
     excludePaths: Object.freeze(["/api/wrapper/status", "/api/server/metrics"])
+  }),
+  pageAgent: Object.freeze({
+    enabled: false,
+    clientUiEnabled: true,
+    serverBrowserEnabled: false,
+    mcpEnabled: false,
+    model: "deepseek-v4-flash",
+    baseURL: "http://127.0.0.1:8080/v1",
+    apiKey: "not-needed",
+    language: "it-IT",
+    maxSteps: 20,
+    actionTimeoutMs: 120000,
+    requireConfirmation: true,
+    experimentalScriptExecutionTool: false,
+    allowExternalDomains: false,
+    allowedOrigins: Object.freeze([
+      "http://127.0.0.1:5173",
+      "http://localhost:5173"
+    ]),
+    auditDir: "data/pageagent-runs"
   })
 });
 

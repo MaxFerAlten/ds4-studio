@@ -7,7 +7,7 @@ import { buildChatPayload, isAutoMaxTokens } from "../server/requestPayload.mjs"
 import { backendHealthLabel, backendStartupDetail, streamFailureNotice, formatNativeAgentNotice, parseAgentInput, withAgentPriming, historyHasPersistableAssistant, sessionHasAgentMetadata, sessionsExposeMetadata, clearStoredExportIncludeReasoning, readStoredExportDir, readStoredExportIncludeReasoning, writeStoredExportDir, writeStoredExportIncludeReasoning, createDeltaBatcher, documentIsVisible, clearCallDebug, fetchCallDebug } from "./utils.mjs";
 import { exportConversationMarkdown, markdownFileName } from "./conversationExport.mjs";
 import { ChatPanel } from "./chat/ChatPanel.jsx";
-import { RequestPanel, ProfilePanel, StartupPanel, StrategyPanel, LogsPanel, MetricsPanel, CompressionPanel, CallDebugPanel } from "./panels/RightRailPanels.jsx";
+import { RequestPanel, ProfilePanel, StartupPanel, StrategyPanel, LogsPanel, MetricsPanel, CompressionPanel, CallDebugPanel, PageAgentPanel } from "./panels/RightRailPanels.jsx";
 import { LeftRail } from "./panels/LeftRail.jsx";
 import { HistoryPanel } from "./panels/HistoryPanel.jsx";
 import { listResearchSessions } from "./research/researchApi.mjs";
@@ -1829,7 +1829,7 @@ export default function App() {
 
   return (
     <>
-      <main className="studio">
+      <main className="studio" data-agent-id="app-main">
         <LeftRail status={status} error={error} startupDetail={startupDetail}
           serverBusy={serverBusy} serverAction={serverAction}
           effectiveCommand={effectiveCommand} commandDraft={commandDraft}
@@ -1877,37 +1877,40 @@ export default function App() {
           handleResearchHistoryChange={handleResearchHistoryChange}
         />
 
-        <aside className="right-rail panel">
+        <aside className="right-rail panel" data-agent-id="right-rail-panels">
         <div className="tabs">
-          <button type="button" className={tab === "request" ? "active" : ""} onClick={() => setTab("request")}>
+          <button type="button" className={tab === "request" ? "active" : ""} onClick={() => setTab("request")} data-agent-id="right-rail-request-tab">
             Request
           </button>
-          <button type="button" className={tab === "profile" ? "active" : ""} onClick={() => setTab("profile")}>
+          <button type="button" className={tab === "profile" ? "active" : ""} onClick={() => setTab("profile")} data-agent-id="right-rail-profile-tab">
             Profile
           </button>
-          <button type="button" className={tab === "startup" ? "active" : ""} onClick={() => setTab("startup")}>
+          <button type="button" className={tab === "startup" ? "active" : ""} onClick={() => setTab("startup")} data-agent-id="right-rail-startup-tab">
             Startup
           </button>
-          <button type="button" className={tab === "strategy" ? "active" : ""} onClick={() => setTab("strategy")}>
+          <button type="button" className={tab === "strategy" ? "active" : ""} onClick={() => setTab("strategy")} data-agent-id="right-rail-strategy-tab">
             Strategy
           </button>
-          <button type="button" className={tab === "history" ? "active" : ""} onClick={() => setTab("history")}>
+          <button type="button" className={tab === "history" ? "active" : ""} onClick={() => setTab("history")} data-agent-id="right-rail-history-tab">
             History
           </button>
-          <button type="button" className={tab === "export" ? "active" : ""} onClick={() => setTab("export")}>
+          <button type="button" className={tab === "export" ? "active" : ""} onClick={() => setTab("export")} data-agent-id="right-rail-export-tab">
             Export
           </button>
-          <button type="button" className={tab === "logs" ? "active" : ""} onClick={() => setTab("logs")}>
+          <button type="button" className={tab === "logs" ? "active" : ""} onClick={() => setTab("logs")} data-agent-id="right-rail-logs-tab">
             Logs
           </button>
-          <button type="button" className={tab === "metrics" ? "active" : ""} onClick={() => setTab("metrics")}>
+          <button type="button" className={tab === "metrics" ? "active" : ""} onClick={() => setTab("metrics")} data-agent-id="right-rail-metrics-tab">
             Metrics
           </button>
-          <button type="button" className={tab === "call-debug" ? "active" : ""} onClick={() => setTab("call-debug")}>
+          <button type="button" className={tab === "call-debug" ? "active" : ""} onClick={() => setTab("call-debug")} data-agent-id="right-rail-call-debug-tab">
             Call Debug
           </button>
-          <button type="button" className={tab === "compression" ? "active" : ""} onClick={() => setTab("compression")}>
+          <button type="button" className={tab === "compression" ? "active" : ""} onClick={() => setTab("compression")} data-agent-id="right-rail-compression-tab">
             Compression
+          </button>
+          <button type="button" className={tab === "pageagent" ? "active" : ""} onClick={() => setTab("pageagent")} data-agent-id="right-rail-pageagent-tab">
+            PageAgent
           </button>
         </div>
         {tab === "request" ? (
@@ -1978,6 +1981,9 @@ export default function App() {
         ) : null}
         {tab === "compression" ? (
           <CompressionPanel metrics={compressionMetrics} />
+        ) : null}
+        {tab === "pageagent" ? (
+          <PageAgentPanel config={config} />
         ) : null}
         </aside>
       </main>

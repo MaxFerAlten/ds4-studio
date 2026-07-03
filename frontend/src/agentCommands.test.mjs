@@ -109,3 +109,61 @@ test("formats native command errors without requiring JSON data", () => {
     "**/power 0** (HTTP 400)\n\nunknown or invalid native agent command"
   );
 });
+
+test("parses /pageagent status", () => {
+  assert.deepEqual(parseAgentInput("/pageagent status", false), {
+    type: "pageagent",
+    action: "status"
+  });
+  assert.deepEqual(parseAgentInput(" /PAGEAGENT STATUS ", true), {
+    type: "pageagent",
+    action: "status"
+  });
+});
+
+test("parses /pageagent stop", () => {
+  assert.deepEqual(parseAgentInput("/pageagent stop", false), {
+    type: "pageagent",
+    action: "stop"
+  });
+});
+
+test("parses /pageagent run with task", () => {
+  assert.deepEqual(parseAgentInput("/pageagent run apri History", false), {
+    type: "pageagent",
+    action: "run",
+    task: "apri History"
+  });
+});
+
+test("parses /ui as alias for pageagent run", () => {
+  assert.deepEqual(parseAgentInput("/ui apri History", false), {
+    type: "pageagent",
+    action: "run",
+    task: "apri History",
+    alias: "ui"
+  });
+  assert.deepEqual(parseAgentInput("/ui imposta temperature a 0", true), {
+    type: "pageagent",
+    action: "run",
+    task: "imposta temperature a 0",
+    alias: "ui"
+  });
+});
+
+test("/pageagent commands work independently of agent mode", () => {
+  assert.deepEqual(parseAgentInput("/pageagent status", false), {
+    type: "pageagent",
+    action: "status"
+  });
+  assert.deepEqual(parseAgentInput("/pageagent stop", true), {
+    type: "pageagent",
+    action: "stop"
+  });
+  assert.deepEqual(parseAgentInput("/ui apri Research", false), {
+    type: "pageagent",
+    action: "run",
+    task: "apri Research",
+    alias: "ui"
+  });
+});

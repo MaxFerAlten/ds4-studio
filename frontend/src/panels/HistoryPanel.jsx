@@ -14,7 +14,7 @@ export function HistoryPanel({
   sessionStorage, setError
 }) {
   return (
-        <div className="history-panel">
+        <div className="history-panel" data-agent-id="history-panel">
             <div className="history-mode-tabs" role="tablist" aria-label="History type">
               <button
                 type="button"

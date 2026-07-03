@@ -1,3 +1,4 @@
+import { useState, useEffect } from "react";
 import { RefreshCw } from "lucide-react";
 import {
   STARTUP_GROUPS,
@@ -22,6 +23,7 @@ export function RequestPanel({ request, updateRequestField }) {
           value={request.max_tokens ?? ""}
           placeholder={REQUEST_PLACEHOLDERS.max_tokens || ""}
           onChange={(event) => updateRequestField("max_tokens", event.target.value)}
+          data-agent-id="settings-max-tokens-input"
         />
         <small>Usa <code>auto</code> per generare fino a EOS/context, limitato dal safety cap.</small>
       </label>
@@ -33,6 +35,7 @@ export function RequestPanel({ request, updateRequestField }) {
               value={request.max_tokens_safety_cap ?? ""}
               placeholder={REQUEST_PLACEHOLDERS.max_tokens_safety_cap || ""}
               onChange={(event) => updateRequestField("max_tokens_safety_cap", event.target.value)}
+              data-agent-id="settings-max-tokens-safety-cap-input"
             />
           </label>
           <label className="field" data-tooltip={requestHelp("context_margin")}>
@@ -41,6 +44,7 @@ export function RequestPanel({ request, updateRequestField }) {
               value={request.context_margin ?? ""}
               placeholder={REQUEST_PLACEHOLDERS.context_margin || ""}
               onChange={(event) => updateRequestField("context_margin", event.target.value)}
+              data-agent-id="settings-context-margin-input"
             />
           </label>
         </>
@@ -51,19 +55,21 @@ export function RequestPanel({ request, updateRequestField }) {
           <label className="field" key={key} data-tooltip={requestHelp(key)}>
             <span>{key}</span>
             {typeof value === "boolean" ? (
-              <input type="checkbox" checked={value} aria-label={`${key}: ${requestHelp(key)}`} onChange={(event) => updateRequestField(key, event.target.checked)} />
+              <input type="checkbox" checked={value} aria-label={`${key}: ${requestHelp(key)}`} onChange={(event) => updateRequestField(key, event.target.checked)} data-agent-id={`settings-${key}-input`} />
             ) : key === "stop" ? (
               <textarea
                 value={value}
                 placeholder={REQUEST_PLACEHOLDERS[key] || ""}
                 onChange={(event) => updateRequestField(key, event.target.value)}
                 rows={3}
+                data-agent-id={`settings-${key}-input`}
               />
             ) : (
               <input
                 value={value}
                 placeholder={REQUEST_PLACEHOLDERS[key] || ""}
                 onChange={(event) => updateRequestField(key, event.target.value)}
+                data-agent-id={`settings-${key}-input`}
               />
             )}
           </label>
@@ -295,6 +301,71 @@ export function CompressionPanel({ metrics }) {
           <strong>{lastStrategy || "-"}</strong>
         </div>
       </div>
+    </div>
+  );
+}
+
+export function PageAgentPanel({ config }) {
+  const [status, setStatus] = useState("not_initialized");
+  const [task, setTask] = useState("");
+  const [activity, setActivity] = useState("");
+  const [result, setResult] = useState("");
+
+  useEffect(() => {
+    const handler = (event) => {
+      const detail = event.detail || {};
+      if (event.type === "pageagent_status") {
+        setStatus(detail.status || "unknown");
+      }
+      if (event.type === "pageagent_activity") {
+        setActivity(detail.message || "");
+      }
+      if (event.type === "pageagent_result") {
+        setResult(detail.message || "");
+      }
+    };
+    document.addEventListener("pageagent_status", handler);
+    document.addEventListener("pageagent_activity", handler);
+    document.addEventListener("pageagent_result", handler);
+    return () => {
+      document.removeEventListener("pageagent_status", handler);
+      document.removeEventListener("pageagent_activity", handler);
+      document.removeEventListener("pageagent_result", handler);
+    };
+  }, []);
+
+  const enabled = Boolean(config?.pageAgent?.enabled);
+
+  if (!enabled) {
+    return (
+      <div className="pageagent-panel">
+        <div className="status-pill warn">PageAgent disabled (pageAgent.enabled)</div>
+      </div>
+    );
+  }
+
+  const statusClass = status === "running" ? "ok" : status === "error" ? "bad" : status === "stopped" ? "warn" : "";
+
+  return (
+    <div className="pageagent-panel">
+      <div className={`status-pill ${statusClass}`}>
+        {status === "not_initialized" ? "Not initialized" : status}
+      </div>
+      {task ? <div className="pageagent-task">Task: {task}</div> : null}
+      {activity ? <div className="pageagent-activity">{activity}</div> : null}
+      {result ? <div className="pageagent-result">{result}</div> : null}
+      {status === "running" ? (
+        <button
+          type="button"
+          className="pageagent-stop"
+          onClick={async () => {
+            const { stopUiTask } = await import("../pageagent/pageAgentClient.mjs");
+            await stopUiTask();
+          }}
+        >
+          Stop
+        </button>
+      ) : null}
     </div>
   );
 }

@@ -1938,3 +1938,38 @@ pre {
   word-break: break-all;
   margin-top: 2px;
 }
+
+/* PageAgent panel */
+.pageagent-panel {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.pageagent-panel .status-pill {
+  font-size: 0.85rem;
+}
+.pageagent-task {
+  font-size: 0.85rem;
+  color: #eef2f5;
+}
+.pageagent-activity {
+  font-size: 0.8rem;
+  color: #8ba0c0;
+}
+.pageagent-result {
+  font-size: 0.8rem;
+  color: #6bff8a;
+}
+.pageagent-stop {
+  align-self: start;
+  padding: 4px 12px;
+  border-radius: 6px;
+  border: 1px solid #f05050;
+  background: transparent;
+  color: #f05050;
+  cursor: pointer;
+}
+.pageagent-stop:hover {
+  background: rgba(240, 80, 80, 0.15);
+}

@@ -144,6 +144,12 @@ export function mergeConfig(input = {}) {
       ...(input.crawl && typeof input.crawl === "object" && !Array.isArray(input.crawl)
         ? input.crawl
         : {})
+    },
+    pageAgent: {
+      ...DEFAULT_CONFIG.pageAgent,
+      ...(input.pageAgent && typeof input.pageAgent === "object" && !Array.isArray(input.pageAgent)
+        ? input.pageAgent
+        : {})
     }
   };
 }
@@ -251,7 +257,7 @@ function validateOptionalEnvTokens(env, key, label, min, max) {
 }
 
 export function validateConfig(config) {
-  const errors = { control: {}, history: {}, server: {}, wrapper: {}, requestDefaults: {}, research: {}, callDebug: {} };
+  const errors = { control: {}, history: {}, server: {}, wrapper: {}, requestDefaults: {}, research: {}, callDebug: {}, pageAgent: {} };
   if (!validatePort(config.control.port)) errors.control.port = "must be between 1 and 65535";
   if (!validatePort(config.server.port)) errors.server.port = "must be between 1 and 65535";
   if (!config.control.host) errors.control.host = "is required";
@@ -350,6 +356,23 @@ export function validateConfig(config) {
   errors.research = validateResearchConfig(config.research || {});
   errors.callDebug = validateCallDebug(config.callDebug || {});
   errors.toolBlobs = validateToolBlobs(config.toolBlobs || {});
+  // PageAgent validation
+  const pa = config.pageAgent || {};
+  if (typeof pa.enabled !== "boolean") errors.pageAgent.enabled = "must be boolean";
+  if (typeof pa.clientUiEnabled !== "boolean") errors.pageAgent.clientUiEnabled = "must be boolean";
+  if (typeof pa.serverBrowserEnabled !== "boolean") errors.pageAgent.serverBrowserEnabled = "must be boolean";
+  if (typeof pa.mcpEnabled !== "boolean") errors.pageAgent.mcpEnabled = "must be boolean";
+  if (typeof pa.model !== "string" || !pa.model.trim()) errors.pageAgent.model = "is required";
+  if (typeof pa.baseURL !== "string" || !pa.baseURL.trim()) errors.pageAgent.baseURL = "is required";
+  if (typeof pa.apiKey !== "string") errors.pageAgent.apiKey = "must be a string";
+  if (typeof pa.language !== "string" || !pa.language.trim()) errors.pageAgent.language = "is required";
+  if (!isPositiveInt(pa.maxSteps) || pa.maxSteps > 40) errors.pageAgent.maxSteps = "must be an integer between 1 and 40";
+  if (!isPositiveInt(pa.actionTimeoutMs) || pa.actionTimeoutMs < 1000 || pa.actionTimeoutMs > 600000) errors.pageAgent.actionTimeoutMs = "must be between 1000 and 600000";
+  if (typeof pa.requireConfirmation !== "boolean") errors.pageAgent.requireConfirmation = "must be boolean";
+  if (typeof pa.experimentalScriptExecutionTool !== "boolean") errors.pageAgent.experimentalScriptExecutionTool = "must be boolean";
+  if (typeof pa.allowExternalDomains !== "boolean") errors.pageAgent.allowExternalDomains = "must be boolean";
+  if (!Array.isArray(pa.allowedOrigins) || pa.allowedOrigins.some(o => typeof o !== "string")) errors.pageAgent.allowedOrigins = "must be an array of strings";
+  if (typeof pa.auditDir !== "string" || !pa.auditDir.trim()) errors.pageAgent.auditDir = "is required";
   const ok =
     Object.keys(errors.control).length === 0 &&
     Object.keys(errors.history).length === 0 &&
@@ -358,7 +381,8 @@ export function validateConfig(config) {
     Object.keys(errors.requestDefaults).length === 0 &&
     Object.keys(errors.research).length === 0 &&
     Object.keys(errors.callDebug).length === 0 &&
-    Object.keys(errors.toolBlobs).length === 0;
+    Object.keys(errors.toolBlobs).length === 0 &&
+    Object.keys(errors.pageAgent).length === 0;
   return { ok, errors };
 }
 

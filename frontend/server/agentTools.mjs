@@ -21,6 +21,8 @@ import { crawlUrl } from "./crawlClient.mjs";
 import { summarizeCrawlManifest } from "./crawlSummarizer.mjs";
 import { formatResearchSources } from "./researchFormatter.mjs";
 import { searchChatHistory, formatHistoryResults } from "./historyTool.mjs";
+import { toolPageSnapshot, toolPageAction } from "./pageAgentTool.mjs";
+import { toolPageTask } from "./pageAgentTask.mjs";
 
 const DEFAULT_TIMEOUT_SEC = 30;
 const DEFAULT_MAX_LINES = 500;
@@ -236,6 +238,12 @@ export async function executeTool(name, args = {}, options = {}) {
         return await toolRetrieveContextBlob(args, options);
       case "chat_history_search":
         return toolHistory(args, options);
+      case "page_snapshot":
+        return toolPageSnapshot(args, options);
+      case "page_action":
+        return toolPageAction(args, options);
+      case "page_task":
+        return toolPageTask(args, options);
       default:
         return { content: `Unknown tool: ${name}`, isError: true };
     }

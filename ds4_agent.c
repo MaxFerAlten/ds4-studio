@@ -1037,6 +1037,52 @@ static const char agent_tools_prompt_after_edit[] =
     "{\n"
     "  \"type\": \"function\",\n"
     "  \"function\": {\n"
+    "    \"name\": \"page_snapshot\",\n"
+    "    \"description\": \"Read a guarded snapshot of the current DS4 Studio UI or an allowed browser page. Use this before requesting UI actions.\",\n"
+    "    \"parameters\": {\n"
+    "      \"type\": \"object\",\n"
+    "      \"properties\": {\n"
+    "        \"url\": {\"type\": \"string\", \"description\": \"Optional URL. If omitted, snapshots the current DS4 Studio UI/browser session.\"},\n"
+    "        \"includeControls\": {\"type\": \"boolean\", \"description\": \"Include visible buttons, inputs, selects, links.\"}\n"
+    "      }\n"
+    "    }\n"
+    "  }\n"
+    "}\n\n"
+    "{\n"
+    "  \"type\": \"function\",\n"
+    "  \"function\": {\n"
+    "    \"name\": \"page_action\",\n"
+    "    \"description\": \"Perform one guarded UI action on the DS4 Studio UI or an allowed page. Always inspect with page_snapshot first.\",\n"
+    "    \"parameters\": {\n"
+    "      \"type\": \"object\",\n"
+    "      \"properties\": {\n"
+    "        \"action\": {\"type\": \"string\", \"enum\": [\"click\", \"input\", \"select\", \"scroll\", \"wait\"], \"description\": \"Action to perform.\"},\n"
+    "        \"target\": {\"type\": \"string\", \"description\": \"data-agent-id, visible label, or stable selector.\"},\n"
+    "        \"value\": {\"type\": \"string\", \"description\": \"Text/value for input or select.\"},\n"
+    "        \"requireConfirmation\": {\"type\": \"boolean\", \"description\": \"Require user confirmation for potentially destructive action.\"}\n"
+    "      },\n"
+    "      \"required\": [\"action\", \"target\"]\n"
+    "    }\n"
+    "  }\n"
+    "}\n\n"
+    "{\n"
+    "  \"type\": \"function\",\n"
+    "  \"function\": {\n"
+    "    \"name\": \"page_task\",\n"
+    "    \"description\": \"Perform a high-level UI task described in natural language. Automatically inspects the page, plans actions, executes them, and confirms the result. Use instead of chaining page_snapshot + page_action.\",\n"
+    "    \"parameters\": {\n"
+    "      \"type\": \"object\",\n"
+    "      \"properties\": {\n"
+    "        \"task\": {\"type\": \"string\", \"description\": \"Natural language task description (e.g., 'Click the send button').\"},\n"
+    "        \"timeout_sec\": {\"type\": \"number\", \"description\": \"Timeout in seconds. Default 30.\"}\n"
+    "      },\n"
+    "      \"required\": [\"task\"]\n"
+    "    }\n"
+    "  }\n"
+    "}\n\n"
+    "{\n"
+    "  \"type\": \"function\",\n"
+    "  \"function\": {\n"
     "    \"name\": \"read\",\n"
     "    \"description\": \"Read a text file or a range of lines.\",\n"
     "    \"parameters\": {\n"
@@ -7906,6 +7952,121 @@ static char *agent_tool_sage_via_http(agent_worker *w, const agent_tool_call *ca
     return xstrdup("Tool error: sage HTTP backend error (no output)\n");
 }
 
+/* Page agent tool implementation that delegates execution to the Node frontend
+ * server via HTTP POST /api/pageagent/tool.  Supports page_snapshot and
+ * page_action — dispatches based on call->name.  Follows the same pattern as
+ * agent_tool_sage_via_http. */
+static char *agent_tool_pageagent_via_http(agent_worker *w, const agent_tool_call *call) {
+    const char *name = call->name;
+    if (!name) return xstrdup("Tool error: missing page agent tool name\n");
+
+    int port = w->cfg->frontend_port;
+    if (port <= 0) {
+        return xstrdup("Tool error: page agent HTTP backend unavailable (FRONTEND_PORT not set)\n");
+    }
+
+    /* Build arguments JSON object by iterating all args of the tool call.
+     * Produces: "key1":val1,"key2":val2,...  (is_string values get quoted). */
+    agent_buf args_json = {0};
+    agent_buf_puts(&args_json, "{");
+    for (int i = 0; i < call->argc; i++) {
+        if (!call->args[i].name) continue;
+        if (args_json.len > 1) agent_buf_puts(&args_json, ",");
+        char *en = agent_json_escape(call->args[i].name, strlen(call->args[i].name));
+        if (!en) { free(args_json.ptr); return xstrdup("Tool error: page agent memory error\n"); }
+        agent_buf_puts(&args_json, en);
+        agent_buf_puts(&args_json, ":");
+        free(en);
+        if (call->args[i].is_string) {
+            char *ev = agent_json_escape(call->args[i].value ? call->args[i].value : "",
+                                         call->args[i].value ? strlen(call->args[i].value) : 0);
+            if (!ev) { free(args_json.ptr); return xstrdup("Tool error: page agent memory error\n"); }
+            agent_buf_puts(&args_json, ev);
+            free(ev);
+        } else {
+            agent_buf_puts(&args_json, call->args[i].value ? call->args[i].value : "null");
+        }
+    }
+    agent_buf_puts(&args_json, "}");
+
+    /* Build full body: {"name":"page_snapshot","arguments":{...}} */
+    char *escaped_name = agent_json_escape(name, strlen(name));
+    if (!escaped_name) { free(args_json.ptr); return xstrdup("Tool error: page agent memory error\n"); }
+
+    agent_buf body = {0};
+    agent_buf_puts(&body, "{\"name\":");
+    agent_buf_puts(&body, escaped_name);
+    agent_buf_puts(&body, ",\"arguments\":");
+    agent_buf_puts(&body, args_json.ptr ? args_json.ptr : "{}");
+    agent_buf_puts(&body, "}");
+    free(escaped_name);
+    free(args_json.ptr);
+
+    /* Build curl POST command.  Single quotes around -d payload are safe because
+     * agent_json_escape never produces unescaped single quotes. */
+    char cmd[8192];
+    int body_len = body.ptr ? (int)body.len : 2;
+    if (body_len > 8000) {
+        free(body.ptr);
+        return xstrdup("Tool error: page agent request too large\n");
+    }
+    snprintf(cmd, sizeof(cmd),
+        "curl -s -X POST http://127.0.0.1:%d/api/pageagent/tool "
+        "-H 'Content-Type: application/json' "
+        "-d '%s' --max-time 30 2>/dev/null",
+        port, body.ptr ? body.ptr : "{}");
+    free(body.ptr);
+
+    agent_publishf_system_status(w, "Running %s via HTTP...", name);
+
+    /* Execute curl and parse JSON response (same pattern as sage). */
+    agent_buf result = {0};
+    char buf[4096];
+    FILE *fp = popen(cmd, "r");
+    if (!fp) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "Tool error: %s HTTP backend unavailable (popen failed)\n", name);
+        return xstrdup(msg);
+    }
+    while (fgets(buf, sizeof(buf), fp)) agent_buf_puts(&result, buf);
+    int status = pclose(fp);
+    int exit_code = (status >= 0 && WIFEXITED(status)) ? WEXITSTATUS(status) : -1;
+
+    if (exit_code == 0 && result.ptr) {
+        char *content = agent_json_extract_string(result.ptr, "content");
+        bool is_error = agent_json_extract_bool(result.ptr, "isError");
+
+        if (content && !is_error) {
+            free(result.ptr);
+            return content;
+        }
+        free(content);
+        if (is_error && result.ptr) {
+            char *err_content = agent_json_extract_string(result.ptr, "content");
+            agent_buf b = {0};
+            char header[256];
+            snprintf(header, sizeof(header), "Tool error: %s failed", name);
+            agent_buf_puts(&b, header);
+            if (err_content) {
+                agent_buf_puts(&b, ": ");
+                agent_buf_puts(&b, err_content);
+                free(err_content);
+            }
+            agent_buf_puts(&b, "\n");
+            free(result.ptr);
+            return agent_buf_take(&b);
+        }
+    }
+
+    free(result.ptr);
+    if (exit_code > 0) {
+        char msg[256];
+        snprintf(msg, sizeof(msg), "Tool error: %s HTTP request failed (curl exit %d)\n", name, exit_code);
+        return xstrdup(msg);
+    }
+    return xstrdup("Tool error: page agent HTTP backend error (no output)\n");
+}
+
 static char *agent_tool_crawl(agent_worker *w, const agent_tool_call *call) {
     const char *url = agent_tool_arg_value(call, "url");
     if (!url || !url[0]) return xstrdup("Tool error: crawl requires url\n");
@@ -8134,6 +8295,9 @@ static char *agent_execute_tool_call(agent_worker *w, const agent_tool_call *cal
     if (!strcmp(call->name, "visit_page")) return agent_tool_visit_page(w, call);
     if (!strcmp(call->name, "crawl")) return agent_tool_crawl(w, call);
     if (!strcmp(call->name, "sage")) return agent_tool_sage_via_http(w, call);
+    if (!strcmp(call->name, "page_snapshot")) return agent_tool_pageagent_via_http(w, call);
+    if (!strcmp(call->name, "page_action")) return agent_tool_pageagent_via_http(w, call);
+    if (!strcmp(call->name, "page_task")) return agent_tool_pageagent_via_http(w, call);
 
     if (!strcmp(call->name, "bash")) {
         const char *cmd = agent_tool_arg_value(call, "command");

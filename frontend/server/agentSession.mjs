@@ -315,6 +315,52 @@ const AGENT_TOOLS = [
         required: []
       }
     }
+  },
+  {
+    type: "function",
+    function: {
+      name: "page_snapshot",
+      description: "Read a guarded snapshot of the current DS4 Studio UI or an allowed browser page. Use this before requesting UI actions.",
+      parameters: {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "Optional URL. If omitted, snapshots the current DS4 Studio UI/browser session." },
+          includeControls: { type: "boolean", description: "Include visible buttons, inputs, selects, links." }
+        }
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "page_action",
+      description: "Perform one guarded UI action on the DS4 Studio UI or an allowed page. Always inspect with page_snapshot first.",
+      parameters: {
+        type: "object",
+        properties: {
+          action: { type: "string", enum: ["click", "input", "select", "scroll", "wait"], description: "Action to perform." },
+          target: { type: "string", description: "data-agent-id, visible label, or stable selector." },
+          value: { type: "string", description: "Text/value for input or select." },
+          requireConfirmation: { type: "boolean", description: "Require user confirmation for potentially destructive action." }
+        },
+        required: ["action", "target"]
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "page_task",
+      description: "Perform a high-level UI task described in natural language. Automatically inspects the page, plans and executes actions, and confirms the result. Use for multi-step tasks instead of chaining page_snapshot + page_action manually.",
+      parameters: {
+        type: "object",
+        properties: {
+          task: { type: "string", description: "Natural language description of the task (e.g., 'Click the send button', 'Type hello in the chat input and click send')." },
+          timeout_sec: { type: "number", description: "Timeout in seconds. Default 30." }
+        },
+        required: ["task"]
+      }
+    }
   }
 ];
 
