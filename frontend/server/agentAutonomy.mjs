@@ -8,7 +8,8 @@
 // Read-only / non-destructive tools — run without asking.
 export const SAFE_TOOLS = new Set([
   "web_search", "web_read", "crawl", "research_discover",
-  "chat_history_search", "read", "list", "search", "sage"
+  "chat_history_search", "read", "list", "search", "sage",
+  "page_snapshot"
 ]);
 
 // Action types that must be confirmed before running.

@@ -293,6 +293,24 @@ export function parseAgentInput(text, agentMode) {
     if (action === "stop")  return { type: "gitnexus", action: "set", enabled: false };
   }
 
+  // PageAgent commands — work independently of agent mode
+  const pageagentStatus = trimmed.match(/^\/pageagent\s+status\s*$/i);
+  if (pageagentStatus) {
+    return { type: "pageagent", action: "status" };
+  }
+  const pageagentStop = trimmed.match(/^\/pageagent\s+stop\s*$/i);
+  if (pageagentStop) {
+    return { type: "pageagent", action: "stop" };
+  }
+  const pageagentRun = trimmed.match(/^\/pageagent\s+run\s+(.+)$/i);
+  if (pageagentRun) {
+    return { type: "pageagent", action: "run", task: pageagentRun[1].trim() };
+  }
+  const uiCmd = trimmed.match(/^\/ui\s+(.+)$/i);
+  if (uiCmd) {
+    return { type: "pageagent", action: "run", task: uiCmd[1].trim(), alias: "ui" };
+  }
+
   const alias = trimmed.match(/^\/agent\s+(\S+)(?:\s+([\s\S]*))?$/i);
   if (alias) {
     const name = alias[1].toLowerCase();

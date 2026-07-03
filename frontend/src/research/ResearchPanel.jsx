@@ -161,7 +161,7 @@ export function ResearchPanel({
   }
 
   return (
-    <div className="research-panel">
+    <div className="research-panel" data-agent-id="research-panel">
       <div className="research-header">
         <h2 className="research-title">Deep Research</h2>
         <span className={`research-status ${view.status}`}>{view.status}</span>

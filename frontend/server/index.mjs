@@ -1559,6 +1559,31 @@ app.post("/api/sage/exec", asyncHandler(async (req, res) => {
   res.json(result);
 }));
 
+/**
+ * Execute PageAgent tools (page_snapshot, page_action) via HTTP.
+ * Used by the C agent (ds4-wrapper) to delegate page agent execution.
+ * Body: { name: "page_snapshot"|"page_action", arguments: {...}, sessionId? }
+ */
+app.post("/api/pageagent/tool", asyncHandler(async (req, res) => {
+  const { name, arguments: args, sessionId } = req.body || {};
+  if (!name || typeof name !== "string") {
+    return res.status(400).json({ content: "Tool error: name is required", isError: true });
+  }
+  if (!args || typeof args !== "object") {
+    return res.status(400).json({ content: "Tool error: arguments is required", isError: true });
+  }
+
+  const validTools = ["page_snapshot", "page_action", "page_task"];
+  if (!validTools.includes(name)) {
+    return res.status(400).json({ content: `Tool error: unknown page tool: ${name}`, isError: true });
+  }
+
+  const opts = { sessionId: sessionId || undefined };
+
+  const result = await executeTool(name, args, opts);
+  res.json(result);
+}));
+
 // ---------------------------------------------------------------------------
 
 /**

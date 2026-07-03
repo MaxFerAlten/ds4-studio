@@ -8,15 +8,17 @@
 
 /**
  * @param {object} config server config
- * @returns {{ webSearch: boolean, crawl: boolean, sage: boolean, history: boolean, researchSearch: boolean }}
+ * @returns {{ webSearch: boolean, crawl: boolean, sage: boolean, history: boolean, researchSearch: boolean, pageAgent: boolean, pageAgentMcp: boolean }}
  */
 export function getAgentCapabilities(config = {}) {
   return {
-    webSearch: true, // web_search/web_read are always registered tools
-    crawl: Boolean(config.crawl?.host), // crawl service is configured/spawned
-    sage: true, // sage tool always available
-    history: true, // chat_history_search operates on the live transcript
-    researchSearch: Boolean(config.research?.search?.enabled)
+    webSearch: true,
+    crawl: Boolean(config.crawl?.host),
+    sage: true,
+    history: true,
+    researchSearch: Boolean(config.research?.search?.enabled),
+    pageAgent: Boolean(config.pageAgent?.enabled),
+    pageAgentMcp: Boolean(config.pageAgent?.mcpEnabled)
   };
 }
 
@@ -25,7 +27,9 @@ const LABELS = {
   crawl: "crawl — fetch & extract page content via the crawl service",
   researchSearch: "research_discover — ranked, deduped, enriched research sources",
   history: "chat_history_search — search this conversation for prior links/actions/claims",
-  sage: "sage — symbolic/numeric math via SageMath"
+  sage: "sage — symbolic/numeric math via SageMath",
+  pageAgent: "page_snapshot / page_action — inspect and operate the DS4 Studio UI through guarded page automation",
+  pageAgentMcp: "MCP server available — pageagent tools can be consumed by external MCP clients (Claude Desktop etc.)"
 };
 
 /** Build the system-prompt section listing the enabled runtime tools. */

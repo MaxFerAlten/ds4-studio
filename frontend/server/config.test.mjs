@@ -508,3 +508,58 @@ test("validateConfig rejects invalid research block", () => {
   assert.equal(result.ok, false);
   assert.match(result.errors.research.maxPlanIterations, /between 1 and 10/);
 });
+
+test("default pageAgent config is disabled", () => {
+  assert.equal(DEFAULT_CONFIG.pageAgent.enabled, false);
+  assert.equal(DEFAULT_CONFIG.pageAgent.clientUiEnabled, true);
+  assert.equal(DEFAULT_CONFIG.pageAgent.serverBrowserEnabled, false);
+  assert.equal(DEFAULT_CONFIG.pageAgent.mcpEnabled, false);
+  assert.equal(DEFAULT_CONFIG.pageAgent.experimentalScriptExecutionTool, false);
+  assert.equal(DEFAULT_CONFIG.pageAgent.allowExternalDomains, false);
+  assert.equal(DEFAULT_CONFIG.pageAgent.requireConfirmation, true);
+});
+
+test("mergeConfig keeps pageAgent defaults", () => {
+  const merged = mergeConfig({});
+  assert.equal(merged.pageAgent.enabled, false);
+  assert.equal(merged.pageAgent.maxSteps, 20);
+  assert.equal(merged.pageAgent.actionTimeoutMs, 120000);
+  assert.deepEqual(merged.pageAgent.allowedOrigins, ["http://127.0.0.1:5173", "http://localhost:5173"]);
+});
+
+test("mergeConfig merges pageAgent overrides", () => {
+  const merged = mergeConfig({
+    pageAgent: { enabled: true, maxSteps: 10, baseURL: "http://127.0.0.1:8081/v1" }
+  });
+  assert.equal(merged.pageAgent.enabled, true);
+  assert.equal(merged.pageAgent.maxSteps, 10);
+  assert.equal(merged.pageAgent.baseURL, "http://127.0.0.1:8081/v1");
+  assert.equal(merged.pageAgent.clientUiEnabled, true); // default preserved
+});
+
+test("validateConfig accepts valid pageAgent config", () => {
+  const config = mergeConfig({ pageAgent: { enabled: true } });
+  const result = validateConfig(config);
+  assert.equal(result.ok, true);
+});
+
+test("validateConfig rejects invalid pageAgent maxSteps", () => {
+  const config = mergeConfig({ pageAgent: { maxSteps: 0 } });
+  const result = validateConfig(config);
+  assert.equal(result.ok, false);
+  assert.match(result.errors.pageAgent.maxSteps, /between 1 and 40/);
+});
+
+test("validateConfig rejects invalid pageAgent actionTimeoutMs", () => {
+  const config = mergeConfig({ pageAgent: { actionTimeoutMs: 500 } });
+  const result = validateConfig(config);
+  assert.equal(result.ok, false);
+  assert.match(result.errors.pageAgent.actionTimeoutMs, /between 1000 and 600000/);
+});
+
+test("validateConfig rejects invalid pageAgent allowedOrigins", () => {
+  const config = mergeConfig({ pageAgent: { allowedOrigins: "not-an-array" } });
+  const result = validateConfig(config);
+  assert.equal(result.ok, false);
+  assert.match(result.errors.pageAgent.allowedOrigins, /array of strings/);
+});

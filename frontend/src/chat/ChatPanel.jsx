@@ -37,7 +37,7 @@ export function ChatPanel({
   handleResearchHistoryChange
 }) {
   return (
-    <section className={`chat-panel panel${researchMode ? " research-active" : ""}`}>
+    <section className={`chat-panel panel${researchMode ? " research-active" : ""}`} data-agent-id="chat-panel">
       <div className="chat-header">
         <button
           type="button"
@@ -45,6 +45,7 @@ export function ChatPanel({
           onClick={startNewSession}
           disabled={generationBusy || !messages.length}
           title="Start a new chat session (clears messages and attachments)"
+          data-agent-id="chat-new-session-button"
         >
           <Plus size={16} />
           New session
@@ -56,12 +57,13 @@ export function ChatPanel({
             onClick={() => setResearchMode((v) => !v)}
             disabled={agentMode}
             title="Toggle Deep Research mode"
+            data-agent-id="chat-research-toggle"
           >
             Deep Research
           </button>
         ) : null}
         {agentMode && (
-          <div className="agent-badge" title={`Agent Mode Active - Iteration ${agentStatus?.iteration || 0} · Pony ${agentStatus?.ponyMode || "off"} · Headroom ${headroomEnabled ? "on" : "off"} · GitNexus ${agentStatus?.gitnexusEnabled ? "on" : "off"}`}>
+          <div className="agent-badge" data-agent-id="chat-agent-badge" title={`Agent Mode Active - Iteration ${agentStatus?.iteration || 0} · Pony ${agentStatus?.ponyMode || "off"} · Headroom ${headroomEnabled ? "on" : "off"} · GitNexus ${agentStatus?.gitnexusEnabled ? "on" : "off"}`}>
             <div className="agent-indicator"></div>
             <span>Agent Active · Pony: {agentStatus?.ponyMode || "off"} · Headroom: {headroomEnabled ? "ON" : "OFF"} · GitNexus: {agentStatus?.gitnexusEnabled ? "ON" : "OFF"}</span>
             <button
@@ -69,6 +71,7 @@ export function ChatPanel({
               className="agent-stop-btn"
               onClick={() => toggleAgentMode(false)}
               title="Stop Agent Mode"
+              data-agent-id="chat-agent-stop-button"
             >
               <Square size={12} />
             </button>
@@ -82,7 +85,7 @@ export function ChatPanel({
           onHistoryChange={handleResearchHistoryChange}
         />
       ) : null}
-      <div className="messages" ref={messagesRef}>
+      <div className="messages" ref={messagesRef} data-agent-id="chat-messages">
         {messages.map((message, index) => (
           <article className={`message ${message.role}`} key={index}>
             <strong>{message.role}</strong>
@@ -125,6 +128,7 @@ export function ChatPanel({
           onClick={downloadConversation}
           disabled={!messages.length}
           title="Export the whole conversation as Obsidian-compatible Markdown"
+          data-agent-id="chat-export-button"
         >
           <Download size={16} />
           Export MD
@@ -238,6 +242,7 @@ export function ChatPanel({
               if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) sendMessage();
             }
           }}
+          data-agent-id="chat-input"
         />
         {generationBusy ? (
           <button
@@ -246,12 +251,13 @@ export function ChatPanel({
             onClick={() => abortGeneration("Interrupted.")}
             title="Stop generation"
             aria-label="Stop"
+            data-agent-id="chat-stop-button"
           >
             <Square size={16} />
             Stop
           </button>
         ) : (
-          <button className="send-button" type="button" onClick={sendMessage} disabled={!canSend || uploadBusy}>
+          <button className="send-button" type="button" onClick={sendMessage} disabled={!canSend || uploadBusy} data-agent-id="chat-send-button">
             <Send size={16} />
             Send
           </button>

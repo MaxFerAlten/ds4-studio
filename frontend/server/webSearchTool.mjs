@@ -19,7 +19,7 @@
 import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 
 const CHROME_PATH = "/usr/bin/google-chrome";
 // Headful Chrome on a virtual X display: Google bot-blocks true headless, but a
@@ -29,7 +29,10 @@ const XVFB_DISPLAY = ":99";
 // ponytail: own profile dir, not ds4-agent's ~/.ds4/browser — Chrome locks a
 // user-data-dir to one process; sharing it clashes if the C agent runs too.
 // add when a shared, already-consented profile is actually wanted.
-const PROFILE_DIR = path.join(os.homedir(), ".ds4", "browser-frontend");
+// In test mode use a temp dir to avoid clashes with running instances.
+const PROFILE_DIR = process.env.NODE_ENV === "test"
+  ? path.join(os.tmpdir(), `ds4-browser-test-${process.pid}`)
+  : path.join(os.homedir(), ".ds4", "browser-frontend");
 const BROWSER_TIMEOUT = 30000;
 const PAGE_TIMEOUT = 15000;
 
@@ -68,7 +71,8 @@ async function getBrowser() {
     // Headless Chrome gets sent to Google's /sorry CAPTCHA wall; a real Chrome
     // (here on a virtual Xvfb display) is served normally. env.DISPLAY points
     // Chrome at the invisible display so no window ever appears.
-    headless: false,
+    // In test mode use Chrome 149+'s new headless mode (no display needed).
+    headless: process.env.NODE_ENV === "test" ? "new" : false,
     env: { ...process.env, DISPLAY: display },
     userDataDir: PROFILE_DIR,
     // Strip puppeteer's bot tells so Chrome looks like ds4-agent's raw CDP
@@ -103,6 +107,10 @@ async function releaseBrowser() {
     await browserSingleton.close().catch(() => {});
     browserSingleton = null;
     browserRefCount = 0;
+    // Clean up temp profile dir in test mode
+    if (process.env.NODE_ENV === "test") {
+      try { rmSync(PROFILE_DIR, { recursive: true, force: true }); } catch {}
+    }
   }
 }
 
