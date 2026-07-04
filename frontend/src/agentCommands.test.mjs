@@ -167,3 +167,34 @@ test("/pageagent commands work independently of agent mode", () => {
     alias: "ui"
   });
 });
+
+test("parses /pageagent start and /pageagent on", () => {
+  assert.deepEqual(parseAgentInput("/pageagent start", false), {
+    type: "pageagent",
+    action: "set",
+    enabled: true
+  });
+  assert.deepEqual(parseAgentInput("/pageagent on", true), {
+    type: "pageagent",
+    action: "set",
+    enabled: true
+  });
+  assert.deepEqual(parseAgentInput(" /PAGEAGENT START ", false), {
+    type: "pageagent",
+    action: "set",
+    enabled: true
+  });
+});
+
+test("parses /pageagent off", () => {
+  assert.deepEqual(parseAgentInput("/pageagent off", false), {
+    type: "pageagent",
+    action: "set",
+    enabled: false
+  });
+  assert.deepEqual(parseAgentInput(" /pageagent OFF ", true), {
+    type: "pageagent",
+    action: "set",
+    enabled: false
+  });
+});

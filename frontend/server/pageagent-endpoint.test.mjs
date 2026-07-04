@@ -27,10 +27,10 @@ function buildHandler(mockExecuteTool) {
   };
 }
 
-async function withServer(handler, body) {
+async function withServer(handler, body, route = "/api/pageagent/tool") {
   const app = express();
   app.use(express.json());
-  app.post("/api/pageagent/tool", handler);
+  app.post(route, handler);
 
   const server = createServer(app);
   await new Promise((resolve) => server.listen(0, resolve));
@@ -44,7 +44,7 @@ async function withServer(handler, body) {
       fetchOpts.body = JSON.stringify(body);
       fetchOpts.headers = { "Content-Type": "application/json" };
     }
-    const res = await fetch(`http://127.0.0.1:${port}/api/pageagent/tool`, fetchOpts);
+    const res = await fetch(`http://127.0.0.1:${port}${route}`, fetchOpts);
     const json = await res.json().catch(() => null);
     return { status: res.status, json };
   } finally {
@@ -149,4 +149,143 @@ test("POST /api/pageagent/tool returns isError true on tool failure", async () =
   assert.equal(status, 200);
   assert.equal(json.isError, true);
   assert.match(json.content, /Tool error/);
+});
+
+function withParseServer(handler, body) {
+  return withServer(async (req, res) => {
+    handler(req, res);
+  }, body, "/api/pageagent/parse");
+}
+
+test("POST /api/pageagent/parse returns 400 when body is empty", async () => {
+  const { parseTask } = await import("./pageAgentTask.mjs");
+  const handler = async (req, res) => {
+    const { task } = req.body || {};
+    if (!task || typeof task !== "string") {
+      res.status(400).json({ error: "task is required" });
+      return;
+    }
+    const parsed = parseTask(task);
+    if (!parsed) { res.status(400).json({ error: "Could not parse task" }); return; }
+    res.json(parsed);
+  };
+  const { status, json } = await withServer(handler, undefined, "/api/pageagent/parse");
+  assert.equal(status, 400);
+  assert.equal(json.error, "task is required");
+});
+
+test("POST /api/pageagent/parse returns structured action for Italian task", async () => {
+  const { parseTask } = await import("./pageAgentTask.mjs");
+  const handler = async (req, res) => {
+    const { task } = req.body || {};
+    if (!task || typeof task !== "string") {
+      res.status(400).json({ error: "task is required" });
+      return;
+    }
+    const parsed = parseTask(task);
+    if (!parsed) { res.status(400).json({ error: "Could not parse task" }); return; }
+    res.json(parsed);
+  };
+  const { status, json } = await withServer(handler, { task: "fai click su Profile" }, "/api/pageagent/parse");
+  assert.equal(status, 200);
+  assert.equal(json.action, "click");
+  assert.equal(json.target, "profile");
+});
+
+test("POST /api/pageagent/parse returns structured action for English task", async () => {
+  const { parseTask } = await import("./pageAgentTask.mjs");
+  const handler = async (req, res) => {
+    const { task } = req.body || {};
+    if (!task || typeof task !== "string") {
+      res.status(400).json({ error: "task is required" });
+      return;
+    }
+    const parsed = parseTask(task);
+    if (!parsed) { res.status(400).json({ error: "Could not parse task" }); return; }
+    res.json(parsed);
+  };
+  const { status, json } = await withServer(handler, { task: "click on Start" }, "/api/pageagent/parse");
+  assert.equal(status, 200);
+  assert.equal(json.action, "click");
+  assert.equal(json.target, "start");
+});
+
+// ---------------------------------------------------------------------------
+// Bridge endpoint tests (enable, disconnect, pending, resolve)
+// ---------------------------------------------------------------------------
+
+test("POST /api/pageagent/enable sets server enabled", async () => {
+  const mod = {};
+  const handler = async (req, res) => {
+    const { enabled } = req.body || {};
+    mod.pageAgentEnabled = Boolean(enabled);
+    res.json({ ok: true, pageAgentEnabled: mod.pageAgentEnabled });
+  };
+  const { status, json } = await withServer(handler, { enabled: true }, "/api/pageagent/enable");
+  assert.equal(status, 200);
+  assert.equal(json.ok, true);
+  assert.equal(json.pageAgentEnabled, true);
+});
+
+test("POST /api/pageagent/enable false disables server", async () => {
+  const mod = {};
+  const handler = async (req, res) => {
+    const { enabled } = req.body || {};
+    mod.pageAgentEnabled = Boolean(enabled);
+    res.json({ ok: true, pageAgentEnabled: mod.pageAgentEnabled });
+  };
+  const { status, json } = await withServer(handler, { enabled: false }, "/api/pageagent/enable");
+  assert.equal(status, 200);
+  assert.equal(json.ok, true);
+  assert.equal(json.pageAgentEnabled, false);
+});
+
+test("POST /api/pageagent/disconnect returns ok", async () => {
+  const handler = async (req, res) => {
+    res.json({ ok: true });
+  };
+  const { status, json } = await withServer(handler, {}, "/api/pageagent/disconnect");
+  assert.equal(status, 200);
+  assert.equal(json.ok, true);
+});
+
+test("GET /api/pageagent/pending returns tools array", async () => {
+  const handler = async (req, res) => {
+    res.json({ tools: [{ id: 1, name: "page_snapshot", args: {}, ts: Date.now() }] });
+  };
+  const app = express();
+  app.get("/api/pageagent/pending", handler);
+  const server = createServer(app);
+  await new Promise((resolve) => server.listen(0, resolve));
+  const port = server.address().port;
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/pageagent/pending`);
+    const json = await res.json();
+    assert.equal(json.tools.length, 1);
+    assert.equal(json.tools[0].name, "page_snapshot");
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("POST /api/pageagent/resolve with id returns ok", async () => {
+  const handler = async (req, res) => {
+    const { id, result } = req.body || {};
+    if (!id) { res.status(400).json({ error: "id is required" }); return; }
+    res.json({ ok: true });
+  };
+  const { status, json } = await withServer(handler, { id: 1, result: { content: "ok" } }, "/api/pageagent/resolve");
+  assert.equal(status, 200);
+  assert.equal(json.ok, true);
+});
+
+test("POST /api/pageagent/resolve without id returns 400", async () => {
+  const handler = async (req, res) => {
+    const { id } = req.body || {};
+    if (!id) { res.status(400).json({ error: "id is required" }); return; }
+    res.json({ ok: true });
+  };
+  const { status, json } = await withServer(handler, {}, "/api/pageagent/resolve");
+  assert.equal(status, 400);
+  assert.equal(json.error, "id is required");
 });

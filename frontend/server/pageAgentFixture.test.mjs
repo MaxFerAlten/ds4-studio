@@ -35,15 +35,15 @@ test("takeSnapshot with controls includes control list", async () => {
       callCount++;
       if (callCount === 1) return "";
       return [
-        { tag: "button", type: "submit", text: "Send", id: "send-btn", "data-agent-id": "" },
-        { tag: "input", type: "text", text: "", id: "chat-input", "data-agent-id": "chat-input" }
+        { index: 1, tag: "button", type: "submit", text: "Send", id: "send-btn", agentId: "", enabled: true },
+        { index: 2, tag: "input", type: "text", text: "", id: "chat-input", agentId: "chat-input", enabled: true }
       ];
     }
   };
 
   const snap = await takeSnapshot(page, true);
   assert.match(snap, /Visible controls/);
-  assert.match(snap, /send-btn/);
+  assert.match(snap, /text="Send"/);
   assert.match(snap, /chat-input/);
 });
 

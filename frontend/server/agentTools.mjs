@@ -23,6 +23,7 @@ import { formatResearchSources } from "./researchFormatter.mjs";
 import { searchChatHistory, formatHistoryResults } from "./historyTool.mjs";
 import { toolPageSnapshot, toolPageAction } from "./pageAgentTool.mjs";
 import { toolPageTask } from "./pageAgentTask.mjs";
+import { enqueuePageAgentTool, isClientConnected } from "./pageAgentBridge.mjs";
 
 const DEFAULT_TIMEOUT_SEC = 30;
 const DEFAULT_MAX_LINES = 500;
@@ -239,10 +240,22 @@ export async function executeTool(name, args = {}, options = {}) {
       case "chat_history_search":
         return toolHistory(args, options);
       case "page_snapshot":
+        if (isClientConnected()) {
+          const result = await enqueuePageAgentTool("page_snapshot", args);
+          if (result) return result;
+        }
         return toolPageSnapshot(args, options);
       case "page_action":
+        if (isClientConnected()) {
+          const result = await enqueuePageAgentTool("page_action", args);
+          if (result) return result;
+        }
         return toolPageAction(args, options);
       case "page_task":
+        if (isClientConnected()) {
+          const result = await enqueuePageAgentTool("page_task", args);
+          if (result) return result;
+        }
         return toolPageTask(args, options);
       default:
         return { content: `Unknown tool: ${name}`, isError: true };

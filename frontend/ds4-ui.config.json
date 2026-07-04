@@ -276,5 +276,25 @@
   "crawl": {
     "host": "127.0.0.1",
     "port": 9090
+  },
+  "pageAgent": {
+    "enabled": false,
+    "clientUiEnabled": true,
+    "serverBrowserEnabled": false,
+    "mcpEnabled": false,
+    "model": "deepseek-v4-flash",
+    "baseURL": "http://127.0.0.1:8080/v1",
+    "apiKey": "not-needed",
+    "language": "it-IT",
+    "maxSteps": 20,
+    "actionTimeoutMs": 120000,
+    "requireConfirmation": true,
+    "experimentalScriptExecutionTool": false,
+    "allowExternalDomains": false,
+    "allowedOrigins": [
+      "http://127.0.0.1:5173",
+      "http://localhost:5173"
+    ],
+    "auditDir": "data/pageagent-runs"
   }
 }

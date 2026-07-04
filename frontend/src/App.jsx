@@ -6,6 +6,7 @@ import { REQUEST_DEFAULTS } from "../server/defaultConfig.mjs";
 import { buildChatPayload, isAutoMaxTokens } from "../server/requestPayload.mjs";
 import { backendHealthLabel, backendStartupDetail, streamFailureNotice, formatNativeAgentNotice, parseAgentInput, withAgentPriming, historyHasPersistableAssistant, sessionHasAgentMetadata, sessionsExposeMetadata, clearStoredExportIncludeReasoning, readStoredExportDir, readStoredExportIncludeReasoning, writeStoredExportDir, writeStoredExportIncludeReasoning, createDeltaBatcher, documentIsVisible, clearCallDebug, fetchCallDebug } from "./utils.mjs";
 import { exportConversationMarkdown, markdownFileName } from "./conversationExport.mjs";
+import { startProxy as startPageAgentProxy, stopProxy as stopPageAgentProxy } from "./pageagent/pageAgentProxy.mjs";
 import { ChatPanel } from "./chat/ChatPanel.jsx";
 import { RequestPanel, ProfilePanel, StartupPanel, StrategyPanel, LogsPanel, MetricsPanel, CompressionPanel, CallDebugPanel, PageAgentPanel } from "./panels/RightRailPanels.jsx";
 import { LeftRail } from "./panels/LeftRail.jsx";
@@ -230,6 +231,7 @@ export default function App() {
   const [compressionMetrics, setCompressionMetrics] = useState(null);
   const [headroomEnabled, setHeadroomEnabled] = useState(false);
   const [webSearchMode, setWebSearchMode] = useState(false);
+  const [pageAgentMode, setPageAgentMode] = useState(false);
   const [searchStrategy, setSearchStrategy] = useState("F");
   const [searchChunkTokens, setSearchChunkTokens] = useState(25000);
   const [attachedDoc, setAttachedDoc] = useState(null);
@@ -521,6 +523,20 @@ export default function App() {
         setHistoryStatus(`History error: ${err.message}`);
       });
   }, [generationBusy, messages, agentMode, config?.history?.enabled, config?.history?.dir, currentSessionFileName]);
+
+  useEffect(() => {
+    const handleUnload = () => {
+      stopPageAgentProxy();
+      navigator.sendBeacon("/api/pageagent/disconnect");
+    };
+    window.addEventListener("beforeunload", handleUnload);
+    window.addEventListener("pagehide", handleUnload);
+    return () => {
+      handleUnload();
+      window.removeEventListener("beforeunload", handleUnload);
+      window.removeEventListener("pagehide", handleUnload);
+    };
+  }, []);
 
   const commandText = useMemo(() => (config ? commandLineFromConfig(config) : "./ds4-server"), [config]);
   const runningCommandText = useMemo(() => status?.command?.join(" ") || "", [status]);
@@ -1338,6 +1354,258 @@ export default function App() {
     ]);
   }
 
+  function callPageAgentControl(agentInput) {
+    if (agentInput.action === "status") {
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: `PageAgent mode is ${pageAgentMode ? "enabled" : "disabled"}.`, agentNotice: true }
+      ]);
+      return;
+    }
+    const enabled = Boolean(agentInput.enabled);
+    setPageAgentMode(enabled);
+    if (enabled) {
+      startPageAgentProxy();
+      fetch("/api/pageagent/enable", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: true }) }).catch(() => {});
+    } else {
+      stopPageAgentProxy();
+      fetch("/api/pageagent/enable", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: false }) }).catch(() => {});
+    }
+    setMessages((prev) => [
+      ...prev,
+      { role: "assistant", content: `PageAgent mode ${enabled ? "enabled — i tuoi comandi /pageagent run e /ui sono ora attivi" : "disabled"}.`, agentNotice: true }
+    ]);
+  }
+
+  const IT_EN_MAP = {
+    "profilo": "profile", "richiesta": "request", "avvio": "startup",
+    "strategia": "strategy", "cronologia": "history", "esporta": "export",
+    "registri": "logs", "metriche": "metrics", "compressione": "compression",
+    "pagina": "pageagent", "invia": "send", "nuova sessione": "new session",
+    "ricerca approfondita": "deep research", "debug chiamate": "call debug",
+  };
+
+  function splitTaskSteps(task) {
+    const lower = task.toLowerCase();
+    const ands = ["e poi", "e dopo", "poi", "and then", "therefore", "inoltre", "quindi"];
+    for (const sep of ands) {
+      const idx = lower.indexOf(sep);
+      if (idx > 0) {
+        const first = task.slice(0, idx).trim();
+        const rest = task.slice(idx + sep.length).trim();
+        return [first, ...splitTaskSteps(rest)];
+      }
+    }
+    return [task.trim()].filter(Boolean);
+  }
+
+  function waitStep(task) {
+    const m = task.match(/attendi\s+(\d+)\s+second/i) || task.match(/wait\s+(\d+)\s+second/i);
+    if (m) return parseInt(m[1], 10) * 1000;
+    return 0;
+  }
+
+  function translateTarget(target) {
+    const lower = target.toLowerCase();
+    for (const [it, en] of Object.entries(IT_EN_MAP)) {
+      if (lower === it || lower.includes(it)) {
+        if (target.length < 15) return en;
+        return target.replace(new RegExp(it, "gi"), en);
+      }
+    }
+    return target;
+  }
+
+  async function handlePageAgentTask(agentInput) {
+    startPageAgentProxy();
+    setPageAgentMode(true);
+    fetch("/api/pageagent/enable", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: true }) }).catch(() => {});
+    const rawTask = agentInput.task || "";
+    setMessages((prev) => [
+      ...prev,
+      { role: "user", content: `pageagent run: ${rawTask}` }
+    ]);
+    try {
+      const steps = splitTaskSteps(rawTask);
+      const parts = [`Task: ${rawTask}`, "", "--- Initial UI State ---"];
+      parts.push(takeClientSnapshot(true));
+      parts.push("");
+
+      let overallOk = true;
+      for (let si = 0; si < steps.length; si++) {
+        const step = steps[si];
+        const waitMs = waitStep(step);
+        if (waitMs > 0) {
+          parts.push(`--- Step ${si + 1}/${steps.length}: wait ${waitMs / 1000}s ---`);
+          parts.push("");
+          await new Promise((r) => setTimeout(r, waitMs));
+          continue;
+        }
+
+        const parseRes = await fetch("/api/pageagent/parse", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ task: step })
+        });
+        if (!parseRes.ok) {
+          const errBody = await parseRes.json().catch(() => ({}));
+          throw new Error(errBody.error || `parse failed for step "${step}" (HTTP ${parseRes.status})`);
+        }
+        const { action, target } = await parseRes.json();
+        const translatedTarget = translateTarget(target);
+
+        parts.push(`--- Step ${si + 1}/${steps.length}: ${action} on "${translatedTarget}" ---`);
+        parts.push("");
+
+        const beforeHash = hashClientDom();
+        const ok = executeClientAction(action, translatedTarget);
+        const afterHash = hashClientDom();
+
+        parts.push(`Action: ${action}`);
+        parts.push(`Target: ${translatedTarget}`);
+        parts.push(`Result: ${ok ? "ok" : "failed"}`);
+        parts.push(`Observed change: ${beforeHash !== afterHash ? "Yes" : "None detected"}`);
+        parts.push("");
+
+        if (!ok) overallOk = false;
+      }
+
+      parts.push("--- Final UI State ---");
+      parts.push(takeClientSnapshot(false));
+
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: parts.join("\n"), agentNotice: true }
+      ]);
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: `PageAgent error: ${err.message}`, agentNotice: true }
+      ]);
+    }
+  }
+
+  function hashClientDom() {
+    const els = document.querySelectorAll("[data-agent-id], button, input, select, textarea, a, [role=tab]");
+    let h = 0;
+    for (const el of els) {
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) continue;
+      const aid = el.getAttribute("data-agent-id") || "";
+      const txt = (el.textContent || "").trim().slice(0, 40);
+      const active = el.getAttribute("aria-selected") || "";
+      const classes = el.className || "";
+      const key = aid + "|" + txt + "|" + active + "|" + classes + "|" + rect.top + "|" + rect.left;
+      for (let i = 0; i < key.length; i++) {
+        h = ((h << 5) - h) + key.charCodeAt(i);
+        h |= 0;
+      }
+    }
+    return "hash-" + Math.abs(h).toString(16);
+  }
+
+  function takeClientSnapshot(includeControls) {
+    const url = window.location.href;
+    const title = document.title;
+    const lines = [`URL: ${url}`];
+    if (title) lines.push(`Title: ${title}`);
+    lines.push("");
+    if (includeControls) {
+      const tags = "button, input, select, textarea, a, [role=button], [role=tab], [data-agent-id]";
+      const els = document.querySelectorAll(tags);
+      const visible = Array.from(els).filter((el) => {
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      });
+      if (visible.length > 0) {
+        lines.push("Visible controls:");
+        visible.forEach((el, i) => {
+          const agentId = el.getAttribute("data-agent-id") || "";
+          const text = (el.textContent || "").trim().slice(0, 60);
+          const tag = el.tagName.toLowerCase();
+          const enabled = !el.disabled;
+          lines.push(`[${i + 1}] ${tag} data-agent-id="${agentId}" text="${text}" enabled=${enabled}`);
+        });
+      } else {
+        lines.push("(none)");
+      }
+      lines.push("");
+    }
+    const bodyText = document.body?.innerText?.slice(0, 2000) || "";
+    if (bodyText) {
+      lines.push("Visible text:");
+      lines.push(bodyText);
+    }
+    return lines.join("\n");
+  }
+
+  function executeClientAction(action, target, value) {
+    const selectors = [
+      `[data-agent-id="${target}"]`,
+      `[data-agent-id*="${target}"]`,
+      `#${target}`,
+      `[name="${target}"]`,
+      `[aria-label="${target}"]`
+    ];
+    let el = null;
+    for (const sel of selectors) {
+      try { el = document.querySelector(sel); if (el) break; } catch {}
+    }
+    if (!el) {
+      const allButtons = document.querySelectorAll("button, a, [role=button], [role=tab]");
+      const lowerTarget = target.toLowerCase();
+      for (const btn of allButtons) {
+        const btnText = (btn.textContent || "").trim().toLowerCase();
+        if (btnText === lowerTarget) { el = btn; break; }
+        if (btn.getAttribute("data-agent-id")?.toLowerCase().includes(lowerTarget)) { el = btn; break; }
+        if (btnText.includes(lowerTarget) || lowerTarget.includes(btnText)) { el = btn; break; }
+      }
+    }
+    if (!el) return false;
+
+    try {
+      switch (action) {
+        case "click":
+          el.click();
+          el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+          break;
+        case "input": {
+          if (el.tagName === "TEXTAREA" || el.tagName === "INPUT") {
+            const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+              window.HTMLInputElement.prototype, "value"
+            )?.set || Object.getOwnPropertyDescriptor(
+              window.HTMLTextAreaElement.prototype, "value"
+            )?.set;
+            if (nativeInputValueSetter) {
+              nativeInputValueSetter.call(el, value || "");
+            } else {
+              el.value = value || "";
+            }
+            el.dispatchEvent(new Event("input", { bubbles: true }));
+            el.dispatchEvent(new Event("change", { bubbles: true }));
+          } else {
+            el.textContent = value || "";
+          }
+          break;
+        }
+        case "select":
+          if (el.tagName === "SELECT") {
+            el.value = value || "";
+            el.dispatchEvent(new Event("change", { bubbles: true }));
+          }
+          break;
+        case "scroll":
+          el.scrollIntoView({ behavior: "instant", block: "center" });
+          break;
+        case "wait":
+          break;
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async function callWebSearch(query) {
     try {
       const res = await fetch("/api/agent/web-search", {
@@ -1660,6 +1928,12 @@ export default function App() {
       }
       if (agentInput.type === "gitnexus") {
         return callGitnexusControl(agentInput);
+      }
+      if (agentInput.type === "pageagent") {
+        if (agentInput.action === "run") {
+          return handlePageAgentTask(agentInput);
+        }
+        return callPageAgentControl(agentInput);
       }
       return callNativeAgentCommand(agentInput.command);
     }
