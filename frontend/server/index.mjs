@@ -54,6 +54,8 @@ import { readAmdSmiStatusCached } from "./amdSmi.mjs";
 import { AgentSessionStore, AGENT_SYSTEM_PROMPT, AGENT_TOOLS } from "./agentSession.mjs";
 import { appendPonyPolicy, buildPonyPolicy, normalizePonyMode, ponyCommandMessage } from "./agentPonyPolicy.mjs";
 import { checkBashFileReadFallback, executeTool, sageSessionDir, toolSage } from "./agentTools.mjs";
+import { parseTask } from "./pageAgentTask.mjs";
+import { enqueuePageAgentTool, resolvePageAgentTool, getPendingTools, markClientConnected, resetClientConnection, isServerEnabled, setServerEnabled } from "./pageAgentBridge.mjs";
 import { planTools } from "./toolPlanner.mjs";
 import { createTaskState } from "./agentTaskState.mjs";
 import { buildSearchService } from "./research/researchSearchService.mjs";
@@ -1584,6 +1586,49 @@ app.post("/api/pageagent/tool", asyncHandler(async (req, res) => {
   res.json(result);
 }));
 
+/**
+ * Parse a natural-language PageAgent task into structured action/target/value.
+ * Returns JSON without executing the action — the client executes it in the real browser.
+ */
+app.post("/api/pageagent/parse", asyncHandler(async (req, res) => {
+  const { task } = req.body || {};
+  if (!task || typeof task !== "string") {
+    return res.status(400).json({ error: "task is required" });
+  }
+  const parsed = parseTask(task);
+  if (!parsed) {
+    return res.status(400).json({ error: "Could not parse task" });
+  }
+  res.json(parsed);
+}));
+
+/**
+ * Client proxy for pageagent tools: the client polls for pending tool calls,
+ * executes them on the real browser DOM, and posts the result back.
+ */
+app.get("/api/pageagent/pending", asyncHandler(async (req, res) => {
+  markClientConnected();
+  res.json({ tools: getPendingTools() });
+}));
+
+app.post("/api/pageagent/resolve", asyncHandler(async (req, res) => {
+  const { id, result } = req.body || {};
+  if (!id) return res.status(400).json({ error: "id is required" });
+  const ok = resolvePageAgentTool(id, result || { content: "No result", isError: false });
+  res.json({ ok });
+}));
+
+app.post("/api/pageagent/disconnect", asyncHandler(async (req, res) => {
+  resetClientConnection();
+  res.json({ ok: true });
+}));
+
+app.post("/api/pageagent/enable", asyncHandler(async (req, res) => {
+  const { enabled } = req.body || {};
+  setServerEnabled(Boolean(enabled));
+  res.json({ ok: true, pageAgentEnabled: isServerEnabled() });
+}));
+
 // ---------------------------------------------------------------------------
 
 /**
@@ -1694,8 +1739,17 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
 
   let fullMessages = agentSession.messages();
   if (!fullMessages.length) {
+    const caps = isServerEnabled()
+      ? { ...agentCapabilities, pageAgent: true }
+      : agentCapabilities;
+    const prompt = [
+      AGENT_SYSTEM_PROMPT,
+      capabilitiesPromptSection(caps),
+      autonomyPromptSection(),
+      agentCoreRulesSection()
+    ].filter(Boolean).join("\n\n");
     fullMessages = [
-      { role: "system", content: appendPonyPolicy(AGENT_SYSTEM_PROMPT_WITH_CAPS, agentSession.ponyMode) },
+      { role: "system", content: appendPonyPolicy(prompt, agentSession.ponyMode) },
       ...normalizeAgentMessages(conversationMessages)
     ];
   }

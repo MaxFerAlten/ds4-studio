@@ -1,11 +1,11 @@
 import { toolPageSnapshot, toolPageAction } from "./pageAgentTool.mjs";
 
 const ACTION_KEYWORDS = {
-  click: ["click", "press", "tap", "submit", "send", "choose", "select option"],
-  input: ["type", "write", "enter", "fill", "input", "set value"],
-  select: ["select", "pick", "choose from", "dropdown"],
-  scroll: ["scroll", "scroll down", "scroll up"],
-  wait: ["wait", "pause", "delay"]
+  click: ["click", "press", "tap", "submit", "send", "choose", "select option", "premi", "clicca", "fai click"],
+  input: ["type", "write", "enter", "fill", "input", "set value", "scrivi", "inserisci"],
+  select: ["select", "pick", "choose from", "dropdown", "seleziona"],
+  scroll: ["scroll", "scroll down", "scroll up", "scorri"],
+  wait: ["wait", "pause", "delay", "aspetta", "attendi"]
 };
 
 function inferAction(task) {
@@ -20,17 +20,22 @@ function inferAction(task) {
 
 function inferTarget(task) {
   const lower = task.toLowerCase();
+  // Strip common Italian NLP prefixes
+  const stripped = lower.replace(/^(fai\s+|fa\s+|per\s+favore\s+)?/, "");
   const patterns = [
-    /(?:click|press|tap|submit|send)\s+(?:the\s+)?(?:on\s+)?["']?(.+?)["']?(?:\s+button)?(?:\s|$)/i,
-    /(?:type|write|enter|fill)\s+(?:in\s+)?(?:the\s+)?["']?(.+?)["']?(?:\s+(?:input|field|box))?/i,
-    /(?:on|at|into)\s+(?:the\s+)?["']?(.+?)["']?/i,
+    /(?:click|press|tap|submit|send|premi|clicca)\s+(?:su\s+|il\s+|la\s+|sul\s+|sulla\s+|sui\s+|sulle\s+)?(?:the\s+)?(?:on\s+)?["']?(.+?)["']?(?:\s+button)?(?:\s|$)/i,
+    /(?:type|write|enter|fill|scrivi|inserisci)\s+(?:in\s+)?(?:the\s+)?["']?(.+?)["']?(?:\s+(?:input|field|box))?/i,
+    /(?:su|on|at|into)\s+(?:the\s+)?["']?(.+?)["']?/i,
     /["'](.+?)["']/
   ];
   for (const pat of patterns) {
-    const m = lower.match(pat);
+    const m = stripped.match(pat);
     if (m && m[1] && m[1].trim()) return m[1].trim();
   }
-  return task.replace(/^(click|press|tap|submit|send|type|write|enter|fill|scroll|wait)\s+/i, "").trim() || task;
+  // Fallback: take last word after action keywords
+  const actionMatch = lower.match(/(?:clicca|click|premi)\s+(?:su\s+)?(.+)$/i);
+  if (actionMatch) return actionMatch[1].trim();
+  return task.replace(/^(fai\s+)?(click|press|tap|submit|send|type|write|enter|fill|scroll|wait|clicca|premi|scrivi|inserisci)\s+/i, "").trim() || task;
 }
 
 function inferValue(task) {
@@ -45,7 +50,7 @@ function inferValue(task) {
   return "";
 }
 
-function parseTask(task) {
+export function parseTask(task) {
   if (!task || typeof task !== "string") return null;
   return {
     action: inferAction(task),

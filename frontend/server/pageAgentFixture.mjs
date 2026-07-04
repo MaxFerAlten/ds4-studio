@@ -57,32 +57,48 @@ export async function withPage(url, fn) {
 export async function takeSnapshot(page, includeControls = false) {
   const title = await page.title().catch(() => "");
   const url = page.url();
-  const bodyText = await page.evaluate(() => document.body?.innerText?.slice(0, 3000) || "").catch(() => "");
+  const visibleText = await page.evaluate(() => document.body?.innerText?.slice(0, 3000) || "").catch(() => "");
   const controls = includeControls
-    ? await page.evaluate(() =>
-        Array.from(document.querySelectorAll("button, input, select, textarea, a, [role=button]"))
-          .map((el) => ({
+    ? await page.evaluate(() => {
+        const tags = "button, input, select, textarea, a, [role=button], [role=tab], [data-agent-id]";
+        return Array.from(document.querySelectorAll(tags))
+          .filter((el) => {
+            const rect = el.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0;
+          })
+          .map((el, i) => ({
+            index: i + 1,
             tag: el.tagName.toLowerCase(),
             type: el.type || "",
-            text: el.textContent?.trim()?.slice(0, 60) || "",
+            text: el.textContent?.trim()?.slice(0, 80) || "",
             id: el.id || "",
-            "data-agent-id": el.getAttribute("data-agent-id") || ""
-          }))
-      ).catch(() => [])
+            agentId: el.getAttribute("data-agent-id") || "",
+            enabled: !el.disabled
+          }));
+      }).catch(() => [])
     : [];
 
   const lines = [`URL: ${url}`];
   if (title) lines.push(`Title: ${title}`);
-  if (bodyText) lines.push(`", "Body:", bodyText.slice(0, 500)`);
-  if (includeControls && controls.length) {
-    lines.push("");
+  lines.push("");
+
+  if (controls.length > 0) {
     lines.push("Visible controls:");
-    for (const c of controls.slice(0, 30)) {
-      const label = c["data-agent-id"] || c.id || c.text || `${c.tag}[${c.type}]`;
-      lines.push(`  ${label}`);
+    for (const c of controls) {
+      const label = c.agentId || c.id || c.text || `${c.tag}[${c.type}]`;
+      const enabled = c.enabled ? `enabled=true` : `enabled=false`;
+      lines.push(`[${c.index}] ${c.tag} data-agent-id="${c.agentId}" text="${c.text.slice(0, 60)}" ${enabled}`);
     }
-    if (controls.length > 30) lines.push(`  ... and ${controls.length - 30} more`);
+  } else {
+    lines.push("(none requested)");
   }
+
+  if (visibleText) {
+    lines.push("");
+    lines.push("Visible text:");
+    lines.push(visibleText.slice(0, 2000));
+  }
+
   return lines.join("\n");
 }
 
@@ -92,6 +108,7 @@ export async function executeAction(page, action, target, value) {
       const els = await findElements(page, target);
       if (!els.length) return { ok: false, error: `Target not found: ${target}` };
       await els[0].click();
+      await new Promise((r) => setTimeout(r, 300));
       return { ok: true };
     }
     case "input": {
@@ -99,6 +116,12 @@ export async function executeAction(page, action, target, value) {
       if (!els.length) return { ok: false, error: `Input target not found: ${target}` };
       await els[0].click();
       await els[0].fill(value || "");
+      return { ok: true };
+    }
+    case "select": {
+      const els = await findElements(page, target, "select");
+      if (!els.length) return { ok: false, error: `Select target not found: ${target}` };
+      await els[0].select(value || "");
       return { ok: true };
     }
     case "scroll": {
@@ -120,16 +143,17 @@ export async function executeAction(page, action, target, value) {
 async function findElements(page, target, scope) {
   const selectors = [
     `[data-agent-id="${target}"]`,
+    `[data-agent-id*="${target}"]`,
     `#${target}`,
     `[name="${target}"]`,
     `[aria-label="${target}"]`,
+    `button:has-text("${target}")`,
+    `a:has-text("${target}")`,
     target
   ];
   for (const sel of selectors) {
     try {
-      const els = scope
-        ? await page.$$(sel)
-        : await page.$$(sel);
+      const els = await page.$$(sel);
       if (els.length) return els;
     } catch {}
   }

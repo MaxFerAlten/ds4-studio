@@ -298,6 +298,14 @@ export function parseAgentInput(text, agentMode) {
   if (pageagentStatus) {
     return { type: "pageagent", action: "status" };
   }
+  const pageagentOn = trimmed.match(/^\/pageagent\s+(start|on)\s*$/i);
+  if (pageagentOn) {
+    return { type: "pageagent", action: "set", enabled: true };
+  }
+  const pageagentOff = trimmed.match(/^\/pageagent\s+off\s*$/i);
+  if (pageagentOff) {
+    return { type: "pageagent", action: "set", enabled: false };
+  }
   const pageagentStop = trimmed.match(/^\/pageagent\s+stop\s*$/i);
   if (pageagentStop) {
     return { type: "pageagent", action: "stop" };
