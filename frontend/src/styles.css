@@ -920,6 +920,10 @@ pre {
   border-radius: 8px;
   padding: 10px;
   background: #11161e;
+  /* Off-screen messages skip layout/paint: keeps typing and reflow cost
+   * independent of conversation length. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 120px;
 }
 
 .message.user {

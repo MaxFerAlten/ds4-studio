@@ -296,5 +296,9 @@
       "http://localhost:5173"
     ],
     "auditDir": "data/pageagent-runs"
+  },
+  "contextWiki": {
+    "enabled": false,
+    "previewOnly": true
   }
 }

@@ -117,6 +117,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "max_tokens_safety_cap": 32768,
         "context_margin": 1024,
     },
+    "contextWiki": {
+        "enabled": False,
+        "previewOnly": True,
+    },
 }
 
 
@@ -166,6 +170,8 @@ FIELDS: list[Field] = [
     Field("wrapper.freezeOnSwitch", "Freeze on switch", "bool", "Wrapper"),
     Field("wrapper.freeInactiveSession", "Free inactive session", "bool", "Wrapper"),
     Field("wrapper.ramFreezeMaxMb", "RAM freeze max MiB", "nonnegative_int", "Wrapper"),
+    Field("contextWiki.enabled", "Enable ContextWiki capsule injection", "bool", "ContextWiki"),
+    Field("contextWiki.previewOnly", "Preview only (build/log, never inject)", "bool", "ContextWiki"),
 ]
 
 
@@ -389,7 +395,7 @@ class TuningDialog:
         notebook.pack(fill="both", expand=True, padx=10, pady=10)
 
         tabs: dict[str, Any] = {}
-        for tab in ["Server", "Request", "Wrapper", "KV/Tools", "CUDA/Prefill", "Profiling", "MoE Kernel", "MoE Rows", "Extra Env"]:
+        for tab in ["Server", "Request", "Wrapper", "ContextWiki", "KV/Tools", "CUDA/Prefill", "Profiling", "MoE Kernel", "MoE Rows", "Extra Env"]:
             frame = ttk.Frame(notebook)
             notebook.add(frame, text=tab)
             tabs[tab] = self.scroll_frame(frame)

@@ -150,6 +150,12 @@ export function mergeConfig(input = {}) {
       ...(input.pageAgent && typeof input.pageAgent === "object" && !Array.isArray(input.pageAgent)
         ? input.pageAgent
         : {})
+    },
+    contextWiki: {
+      ...DEFAULT_CONFIG.contextWiki,
+      ...(input.contextWiki && typeof input.contextWiki === "object" && !Array.isArray(input.contextWiki)
+        ? input.contextWiki
+        : {})
     }
   };
 }

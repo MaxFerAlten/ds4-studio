@@ -14,6 +14,7 @@ import {
 import { exportConversationMarkdown, exportConversationMarkdownRaw } from "../src/conversationExport.mjs";
 import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
+import crypto from "node:crypto";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
@@ -54,16 +55,24 @@ import { readAmdSmiStatusCached } from "./amdSmi.mjs";
 import { AgentSessionStore, AGENT_SYSTEM_PROMPT, AGENT_TOOLS } from "./agentSession.mjs";
 import { appendPonyPolicy, buildPonyPolicy, normalizePonyMode, ponyCommandMessage } from "./agentPonyPolicy.mjs";
 import { checkBashFileReadFallback, executeTool, sageSessionDir, toolSage } from "./agentTools.mjs";
+import { readContextConfig } from "./contextConfig.mjs";
+import { prepareContextInjection, contextStatusPayload } from "./agentContextIntegration.mjs";
+import { recordToolContext } from "./agentContextToolHooks.mjs";
+import { CONTEXT_SEARCH_TOOL } from "./contextSearchTool.mjs";
+import { readCapsuleMeta } from "./contextCapsuleMeta.mjs";
+import { readContextTelemetry } from "./contextTelemetry.mjs";
+import { readContextEvents, appendContextEvent } from "./contextLedger.mjs";
 import { parseTask } from "./pageAgentTask.mjs";
 import { enqueuePageAgentTool, resolvePageAgentTool, getPendingTools, markClientConnected, resetClientConnection, isServerEnabled, setServerEnabled } from "./pageAgentBridge.mjs";
 import { planTools } from "./toolPlanner.mjs";
 import { createTaskState } from "./agentTaskState.mjs";
 import { buildSearchService } from "./research/researchSearchService.mjs";
 import { evidenceFromCrawlManifest } from "./evidenceStore.mjs";
+import { crawlPreflight } from "./crawlPreflight.mjs";
 import { buildSynthesisBrief } from "./synthesisEngine.mjs";
 import { getAgentCapabilities, capabilitiesPromptSection } from "./agentCapabilities.mjs";
 import { autonomyPromptSection } from "./agentAutonomy.mjs";
-import { agentCoreRulesSection } from "./agentRuntimeRules.mjs";
+import { agentCoreRulesSection, agentContextMemorySection } from "./agentRuntimeRules.mjs";
 import { createHeadroomHandlers } from "./headroomControl.mjs";
 import {
   buildGitnexusPolicy,
@@ -86,13 +95,14 @@ import { ResearchModelClient } from "./research/researchModelClient.mjs";
 import { exportSession } from "./research/researchExport.mjs";
 import { CallDebugRecorder } from "./callDebug.mjs";
 import { sageState, SageCallLog, sageBinaryExists, sageResponds } from "./sageState.mjs";
+import { abortOnClientDisconnect } from "./clientDisconnect.mjs";
 
-const PROXY_TIMEOUT_MS = 60 * 60 * 1000;
 const HTTP_DRAIN_GRACE_MS = 2000;
 const SHUTDOWN_TIMEOUT_MS = 10000;
 const UPLOAD_LIMIT_BYTES = 50 * 1024 * 1024;
 const FRONTEND_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PROJECT_ROOT = path.resolve(FRONTEND_ROOT, "..");
+const CRAWL_OWNER_ID = `ds4-ui:${process.pid}`;
 
 // Load optional frontend/.env before any env reads so research provider API keys
 // (TAVILY_API_KEY, SERPAPI_KEY, …) can live in a file instead of the shell.
@@ -114,6 +124,18 @@ if (process.env.DS4_UI_PORT) config.control.port = process.env.DS4_UI_PORT;
 // Expose the frontend port to child processes (ds4-wrapper agent needs it
 // to call back into the Node server for delegated sage execution).
 process.env.FRONTEND_PORT = String(config.control.port);
+
+// ContextWiki: let the startup tuning GUI (ds4-ui.config.json → contextWiki)
+// drive the capsule flags, unless an explicit env var already set them (e.g.
+// the A/B benchmark exporting per-arm env wins over the config file).
+if (config.contextWiki && typeof config.contextWiki === "object") {
+  if (!process.env.DS4_CONTEXT_WIKI_ENABLED) {
+    process.env.DS4_CONTEXT_WIKI_ENABLED = config.contextWiki.enabled ? "1" : "0";
+  }
+  if (!process.env.DS4_CONTEXT_PREVIEW_ONLY) {
+    process.env.DS4_CONTEXT_PREVIEW_ONLY = config.contextWiki.previewOnly ? "1" : "0";
+  }
+}
 
 let activeProfile = null;
 let activeRequestDefaults = { ...REQUEST_DEFAULTS, ...(config.requestDefaults || {}) };
@@ -241,25 +263,6 @@ function publicConfig() {
 function asyncHandler(handler) {
   return (req, res, next) => {
     Promise.resolve(handler(req, res, next)).catch(next);
-  };
-}
-
-function abortOnClientDisconnect(req, res) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(new Error("upstream request timed out")), PROXY_TIMEOUT_MS);
-  const abort = () => controller.abort();
-  const abortIfOpen = () => {
-    if (!res.writableEnded) abort();
-  };
-  req.on("aborted", abort);
-  res.on("close", abortIfOpen);
-  return {
-    signal: controller.signal,
-    cleanup: () => {
-      clearTimeout(timeout);
-      req.off("aborted", abort);
-      res.off("close", abortIfOpen);
-    }
   };
 }
 
@@ -820,13 +823,29 @@ function crawlBase() {
   return `http://${config.crawl.host}:${config.crawl.port}`;
 }
 
-async function readCrawlToken() {
-  const tokenPath = path.join(os.homedir(), ".config", "ds4-studio", "crawl", "token");
-  try {
-    return (await fs.readFile(tokenPath, "utf-8")).trim();
-  } catch {
-    return "";
-  }
+// Node owns the crawl-service auth token: resolve it once (read the existing
+// file or generate + persist), then hand it to the spawned service via env
+// (DS4_CRAWL_TOKEN). Nothing reads the token file at request time, so there is
+// no cold-start race where a crawl request beats the service writing the token.
+let crawlTokenPromise = null;
+function ensureCrawlToken() {
+  if (crawlTokenPromise) return crawlTokenPromise;
+  crawlTokenPromise = (async () => {
+    const tokenPath = path.join(os.homedir(), ".config", "ds4-studio", "crawl", "token");
+    try {
+      const existing = (await fs.readFile(tokenPath, "utf-8")).trim();
+      if (existing.length >= 43) return existing;
+    } catch { }
+    const token = crypto.randomBytes(32).toString("base64url"); // 43 chars, matches secrets.token_urlsafe(32)
+    await fs.mkdir(path.dirname(tokenPath), { recursive: true, mode: 0o700 });
+    await fs.writeFile(tokenPath, token + "\n", { mode: 0o600 });
+    return token;
+  })();
+  return crawlTokenPromise;
+}
+
+function readCrawlToken() {
+  return ensureCrawlToken();
 }
 
 // Built once. Null unless research.search is enabled, so disabled deployments
@@ -849,15 +868,22 @@ const AGENT_SYSTEM_PROMPT_WITH_CAPS = [
   agentCoreRulesSection()
 ].filter(Boolean).join("\n\n");
 
+app.get("/api/crawl/preflight", asyncHandler(async (_req, res) => {
+  res.json(await crawlPreflight({
+    fetchImpl: fetch,
+    crawlBaseUrl: crawlBase(),
+    token: await readCrawlToken(),
+    expectedOwner: CRAWL_OWNER_ID,
+    wrapperBaseUrl: backendBase(),
+    wrapperEnabled: wrapperEnabled()
+  }));
+}));
+
 app.all("/api/crawl/*", asyncHandler(async (req, res) => {
   const target = `${crawlBase()}${req.originalUrl.replace(/^\/api\/crawl/, "")}`;
   const { signal, cleanup } = abortOnClientDisconnect(req, res);
   try {
-    const tokenPath = path.join(os.homedir(), ".config", "ds4-studio", "crawl", "token");
-    let token = "";
-    try {
-      token = (await fs.readFile(tokenPath, "utf-8")).trim();
-    } catch { }
+    const token = await readCrawlToken();
     const body = ["GET", "HEAD"].includes(req.method) ? undefined : JSON.stringify(req.body);
     const upstream = await fetch(target, {
       method: req.method,
@@ -1337,6 +1363,17 @@ app.get("/api/agent/status", async (req, res) => {
   });
 });
 
+// ContextWiki (§15): read-only diagnostics. Never exposes the raw sessionKey,
+// full capsule text, raw evidence, or blob content — only sanitized summaries.
+app.get("/api/agent/context/status", async (req, res) => {
+  const sessionKey = agentSessionKey(req);
+  const cfg = readContextConfig(process.env);
+  const meta = await readCapsuleMeta(sessionKey).catch(() => null);
+  const telemetry = await readContextTelemetry(sessionKey, { limit: 20 }).catch(() => []);
+  const events = await readContextEvents(sessionKey, { limit: 20 }).catch(() => []);
+  res.json(contextStatusPayload({ config: cfg, meta, telemetry, events }));
+});
+
 app.get("/api/agent/pony", asyncHandler(async (req, res) => {
   const status = agentSessions.status(agentSessionKey(req));
   res.json({
@@ -1683,11 +1720,16 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
       request: req.body?.request || {}
     };
 
+    // Use the existing abort helper: it listens on req "aborted" (client
+    // disconnect) and res "close" (socket gone while still writing), both
+    // guarded so they don't fire after a normal res.end().
+    const { signal: nativeSignal, cleanup: nativeCleanup } = abortOnClientDisconnect(req, res);
+
     const up = await fetch(`${backendBase()}/api/native-agent/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(outboundBody),
-      signal: req.signal
+      signal: nativeSignal
     });
 
     if (!up.ok) {
@@ -1703,16 +1745,22 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
 
     res.status(up.status);
     up.headers.forEach((value, key) => res.setHeader(key, value));
-    if (up.body) {
-      for await (const chunk of up.body) {
-        if (Date.now() - nativeStartedAt > nativeMaxMsFinal) {
-          res.write(`event: agent_error\ndata: ${JSON.stringify({ error: "Native agent timeout" })}\n\n`);
-          break;
+    try {
+      if (up.body) {
+        for await (const chunk of up.body) {
+          if (Date.now() - nativeStartedAt > nativeMaxMsFinal) {
+            res.write(`event: agent_error\ndata: ${JSON.stringify({ error: "Native agent timeout" })}\n\n`);
+            break;
+          }
+          res.write(chunk);
         }
-        res.write(chunk);
       }
+    } catch (err) {
+      // Client disconnected, upstream closed, or res.write failed — all are
+      // non-fatal for a proxied SSE stream.  Silently close what we can.
     }
-    res.end();
+    nativeCleanup();
+    if (!res.writableEnded) res.end();
     return;
   }
 
@@ -1737,6 +1785,10 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
     return res.status(400).json({ error: "message or messages array required" });
   }
 
+  // ContextWiki (§8/§9/§13): read config once per turn. When disabled (default),
+  // the context memory rules are omitted so the base system prompt is unchanged.
+  const contextConfig = readContextConfig(process.env);
+
   let fullMessages = agentSession.messages();
   if (!fullMessages.length) {
     const caps = isServerEnabled()
@@ -1746,7 +1798,8 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
       AGENT_SYSTEM_PROMPT,
       capabilitiesPromptSection(caps),
       autonomyPromptSection(),
-      agentCoreRulesSection()
+      agentCoreRulesSection(),
+      contextConfig.enabled ? agentContextMemorySection() : null
     ].filter(Boolean).join("\n\n");
     fullMessages = [
       { role: "system", content: appendPonyPolicy(prompt, agentSession.ponyMode) },
@@ -1754,6 +1807,27 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
     ];
   }
   if (userMessage) fullMessages.push({ role: "user", content: String(userMessage) });
+
+  // ContextWiki (§8/§9): build a delta-safe context capsule and, when enabled,
+  // inject it as an append-only user message. Default is preview-only (telemetry
+  // + ledger only), leaving the transcript and payload identical to baseline.
+  // Advertise context_search only when ContextWiki is enabled (request-time, so
+  // it honors config/env resolved at startup). Same expression is used for the
+  // real payload below so the tools hash — and the delta path — stay consistent.
+  const withContextTool = (base) => (contextConfig.enabled ? [...base, CONTEXT_SEARCH_TOOL] : base);
+  const contextTools = withContextTool(
+    sageState.enabled ? AGENT_TOOLS : AGENT_TOOLS.filter((t) => t.function?.name !== "sage")
+  );
+  const contextInjection = await prepareContextInjection({
+    sessionKey,
+    session: agentSession,
+    fullMessages,
+    tools: contextTools,
+    userMessage,
+    config: contextConfig
+  }).catch(() => null);
+  if (contextInjection?.capsuleMessage) fullMessages.push(contextInjection.capsuleMessage);
+
   const turnEvidence = [];
   const policyState = { gitnexusAnalyzeSeen: false };
 
@@ -1869,9 +1943,9 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
 
       let basePayload = buildChatPayload({ ...reqParams, stream: true }, fullMessages);
       // Filter out sage tool if SageMath is not enabled
-      basePayload.tools = sageState.enabled
-        ? AGENT_TOOLS
-        : AGENT_TOOLS.filter((t) => t.function?.name !== "sage");
+      basePayload.tools = withContextTool(
+        sageState.enabled ? AGENT_TOOLS : AGENT_TOOLS.filter((t) => t.function?.name !== "sage")
+      );
       basePayload.stream = true;
       basePayload.stream_options = { include_usage: true };
       basePayload = await resolveAutoMaxTokensPayload(basePayload, controller.signal);
@@ -2201,7 +2275,8 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
           // Keep sage-generated files (.sage.py, plots, …) out of the project
           // tree: run sage in a per-session dir under the workspace that holds
           // history/sessions.
-          sageWorkdir: tc.name === "sage" ? sageSessionDir(fileWorkspace.root, sessionKey) : undefined
+          sageWorkdir: tc.name === "sage" ? sageSessionDir(fileWorkspace.root, sessionKey) : undefined,
+          sessionKey
         };
         const rawResult = await executeTool(tc.name, tc.arguments, opts);
         recordGitnexusAnalyzeResult(
@@ -2224,6 +2299,16 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
           content: String(rawResult.content || "")
         });
         if (progress?.block) {
+          // ContextWiki (§2): record the loop-guard trip in the ledger (gated).
+          if (contextConfig.enabled || contextConfig.previewOnly) {
+            appendContextEvent(sessionKey, {
+              type: "loop_guard",
+              source: tc.name,
+              target: tc.arguments?.path || tc.arguments?.query || tc.arguments?.command || tc.arguments?.url || null,
+              summary: String(progress.reason || "loop guard blocked"),
+              meta: { guarded: true }
+            }, { maxEvents: contextConfig.maxLedgerEvents }).catch(() => {});
+          }
           return { id: tc.id, name: tc.name, content: `${progress.reason}\n${progress.guidance}`, isError: true, guarded: true };
         }
 
@@ -2248,6 +2333,18 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
             agentSession.loopGuard.recordCompressedObservation();
           }
         }
+
+        // ContextWiki (§10): capture synthetic evidence + a ledger event from the
+        // compressed result. Best-effort, never blocks or breaks the tool flow.
+        recordToolContext({
+          sessionKey,
+          tool: tc.name,
+          args: tc.arguments,
+          rawResult,
+          compressed: result,
+          config: contextConfig,
+          workspace: fileWorkspace.root
+        }).catch(() => {});
 
         return { id: tc.id, name: tc.name, content: result.content, isError: result.isError };
       };
@@ -2318,10 +2415,7 @@ app.post("/api/native-agent/command", asyncHandler(async (req, res) => {
   }
   const crawlOptions = {};
   if (/^\/crawl(?:\s|$)/i.test(command)) {
-    const tokenPath = path.join(os.homedir(), ".config", "ds4-studio", "crawl", "token");
-    try {
-      crawlOptions.crawlToken = (await fs.readFile(tokenPath, "utf-8")).trim();
-    } catch { }
+    crawlOptions.crawlToken = await readCrawlToken();
     crawlOptions.crawlBaseUrl = crawlBase();
   }
   if (!wrapperEnabled() && !crawlOptions.crawlBaseUrl) {
@@ -2557,11 +2651,12 @@ async function startCrawlService() {
   const pythonBin = process.env.DS4_CRAWL_PYTHON || defaultPython;
   const crawlHost = config.crawl.host;
   const crawlPort = config.crawl.port;
+  const token = await ensureCrawlToken();
   const args = ["-m", "ds4_crawl.cli", "serve", "--host", crawlHost, "--port", String(crawlPort)];
   crawlProcess = spawn(pythonBin, args, {
     cwd: crawlServiceDir,
     stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, PYTHONPATH: "src" }
+    env: { ...process.env, PYTHONPATH: "src", DS4_CRAWL_TOKEN: token, DS4_CRAWL_OWNER: CRAWL_OWNER_ID }
   });
   crawlProcess.stdout.on("data", (chunk) => process.stdout.write(`[crawl] ${chunk}`));
   crawlProcess.stderr.on("data", (chunk) => process.stderr.write(`[crawl] ${chunk}`));
@@ -2572,11 +2667,17 @@ async function startCrawlService() {
   for (let i = 0; i < 30; i++) {
     try {
       const resp = await fetch(`http://${crawlHost}:${crawlPort}/health`);
-      if (resp.ok) { console.log(`ds4-ui: crawl service ready on ${crawlHost}:${crawlPort}`); return; }
+      if (resp.ok) {
+        const health = await resp.json().catch(() => ({}));
+        if (health?.owner === CRAWL_OWNER_ID) {
+          console.log(`ds4-ui: crawl service ready on ${crawlHost}:${crawlPort}`);
+          return;
+        }
+      }
     } catch { }
     await new Promise((r) => setTimeout(r, 500));
   }
-  console.warn("ds4-ui: crawl service did not become ready in time");
+  console.warn("ds4-ui: crawl service did not become ready with this UI owner");
 }
 
 async function stopCrawlService() {

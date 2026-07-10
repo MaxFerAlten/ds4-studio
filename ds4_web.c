@@ -45,6 +45,7 @@ struct ds4_web {
     bool browser_allowed;
     ds4_web_confirm_fn confirm;
     void *confirm_privdata;
+    bool skip_confirm;
     ds4_web_log_fn log;
     void *log_privdata;
     ds4_web_cancel_fn cancel;
@@ -1057,19 +1058,22 @@ static bool web_spawn_chrome(ds4_web *web, char *err, size_t err_len) {
                    "--disable-sync", "--use-mock-keychain", "--password-store=basic",
                    "--mute-audio", "about:blank", (char *)NULL);
         } else {
-            execlp(exe, exe, port_arg, "--remote-allow-origins=*",
+            const char *headless_flag = web->skip_confirm ? "--headless=new" : "";
+            execlp(exe, exe, port_arg, headless_flag, "--remote-allow-origins=*",
                    profile_arg, "--no-first-run", "--no-default-browser-check",
                    "--disable-sync", "--use-mock-keychain", "--password-store=basic",
                    "--mute-audio", "about:blank", (char *)NULL);
         }
 #else
         if (geteuid() == 0) {
-            execlp(exe, exe, port_arg, "--remote-allow-origins=*",
+            const char *headless_flag = web->skip_confirm ? "--headless=new" : "";
+            execlp(exe, exe, port_arg, headless_flag, "--remote-allow-origins=*",
                    profile_arg, "--no-first-run", "--no-default-browser-check",
                    "--disable-sync", "--password-store=basic", "--no-sandbox",
                    "--mute-audio", "about:blank", (char *)NULL);
         } else {
-            execlp(exe, exe, port_arg, "--remote-allow-origins=*",
+            const char *headless_flag = web->skip_confirm ? "--headless=new" : "";
+            execlp(exe, exe, port_arg, headless_flag, "--remote-allow-origins=*",
                    profile_arg, "--no-first-run", "--no-default-browser-check",
                    "--disable-sync", "--password-store=basic",
                    "--mute-audio", "about:blank", (char *)NULL);
@@ -1110,12 +1114,13 @@ static bool web_ensure_browser(ds4_web *web, char *err, size_t err_len) {
         web->chrome_pid = 0;
     }
     if (!web->browser_allowed) {
-        if (!web->confirm) {
+        if (!web->confirm && !web->skip_confirm) {
             web_set_err(err, err_len,
                         "starting a visible Chrome browser requires interactive approval");
             return false;
         }
-        if (!web->confirm(web->confirm_privdata,
+        if (!web->skip_confirm &&
+            !web->confirm(web->confirm_privdata,
                           "The web tool wants to start a visible Chrome browser. Allow? (y/n) ",
                           err, err_len))
         {
@@ -1343,6 +1348,7 @@ ds4_web *ds4_web_create(const ds4_web_config *cfg) {
     if (cfg) {
         web->confirm = cfg->confirm;
         web->confirm_privdata = cfg->confirm_privdata;
+        web->skip_confirm = cfg->skip_confirm;
         web->log = cfg->log;
         web->log_privdata = cfg->log_privdata;
         web->cancel = cfg->cancel;

@@ -25959,6 +25959,33 @@ int ds4_session_set_logits(ds4_session *s, const float *logits, int n) {
     return 0;
 }
 
+int ds4_session_penalize_logits(ds4_session *s, const int *tokens, int n, float penalty) {
+    if (!s || !tokens || n <= 0 || !(penalty > 1.0f)) return 0;
+    int adjusted = 0;
+    for (int i = 0; i < n; i++) {
+        const int t = tokens[i];
+        if (t < 0 || t >= (int)DS4_N_VOCAB) continue;
+        const float v = s->logits[t];
+        if (!isfinite(v)) continue;
+        s->logits[t] = v > 0.0f ? v / penalty : v * penalty;
+        adjusted++;
+    }
+    return adjusted;
+}
+
+int ds4_session_ban_logits(ds4_session *s, const int *tokens, int n) {
+    if (!s || !tokens || n <= 0) return 0;
+    int banned = 0;
+    for (int i = 0; i < n; i++) {
+        const int t = tokens[i];
+        if (t < 0 || t >= (int)DS4_N_VOCAB) continue;
+        /* Finite but exp-underflows against any realistic max logit. */
+        s->logits[t] = -1e30f;
+        banned++;
+    }
+    return banned;
+}
+
 static int ds4_session_eval_internal(ds4_session *s, int token, bool probe_mtp,
                                      char *err, size_t errlen) {
     if (!s) return 1;

@@ -239,6 +239,12 @@ export async function executeTool(name, args = {}, options = {}) {
         return await toolRetrieveContextBlob(args, options);
       case "chat_history_search":
         return toolHistory(args, options);
+      case "context_search": {
+        // ponytail: dynamic import — tool only reachable when ContextWiki is enabled.
+        const { contextSearch } = await import("./contextSearchTool.mjs");
+        const result = await contextSearch({ sessionKey: options?.sessionKey, query: args?.query, limit: args?.limit });
+        return { content: JSON.stringify(result), isError: result.status === "error" };
+      }
       case "page_snapshot":
         if (isClientConnected()) {
           const result = await enqueuePageAgentTool("page_snapshot", args);

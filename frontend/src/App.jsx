@@ -4,7 +4,7 @@ import { Play, Power, RefreshCw, Terminal } from "lucide-react";
 import { commandLineFromConfig } from "../server/commandBuilder.mjs";
 import { REQUEST_DEFAULTS } from "../server/defaultConfig.mjs";
 import { buildChatPayload, isAutoMaxTokens } from "../server/requestPayload.mjs";
-import { backendHealthLabel, backendStartupDetail, streamFailureNotice, formatNativeAgentNotice, parseAgentInput, withAgentPriming, historyHasPersistableAssistant, sessionHasAgentMetadata, sessionsExposeMetadata, clearStoredExportIncludeReasoning, readStoredExportDir, readStoredExportIncludeReasoning, writeStoredExportDir, writeStoredExportIncludeReasoning, createDeltaBatcher, documentIsVisible, clearCallDebug, fetchCallDebug } from "./utils.mjs";
+import { backendHealthLabel, backendStartupDetail, streamFailureNotice, formatNativeAgentNotice, parseAgentInput, withAgentPriming, commandRebuildsSessionKeepingContext, historyHasPersistableAssistant, sessionHasAgentMetadata, sessionsExposeMetadata, clearStoredExportIncludeReasoning, readStoredExportDir, readStoredExportIncludeReasoning, writeStoredExportDir, writeStoredExportIncludeReasoning, createDeltaBatcher, documentIsVisible, clearCallDebug, fetchCallDebug } from "./utils.mjs";
 import { exportConversationMarkdown, markdownFileName } from "./conversationExport.mjs";
 import { startProxy as startPageAgentProxy, stopProxy as stopPageAgentProxy } from "./pageagent/pageAgentProxy.mjs";
 import { ChatPanel } from "./chat/ChatPanel.jsx";
@@ -1152,6 +1152,16 @@ export default function App() {
         setAgentMode(false);
         setAgentStatus((prev) => ({ ...prev, active: false }));
       }
+      // A skill toggle (/metacognition, /soul, /ethic) rebuilt the native
+      // session from a new system prompt, discarding the live conversation.
+      // Re-arm priming so the next turn replays the transcript into the fresh
+      // session — same mechanism as entering agent mode with existing history.
+      if (res.ok && commandRebuildsSessionKeepingContext(command)) {
+        const hasReplayableHistory = messages.some(
+          (msg) => msg && !msg.agentNotice && (msg.role === "user" || msg.role === "assistant")
+        );
+        if (hasReplayableHistory) agentPrimingPendingRef.current = true;
+      }
       setMessages((prev) => [
         ...prev,
         {
@@ -1832,8 +1842,10 @@ export default function App() {
           } else if (event === "agent_error") {
             deltaBatcher.flush();
             setMessages(appendTransientNotice(`Agent Error: ${data.error}`));
+            setGenerationBusy(false);
           } else if (event === "agent_done") {
             deltaBatcher.flush();
+            setGenerationBusy(false);
           }
         }
       }

@@ -1,4 +1,5 @@
 #include "ds4.h"
+#include "ds4_crawl_client.h"
 #include "ds4_crawl_grounding.h"
 #include "ds4_distributed.h"
 #include "ds4_help.h"
@@ -1256,41 +1257,6 @@ static int run_chat_turn(ds4_engine *engine, cli_config *cfg, repl_chat *chat,
 }
 
 
-static char *crawl_popen(const char *cmd, char *err, size_t err_len) {
-    FILE *fp = popen(cmd, "r");
-    if (!fp) {
-        snprintf(err, err_len, "ds4: failed to run crawl command");
-        return NULL;
-    }
-    char buf[4096];
-    size_t len = 0, cap = 0;
-    char *out = NULL;
-    while (fgets(buf, sizeof(buf), fp)) {
-        size_t n = strlen(buf);
-        if (len + n + 1 > cap) {
-            cap = cap ? cap * 2 : 8192;
-            while (cap < len + n + 1) cap *= 2;
-            char *next = realloc(out, cap);
-            if (!next) { free(out); pclose(fp); return NULL; }
-            out = next;
-        }
-        memcpy(out + len, buf, n);
-        len += n;
-        out[len] = '\0';
-    }
-    int status = pclose(fp);
-    if (!out) {
-        out = malloc(1);
-        if (out) out[0] = '\0';
-    }
-    if (status == -1 && out && !out[0]) {
-        snprintf(err, err_len, "ds4: crawl command returned no output");
-        free(out);
-        return NULL;
-    }
-    return out;
-}
-
 static char *crawl_json_extract_string(const char *json, const char *key) {
     /* Simple JSON string value extractor: finds "key":"value" or "key": "value" */
     char pattern[256];
@@ -1341,74 +1307,6 @@ static char *crawl_json_extract_object(const char *json, const char *key) {
     memcpy(val, start, len);
     val[len] = '\0';
     return val;
-}
-
-static int crawl_read_token(char *token, size_t token_len) {
-    const char *token_path = getenv("HOME");
-    if (!token_path) return 1;
-    char path[512];
-    int n = snprintf(path, sizeof(path), "%s/.config/ds4-studio/crawl/token", token_path);
-    if (n < 0 || (size_t)n >= sizeof(path)) return 1;
-    FILE *f = fopen(path, "r");
-    if (!f) return 1;
-    if (!fgets(token, (int)token_len, f)) { fclose(f); return 1; }
-    fclose(f);
-    size_t len = strlen(token);
-    while (len > 0 && (token[len-1] == '\n' || token[len-1] == '\r')) token[--len] = '\0';
-    return len == 0 ? 1 : 0;
-}
-
-static int crawl_http_post(const char *url, const char *body, char *out, size_t out_len, char *err, size_t err_len) {
-    char token[256];
-    char auth_hdr[512];
-    if (crawl_read_token(token, sizeof(token)) == 0) {
-        int m = snprintf(auth_hdr, sizeof(auth_hdr), "-H 'Authorization: Bearer %s'", token);
-        if (m < 0 || (size_t)m >= sizeof(auth_hdr)) { auth_hdr[0] = '\0'; }
-    } else { auth_hdr[0] = '\0'; }
-    char cmd[8192];
-    int n = snprintf(cmd, sizeof(cmd),
-        "curl -s -X POST http://127.0.0.1:9090%s "
-        "-H 'Content-Type: application/json' "
-        "%s "
-        "-d '%s' --max-time 120 2>/dev/null",
-        url, auth_hdr, body);
-    if (n < 0 || (size_t)n >= sizeof(cmd)) {
-        snprintf(err, err_len, "ds4: crawl command too long");
-        return 1;
-    }
-    char *result = crawl_popen(cmd, err, err_len);
-    if (!result) return 1;
-    size_t result_len = strlen(result);
-    if (result_len >= out_len) result_len = out_len - 1;
-    memcpy(out, result, result_len);
-    out[result_len] = '\0';
-    free(result);
-    return 0;
-}
-
-static int crawl_http_get(const char *path, char *out, size_t out_len, char *err, size_t err_len) {
-    char token[256];
-    char auth_hdr[512];
-    if (crawl_read_token(token, sizeof(token)) == 0) {
-        int m = snprintf(auth_hdr, sizeof(auth_hdr), "-H 'Authorization: Bearer %s'", token);
-        if (m < 0 || (size_t)m >= sizeof(auth_hdr)) { auth_hdr[0] = '\0'; }
-    } else { auth_hdr[0] = '\0'; }
-    char cmd[8192];
-    int n = snprintf(cmd, sizeof(cmd),
-        "curl -s http://127.0.0.1:9090%s %s --max-time 30 2>/dev/null",
-        path, auth_hdr);
-    if (n < 0 || (size_t)n >= sizeof(cmd)) {
-        snprintf(err, err_len, "ds4: crawl command too long");
-        return 1;
-    }
-    char *result = crawl_popen(cmd, err, err_len);
-    if (!result) return 1;
-    size_t result_len = strlen(result);
-    if (result_len >= out_len) result_len = out_len - 1;
-    memcpy(out, result, result_len);
-    out[result_len] = '\0';
-    free(result);
-    return 0;
 }
 
 static bool crawl_has_visible_text(const char *s) {
@@ -1533,28 +1431,15 @@ static int run_crawl_grounded_summary(ds4_engine *engine, cli_config *cfg,
 
 static int run_crawl_start(ds4_engine *engine, cli_config *cfg, repl_chat *chat, const char *url) {
     char body[8192];
-    char escaped_url[4096];
-    /* Shell-escape single quotes in the URL for curl -d */
-    const char *s;
-    char *w = escaped_url;
-    size_t remaining = sizeof(escaped_url) - 1;
-    for (s = url; *s && remaining > 0; s++) {
-        if (*s == '\'') {
-            if (remaining < 5) break;
-            memcpy(w, "'\\''", 4); w += 4; remaining -= 4;
-        } else {
-            *w++ = *s; remaining--;
-        }
-    }
-    *w = '\0';
-    int n = snprintf(body, sizeof(body), "{\"url\":\"%s\"}", url);
-    if (n < 0 || (size_t)n >= sizeof(body)) {
-        fprintf(stderr, "ds4: crawl request too large\n");
+    char err[256];
+    if (ds4_crawl_client_build_url_body(url, body, sizeof(body),
+                                        err, sizeof(err)) != 0) {
+        fprintf(stderr, "ds4: %s\n", err[0] ? err : "crawl request too large");
         return 1;
     }
     char json[65536];
-    char err[256];
-    if (crawl_http_post("/jobs", body, json, sizeof(json), err, sizeof(err)) != 0) {
+    if (ds4_crawl_client_post("/jobs", body, json, sizeof(json),
+                              err, sizeof(err)) != 0) {
         fprintf(stderr, "ds4: crawl failed: %s\n", err);
         return 1;
     }
@@ -1570,7 +1455,8 @@ static int run_crawl_start(ds4_engine *engine, cli_config *cfg, repl_chat *chat,
     for (int i = 0; i < 120; i++) {
         char path[256];
         snprintf(path, sizeof(path), "/jobs/%s", job_id);
-        if (crawl_http_get(path, result, sizeof(result), err, sizeof(err)) != 0) {
+        if (ds4_crawl_client_get(path, result, sizeof(result),
+                                 err, sizeof(err)) != 0) {
             fprintf(stderr, "ds4: crawl status failed: %s\n", err);
             free(job_id);
             return 1;
@@ -1687,7 +1573,8 @@ static int run_repl(ds4_engine *engine, cli_config *cfg) {
                 } else {
                     char path[256], result[65536], err[256];
                     snprintf(path, sizeof(path), "/jobs/%s", job_id);
-                    if (crawl_http_get(path, result, sizeof(result), err, sizeof(err)) != 0) {
+                    if (ds4_crawl_client_get(path, result, sizeof(result),
+                                             err, sizeof(err)) != 0) {
                         fprintf(stderr, "ds4: %s\n", err);
                     } else {
                         puts(result);
@@ -1700,7 +1587,8 @@ static int run_repl(ds4_engine *engine, cli_config *cfg) {
                 } else {
                     char path[256], result[65536], err[256];
                     snprintf(path, sizeof(path), "/jobs/%s", job_id);
-                    if (crawl_http_post(path, "", result, sizeof(result), err, sizeof(err)) != 0) {
+                    if (ds4_crawl_client_delete(path, result, sizeof(result),
+                                                err, sizeof(err)) != 0) {
                         fprintf(stderr, "ds4: %s\n", err);
                     } else {
                         puts(result);

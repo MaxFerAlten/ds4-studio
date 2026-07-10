@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildAgentPrimingPreamble, withAgentPriming } from "./utils.mjs";
+import { buildAgentPrimingPreamble, withAgentPriming, commandRebuildsSessionKeepingContext } from "./utils.mjs";
 
 test("returns empty string for missing or empty history", () => {
   assert.equal(buildAgentPrimingPreamble(undefined), "");
@@ -76,4 +76,45 @@ test("withAgentPriming wraps the new request below the history block", () => {
     wrapped.indexOf("</chat_history>") < wrapped.indexOf("New user request:"),
     "history block must precede the new user request"
   );
+});
+
+test("skill toggles re-arm priming; session-changing and other commands do not", () => {
+  // /metacognition, /soul, /ethic rebuild the native session from a new system
+  // prompt and drop the live conversation — priming must replay it.
+  for (const cmd of [
+    "/soul start", "/soul stop", "/ethic start", "/ethic stop",
+    "/metacognition start", "/metacognition stop", "  /soul start  "
+  ]) {
+    assert.equal(commandRebuildsSessionKeepingContext(cmd), true, cmd);
+  }
+  // /new and /switch intentionally move sessions; everything else is unrelated.
+  for (const cmd of [
+    "/new", "/switch abc123", "/save", "/list", "/pony start",
+    "/crawl https://x", "/soulmate start", "soul start", "", null, undefined
+  ]) {
+    assert.equal(commandRebuildsSessionKeepingContext(cmd), false, String(cmd));
+  }
+});
+
+test("priming replays the WHOLE conversation from the first turn (no cap / recent window)", () => {
+  // Guards the "riassumi dall'inizio" case after /agent start: the fresh native
+  // session must receive every prior turn, in order, from message 0.
+  const messages = [];
+  for (let i = 1; i <= 30; i++) {
+    messages.push({ role: "user", content: `domanda ${i}` });
+    messages.push({ role: "assistant", content: `risposta ${i}`, reasoning: "hidden-cot" });
+  }
+  messages.push({ role: "assistant", content: "Agent mode started.", agentNotice: true });
+
+  const out = withAgentPriming(messages, "riassumi dall'inizio");
+
+  // First and last real turns both present -> nothing was trimmed off either end.
+  assert.match(out, /domanda 1\b/);
+  assert.match(out, /risposta 30\b/);
+  // In-order: turn 1 precedes turn 30 precedes the new request.
+  assert.ok(out.indexOf("domanda 1") < out.indexOf("risposta 30"));
+  assert.ok(out.indexOf("risposta 30") < out.indexOf("riassumi dall'inizio"));
+  // Notices excluded; hidden reasoning never leaks into the replay.
+  assert.ok(!out.includes("Agent mode started"));
+  assert.ok(!out.includes("hidden-cot"));
 });

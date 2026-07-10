@@ -261,6 +261,13 @@ int ds4_session_top_logprobs(ds4_session *s, ds4_token_score *out, int k);
 int ds4_session_token_logprob(ds4_session *s, int token, ds4_token_score *out);
 int ds4_session_copy_logits(ds4_session *s, float *out, int cap);
 int ds4_session_set_logits(ds4_session *s, const float *logits, int n);
+/* Apply a llama.cpp-style repeat penalty (>1.0) to the given token ids on the
+ * session's current logits, before sampling.  Duplicate ids compound: pass a
+ * deduplicated list.  Returns the number of logits adjusted. */
+int ds4_session_penalize_logits(ds4_session *s, const int *tokens, int n, float penalty);
+/* Hard-ban token ids on the session's current logits (effectively -inf) so
+ * the next sample cannot pick them.  Returns the number of logits banned. */
+int ds4_session_ban_logits(ds4_session *s, const int *tokens, int n);
 int ds4_session_eval(ds4_session *s, int token, char *err, size_t errlen);
 int ds4_session_eval_speculative_argmax(ds4_session *s, int first_token,
                                         int max_tokens, int eos_token,
