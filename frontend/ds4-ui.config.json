@@ -52,13 +52,13 @@
       "DS4_CUDA_MOE_DOWN_ROW1024": "",
       "DS4_CUDA_MOE_DOWN_ROW2048": "",
       "DS4_CUDA_MOE_DOWN_ROW256": "",
-      "DS4_CUDA_MOE_NO_DOWN_ROW128": "",
-      "DS4_CUDA_MOE_NO_DOWN_ROW64": "",
-      "DS4_CUDA_MOE_NO_DIRECT_DOWN_SUM6": "",
       "DS4_CUDA_MOE_DOWN_ROW128": "",
       "DS4_CUDA_MOE_DOWN_ROW64": "",
       "DS4_CUDA_MOE_NO_DOWN_ROW2048": "",
-      "DS4_CUDA_MOE_NO_DOWN_ROW256": ""
+      "DS4_CUDA_MOE_NO_DOWN_ROW256": "",
+      "DS4_CUDA_MOE_NO_DOWN_ROW128": "",
+      "DS4_CUDA_MOE_NO_DOWN_ROW64": "",
+      "DS4_CUDA_MOE_NO_DIRECT_DOWN_SUM6": ""
     },
     "trace": "./traces/ds4-quality.trace",
     "dirSteeringFile": "",
@@ -87,12 +87,12 @@
     "modeSwitchTimeoutMs": 120000
   },
   "requestDefaults": {
-    "endpoint": "/v1/chat/completions",
-    "model": "deepseek-v4-flash",
-    "system": "",
     "max_tokens": "auto",
     "max_tokens_safety_cap": 32768,
     "context_margin": 1024,
+    "endpoint": "/v1/chat/completions",
+    "model": "deepseek-v4-flash",
+    "system": "",
     "temperature": 0,
     "top_p": 1,
     "top_k": 0,
@@ -102,6 +102,10 @@
     "thinking": false,
     "reasoning_effort": "high",
     "stop": ""
+  },
+  "contextWiki": {
+    "enabled": false,
+    "previewOnly": true
   },
   "research": {
     "enabled": true,
@@ -296,9 +300,5 @@
       "http://localhost:5173"
     ],
     "auditDir": "data/pageagent-runs"
-  },
-  "contextWiki": {
-    "enabled": false,
-    "previewOnly": true
   }
 }
