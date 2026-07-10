@@ -10,6 +10,7 @@
 #include "ds4_agent.c"
 
 #include "ds4_agent_runtime.h"
+#include "ds4_crawl_client.h"
 #include "ds4_crawl_grounding.h"
 #include <poll.h>
 #include <stdlib.h>
@@ -601,6 +602,8 @@ static const char *runtime_command_name(agent_slash_command_kind kind) {
     case AGENT_SLASH_HISTORY: return "history";
     case AGENT_SLASH_CRAWL:   return "crawl";
     case AGENT_SLASH_METACOGNITION: return "metacognition";
+    case AGENT_SLASH_SOUL:    return "soul";
+    case AGENT_SLASH_ETHIC:   return "ethic";
     default:                  return "unknown";
     }
 }
@@ -709,72 +712,12 @@ static char *runtime_command_capture_history(ds4_agent_runtime *rt,
     return agent_buf_take(&capture.output);
 }
 
-static int runtime_command_crawl_read_token(char *token, size_t token_len) {
-    const char *home = getenv("HOME");
-    if (!home) return 1;
-    char path[512];
-    int n = snprintf(path, sizeof(path), "%s/.config/ds4-studio/crawl/token", home);
-    if (n < 0 || (size_t)n >= sizeof(path)) return 1;
-    FILE *f = fopen(path, "r");
-    if (!f) return 1;
-    if (!fgets(token, (int)token_len, f)) {
-        fclose(f);
-        return 1;
-    }
-    fclose(f);
-    size_t len = strlen(token);
-    while (len > 0 && (token[len - 1] == '\n' || token[len - 1] == '\r')) {
-        token[--len] = '\0';
-    }
-    return len == 0 ? 1 : 0;
-}
-
 static int runtime_command_crawl_request(const char *method, const char *path,
                                          const char *body, char *out,
                                          size_t out_len) {
-    char token[256];
-    char auth_hdr[512];
-    if (runtime_command_crawl_read_token(token, sizeof(token)) == 0) {
-        int m = snprintf(auth_hdr, sizeof(auth_hdr),
-                         "-H 'Authorization: Bearer %s'", token);
-        if (m < 0 || (size_t)m >= sizeof(auth_hdr)) auth_hdr[0] = '\0';
-    } else {
-        auth_hdr[0] = '\0';
-    }
-
-    char cmd[8192];
-    int n;
-    if (body && body[0]) {
-        n = snprintf(cmd, sizeof(cmd),
-                     "curl -s -X %s http://127.0.0.1:9090%s "
-                     "-H 'Content-Type: application/json' "
-                     "%s "
-                     "-d '%s' --max-time 30 2>/dev/null",
-                     method, path, auth_hdr, body);
-    } else {
-        n = snprintf(cmd, sizeof(cmd),
-                     "curl -s -X %s http://127.0.0.1:9090%s %s --max-time 30 2>/dev/null",
-                     method, path, auth_hdr);
-    }
-    if (n < 0 || (size_t)n >= sizeof(cmd)) return -1;
-
-    char buf[65536];
-    size_t blen = 0;
-    FILE *fp = popen(cmd, "r");
-    if (!fp) return -1;
-    while (fgets(buf + blen, (int)(sizeof(buf) - blen), fp)) {
-        blen += strlen(buf + blen);
-        if (blen >= sizeof(buf) - 1) break;
-    }
-    int st = pclose(fp);
-    if (st != 0 || blen == 0) return -1;
-    buf[blen] = '\0';
-
-    size_t copy = strlen(buf);
-    if (copy >= out_len) copy = out_len - 1;
-    memcpy(out, buf, copy);
-    out[copy] = '\0';
-    return 0;
+    char err[256];
+    return ds4_crawl_client_request(method, path, body, 30,
+                                    out, out_len, err, sizeof(err)) == 0 ? 0 : -1;
 }
 
 static char *runtime_command_json_extract_object(const char *json,
@@ -834,9 +777,8 @@ static char *runtime_command_crawl_start(ds4_agent_runtime *rt,
     }
 
     char body[8192];
-    int n = snprintf(body, sizeof(body), "{\"url\":\"%s\"}", url);
-    if (n < 0 || (size_t)n >= sizeof(body)) {
-        snprintf(err, err_len, "crawl request too large");
+    if (ds4_crawl_client_build_url_body(url, body, sizeof(body),
+                                        err, err_len) != 0) {
         return NULL;
     }
 
@@ -1128,6 +1070,76 @@ int ds4_agent_runtime_command(ds4_agent_runtime *rt, const char *command,
         } else {
             return runtime_command_fail(result, 400,
                                         "usage: /metacognition start|stop");
+        }
+        break;
+    }
+
+    case AGENT_SLASH_SOUL: {
+        char *arg = parsed.arg;
+        while (*arg == ' ' || *arg == '\t') arg++;
+        if (!strncmp(arg, "start", 5) &&
+            (arg[5] == '\0' || arg[5] == ' ' || arg[5] == '\t')) {
+            char rerr[256] = {0};
+            char *content = agent_read_soul_skill(rerr, sizeof(rerr));
+            if (!content)
+                return runtime_command_fail(result, 404, "%s", rerr);
+            free(rt->worker.soul_prompt);
+            rt->worker.soul_prompt = content;
+            if (!runtime_command_save_if_dirty(rt, result)) return -1;
+            if (ds4_agent_runtime_new(rt, rerr, sizeof(rerr)) != 0)
+                return runtime_command_fail(result, 500, "session reset failed: %s",
+                                            rerr[0] ? rerr : "unknown error");
+            runtime_command_set_message(result, "Soul skill activated.");
+        } else if (!strncmp(arg, "stop", 4) &&
+                   (arg[4] == '\0' || arg[4] == ' ' || arg[4] == '\t')) {
+            if (!rt->worker.soul_prompt)
+                return runtime_command_fail(result, 400,
+                                            "Soul skill is not active.");
+            free(rt->worker.soul_prompt);
+            rt->worker.soul_prompt = NULL;
+            if (!runtime_command_save_if_dirty(rt, result)) return -1;
+            if (ds4_agent_runtime_new(rt, err, sizeof(err)) != 0)
+                return runtime_command_fail(result, 500, "session reset failed: %s",
+                                            err[0] ? err : "unknown error");
+            runtime_command_set_message(result, "Soul skill deactivated.");
+        } else {
+            return runtime_command_fail(result, 400,
+                                        "usage: /soul start|stop");
+        }
+        break;
+    }
+
+    case AGENT_SLASH_ETHIC: {
+        char *arg = parsed.arg;
+        while (*arg == ' ' || *arg == '\t') arg++;
+        if (!strncmp(arg, "start", 5) &&
+            (arg[5] == '\0' || arg[5] == ' ' || arg[5] == '\t')) {
+            char rerr[256] = {0};
+            char *content = agent_read_ethic_skill(rerr, sizeof(rerr));
+            if (!content)
+                return runtime_command_fail(result, 404, "%s", rerr);
+            free(rt->worker.ethic_prompt);
+            rt->worker.ethic_prompt = content;
+            if (!runtime_command_save_if_dirty(rt, result)) return -1;
+            if (ds4_agent_runtime_new(rt, rerr, sizeof(rerr)) != 0)
+                return runtime_command_fail(result, 500, "session reset failed: %s",
+                                            rerr[0] ? rerr : "unknown error");
+            runtime_command_set_message(result, "Ethic skill activated.");
+        } else if (!strncmp(arg, "stop", 4) &&
+                   (arg[4] == '\0' || arg[4] == ' ' || arg[4] == '\t')) {
+            if (!rt->worker.ethic_prompt)
+                return runtime_command_fail(result, 400,
+                                            "Ethic skill is not active.");
+            free(rt->worker.ethic_prompt);
+            rt->worker.ethic_prompt = NULL;
+            if (!runtime_command_save_if_dirty(rt, result)) return -1;
+            if (ds4_agent_runtime_new(rt, err, sizeof(err)) != 0)
+                return runtime_command_fail(result, 500, "session reset failed: %s",
+                                            err[0] ? err : "unknown error");
+            runtime_command_set_message(result, "Ethic skill deactivated.");
+        } else {
+            return runtime_command_fail(result, 400,
+                                        "usage: /ethic start|stop");
         }
         break;
     }

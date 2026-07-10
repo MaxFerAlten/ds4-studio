@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -24,7 +25,10 @@ from .settings import Settings as CrawlSettings
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     settings = CrawlSettings.load()
-    token = settings.ensure_token()
+    # Prefer the token handed down by the parent (ds4-ui spawns us with
+    # DS4_CRAWL_TOKEN), so client and service share one secret with no file
+    # race. Standalone `serve` (no env) falls back to the on-disk token.
+    token = os.environ.get("DS4_CRAWL_TOKEN") or settings.ensure_token()
     repository = Repository(settings.database_path)
     artifact_store = ArtifactStore(settings.artifact_dir)
     runner = CrawlRunner(repository, artifact_store)
@@ -49,7 +53,17 @@ def _auth(request: Request) -> None:
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "service": "ds4-crawl-service"}
+    return {
+        "status": "ok",
+        "service": "ds4-crawl-service",
+        "owner": os.environ.get("DS4_CRAWL_OWNER") or "unknown",
+        "pid": os.getpid(),
+    }
+
+@app.get("/auth/check")
+async def auth_check(request: Request):
+    _auth(request)
+    return {"ok": True, "service": "ds4-crawl-service"}
 
 
 @app.post("/jobs")

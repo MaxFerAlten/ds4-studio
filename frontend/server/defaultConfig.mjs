@@ -122,6 +122,10 @@ export const DEFAULT_CONFIG = Object.freeze({
       "http://localhost:5173"
     ]),
     auditDir: "data/pageagent-runs"
+  }),
+  contextWiki: Object.freeze({
+    enabled: false,
+    previewOnly: true
   })
 });
 

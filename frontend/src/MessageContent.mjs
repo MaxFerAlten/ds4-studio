@@ -1,4 +1,4 @@
-import { Children, createElement, isValidElement, useEffect, useId, useState } from "react";
+import { Children, createElement, isValidElement, memo, useEffect, useId, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
@@ -530,7 +530,7 @@ export function normalizeMathDelimiters(content) {
   return output.join("");
 }
 
-export function MessageContent({ content }) {
+export const MessageContent = memo(function MessageContent({ content }) {
   return createElement(
     "div",
     { className: "message-content" },
@@ -540,4 +540,4 @@ export function MessageContent({ content }) {
       normalizeMathDelimiters(markIncompleteMermaidFences(content))
     )
   );
-}
+});

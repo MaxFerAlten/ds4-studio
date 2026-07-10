@@ -1,6 +1,52 @@
+import { memo } from "react";
 import { Download, Plus, Square, Send } from "lucide-react";
 import { MessageContent } from "../MessageContent.mjs";
 import { ResearchPanel } from "../research/ResearchPanel.jsx";
+
+/* Memoized: typing in the composer re-renders ChatPanel on every keystroke,
+ * but messages/messagesRef are unchanged, so the whole list (and every
+ * ReactMarkdown parse inside MessageContent) is skipped. */
+const MessagesList = memo(function MessagesList({ messages, messagesRef }) {
+  return (
+    <div className="messages" ref={messagesRef} data-agent-id="chat-messages">
+      {messages.map((message, index) => (
+        <article className={`message ${message.role}`} key={index}>
+          <strong>{message.role}</strong>
+          {message.reasoning ? (
+            <details>
+              <summary>Reasoning</summary>
+              <MessageContent content={message.reasoning} />
+            </details>
+          ) : null}
+          {message.tool_calls ? (
+            <div className="tool-calls-container">
+              {message.tool_calls.map(tc => (
+                <div key={tc.id} className="tool-call-block">
+                  <div className="tool-call-header">Tool Call: <code>{tc.name}</code></div>
+                  <pre className="tool-call-args">{tc.arguments}</pre>
+                  {tc.progress ? (
+                    <pre className="tool-call-progress" aria-live="polite">{tc.progress}</pre>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {message.role === "tool" ? (
+            <div className={`tool-result-block ${message.isError ? "error" : ""} ${message.guarded ? "guarded" : ""}`}>
+              <div className="tool-result-header">
+                Tool Result: <code>{message.name}</code>
+                {message.guarded ? <span className="tool-result-guard">guarded</span> : null}
+              </div>
+              <pre className="tool-result-content">{message.content}</pre>
+            </div>
+          ) : (
+            <MessageContent content={message.content} />
+          )}
+        </article>
+      ))}
+    </div>
+  );
+});
 
 export function ChatPanel({
   messages,
@@ -85,43 +131,7 @@ export function ChatPanel({
           onHistoryChange={handleResearchHistoryChange}
         />
       ) : null}
-      <div className="messages" ref={messagesRef} data-agent-id="chat-messages">
-        {messages.map((message, index) => (
-          <article className={`message ${message.role}`} key={index}>
-            <strong>{message.role}</strong>
-            {message.reasoning ? (
-              <details>
-                <summary>Reasoning</summary>
-                <MessageContent content={message.reasoning} />
-              </details>
-            ) : null}
-            {message.tool_calls ? (
-              <div className="tool-calls-container">
-                {message.tool_calls.map(tc => (
-                  <div key={tc.id} className="tool-call-block">
-                    <div className="tool-call-header">Tool Call: <code>{tc.name}</code></div>
-                    <pre className="tool-call-args">{tc.arguments}</pre>
-                    {tc.progress ? (
-                      <pre className="tool-call-progress" aria-live="polite">{tc.progress}</pre>
-                    ) : null}
-                  </div>
-                ))}
-              </div>
-            ) : null}
-            {message.role === "tool" ? (
-              <div className={`tool-result-block ${message.isError ? "error" : ""} ${message.guarded ? "guarded" : ""}`}>
-                <div className="tool-result-header">
-                  Tool Result: <code>{message.name}</code>
-                  {message.guarded ? <span className="tool-result-guard">guarded</span> : null}
-                </div>
-                <pre className="tool-result-content">{message.content}</pre>
-              </div>
-            ) : (
-              <MessageContent content={message.content} />
-            )}
-          </article>
-        ))}
-      </div>
+      <MessagesList messages={messages} messagesRef={messagesRef} />
       <div className="export-row">
         <button
           type="button"

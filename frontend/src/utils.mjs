@@ -406,3 +406,13 @@ export function withAgentPriming(messages, requestText) {
   if (!preamble) return requestText;
   return `${preamble}\nNew user request:\n${requestText}`;
 }
+
+// The /metacognition, /soul and /ethic skill toggles rebuild the native agent
+// session from a new system prompt (ds4_agent_runtime_new), which drops the
+// live conversation from the agent's context. After one of these we re-arm
+// priming so the next turn replays the transcript into the fresh session.
+// /new and /switch intentionally move to a different session, so they are
+// excluded. Case-sensitive to mirror the runtime's own command parsing.
+export function commandRebuildsSessionKeepingContext(command) {
+  return /^\/(metacognition|soul|ethic)\b/.test(String(command || "").trim());
+}

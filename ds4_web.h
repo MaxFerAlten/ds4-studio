@@ -14,6 +14,7 @@ typedef struct {
     int port;
     ds4_web_confirm_fn confirm;
     void *confirm_privdata;
+    bool skip_confirm; /* se true, salta la richiesta di conferma interattiva */
     ds4_web_log_fn log;
     void *log_privdata;
     ds4_web_cancel_fn cancel;

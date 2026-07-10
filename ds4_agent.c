@@ -6,6 +6,7 @@
 #include "ds4_context_blob.h"
 #include "ds4_tool_compress.h"
 #include "ds4_crawl_grounding.h"
+#include "ds4_crawl_client.h"
 #include "linenoise.h"
 
 #include <errno.h>
@@ -149,6 +150,13 @@ typedef struct {
     int progress_base;
     double progress_started_at;
     int last_system_prompt_reminder_at;
+    int tool_result_tokens_since_reminder;
+    /* P6: token spans of large tool results still resident in the
+     * transcript, eligible for eviction into context blobs.  Any rebuild
+     * of the transcript that is not append-only must clear these. */
+    struct agent_tool_span { int start, end; char *text; } *tool_spans;
+    int tool_span_count;
+    int tool_span_cap;
     char *cmd_text;
     agent_status status;
     char *out;
@@ -178,6 +186,12 @@ typedef struct {
 
     /* Metacognition skill: content injected via /metacognition start */
     char *metacognition_prompt;
+
+    /* Soul skill: content injected via /soul start */
+    char *soul_prompt;
+
+    /* Ethic skill: content injected via /ethic start */
+    char *ethic_prompt;
 
     char *context_blob_dir;
 
@@ -511,6 +525,8 @@ typedef enum {
     AGENT_SLASH_HISTORY,
     AGENT_SLASH_CRAWL,
     AGENT_SLASH_METACOGNITION,
+    AGENT_SLASH_SOUL,
+    AGENT_SLASH_ETHIC,
 } agent_slash_command_kind;
 
 typedef struct {
@@ -571,6 +587,20 @@ static DS4_MAYBE_UNUSED bool agent_parse_slash_command(const char *input,
         if (arg_len) memcpy(out->arg, arg, arg_len + 1);
         return true;
     }
+    else if (!strcmp(command, "/soul")) {
+        out->kind = AGENT_SLASH_SOUL;
+        size_t arg_len = strlen(arg);
+        if (arg_len >= sizeof(out->arg)) return false;
+        if (arg_len) memcpy(out->arg, arg, arg_len + 1);
+        return true;
+    }
+    else if (!strcmp(command, "/ethic")) {
+        out->kind = AGENT_SLASH_ETHIC;
+        size_t arg_len = strlen(arg);
+        if (arg_len >= sizeof(out->arg)) return false;
+        if (arg_len) memcpy(out->arg, arg, arg_len + 1);
+        return true;
+    }
     else return false;
 
     if (out->kind == AGENT_SLASH_POWER) {
@@ -626,7 +656,9 @@ static bool agent_slash_command_known(const char *cmd) {
            agent_slash_command_with_args(cmd, "/history") ||
            agent_slash_command_with_args(cmd, "/crawl") ||
            agent_slash_command_with_args(cmd, "/gitnexus") ||
-           agent_slash_command_with_args(cmd, "/metacognition");
+           agent_slash_command_with_args(cmd, "/metacognition") ||
+           agent_slash_command_with_args(cmd, "/soul") ||
+           agent_slash_command_with_args(cmd, "/ethic");
 }
 
 static uint64_t parse_u64(const char *s, const char *opt) {
@@ -1239,33 +1271,72 @@ static const char agent_dsml_syntax_reminder[] =
     "</｜DSML｜tool_calls>\n";
 
 #define AGENT_SYSTEM_PROMPT_REMINDER_TOKENS 50000
+/* A burst of high-volume tool results dilutes attention long before the
+ * 50K threshold: re-anchor early once this many tool result tokens have
+ * accumulated since the last reminder (P5). */
+#define AGENT_REMINDER_TOOL_BURST_TOKENS 20000
+
+/* ── Conduct rules (P1-P4, doc/analisi-contesto-ed-agente-inquinato.md) ──
+ * Compact prior-over-evidence guardrails: injected once at startup after
+ * the tools prompt and again inside every system prompt reminder so they
+ * survive long contexts. */
+static const char agent_conduct_rules[] =
+    "# Operating rules\n"
+    "1. If the filesystem holds more than one copy/clone of the project: "
+    "stop, list them and ask the user which one is canonical. Never "
+    "proceed on a guess like \"it seems to be this one\".\n"
+    "2. Propose fixes bottom-up and stop at the first sufficient rung: "
+    "(1) native platform feature (CSS, DB constraint, stdlib); (2) code "
+    "already in the project; (3) a few new dependency-free lines; "
+    "(4) refactoring; (5) new dependency, only if 1-4 are provably "
+    "insufficient, and say why. State the cost of a change next to its "
+    "benefit.\n"
+    "3. Any causal or performance claim must cite file:line and the exact "
+    "mechanism. Before claiming a cost, check it is not already removed "
+    "by a fix you listed as present in the same answer; without evidence, "
+    "label the claim a hypothesis.\n"
+    "4. High-volume commands: start with git diff --stat / git log "
+    "--oneline; ask for full diffs only on specific paths. Never bare "
+    "git diff on a large repo.\n";
+
+/* Conduct rules plus the worker's own cwd, so the model never guesses
+ * which checkout it is working on (P1a). */
+static char *agent_build_conduct_note(void) {
+    char cwd[PATH_MAX];
+    const char *dir = getcwd(cwd, sizeof(cwd)) ? cwd : "";
+    size_t len = sizeof(agent_conduct_rules) + strlen(dir) + 160;
+    char *out = xmalloc(len);
+    if (dir[0]) {
+        snprintf(out, len,
+                 "%sWorkspace: %s\n"
+                 "This is the project you are working on. Do not search "
+                 "the filesystem for other copies of it.\n",
+                 agent_conduct_rules, dir);
+    } else {
+        snprintf(out, len, "%s", agent_conduct_rules);
+    }
+    return out;
+}
 
 static char *agent_build_system_prompt_reminder(void) {
-    char *tools = agent_build_tools_prompt();
+    /* Digest, not the full tools prompt: re-injecting the whole prompt at
+     * every threshold would itself dilute the context (P5).  Carry the
+     * DSML call syntax, the conduct rules + workspace, and a recitation
+     * directive that pulls goal and progress back into the most recent
+     * tokens, where attention is strongest. */
+    static const char recitation[] =
+        "Before continuing, restate in 3 lines: (1) the current task "
+        "goal, (2) what is already done, (3) the single next step. Do "
+        "not re-investigate anything you list as done.\n";
     const char *start = "\n\n[System prompt reminder follows.]\n";
     const char *end = "[End system prompt reminder.]\n\n";
-    size_t start_len = strlen(start);
-    size_t tools_len = strlen(tools);
-    size_t end_len = strlen(end);
-    if (start_len > SIZE_MAX - tools_len) {
-        free(tools);
-        fprintf(stderr, "ds4-agent: system prompt reminder overflow\n");
-        exit(1);
-    }
-    size_t prefix_len = start_len + tools_len;
-    if (end_len > SIZE_MAX - prefix_len - 1) {
-        free(tools);
-        fprintf(stderr, "ds4-agent: system prompt reminder overflow\n");
-        exit(1);
-    }
-    size_t len = prefix_len + end_len + 1;
+    char *note = agent_build_conduct_note();
+    size_t len = strlen(start) + strlen(agent_dsml_syntax_reminder) +
+                 strlen(note) + sizeof(recitation) + strlen(end) + 1;
     char *out = xmalloc(len);
-    size_t off = 0;
-    memcpy(out + off, start, start_len); off += start_len;
-    memcpy(out + off, tools, tools_len); off += tools_len;
-    memcpy(out + off, end, end_len); off += end_len;
-    out[off] = '\0';
-    free(tools);
+    snprintf(out, len, "%s%s%s%s%s", start, agent_dsml_syntax_reminder,
+             note, recitation, end);
+    free(note);
     return out;
 }
 
@@ -1280,6 +1351,12 @@ static void agent_append_system_prompt(ds4_engine *engine, ds4_tokens *tokens,
     ds4_tokenize_rendered_chat(engine, tools_prompt, tokens);
     free(tools_prompt);
 
+    /* Conduct rules + workspace ride as a plain system message: they carry
+     * no DSML markers, and an unusual cwd can never become control tokens. */
+    char *note = agent_build_conduct_note();
+    ds4_chat_append_message(engine, tokens, "system", note);
+    free(note);
+
     if (!extra || !extra[0]) return;
     size_t n = strlen(extra);
     char *plain = xmalloc(n + 3);
@@ -1291,6 +1368,40 @@ static void agent_append_system_prompt(ds4_engine *engine, ds4_tokens *tokens,
 
 static void agent_worker_note_system_prompt_seen(agent_worker *w) {
     w->last_system_prompt_reminder_at = w->transcript.len;
+    w->tool_result_tokens_since_reminder = 0;
+}
+
+/* Track only results worth evicting: replacing a small body with a stub
+ * would not buy back any context. */
+#define AGENT_EVICT_MIN_BYTES 2048
+
+static void agent_worker_track_tool_span(agent_worker *w, int start, int end,
+                                         const char *text) {
+    if (end <= start || strlen(text) < AGENT_EVICT_MIN_BYTES) return;
+    if (w->tool_span_count == w->tool_span_cap) {
+        w->tool_span_cap = w->tool_span_cap ? w->tool_span_cap * 2 : 16;
+        w->tool_spans = xrealloc(w->tool_spans,
+                                 (size_t)w->tool_span_cap *
+                                 sizeof(*w->tool_spans));
+    }
+    struct agent_tool_span *s = &w->tool_spans[w->tool_span_count++];
+    s->start = start;
+    s->end = end;
+    s->text = xstrdup(text);
+}
+
+static void agent_worker_clear_tool_spans(agent_worker *w) {
+    for (int i = 0; i < w->tool_span_count; i++) free(w->tool_spans[i].text);
+    w->tool_span_count = 0;
+}
+
+/* Append a tool result to the transcript and account its token cost so a
+ * burst of high-volume results can trigger an early reminder (P5). */
+static void agent_worker_append_tool_result(agent_worker *w, const char *text) {
+    int before = w->transcript.len;
+    ds4_chat_append_message(w->engine, &w->transcript, "tool", text);
+    w->tool_result_tokens_since_reminder += w->transcript.len - before;
+    agent_worker_track_tool_span(w, before, w->transcript.len, text);
 }
 
 static void agent_worker_maybe_append_datetime_context(agent_worker *w) {
@@ -1322,7 +1433,10 @@ static void agent_worker_maybe_append_system_prompt_reminder(agent_worker *w) {
         agent_worker_note_system_prompt_seen(w);
         return;
     }
-    if (w->transcript.len - w->last_system_prompt_reminder_at <
+    bool burst = w->tool_result_tokens_since_reminder >=
+                 AGENT_REMINDER_TOOL_BURST_TOKENS;
+    if (!burst &&
+        w->transcript.len - w->last_system_prompt_reminder_at <
         AGENT_SYSTEM_PROMPT_REMINDER_TOKENS)
     {
         return;
@@ -4296,18 +4410,53 @@ static char *agent_read_metacognition_skill(char *err, size_t err_len) {
     return NULL;
 }
 
+static char *agent_read_soul_skill(char *err, size_t err_len) {
+    const char *path = "skills/soul/SKILL.md";
+    char *data = NULL;
+    size_t len = 0;
+    if (agent_read_file_bytes(path, &data, &len, err, err_len) == 0 && data) {
+        return data;
+    }
+    snprintf(err, err_len, "soul skill file not found at %s", path);
+    return NULL;
+}
+
+static char *agent_read_ethic_skill(char *err, size_t err_len) {
+    const char *path = "skills/ethic/SKILL.md";
+    char *data = NULL;
+    size_t len = 0;
+    if (agent_read_file_bytes(path, &data, &len, err, err_len) == 0 && data) {
+        return data;
+    }
+    snprintf(err, err_len, "ethic skill file not found at %s", path);
+    return NULL;
+}
+
 static void agent_worker_build_system_tokens(agent_worker *w, ds4_tokens *out) {
     ds4_chat_begin(w->engine, out);
     if (w->cfg->gen.think_mode == DS4_THINK_MAX &&
         effective_think_mode(w->cfg) == DS4_THINK_MAX)
         ds4_chat_append_max_effort_prefix(w->engine, out);
-    if (w->metacognition_prompt) {
-        size_t extra_len = strlen(w->cfg->gen.system ? w->cfg->gen.system : "");
-        size_t meta_len = strlen(w->metacognition_prompt);
-        char *combined = xmalloc(extra_len + meta_len + 1);
+
+    /* Collect all active skill prompts */
+    char *meta = w->metacognition_prompt;
+    char *soul = w->soul_prompt;
+    char *ethic = w->ethic_prompt;
+
+    if (meta || soul || ethic) {
+        size_t base_len = strlen(w->cfg->gen.system ? w->cfg->gen.system : "");
+        size_t meta_len = meta ? strlen(meta) : 0;
+        size_t soul_len = soul ? strlen(soul) : 0;
+        size_t ethic_len = ethic ? strlen(ethic) : 0;
+        size_t total = base_len + meta_len + soul_len + ethic_len;
+        char *combined = xmalloc(total + 1);
         combined[0] = '\0';
-        if (w->cfg->gen.system) memcpy(combined, w->cfg->gen.system, extra_len + 1);
-        memcpy(combined + extra_len, w->metacognition_prompt, meta_len + 1);
+        if (w->cfg->gen.system) memcpy(combined, w->cfg->gen.system, base_len + 1);
+        char *p = combined + base_len;
+        if (meta) { memcpy(p, meta, meta_len); p += meta_len; }
+        if (soul) { memcpy(p, soul, soul_len); p += soul_len; }
+        if (ethic) { memcpy(p, ethic, ethic_len); p += ethic_len; }
+        *p = '\0';
         agent_append_system_prompt(w->engine, out, combined);
         free(combined);
     } else {
@@ -4564,6 +4713,7 @@ static bool agent_worker_reset_to_sysprompt(agent_worker *w, char *err, size_t e
         if (w->sysprompt_path)
             agent_publish_system_status(w, "Updating system prompt cache...");
         ds4_tokens_free(&w->transcript);
+        agent_worker_clear_tool_spans(w);
         ds4_tokens_copy(&w->transcript, &sys);
         if (agent_worker_sync_tokens(w, &w->transcript, true, err, err_len) != 0) {
             free(text);
@@ -5734,6 +5884,7 @@ static bool agent_worker_switch_session(agent_worker *w, const char *prefix,
                                  err, err_len);
     if (ok) {
         ds4_tokens_free(&w->transcript);
+        agent_worker_clear_tool_spans(w);
         w->transcript = loaded;
         free(w->session_title);
         w->session_title = meta.title ? xstrdup(meta.title) : xstrdup("(no user prompt)");
@@ -6490,6 +6641,219 @@ static bool agent_edit_find_old_span(const char *data, size_t len,
     return true;
 }
 
+/* ── Degenerate-repetition detector ──────────────────────────────────────
+ * A model at very long context can collapse into repeating the same few
+ * sentences inside ONE generation, without ever emitting DSML: the round
+ * guards (which run between rounds) never fire, and the decode loop only
+ * stops on EOS/max_tokens/interrupt (trace 2026-07-04).  Hash every
+ * completed non-blank line (whitespace ignored) into a small ring and flag
+ * when the tail is a cycle of period <= AGENT_REP_MAX_PERIOD repeated
+ * >= AGENT_REP_MIN_CYCLES times.  Only fed with prose outside DSML, so
+ * repetitive file content in tool parameters can never trigger it. */
+#define AGENT_REP_WINDOW 32
+#define AGENT_REP_MAX_PERIOD 4
+#define AGENT_REP_MIN_CYCLES 5
+#define AGENT_REP_WARN_CYCLES 3
+#define AGENT_REP_MIN_LINE_LEN 4
+#define AGENT_REP_FNV_OFFSET 1469598103934665603ULL
+#define AGENT_REP_FNV_PRIME 1099511628211ULL
+
+typedef struct {
+    uint64_t h[AGENT_REP_WINDOW]; /* line hashes, ring keyed by count */
+    int count;                    /* total significant lines pushed */
+    uint64_t cur;                 /* FNV-1a of current line's non-space bytes */
+    int cur_sig;                  /* non-space bytes hashed so far */
+} agent_repetition_detector;
+
+#define AGENT_REP_INIT {.cur = AGENT_REP_FNV_OFFSET}
+
+static uint64_t agent_rep_line_back(const agent_repetition_detector *d, int back) {
+    return d->h[(d->count - 1 - back) % AGENT_REP_WINDOW];
+}
+
+/* How many times the trailing cycle (period <= AGENT_REP_MAX_PERIOD lines)
+ * repeats consecutively at the tail.  1 = no repetition. */
+static int agent_repetition_cycles(const agent_repetition_detector *d) {
+    int avail = d->count < AGENT_REP_WINDOW ? d->count : AGENT_REP_WINDOW;
+    int best = 1;
+    for (int period = 1; period <= AGENT_REP_MAX_PERIOD; period++) {
+        if (avail < 2 * period) continue;
+        int limit = avail - period;
+        int m = 0;
+        while (m < limit &&
+               agent_rep_line_back(d, m) == agent_rep_line_back(d, m + period))
+            m++;
+        int reps = m / period + 1;
+        if (reps > best) best = reps;
+    }
+    return best;
+}
+
+/* Feed generated text; returns the highest trailing cycle count observed on
+ * the lines completed by this call (0 when no line was completed). */
+static int agent_repetition_feed(agent_repetition_detector *d,
+                                 const char *text, size_t len) {
+    int worst = 0;
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)text[i];
+        if (c == '\n') {
+            if (d->cur_sig >= AGENT_REP_MIN_LINE_LEN) {
+                d->h[d->count % AGENT_REP_WINDOW] = d->cur;
+                d->count++;
+                int cycles = agent_repetition_cycles(d);
+                if (cycles > worst) worst = cycles;
+            }
+            d->cur = AGENT_REP_FNV_OFFSET;
+            d->cur_sig = 0;
+        } else if (!isspace(c)) {
+            d->cur = (d->cur ^ c) * AGENT_REP_FNV_PRIME;
+            d->cur_sig++;
+        }
+    }
+    return worst;
+}
+
+/* ── Repeat penalty ──────────────────────────────────────────────────────
+ * Prevention side of the degenerate-repetition guard: dampen tokens the
+ * model produced recently in free text, so long-context sessions do not
+ * collapse into repeating the same sentences in the first place.  Only
+ * free-text (non-greedy) sampling is penalized: DSML tool calls sample
+ * greedy and legitimately repeat file content.  Tuning:
+ * DS4_AGENT_REPEAT_PENALTY env (set to 1.0 to disable). */
+#define AGENT_REPEAT_PENALTY_DEFAULT 1.08f
+#define AGENT_REPEAT_WINDOW 256
+
+typedef struct {
+    int t[AGENT_REPEAT_WINDOW];
+    int count; /* monotonic; ring keyed by count % AGENT_REPEAT_WINDOW */
+} agent_recent_tokens;
+
+static void agent_recent_tokens_push(agent_recent_tokens *r, int token) {
+    r->t[r->count % AGENT_REPEAT_WINDOW] = token;
+    r->count++;
+}
+
+/* Collect the deduplicated window into out (>= AGENT_REPEAT_WINDOW slots);
+ * returns the unique count.  ds4_session_penalize_logits compounds duplicate
+ * ids, so the list must be unique. */
+static int agent_recent_tokens_unique(const agent_recent_tokens *r, int *out) {
+    int n = r->count < AGENT_REPEAT_WINDOW ? r->count : AGENT_REPEAT_WINDOW;
+    int u = 0;
+    for (int i = 0; i < n; i++) {
+        const int t = r->t[i];
+        bool seen = false;
+        for (int j = 0; j < u && !seen; j++) seen = out[j] == t;
+        if (!seen) out[u++] = t;
+    }
+    return u;
+}
+
+static float agent_repeat_penalty_value(void) {
+    static float v = -1.0f;
+    if (v < 0.0f) {
+        const char *env = getenv("DS4_AGENT_REPEAT_PENALTY");
+        v = (env && env[0]) ? (float)atof(env) : AGENT_REPEAT_PENALTY_DEFAULT;
+        if (v < 1.0f) v = 1.0f;
+    }
+    return v;
+}
+
+/* ── Tool output noise filter ────────────────────────────────────────────
+ * (P4a, doc/analisi-contesto-ed-agente-inquinato.md)  Binary hunks, base64
+ * blobs and minified one-liners in tool output pass the quantitative head
+ * caps as if they were useful text, pollute the context and dilute the
+ * model's attention.  Elide them line-by-line before the result is
+ * appended to the transcript. */
+#define AGENT_NOISE_MAX_LINE_BYTES 400
+#define AGENT_NOISE_MIN_PRINTABLE 0.70f
+
+static bool agent_line_is_noise(const char *line, size_t len) {
+    if (len > AGENT_NOISE_MAX_LINE_BYTES) return true;
+    if (len >= 13 && !strncmp(line, "Binary files ", 13)) return true;
+    if (len == 0) return false;
+    size_t printable = 0;
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)line[i];
+        if (c == '\t' || (c >= 0x20 && c != 0x7f)) printable++;
+    }
+    return (float)printable / (float)len < AGENT_NOISE_MIN_PRINTABLE;
+}
+
+/* Collapse noise lines into a one-line placeholder per run.  Returns a new
+ * string when something was elided, NULL when the input is clean (caller
+ * keeps using the original — the common path allocates nothing). */
+static char *agent_elide_noise_lines(const char *s) {
+    if (!s || !s[0]) return NULL;
+    agent_buf out = {0};
+    int elided = 0;
+    bool changed = false;
+    const char *p = s;
+    while (*p) {
+        const char *nl = strchr(p, '\n');
+        size_t len = nl ? (size_t)(nl - p) : strlen(p);
+        if (agent_line_is_noise(p, len)) {
+            elided++;
+            changed = true;
+        } else {
+            if (elided) {
+                char note[64];
+                snprintf(note, sizeof(note),
+                         "[... %d noise/binary line%s elided ...]\n",
+                         elided, elided == 1 ? "" : "s");
+                agent_buf_puts(&out, note);
+                elided = 0;
+            }
+            agent_buf_append(&out, p, len);
+            agent_buf_puts(&out, "\n");
+        }
+        if (!nl) break;
+        p = nl + 1;
+    }
+    if (elided) {
+        char note[64];
+        snprintf(note, sizeof(note),
+                 "[... %d noise/binary line%s elided ...]\n",
+                 elided, elided == 1 ? "" : "s");
+        agent_buf_puts(&out, note);
+    }
+    if (!changed) {
+        free(out.ptr);
+        return NULL;
+    }
+    return agent_buf_take(&out);
+}
+
+#define AGENT_NGRAM_BAN_CONTEXT 3
+#define AGENT_NGRAM_BAN_MAX 64
+
+/* No-repeat-ngram: find every token that would complete a 4-gram already
+ * present in the recent window.  Banning them forces the model to diverge
+ * instead of finishing the next repeat verbatim.  Only used once the
+ * repetition detector has armed it (>= AGENT_REP_WARN_CYCLES trailing
+ * cycles), so ordinary prose that legitimately repeats short sequences —
+ * file paths, identifiers — is never touched.  eos_token is never banned.
+ * Returns the number of candidates written to out. */
+static int agent_ngram_ban_candidates(const agent_recent_tokens *r,
+                                      int eos_token, int *out, int cap) {
+    int seq[AGENT_REPEAT_WINDOW];
+    int n = r->count < AGENT_REPEAT_WINDOW ? r->count : AGENT_REPEAT_WINDOW;
+    if (n < AGENT_NGRAM_BAN_CONTEXT + 1) return 0;
+    for (int back = 0; back < n; back++)
+        seq[n - 1 - back] = r->t[(r->count - 1 - back) % AGENT_REPEAT_WINDOW];
+    const int *tail = &seq[n - AGENT_NGRAM_BAN_CONTEXT];
+    int found = 0;
+    for (int i = 0; i + AGENT_NGRAM_BAN_CONTEXT < n && found < cap; i++) {
+        if (memcmp(&seq[i], tail,
+                   AGENT_NGRAM_BAN_CONTEXT * sizeof(seq[0])) != 0) continue;
+        const int cand = seq[i + AGENT_NGRAM_BAN_CONTEXT];
+        if (cand == eos_token) continue;
+        bool dup = false;
+        for (int j = 0; j < found && !dup; j++) dup = out[j] == cand;
+        if (!dup) out[found++] = cand;
+    }
+    return found;
+}
+
 #ifdef DS4_AGENT_TEST
 static int agent_test_failures;
 
@@ -6592,6 +6956,15 @@ static void test_agent_parse_native_slash_commands(void) {
     AGENT_TEST_ASSERT(agent_parse_slash_command("/crawl start https://example.com", &parsed));
     AGENT_TEST_ASSERT(parsed.kind == AGENT_SLASH_CRAWL);
     AGENT_TEST_ASSERT(!strcmp(parsed.arg, "start https://example.com"));
+    AGENT_TEST_ASSERT(agent_parse_slash_command("/metacognition start", &parsed));
+    AGENT_TEST_ASSERT(parsed.kind == AGENT_SLASH_METACOGNITION);
+    AGENT_TEST_ASSERT(!strcmp(parsed.arg, "start"));
+    AGENT_TEST_ASSERT(agent_parse_slash_command("/soul start", &parsed));
+    AGENT_TEST_ASSERT(parsed.kind == AGENT_SLASH_SOUL);
+    AGENT_TEST_ASSERT(!strcmp(parsed.arg, "start"));
+    AGENT_TEST_ASSERT(agent_parse_slash_command("/ethic stop", &parsed));
+    AGENT_TEST_ASSERT(parsed.kind == AGENT_SLASH_ETHIC);
+    AGENT_TEST_ASSERT(!strcmp(parsed.arg, "stop"));
 }
 
 static void test_agent_rejects_invalid_native_slash_commands(void) {
@@ -6677,8 +7050,223 @@ static void test_tool_compress_read_passthrough(void) {
     free(huge);
 }
 
+static void test_agent_repetition_detector(void) {
+    /* Varied prose stays below the warn threshold. */
+    agent_repetition_detector d = AGENT_REP_INIT;
+    const char *prose =
+        "The user is asking about fix #6.\n"
+        "Let me look at the history saving code.\n"
+        "The history POST is triggered on new messages.\n"
+        "So it should not affect typing performance.\n"
+        "However the problem might persist.\n"
+        "Let me think about what else could cause it.\n";
+    AGENT_TEST_ASSERT(agent_repetition_feed(&d, prose, strlen(prose)) <
+                      AGENT_REP_WARN_CYCLES);
+
+    /* Period-2 cycle (2026-07-04 trace failure mode); blank lines ignored.
+     * Cycle count grows one per repeat: warn at 3, abort at 5. */
+    agent_repetition_detector d2 = AGENT_REP_INIT;
+    const char *cycle =
+        "Let me check the index.mjs file for any WebSocket connections.\n"
+        "\n"
+        "Let me also check if there is any JavaScript that monitors.\n"
+        "\n";
+    int worst = 0;
+    int feeds = 0;
+    while (worst < AGENT_REP_MIN_CYCLES && feeds < 10) {
+        worst = agent_repetition_feed(&d2, cycle, strlen(cycle));
+        feeds++;
+    }
+    AGENT_TEST_ASSERT(worst >= AGENT_REP_MIN_CYCLES);
+    AGENT_TEST_ASSERT(feeds == AGENT_REP_MIN_CYCLES);
+
+    /* Same line repeated = period 1: abort at MIN_CYCLES, not before. */
+    agent_repetition_detector d3 = AGENT_REP_INIT;
+    const char *line = "same line again\n";
+    worst = 0;
+    for (int i = 0; i < AGENT_REP_MIN_CYCLES - 1; i++)
+        worst = agent_repetition_feed(&d3, line, strlen(line));
+    AGENT_TEST_ASSERT(worst == AGENT_REP_MIN_CYCLES - 1);
+    AGENT_TEST_ASSERT(agent_repetition_feed(&d3, line, strlen(line)) >=
+                      AGENT_REP_MIN_CYCLES);
+
+    /* Indentation/trailing-space variants hash the same. */
+    agent_repetition_detector d4 = AGENT_REP_INIT;
+    worst = 0;
+    worst = agent_repetition_feed(&d4, "same line again\n", 16);
+    worst = agent_repetition_feed(&d4, "  same line again\n", 18);
+    worst = agent_repetition_feed(&d4, "same line again  \n", 18);
+    worst = agent_repetition_feed(&d4, "\tsame  line\tagain\n", 18);
+    AGENT_TEST_ASSERT(worst == AGENT_REP_MIN_CYCLES - 1);
+    AGENT_TEST_ASSERT(agent_repetition_feed(&d4, "same line again\n", 16) >=
+                      AGENT_REP_MIN_CYCLES);
+}
+
+static void test_agent_ngram_ban_candidates(void) {
+    agent_recent_tokens r = {0};
+    int out[AGENT_NGRAM_BAN_MAX];
+    /* Too short for a 4-gram: no candidates. */
+    agent_recent_tokens_push(&r, 1);
+    agent_recent_tokens_push(&r, 2);
+    agent_recent_tokens_push(&r, 3);
+    AGENT_TEST_ASSERT(agent_ngram_ban_candidates(&r, 99, out,
+                                                 AGENT_NGRAM_BAN_MAX) == 0);
+
+    /* 1 2 3 4 7 1 2 3 → tail {1,2,3} seen before with follower 4. */
+    agent_recent_tokens_push(&r, 4);
+    agent_recent_tokens_push(&r, 7);
+    agent_recent_tokens_push(&r, 1);
+    agent_recent_tokens_push(&r, 2);
+    agent_recent_tokens_push(&r, 3);
+    int n = agent_ngram_ban_candidates(&r, 99, out, AGENT_NGRAM_BAN_MAX);
+    AGENT_TEST_ASSERT(n == 1 && out[0] == 4);
+
+    /* EOS is never a ban candidate. */
+    AGENT_TEST_ASSERT(agent_ngram_ban_candidates(&r, 4, out,
+                                                 AGENT_NGRAM_BAN_MAX) == 0);
+}
+
+static char *agent_tool_search(agent_worker *w, const agent_tool_call *call);
+
+static void test_agent_search_literal_pipe_regex_retry(void) {
+    char dir[] = "/tmp/ds4_search_testXXXXXX";
+    if (!mkdtemp(dir)) { AGENT_TEST_ASSERT(!"mkdtemp failed"); return; }
+    char fpath[512];
+    snprintf(fpath, sizeof(fpath), "%s/sample.js", dir);
+    FILE *f = fopen(fpath, "w");
+    AGENT_TEST_ASSERT(f != NULL);
+    if (f) {
+        fputs("const o = new MutationObserver(cb);\n", f);
+        fclose(f);
+    }
+
+    /* Literal pass finds nothing, regex retry must surface the match. */
+    agent_tool_arg args[2] = {
+        {.name = (char *)"query",
+         .value = (char *)"observer|Observe|MutationObserver",
+         .is_string = true},
+        {.name = (char *)"path", .value = dir, .is_string = true},
+    };
+    agent_tool_call call = {.name = (char *)"search", .args = args, .argc = 2};
+    char *out = agent_tool_search(NULL, &call);
+    AGENT_TEST_ASSERT(out && strstr(out, "treated as regex"));
+    AGENT_TEST_ASSERT(out && strstr(out, "MutationObserver"));
+    free(out);
+
+    /* No matches either way: the result must say both were tried. */
+    agent_tool_arg args2[2] = {
+        {.name = (char *)"query", .value = (char *)"zz_nope|qq_nada",
+         .is_string = true},
+        {.name = (char *)"path", .value = dir, .is_string = true},
+    };
+    agent_tool_call call2 = {.name = (char *)"search", .args = args2, .argc = 2};
+    out = agent_tool_search(NULL, &call2);
+    AGENT_TEST_ASSERT(out && strstr(out, "no matches found"));
+    AGENT_TEST_ASSERT(out && strstr(out, "one term at a time"));
+    free(out);
+
+    unlink(fpath);
+    rmdir(dir);
+}
+
+static void test_agent_recent_tokens_unique(void) {
+    agent_recent_tokens r = {0};
+    int uniq[AGENT_REPEAT_WINDOW];
+    AGENT_TEST_ASSERT(agent_recent_tokens_unique(&r, uniq) == 0);
+
+    /* 3 distinct ids pushed repeatedly dedup to 3. */
+    for (int i = 0; i < 30; i++) agent_recent_tokens_push(&r, i % 3);
+    AGENT_TEST_ASSERT(agent_recent_tokens_unique(&r, uniq) == 3);
+
+    /* Overflowing the ring keeps at most AGENT_REPEAT_WINDOW entries. */
+    agent_recent_tokens r2 = {0};
+    for (int i = 0; i < AGENT_REPEAT_WINDOW * 2; i++)
+        agent_recent_tokens_push(&r2, i);
+    AGENT_TEST_ASSERT(agent_recent_tokens_unique(&r2, uniq) == AGENT_REPEAT_WINDOW);
+}
+
+static void test_agent_elide_noise_lines(void) {
+    /* Clean input: no allocation, caller keeps the original. */
+    AGENT_TEST_ASSERT(agent_elide_noise_lines(NULL) == NULL);
+    AGENT_TEST_ASSERT(agent_elide_noise_lines("") == NULL);
+    AGENT_TEST_ASSERT(agent_elide_noise_lines("hello\nworld\n") == NULL);
+
+    /* Overlong line is elided, neighbours survive. */
+    char long_line[600];
+    memset(long_line, 'x', sizeof(long_line) - 1);
+    long_line[sizeof(long_line) - 1] = '\0';
+    char in[1024];
+    snprintf(in, sizeof(in), "keep1\n%s\nkeep2\n", long_line);
+    char *out = agent_elide_noise_lines(in);
+    AGENT_TEST_ASSERT(out != NULL);
+    AGENT_TEST_ASSERT(strstr(out, "keep1\n"));
+    AGENT_TEST_ASSERT(strstr(out, "keep2\n"));
+    AGENT_TEST_ASSERT(strstr(out, "[... 1 noise/binary line elided ...]"));
+    AGENT_TEST_ASSERT(!strstr(out, "xxxx"));
+    free(out);
+
+    /* Git binary hunk and low-printable line collapse into one note. */
+    out = agent_elide_noise_lines(
+        "diff --git a/f.png b/f.png\n"
+        "Binary files a/f.png and b/f.png differ\n"
+        "\x01\x02\x03\x04\x05\x06\x07\x08\x01\x02 x\n"
+        "trailer\n");
+    AGENT_TEST_ASSERT(out != NULL);
+    AGENT_TEST_ASSERT(strstr(out, "diff --git"));
+    AGENT_TEST_ASSERT(strstr(out, "[... 2 noise/binary lines elided ...]"));
+    AGENT_TEST_ASSERT(strstr(out, "trailer\n"));
+    free(out);
+
+    /* Trailing noise run still gets its placeholder. */
+    out = agent_elide_noise_lines("ok\nBinary files a/x and b/x differ\n");
+    AGENT_TEST_ASSERT(out != NULL);
+    AGENT_TEST_ASSERT(strstr(out, "ok\n[... 1 noise/binary line elided ...]"));
+    free(out);
+}
+
+static void test_system_prompt_reminder_digest(void) {
+    char *r = agent_build_system_prompt_reminder();
+    AGENT_TEST_ASSERT(strstr(r, "[System prompt reminder follows.]"));
+    AGENT_TEST_ASSERT(strstr(r, "# Operating rules"));
+    AGENT_TEST_ASSERT(strstr(r, "restate in 3 lines"));
+    AGENT_TEST_ASSERT(strstr(r, "Workspace: "));
+    /* Digest property: far smaller than the full tools prompt. */
+    char *tools = agent_build_tools_prompt();
+    AGENT_TEST_ASSERT(strlen(r) < strlen(tools) / 4);
+    free(tools);
+    free(r);
+}
+
+static void test_tool_span_tracking(void) {
+    static agent_worker w;
+    memset(&w, 0, sizeof(w));
+    char big[AGENT_EVICT_MIN_BYTES + 16];
+    memset(big, 'a', sizeof(big) - 1);
+    big[sizeof(big) - 1] = '\0';
+
+    agent_worker_track_tool_span(&w, 10, 50, big);
+    AGENT_TEST_ASSERT(w.tool_span_count == 1);
+    /* Small bodies and empty token spans are not worth evicting. */
+    agent_worker_track_tool_span(&w, 60, 70, "tiny");
+    agent_worker_track_tool_span(&w, 80, 80, big);
+    AGENT_TEST_ASSERT(w.tool_span_count == 1);
+    AGENT_TEST_ASSERT(w.tool_spans[0].start == 10 && w.tool_spans[0].end == 50);
+    AGENT_TEST_ASSERT(!strcmp(w.tool_spans[0].text, big));
+
+    agent_worker_clear_tool_spans(&w);
+    AGENT_TEST_ASSERT(w.tool_span_count == 0);
+    free(w.tool_spans);
+}
+
 static void ds4_agent_unit_tests_run(void) {
+    test_agent_elide_noise_lines();
+    test_system_prompt_reminder_digest();
+    test_tool_span_tracking();
     test_agent_edit_upto_tail_newline_is_not_part_of_anchor();
+    test_agent_repetition_detector();
+    test_agent_search_literal_pipe_regex_retry();
+    test_agent_recent_tokens_unique();
+    test_agent_ngram_ban_candidates();
     test_agent_edit_upto_requires_tail_after_newline_strip();
     test_agent_parse_native_slash_commands();
     test_agent_rejects_invalid_native_slash_commands();
@@ -6956,11 +7544,42 @@ static char *agent_tool_search(agent_worker *w, const agent_tool_call *call) {
     }
     agent_search_path(&ctx, path, 0);
     if (ctx.regex_ready) regfree(&ctx.regex);
-    if (!ctx.out.ptr) agent_buf_puts(&ctx.out, "search: no matches found for pattern.\n");
+    ctx.regex_ready = false;
+    /* A literal query containing '|' that matched nothing is almost always a
+     * regex alternation the model forgot to flag (trace 2026-07-04: giant
+     * "a|b|c" queries returned false "no matches", starving the model of
+     * data).  Retry once as ERE instead of bouncing an empty result back. */
+    bool regex_retry = false;
+    if (!ctx.out.ptr && !ctx.use_regex && strchr(query, '|')) {
+        int flags = REG_EXTENDED | REG_NOSUB;
+        if (!ctx.case_sensitive) flags |= REG_ICASE;
+        if (regcomp(&ctx.regex, query, flags) == 0) {
+            ctx.use_regex = true;
+            ctx.regex_ready = true;
+            regex_retry = true;
+            agent_search_path(&ctx, path, 0);
+            regfree(&ctx.regex);
+            ctx.regex_ready = false;
+        }
+    }
+    if (!ctx.out.ptr) {
+        agent_buf_puts(&ctx.out, "search: no matches found for pattern.");
+        if (regex_retry)
+            agent_buf_puts(&ctx.out,
+                " Query was tried both literally and as ERE regex;"
+                " try searching one term at a time.");
+        else if (strchr(query, '|'))
+            agent_buf_puts(&ctx.out,
+                " Note: query matched literally; pass mode=regex for"
+                " '|' alternation.");
+        agent_buf_puts(&ctx.out, "\n");
+    }
     else {
-        char hdr[96];
-        snprintf(hdr, sizeof(hdr), "%d match%s shown\n\n",
-                 ctx.results, ctx.results == 1 ? "" : "es");
+        char hdr[192];
+        snprintf(hdr, sizeof(hdr), "%d match%s shown%s\n\n",
+                 ctx.results, ctx.results == 1 ? "" : "es",
+                 regex_retry ?
+                 " (literal query had no matches; treated as regex)" : "");
         size_t hdr_len = strlen(hdr);
         /* Prepend header using agent_buf API to avoid manual memmove corruption */
         agent_buf prepended = {0};
@@ -7489,6 +8108,11 @@ static char *agent_bash_observation(agent_bash_job *job, bool mark_observed) {
         char *head = agent_bash_read_head(job, AGENT_BASH_HEAD_LINES,
                                           AGENT_BASH_HEAD_BYTES,
                                           &shown_lines, &byte_limited);
+        char *clean = agent_elide_noise_lines(head);
+        if (clean) {
+            free(head);
+            head = clean;
+        }
         bool truncated = byte_limited || display_lines > shown_lines;
         if (!job->running && !truncated) {
             agent_buf_puts(&out, "<output>\n");
@@ -7513,6 +8137,11 @@ static char *agent_bash_observation(agent_bash_job *job, bool mark_observed) {
         int tail_lines = job->running ? AGENT_BASH_PROGRESS_TAIL_LINES :
                                         AGENT_BASH_FINAL_TAIL_LINES;
         char *tail = agent_bash_read_tail_lines(job, tail_lines);
+        char *clean = agent_elide_noise_lines(tail);
+        if (clean) {
+            free(tail);
+            tail = clean;
+        }
         snprintf(line, sizeof(line),
                  "output_path=%s (%zu bytes, %d lines)\n",
                  job->path[0] ? job->path : "<unavailable>",
@@ -8072,39 +8701,23 @@ static char *agent_tool_crawl(agent_worker *w, const agent_tool_call *call) {
     if (!url || !url[0]) return xstrdup("Tool error: crawl requires url\n");
     agent_publishf_system_status(w, "Crawling %s...", url);
 
-    /* Build curl POST to the crawl service */
-    /* Validate URL length before escaping to prevent buffer overflow */
-    size_t url_len = strlen(url);
-    if (url_len > 4096) return xstrdup("Tool error: crawl URL too long\n");
-    char escaped[8192];
-    char *we = escaped;
-    size_t rem = sizeof(escaped) - 1;
-    for (const char *s = url; *s && rem > 0; s++) {
-        if (*s == '\'') { if (rem < 5) break; memcpy(we, "'\\''", 4); we += 4; rem -= 4; }
-        else { *we++ = *s; rem--; }
-    }
-    *we = '\0';
     char body[8192];
-    int bn = snprintf(body, sizeof(body), "{\"url\":\"%s\"}", url);
-    if (bn < 0 || (size_t)bn >= sizeof(body))
-        return xstrdup("Tool error: crawl request too large\n");
-    char cmd[12288];
-    snprintf(cmd, sizeof(cmd),
-        "curl -s -X POST http://127.0.0.1:9090/jobs "
-        "-H 'Content-Type: application/json' "
-        "-d '%s' --max-time 120 2>/dev/null",
-        body);
-    char buf[65536];
-    size_t blen = 0;
-    FILE *fp = popen(cmd, "r");
-    if (!fp) return xstrdup("Tool error: crawl service unavailable\n");
-    while (fgets(buf + blen, (int)(sizeof(buf) - blen), fp)) {
-        blen += strlen(buf + blen);
-        if (blen >= sizeof(buf) - 1) break;
+    char err[256] = {0};
+    if (ds4_crawl_client_build_url_body(url, body, sizeof(body),
+                                        err, sizeof(err)) != 0) {
+        char msg[384];
+        snprintf(msg, sizeof(msg), "Tool error: %s\n",
+                 err[0] ? err : "crawl request too large");
+        return xstrdup(msg);
     }
-    int st = pclose(fp);
-    if (st != 0 || blen == 0) return xstrdup("Tool error: crawl request failed\n");
-    buf[blen] = '\0';
+    char buf[65536];
+    if (ds4_crawl_client_post("/jobs", body, buf, sizeof(buf),
+                              err, sizeof(err)) != 0) {
+        char msg[384];
+        snprintf(msg, sizeof(msg), "Tool error: crawl request failed: %s\n",
+                 err[0] ? err : "unknown error");
+        return xstrdup(msg);
+    }
 
     /* Extract job_id */
     char *job_id = agent_json_extract_string(buf, "job_id");
@@ -8118,19 +8731,10 @@ static char *agent_tool_crawl(agent_worker *w, const agent_tool_call *call) {
         free(state); state = NULL;
         char path[256];
         snprintf(path, sizeof(path), "/jobs/%s", job_id);
-        char pcmd[8192];
-        snprintf(pcmd, sizeof(pcmd),
-            "curl -s http://127.0.0.1:9090%s --max-time 30 2>/dev/null", path);
         char pbuf[65536];
-        size_t plen = 0;
-        FILE *pfp = popen(pcmd, "r");
-        if (!pfp) break;
-        while (fgets(pbuf + plen, (int)(sizeof(pbuf) - plen), pfp)) {
-            plen += strlen(pbuf + plen);
-            if (plen >= sizeof(pbuf) - 1) break;
-        }
-        pclose(pfp);
-        pbuf[plen] = '\0';
+        if (ds4_crawl_client_get(path, pbuf, sizeof(pbuf),
+                                 err, sizeof(err)) != 0)
+            break;
         state = agent_json_extract_string(pbuf, "state");
         if (!state) break;
         if (!strcmp(state, "succeeded") || !strcmp(state, "partially_succeeded")) {
@@ -8193,38 +8797,9 @@ static void agent_run_crawl_start_command(agent_worker *worker, const char *url)
 static int agent_crawl_http_request(const char *method, const char *path,
                                     const char *body, char *out,
                                     size_t out_len) {
-    char cmd[8192];
-    int n;
-    if (body && body[0]) {
-        n = snprintf(cmd, sizeof(cmd),
-                     "curl -s -X %s http://127.0.0.1:9090%s "
-                     "-H 'Content-Type: application/json' "
-                     "-d '%s' --max-time 30 2>/dev/null",
-                     method, path, body);
-    } else {
-        n = snprintf(cmd, sizeof(cmd),
-                     "curl -s -X %s http://127.0.0.1:9090%s --max-time 30 2>/dev/null",
-                     method, path);
-    }
-    if (n < 0 || (size_t)n >= sizeof(cmd)) return 1;
-
-    char buf[65536];
-    size_t blen = 0;
-    FILE *fp = popen(cmd, "r");
-    if (!fp) return 1;
-    while (fgets(buf + blen, (int)(sizeof(buf) - blen), fp)) {
-        blen += strlen(buf + blen);
-        if (blen >= sizeof(buf) - 1) break;
-    }
-    int st = pclose(fp);
-    if (st != 0 || blen == 0) return 1;
-    buf[blen] = '\0';
-
-    size_t copy = strlen(buf);
-    if (copy >= out_len) copy = out_len - 1;
-    memcpy(out, buf, copy);
-    out[copy] = '\0';
-    return 0;
+    char err[256];
+    return ds4_crawl_client_request(method, path, body, 30,
+                                    out, out_len, err, sizeof(err));
 }
 
 /* ============================================================================
@@ -8647,11 +9222,12 @@ static bool agent_worker_compact(agent_worker *w, const char *reason,
         return false;
     }
     agent_worker_note_system_prompt_seen(w);
+    agent_worker_clear_tool_spans(w);
     ds4_tokens_free(&old_transcript);
     ds4_tokens_free(&sys);
     char *bash_update = agent_bash_jobs_compaction_observation(w);
     if (bash_update) {
-        ds4_chat_append_message(w->engine, &w->transcript, "tool", bash_update);
+        agent_worker_append_tool_result(w, bash_update);
         w->session_dirty = true;
         agent_trace_text(w, "tool-after-compaction", bash_update, strlen(bash_update));
         agent_publish(w, "\x1b[90mCOMPACTING added bash job update after rebuild\x1b[0m\n",
@@ -8664,8 +9240,115 @@ static bool agent_worker_compact(agent_worker *w, const char *reason,
     return true;
 }
 
+/* ── P6: batch eviction of old tool results ─────────────────────────────
+ * (doc/analisi-contesto-ed-agente-inquinato.md)  A consumed tool result is
+ * ballast: it dilutes attention and burns context.  Past the pressure
+ * threshold, archive the bodies of all but the most recent large tool
+ * results into content-addressed blobs and replace them with a one-line
+ * retrieve_context_blob stub.  Batch, never continuous: editing history
+ * invalidates the KV prefix and forces a re-prefill, the measured
+ * bottleneck on this hardware, so one rebuild must buy back a large slice
+ * of context in one go.  Lossless, unlike summary compaction: everything
+ * stays retrievable on demand. */
+#define AGENT_EVICT_PRESSURE_PERCENT 70
+#define AGENT_EVICT_KEEP_RECENT 4
+
+static bool agent_worker_should_evict(agent_worker *w) {
+    int ctx = w->cfg->gen.ctx_size;
+    if (ctx <= 0) return false;
+    /* Without the retrieve tool the archived bodies would be unreachable. */
+    if (w->cfg->frontend_port <= 0) return false;
+    if (w->tool_span_count <= AGENT_EVICT_KEEP_RECENT) return false;
+    return w->transcript.len >= (ctx * AGENT_EVICT_PRESSURE_PERCENT) / 100;
+}
+
+static bool agent_worker_evict_tool_results(agent_worker *w,
+                                            char *err, size_t err_len) {
+    int evict_n = w->tool_span_count - AGENT_EVICT_KEEP_RECENT;
+    ds4_tokens compacted = {0};
+    int pos = 0;
+    int evicted = 0;
+    for (int i = 0; i < evict_n; i++) {
+        struct agent_tool_span *s = &w->tool_spans[i];
+        agent_tokens_append_range(&compacted, &w->transcript, pos, s->start);
+        ds4_context_blob_ref ref;
+        char blob_err[256] = {0};
+        if (!ds4_context_blob_put_text(w->context_blob_dir, s->text,
+                                       strlen(s->text), &ref,
+                                       blob_err, sizeof(blob_err)))
+        {
+            /* Keep the original body rather than lose it. */
+            agent_trace(w, "eviction: blob store failed: %s", blob_err);
+            agent_tokens_append_range(&compacted, &w->transcript,
+                                      s->start, s->end);
+            pos = s->end;
+            continue;
+        }
+        char stub[256];
+        snprintf(stub, sizeof(stub),
+                 "[Old tool result (%zu bytes) archived to free context. "
+                 "If needed again: retrieve_context_blob id=%s]",
+                 strlen(s->text), ref.id);
+        ds4_chat_append_message(w->engine, &compacted, "tool", stub);
+        pos = s->end;
+        evicted++;
+    }
+    int tail_from = pos;
+    int offset = compacted.len - tail_from;
+    agent_tokens_append_range(&compacted, &w->transcript, tail_from,
+                              w->transcript.len);
+    if (!evicted) {
+        ds4_tokens_free(&compacted);
+        return true;
+    }
+
+    agent_publishf(w,
+        "\x1b[1;95mEVICTING\x1b[0m %d old tool results to blobs: old=%d new=%d\n",
+        evicted, w->transcript.len, compacted.len);
+
+    ds4_tokens old_transcript = {0};
+    ds4_tokens_copy(&old_transcript, &w->transcript);
+    ds4_tokens_free(&w->transcript);
+    w->transcript = compacted;
+    if (agent_worker_sync_tokens(w, &w->transcript, true, err, err_len) != 0) {
+        ds4_session_invalidate(w->session);
+        ds4_tokens_free(&w->transcript);
+        w->transcript = old_transcript;
+        return false;
+    }
+    ds4_tokens_free(&old_transcript);
+    w->session_dirty = true;
+
+    /* Drop the evicted span records and remap the kept ones onto the
+     * rebuilt transcript (they all live in the copied tail). */
+    for (int i = 0; i < evict_n; i++) free(w->tool_spans[i].text);
+    int kept = w->tool_span_count - evict_n;
+    for (int i = 0; i < kept; i++) {
+        w->tool_spans[i] = w->tool_spans[evict_n + i];
+        w->tool_spans[i].start += offset;
+        w->tool_spans[i].end += offset;
+    }
+    w->tool_span_count = kept;
+
+    /* Re-anchor direction in the freshly cleaned context (P5): rules,
+     * workspace and recitation land in the most recent tokens. */
+    char *reminder = agent_build_system_prompt_reminder();
+    ds4_tokenize_rendered_chat(w->engine, reminder, &w->transcript);
+    free(reminder);
+    agent_worker_note_system_prompt_seen(w);
+
+    agent_trace(w, "evicted %d tool results, transcript now %d tokens",
+                evicted, w->transcript.len);
+    return true;
+}
+
 static bool agent_worker_compact_if_needed(agent_worker *w, const char *reason,
                                            char *err, size_t err_len) {
+    if (agent_worker_should_evict(w)) {
+        char evict_err[256] = {0};
+        if (!agent_worker_evict_tool_results(w, evict_err, sizeof(evict_err)))
+            agent_trace(w, "tool result eviction failed: %s", evict_err);
+    }
     if (!agent_worker_should_compact(w)) return true;
     return agent_worker_compact(w, reason, err, err_len);
 }
@@ -8761,7 +9444,24 @@ static bool agent_stream_wants_greedy_sampling(const agent_stream_renderer *sr) 
 }
 
 static int worker_sample_with_mode(agent_worker *w, const agent_config *cfg,
-                                   bool greedy, uint64_t *rng) {
+                                   bool greedy, uint64_t *rng,
+                                   const agent_recent_tokens *recent,
+                                   bool ngram_ban) {
+    if (!greedy && recent && recent->count > 0) {
+        const float penalty = agent_repeat_penalty_value();
+        if (penalty > 1.0f) {
+            int uniq[AGENT_REPEAT_WINDOW];
+            int u = agent_recent_tokens_unique(recent, uniq);
+            ds4_session_penalize_logits(w->session, uniq, u, penalty);
+        }
+        if (ngram_ban) {
+            int banned[AGENT_NGRAM_BAN_MAX];
+            int nb = agent_ngram_ban_candidates(recent,
+                                                ds4_token_eos(w->engine),
+                                                banned, AGENT_NGRAM_BAN_MAX);
+            if (nb > 0) ds4_session_ban_logits(w->session, banned, nb);
+        }
+    }
     return ds4_session_sample(w->session,
                               greedy ? 0.0f : cfg->gen.temperature,
                               0,
@@ -9078,6 +9778,20 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
         if (room <= 1) max_tokens = 0;
         else if (max_tokens > room - 1) max_tokens = room - 1;
 
+        if (max_tokens <= 0) {
+            /* Context completely full.  Without this the turn generated zero
+             * tokens and ended silently — from the outside it looked like a
+             * freeze (trace 2026-07-04, empty "continua" turns). */
+            char full_msg[160];
+            snprintf(full_msg, sizeof(full_msg),
+                     "Contesto pieno (%d/%d token): impossibile generare. "
+                     "Apri una nuova sessione o usa /strip.",
+                     ds4_session_pos(w->session), ds4_session_ctx(w->session));
+            agent_publish_system_status(w, full_msg);
+            agent_set_status(w, AGENT_WORKER_IDLE);
+            return 0;
+        }
+
         bool use_color = isatty(STDOUT_FILENO) != 0;
         agent_token_renderer renderer = {
             .engine = w->engine,
@@ -9095,6 +9809,10 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
             .in_think = ds4_think_mode_enabled(think_mode),
         };
         agent_edit_upto_forcer upto_forcer = {0};
+        agent_repetition_detector rep_detector = AGENT_REP_INIT;
+        agent_recent_tokens recent_tokens = {0};
+        bool degenerate_repetition = false;
+        bool ngram_ban_armed = false;
         bool got_tool = false;
         bool malformed_tool = false;
         bool early_tool_error = false;
@@ -9116,11 +9834,29 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
                 worker_set_greedy_sampling(w, greedy_sampling);
                 status_greedy_sampling = greedy_sampling;
             }
-            int token = worker_sample_with_mode(w, cfg, greedy_sampling, &rng);
+            int token = worker_sample_with_mode(w, cfg, greedy_sampling, &rng,
+                                                &recent_tokens,
+                                                ngram_ban_armed);
             if (token == ds4_token_eos(w->engine)) break;
+            if (!greedy_sampling)
+                agent_recent_tokens_push(&recent_tokens, token);
 
             size_t text_len = 0;
             char *text = ds4_token_text(w->engine, token, &text_len);
+            if (dsml.state == AGENT_DSML_SEARCH && !stream.dsml_active) {
+                int rep_cycles = agent_repetition_feed(&rep_detector,
+                                                       text, text_len);
+                if (rep_cycles >= AGENT_REP_MIN_CYCLES) {
+                    free(text);
+                    degenerate_repetition = true;
+                    break;
+                }
+                if (rep_cycles >= AGENT_REP_WARN_CYCLES && !ngram_ban_armed) {
+                    ngram_ban_armed = true;
+                    agent_trace(w, "ngram ban armed: repetition cycles=%d",
+                                rep_cycles);
+                }
+            }
             if (agent_edit_upto_forcer_should_replace(&upto_forcer, &dsml,
                                                        text, text_len))
             {
@@ -9200,13 +9936,24 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
                     dsml.state == AGENT_DSML_PARAM_VALUE))
         {
             malformed_tool = true;
-            snprintf(dsml.error, sizeof(dsml.error),
-                     "incomplete DSML tool call");
+            if (generated >= max_tokens && max_tokens < cfg->gen.n_predict)
+                snprintf(dsml.error, sizeof(dsml.error),
+                         "incomplete DSML tool call — context exhausted "
+                         "mid-call; emit a shorter call or answer with what "
+                         "you have");
+            else
+                snprintf(dsml.error, sizeof(dsml.error),
+                         "incomplete DSML tool call");
         }
 
         ds4_tokens_push(&w->transcript, ds4_token_eos(w->engine));
 
-        if (!got_tool && !malformed_tool && !early_tool_error) {
+        if (!got_tool && !malformed_tool && !early_tool_error &&
+            !degenerate_repetition) {
+            if (generated >= max_tokens && max_tokens < cfg->gen.n_predict)
+                agent_publish_system_status(w,
+                    "Risposta troncata: contesto esaurito. Apri una nuova "
+                    "sessione o usa /strip.");
             agent_dsml_parser_free(&dsml);
             agent_set_status(w, AGENT_WORKER_IDLE);
             return 0;
@@ -9221,6 +9968,23 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
                            "edit old selector failed before new was generated");
             agent_buf_puts(&b, "\n");
             tool_result = agent_buf_take(&b);
+            w->loop_guard_consecutive_malformed++;
+        } else if (degenerate_repetition) {
+            /* The round was aborted mid-generation for degenerate repetition.
+             * Feed the error and continue the round loop so the model can
+             * retry within the same turn (n-gram ban stays armed via the
+             * fresh round's detector); counts toward the malformed guard so
+             * a model that keeps degenerating stops after 4 attempts. */
+            agent_buf b = {0};
+            agent_buf_puts(&b,
+                "Tool error: generation aborted — the text degenerated into "
+                "repeating the same lines. Do not restate previous sentences; "
+                "answer directly with what was learned so far, or make ONE "
+                "different tool call.\n");
+            tool_result = agent_buf_take(&b);
+            agent_publish_system_status(w,
+                "Loop guard: ripetizione degenerativa — round interrotto, "
+                "il modello riprova.");
             w->loop_guard_consecutive_malformed++;
         } else if (malformed_tool) {
             agent_buf b = {0};
@@ -9284,7 +10048,7 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
                 }
             }
         }
-        ds4_chat_append_message(w->engine, &w->transcript, "tool", append_result);
+        agent_worker_append_tool_result(w, append_result);
         free(compressed_result);
 
         /* Malformed-DSML loop guard. Runs every round, including the
@@ -10941,6 +11705,7 @@ static int agent_worker_init(agent_worker *w, ds4_engine *engine, agent_config *
         .port = 9333,
         .confirm = agent_web_confirm,
         .confirm_privdata = w,
+        .skip_confirm = true,
         .log = agent_web_log,
         .log_privdata = w,
         .cancel = agent_web_cancel,
@@ -10970,6 +11735,8 @@ static void agent_worker_free(agent_worker *w) {
     ds4_web_free(w->web);
     ds4_session_free(w->session);
     ds4_tokens_free(&w->transcript);
+    agent_worker_clear_tool_spans(w);
+    free(w->tool_spans);
     free(w->cache_dir);
     free(w->sysprompt_path);
     free(w->context_blob_dir);
@@ -10977,6 +11744,8 @@ static void agent_worker_free(agent_worker *w) {
     free(w->legacy_session_path_to_delete);
     free(w->queued_user_drain_text);
     free(w->metacognition_prompt);
+    free(w->soul_prompt);
+    free(w->ethic_prompt);
     if (w->wake_fd[0] >= 0) close(w->wake_fd[0]);
     if (w->wake_fd[1] >= 0) close(w->wake_fd[1]);
     if (w->trace) fclose(w->trace);
@@ -11654,6 +12423,96 @@ static int run_agent(ds4_engine *engine, agent_config *cfg) {
                     } else {
                         printf("usage: /metacognition start|stop\n");
                     }
+                } else if (!strncmp(cmd, "/soul", 5) &&
+                           (cmd[5] == '\0' || cmd[5] == ' ' || cmd[5] == '\t')) {
+                    char *arg = cmd + 5;
+                    while (*arg == ' ' || *arg == '\t') arg++;
+                    if (!strncmp(arg, "start", 5) &&
+                        (arg[5] == '\0' || arg[5] == ' ' || arg[5] == '\t')) {
+                        char err[256] = {0};
+                        char *content = agent_read_soul_skill(err, sizeof(err));
+                        if (!content) {
+                            printf("soul: %s\n", err);
+                        } else {
+                            free(worker.soul_prompt);
+                            worker.soul_prompt = content;
+                            editor_restore_terminal_layout(&editor);
+                            if (agent_maybe_save_before_leaving_session(&worker)) {
+                                char rerr[160] = {0};
+                                if (!agent_worker_reset_to_sysprompt(&worker, rerr, sizeof(rerr))) {
+                                    printf("soul: session reset failed: %s\n", rerr);
+                                } else {
+                                    show_welcome_after_restart = true;
+                                    printf("Soul skill activated.\n");
+                                }
+                            }
+                        }
+                    } else if (!strncmp(arg, "stop", 4) &&
+                               (arg[4] == '\0' || arg[4] == ' ' || arg[4] == '\t')) {
+                        if (!worker.soul_prompt) {
+                            printf("Soul skill is not active.\n");
+                        } else {
+                            free(worker.soul_prompt);
+                            worker.soul_prompt = NULL;
+                            editor_restore_terminal_layout(&editor);
+                            if (agent_maybe_save_before_leaving_session(&worker)) {
+                                char rerr[160] = {0};
+                                if (!agent_worker_reset_to_sysprompt(&worker, rerr, sizeof(rerr))) {
+                                    printf("soul: session reset failed: %s\n", rerr);
+                                } else {
+                                    show_welcome_after_restart = true;
+                                    printf("Soul skill deactivated.\n");
+                                }
+                            }
+                        }
+                    } else {
+                        printf("usage: /soul start|stop\n");
+                    }
+                } else if (!strncmp(cmd, "/ethic", 6) &&
+                           (cmd[6] == '\0' || cmd[6] == ' ' || cmd[6] == '\t')) {
+                    char *arg = cmd + 6;
+                    while (*arg == ' ' || *arg == '\t') arg++;
+                    if (!strncmp(arg, "start", 5) &&
+                        (arg[5] == '\0' || arg[5] == ' ' || arg[5] == '\t')) {
+                        char err[256] = {0};
+                        char *content = agent_read_ethic_skill(err, sizeof(err));
+                        if (!content) {
+                            printf("ethic: %s\n", err);
+                        } else {
+                            free(worker.ethic_prompt);
+                            worker.ethic_prompt = content;
+                            editor_restore_terminal_layout(&editor);
+                            if (agent_maybe_save_before_leaving_session(&worker)) {
+                                char rerr[160] = {0};
+                                if (!agent_worker_reset_to_sysprompt(&worker, rerr, sizeof(rerr))) {
+                                    printf("ethic: session reset failed: %s\n", rerr);
+                                } else {
+                                    show_welcome_after_restart = true;
+                                    printf("Ethic skill activated.\n");
+                                }
+                            }
+                        }
+                    } else if (!strncmp(arg, "stop", 4) &&
+                               (arg[4] == '\0' || arg[4] == ' ' || arg[4] == '\t')) {
+                        if (!worker.ethic_prompt) {
+                            printf("Ethic skill is not active.\n");
+                        } else {
+                            free(worker.ethic_prompt);
+                            worker.ethic_prompt = NULL;
+                            editor_restore_terminal_layout(&editor);
+                            if (agent_maybe_save_before_leaving_session(&worker)) {
+                                char rerr[160] = {0};
+                                if (!agent_worker_reset_to_sysprompt(&worker, rerr, sizeof(rerr))) {
+                                    printf("ethic: session reset failed: %s\n", rerr);
+                                } else {
+                                    show_welcome_after_restart = true;
+                                    printf("Ethic skill deactivated.\n");
+                                }
+                            }
+                        }
+                    } else {
+                        printf("usage: /ethic start|stop\n");
+                    }
                 } else if (cmd[0] == '/' && !agent_slash_command_known(cmd)) {
                     ssize_t ignored = write(STDOUT_FILENO, "\a", 1);
                     (void)ignored;
@@ -11797,7 +12656,7 @@ static int run_agent(ds4_engine *engine, agent_config *cfg) {
                         } else {
                             char path[256], result[65536];
                             snprintf(path, sizeof(path), "/jobs/%s", job_id);
-                            if (agent_crawl_http_request("POST", path, "",
+                            if (agent_crawl_http_request("DELETE", path, NULL,
                                                          result, sizeof(result)) != 0)
                                 printf("crawl cancel failed\n");
                             else
