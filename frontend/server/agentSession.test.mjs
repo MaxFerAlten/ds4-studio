@@ -22,6 +22,21 @@ test("agent tool schema exposes exact blob retrieval", () => {
   assert.deepEqual(tool.function.parameters.required, ["id"]);
 });
 
+test("Sage schema adds optional workflow metadata without breaking legacy calls", () => {
+  const sage = AGENT_TOOLS.find((entry) => entry.function?.name === "sage");
+  assert.ok(sage);
+  assert.deepEqual(sage.function.parameters.required, ["code"]);
+  assert.ok(sage.function.parameters.properties.task_type);
+  assert.ok(sage.function.parameters.properties.phase);
+  assert.ok(sage.function.parameters.properties.output_mode);
+
+  const legacyArgs = { code: "2+2" };
+  const missingRequired = sage.function.parameters.required.filter(
+    (key) => !(key in legacyArgs)
+  );
+  assert.deepEqual(missingRequired, []);
+});
+
 test("agent session starts, reports status, and stores committed messages", () => {
   const session = new AgentSessionManager();
   const status = session.start();
