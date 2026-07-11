@@ -411,6 +411,66 @@ static void print_generated_token(void *ud, int token) {
     free(text);
 }
 
+/* Read a text file into a malloc'd buffer; returns NULL on failure (err is set). */
+static char *cli_read_file(const char *path, char *err, size_t errlen) {
+    FILE *fp = fopen(path, "rb");
+    if (!fp) { snprintf(err, errlen, "open %s: %s", path, strerror(errno)); return NULL; }
+    fseek(fp, 0, SEEK_END);
+    long sz = ftell(fp);
+    if (sz < 0) { snprintf(err, errlen, "stat %s: %s", path, strerror(errno)); fclose(fp); return NULL; }
+    rewind(fp);
+    char *data = malloc((size_t)sz + 1);
+    if (!data) {
+        snprintf(err, errlen, "out of memory reading %s", path);
+        fclose(fp);
+        return NULL;
+    }
+    size_t nread = fread(data, 1, (size_t)sz, fp);
+    fclose(fp);
+    if ((long)nread != sz) { free(data); snprintf(err, errlen, "short read of %s", path); return NULL; }
+    data[sz] = '\0';
+    return data;
+}
+
+/* Load soul and ethic SKILL.md content into gen->system (auto unless DS4_SKILL_AUTO=0). */
+static void cli_load_skills(cli_generation_options *gen) {
+    const char *auto_env = getenv("DS4_SKILL_AUTO");
+    if (auto_env && !strcmp(auto_env, "0")) return;
+
+    char soul_err[256] = {0}, ethic_err[256] = {0};
+    char *soul = cli_read_file("skills/soul/SKILL.md", soul_err, sizeof(soul_err));
+    char *ethic = cli_read_file("skills/ethic/SKILL.md", ethic_err, sizeof(ethic_err));
+
+    if (!soul) fprintf(stderr, "warning: %s\n", soul_err);
+    if (!ethic) fprintf(stderr, "warning: %s\n", ethic_err);
+    if (!soul && !ethic) return;
+
+    size_t base_len = gen->system ? strlen(gen->system) : 0;
+    size_t soul_len = soul ? strlen(soul) : 0;
+    size_t ethic_len = ethic ? strlen(ethic) : 0;
+    /* +2 for newline separators, +1 for NUL */
+    char *combined = malloc(base_len + soul_len + ethic_len + 3);
+    if (!combined) {
+        fprintf(stderr, "warning: out of memory loading skills\n");
+        free(soul);
+        free(ethic);
+        return;
+    }
+    combined[0] = '\0';
+    if (gen->system) memcpy(combined, gen->system, base_len);
+    char *p = combined + base_len;
+    if (soul) { memcpy(p, soul, soul_len); p += soul_len; }
+    if (soul && ethic) { *p++ = '\n'; *p++ = '\n'; } /* blank line between skills */
+    if (ethic) { memcpy(p, ethic, ethic_len); p += ethic_len; }
+    *p = '\0';
+
+    gen->system = combined;
+    if (soul) fprintf(stderr, "Soul skill loaded.\n");
+    if (ethic) fprintf(stderr, "Ethic skill loaded.\n");
+    free(soul);
+    free(ethic);
+}
+
 static void build_prompt(ds4_engine *engine, const cli_generation_options *gen, ds4_tokens *out) {
     if (is_rendered_chat_prompt(gen->prompt)) {
         ds4_tokenize_rendered_chat(engine, gen->prompt, out);
@@ -1965,6 +2025,9 @@ int main(int argc, char **argv) {
         free(cfg.prompt_owned);
         return 1;
     }
+    /* Load soul and ethic skills into system prompt (respects DS4_SKILL_AUTO). */
+    cli_load_skills(&cfg.gen);
+
     if (cfg.dist && cfg.dist->role == DS4_DISTRIBUTED_WORKER) {
         ds4_dist_generation_options dist_gen = {
             .prompt = cfg.gen.prompt,

@@ -50,6 +50,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "port": 8000,
         "maxQueuedJobs": 8,
         "env": {
+            "DS4_SKILL_AUTO": "1",
             "DS4_METAL_PREFILL_CHUNK": "8192",
             "DS4_CUDA_Q8_F16_CACHE_MB": "11264",
             "DS4_CUDA_Q8_F16_CACHE_RESERVE_MB": "512",
@@ -176,6 +177,7 @@ FIELDS: list[Field] = [
 
 
 ENV_FIELDS: list[Field] = [
+    Field("server.env.DS4_SKILL_AUTO", "Auto-load soul/ethic skills at startup", "env_flag", "Wrapper"),
     Field("server.env.DS4_METAL_PREFILL_CHUNK", "Prefill chunk tokens", "env_int", "CUDA/Prefill"),
     Field("server.env.DS4_CUDA_Q8_F16_CACHE_MB", "Q8/F16 cache MiB", "env_string", "CUDA/Prefill"),
     Field("server.env.DS4_CUDA_Q8_F16_CACHE_RESERVE_MB", "Q8/F16 reserve MiB", "env_string", "CUDA/Prefill"),

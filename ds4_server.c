@@ -2249,6 +2249,24 @@ static bool chat_history_uses_tool_context(const chat_msgs *msgs,
     return false;
 }
 
+/* Read a text file into a malloc'd buffer; returns NULL on failure (err is set). */
+static char *server_read_file(const char *path, char *err, size_t errlen) {
+    FILE *fp = fopen(path, "rb");
+    if (!fp) { snprintf(err, errlen, "open %s: %s", path, strerror(errno)); return NULL; }
+    fseek(fp, 0, SEEK_END);
+    long sz = ftell(fp);
+    if (sz < 0) { snprintf(err, errlen, "stat %s: %s", path, strerror(errno)); fclose(fp); return NULL; }
+    rewind(fp);
+    char *data = xmalloc((size_t)sz + 1);
+    size_t nread = fread(data, 1, (size_t)sz, fp);
+    fclose(fp);
+    if ((long)nread != sz) { free(data); snprintf(err, errlen, "short read of %s", path); return NULL; }
+    data[sz] = '\0';
+    return data;
+}
+
+static void server_inject_skills(server *s, chat_msgs *msgs);
+
 static char *render_chat_prompt_text(const chat_msgs *msgs, const char *tool_schemas,
                                      const tool_schema_orders *tool_orders,
                                      ds4_think_mode think_mode) {
@@ -2752,6 +2770,7 @@ static bool parse_chat_request(ds4_engine *e, server *s, const char *body, int d
         think_mode_from_enabled(thinking_enabled, reasoning_effort), ctx_size);
     kv_cache_restore_tool_memory_for_messages(s, &msgs);
     tool_memory_attach_to_messages(s, &msgs, &r->tool_replay);
+    server_inject_skills(s, &msgs);
     const char *active_tool_schemas = r->has_tools ? tool_schemas : NULL;
     r->prompt_preserves_reasoning =
         chat_history_uses_tool_context(&msgs, active_tool_schemas);
@@ -2961,6 +2980,7 @@ static bool parse_anthropic_request(ds4_engine *e, server *s, const char *body, 
     }
     kv_cache_restore_tool_memory_for_messages(s, &msgs);
     tool_memory_attach_to_messages(s, &msgs, &r->tool_replay);
+    server_inject_skills(s, &msgs);
     anthropic_prepare_live_continuation(r, &msgs);
     const char *active_tool_schemas = r->has_tools ? tool_schemas : NULL;
     r->prompt_preserves_reasoning =
@@ -3902,6 +3922,7 @@ static bool parse_responses_request(ds4_engine *e, server *s, const char *body, 
     }
     kv_cache_restore_tool_memory_for_messages(s, &msgs);
     tool_memory_attach_to_messages(s, &msgs, &r->tool_replay);
+    server_inject_skills(s, &msgs);
     r->prompt_preserves_reasoning =
         chat_history_uses_tool_context(&msgs, active_tool_schemas);
     responses_prepare_live_continuation(r, &msgs);
@@ -3954,8 +3975,9 @@ static bool parse_prompt(const char **p, char **out) {
     return true;
 }
 
-static bool parse_completion_request(ds4_engine *e, const char *body, int def_tokens,
+static bool parse_completion_request(server *s, ds4_engine *e, const char *body, int def_tokens,
                                      int ctx_size, request *r, char *err, size_t errlen) {
+    (void)s;
     request_init(r, REQ_COMPLETION, def_tokens);
     const char *p = body;
     char *prompt = NULL;
@@ -7729,7 +7751,44 @@ struct server {
     FILE *trace;
     pthread_mutex_t trace_mu;
     uint64_t trace_seq;
+    /* Loaded SKILL.md content (NULL if not loaded). */
+    char *soul_skill;
+    char *ethic_skill;
 };
+
+/* Prepend soul and ethic skill content as synthetic system messages in msgs.
+ * Skill strings come from the server struct (loaded at startup). */
+static void server_inject_skills(server *s, chat_msgs *msgs) {
+    if (!s || (!s->soul_skill && !s->ethic_skill)) return;
+
+    /* Insert at position 0 so skills appear before any client system message. */
+    int insert_at = 0;
+    if (s->soul_skill) {
+        chat_msg msg = {0};
+        msg.role = xstrdup("system");
+        msg.content = xstrdup(s->soul_skill);
+        chat_msgs_push(msgs, msg);
+        /* Move to front */
+        if (msgs->len > 1) {
+            chat_msg tmp = msgs->v[msgs->len - 1];
+            for (int i = msgs->len - 1; i > insert_at; i--) msgs->v[i] = msgs->v[i - 1];
+            msgs->v[insert_at] = tmp;
+        }
+        insert_at++;
+    }
+    if (s->ethic_skill) {
+        chat_msg msg = {0};
+        msg.role = xstrdup("system");
+        msg.content = xstrdup(s->ethic_skill);
+        chat_msgs_push(msgs, msg);
+        if (msgs->len > 1) {
+            chat_msg tmp = msgs->v[msgs->len - 1];
+            for (int i = msgs->len - 1; i > insert_at; i--) msgs->v[i] = msgs->v[i - 1];
+            msgs->v[insert_at] = tmp;
+        }
+        insert_at++;
+    }
+}
 
 /* Jobs are stack-owned by the client thread.  The worker signals completion
  * after the response has been written, so request data and the socket remain
@@ -11310,7 +11369,7 @@ static void *client_main(void *arg) {
         ok = parse_responses_request(s->engine, s, hr.body, s->default_tokens,
                                      ctx_size, &req, err, sizeof(err));
     } else if (!strcmp(hr.method, "POST") && !strcmp(hr.path, "/v1/completions")) {
-        ok = parse_completion_request(s->engine, hr.body, s->default_tokens,
+        ok = parse_completion_request(s, s->engine, hr.body, s->default_tokens,
                                       ctx_size, &req, err, sizeof(err));
     } else {
         http_error(fd, s->enable_cors, 404, "unknown endpoint");
@@ -11497,6 +11556,8 @@ static void server_close_resources(server *s) {
     pthread_cond_destroy(&s->clients_cv);
     pthread_cond_destroy(&s->cv);
     pthread_mutex_destroy(&s->mu);
+    free(s->soul_skill);
+    free(s->ethic_skill);
     ds4_session_free(s->session);
     ds4_engine_close(s->engine);
     memset(s, 0, sizeof(*s));
@@ -11776,6 +11837,23 @@ int main(int argc, char **argv) {
     pthread_cond_init(&s.clients_cv, NULL);
     pthread_mutex_init(&s.tool_mu, NULL);
     pthread_mutex_init(&s.trace_mu, NULL);
+
+    /* Load soul and ethic SKILL.md content (auto unless DS4_SKILL_AUTO=0). */
+    {
+        const char *auto_env = getenv("DS4_SKILL_AUTO");
+        if (!auto_env || strcmp(auto_env, "0")) {
+            char soul_err[256] = {0}, ethic_err[256] = {0};
+            s.soul_skill = server_read_file("skills/soul/SKILL.md", soul_err, sizeof(soul_err));
+            s.ethic_skill = server_read_file("skills/ethic/SKILL.md", ethic_err, sizeof(ethic_err));
+            if (!s.soul_skill)
+                server_log(DS4_LOG_DEFAULT, "warning: %s", soul_err);
+            if (!s.ethic_skill)
+                server_log(DS4_LOG_DEFAULT, "warning: %s", ethic_err);
+            if (s.soul_skill) server_log(DS4_LOG_DEFAULT, "Soul skill loaded.");
+            if (s.ethic_skill) server_log(DS4_LOG_DEFAULT, "Ethic skill loaded.");
+        }
+    }
+
     if (cfg.trace_path) {
         s.trace = fopen(cfg.trace_path, "w");
         if (!s.trace) {
@@ -15703,6 +15781,48 @@ static void test_thinking_canonical_non_thinking_mode_noop(void) {
     chat_msgs_free(&msgs);
 }
 
+static void test_server_inject_skills_preserves_messages(void) {
+    chat_msgs msgs = {0};
+    chat_msg system = {
+        .role = xstrdup("system"),
+        .content = xstrdup("client system"),
+    };
+    chat_msg user = {
+        .role = xstrdup("user"),
+        .content = xstrdup("hello"),
+    };
+    chat_msgs_push(&msgs, system);
+    chat_msgs_push(&msgs, user);
+
+    char *system_role = msgs.v[0].role;
+    char *system_content = msgs.v[0].content;
+    char *user_role = msgs.v[1].role;
+    char *user_content = msgs.v[1].content;
+
+    server_inject_skills(NULL, &msgs);
+    TEST_ASSERT(msgs.len == 2);
+    TEST_ASSERT(msgs.v[0].role == system_role);
+    TEST_ASSERT(msgs.v[1].role == user_role);
+
+    server s = {
+        .soul_skill = "SOUL",
+        .ethic_skill = "ETHIC",
+    };
+    server_inject_skills(&s, &msgs);
+
+    TEST_ASSERT(msgs.len == 4);
+    TEST_ASSERT(!strcmp(msgs.v[0].role, "system"));
+    TEST_ASSERT(!strcmp(msgs.v[0].content, "SOUL"));
+    TEST_ASSERT(!strcmp(msgs.v[1].role, "system"));
+    TEST_ASSERT(!strcmp(msgs.v[1].content, "ETHIC"));
+    TEST_ASSERT(msgs.v[2].role == system_role);
+    TEST_ASSERT(msgs.v[2].content == system_content);
+    TEST_ASSERT(msgs.v[3].role == user_role);
+    TEST_ASSERT(msgs.v[3].content == user_content);
+
+    chat_msgs_free(&msgs);
+}
+
 static void ds4_server_unit_tests_run(void) {
     test_request_defaults_use_min_p_filtering();
     test_reasoning_effort_mapping();
@@ -15712,6 +15832,7 @@ static void ds4_server_unit_tests_run(void) {
     test_render_drops_old_reasoning_without_tools();
     test_render_preserves_reasoning_with_tools();
     test_render_chat_prompt_text_renders_tools_before_system();
+    test_server_inject_skills_preserves_messages();
     test_tool_schema_order_from_anthropic_schema();
     test_tool_schema_order_from_openai_tools();
     test_tool_schema_order_from_responses_tool_search();
