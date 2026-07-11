@@ -15,7 +15,16 @@ function mockSageSessionDir(base, sessionId) {
 // Build the route handler in isolation so we can inject a mock toolSage.
 function buildHandler(mockToolSage) {
   return async (req, res) => {
-    const { code, timeout_sec, sessionId } = req.body || {};
+    res.setHeader("X-DS4-Sage-Contract", "sage_result_v1");
+    const {
+      code,
+      timeout_sec,
+      sessionId,
+      task_type,
+      phase,
+      output_mode,
+      attempt
+    } = req.body || {};
     if (!code || typeof code !== "string" || !code.trim()) {
       res.status(400).json({ error: "code is required" });
       return;
@@ -23,10 +32,15 @@ function buildHandler(mockToolSage) {
 
     const args = {
       code,
-      timeout_sec: Number(timeout_sec) || 60
+      timeout_sec: Number(timeout_sec) || 60,
+      task_type,
+      phase,
+      output_mode
     };
     const opts = {
       sageCallLog: null, // not needed for endpoint test
+      sessionKey: sessionId || undefined,
+      sageAttempt: Number(attempt) || 1,
       sageWorkdir: sessionId
         ? mockSageSessionDir("/tmp/ws", sessionId)
         : undefined
@@ -57,7 +71,11 @@ async function withServer(handler, body) {
     }
     const res = await fetch(`http://127.0.0.1:${port}/api/sage/exec`, fetchOpts);
     const json = await res.json().catch(() => null);
-    return { status: res.status, json };
+    return {
+      status: res.status,
+      json,
+      contract: res.headers.get("x-ds4-sage-contract")
+    };
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
@@ -134,6 +152,65 @@ test("POST /api/sage/exec defaults timeout_sec to 60 when omitted", async () => 
 
   assert.equal(status, 200);
   assert.equal(captured[0].args.timeout_sec, 60);
+});
+
+test("POST /api/sage/exec forwards optional Sage workflow metadata", async () => {
+  const captured = [];
+  const mockToolSage = async (args, opts) => {
+    captured.push({ args, opts });
+    return { content: "ok", isError: false };
+  };
+
+  const handler = buildHandler(mockToolSage);
+  const { status } = await withServer(handler, {
+    code: "1+1",
+    sessionId: "sess-meta",
+    task_type: "validation",
+    phase: "validate",
+    output_mode: "structured",
+    attempt: 2
+  });
+
+  assert.equal(status, 200);
+  assert.equal(captured[0].args.task_type, "validation");
+  assert.equal(captured[0].args.phase, "validate");
+  assert.equal(captured[0].args.output_mode, "structured");
+  assert.equal(captured[0].opts.sessionKey, "sess-meta");
+  assert.equal(captured[0].opts.sageAttempt, 2);
+});
+
+test("POST /api/sage/exec keeps legacy requests valid and advertises the contract", async () => {
+  const captured = [];
+  const handler = buildHandler(async (args, opts) => {
+    captured.push({ args, opts });
+    return { content: "2", isError: false };
+  });
+
+  const { status, contract } = await withServer(handler, { code: "1+1" });
+  assert.equal(status, 200);
+  assert.equal(contract, "sage_result_v1");
+  assert.equal(captured[0].args.task_type, undefined);
+  assert.equal(captured[0].args.phase, undefined);
+  assert.equal(captured[0].args.output_mode, undefined);
+  assert.equal(captured[0].opts.sageAttempt, 1);
+});
+
+test("POST /api/sage/exec returns sageResult without changing legacy fields", async () => {
+  const handler = buildHandler(async () => ({
+    content: "validated",
+    isError: false,
+    sageResult: {
+      contractVersion: "sage_result_v1",
+      tool: "sage",
+      status: "ok"
+    }
+  }));
+
+  const { status, json } = await withServer(handler, { code: "1+1" });
+  assert.equal(status, 200);
+  assert.equal(json.content, "validated");
+  assert.equal(json.isError, false);
+  assert.equal(json.sageResult.contractVersion, "sage_result_v1");
 });
 
 test("POST /api/sage/exec constructs sageWorkdir when sessionId is given", async () => {
