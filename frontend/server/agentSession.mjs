@@ -69,40 +69,23 @@ Other rules:
 - Write code that is reliable and works well.
 - Preserve the current system configuration integrity, unless explicitly asked otherwise by the user.
 - If a tool returns an error, explain the issue and suggest a fix.
-- **SageMath — CRITICAL RULES** (read before anything else):
-  (a) USE the **sage** tool (send code as the \`code\` parameter) — NEVER write .sage files and run with bash. The bash guard will BLOCK \`sage\` in any bash command.
-  (b) NEVER use \`solve()\` for sin/cos equations — it returns only the principal branch, silently MISSING most roots. Enumerate over integer k instead (see examples below).
-  (c) ALWAYS classify every critical point with f''(x) sign (minimo/massimo).
-  (d) NEVER use \`solve()\` for polynomial zeros of degree >= 3 — use \`find_root()\` or sampling instead.
+- SageMath:
+  - Use only the sage tool for SageMath.
+  - Treat Sage execution as internal computation, not as user-facing prose.
+  - Do not narrate retries, code edits, stdout, stderr, tracebacks, or local paths.
+  - Set task_type and phase when possible.
+  - Prefer one complete compute call, then one validation call.
+  - Use repair only after an actual error; maximum two repairs.
+  - The final answer must be a single coherent response based only on validated results.
+  - Use $...$ and $$...$$ for formulas.
+  - For function_study, include domain, intercepts, sign, limits, asymptotes,
+    first derivative, monotonicity, extrema, second derivative, concavity,
+    inflection points, plots when useful, and conclusion.
 
-  WRONG (solve gives only x=0, misses 7.5,8,8.5,9,9.5):
-  > solve(df3, x)
-
-  RIGHT (enumerate sin(2*pi*x)=0 -> x=k/2):
-  > for k in range(15, 21): print(k/2)
-
-  WRONG (solve gives implicit unsolved form):
-  > solve(df2, x)
-
-  RIGHT (trig identity + find_root per subinterval):
-  > # df2 = 2 + pi*sin(2*pi*x)
-  > for k in range(3, 8):
-  >     find_root(df2, k, k+0.5)
-  >     find_root(df2, k+0.5, k+1)
-
-- **Function study — 7 steps**:
-
-  1. **Define & differentiate**: var('x'), define each branch, compute df,d2f. Print with .factor() (polynomial), .trig_reduce() (trigonometric), .expand() (otherwise).
-  2. **Continuity & differentiability** at junctions via limit(f1,x,3,dir='minus'), limit(f2,x,3,dir='plus').
-  3. **Critical points (polynomial)**: solve(df==0,x), filter to domain.
-  4. **Critical points (periodic)**: enumerate (see CRITICAL RULES). NEVER solve().
-  5. **Zeros**: degree >= 3 use find_root(); periodic enumerate; if sign never changes state no zeros.
-  6. **Classify every critical point**: f''(x0) > 0 -> min, < 0 -> max. Mark boundary/non-derivable points.
-  7. **Inflection points**: solve(d2f==0,x) for polynomials; enumerate cos(2*pi*x)=0 -> x=1/4+k/2.
-
-- **Output format**: $$...$$ KaTeX blocks or markdown tables. Use \\lt, \\gt, \\le, \\ge. Tables for extrema/flessi. Image links for plots.
-
-- **Validation**: never assert without Sage producing the number this session. Fix errors and re-run.
+- SageMath mathematical safeguards:
+  - Enumerate periodic trigonometric solutions over the requested domain; do not rely on a principal branch.
+  - For numeric roots, isolate intervals before using find_root and respect excluded domain points.
+  - Classify critical points and validate exact or numeric results before presenting them.
 
 `;
 
@@ -235,7 +218,27 @@ const AGENT_TOOLS = [
         type: "object",
         properties: {
           code: { type: "string", description: "SageMath code to execute. Use Sage syntax (not plain Python). Sage's latex() function is available. IMPORTANT: use diff(f,x).factor() for polynomial derivatives, diff(f,x).trig_reduce() for trigonometric ones, diff(f,x,2).expand() for second derivatives. Use find_root(f,a,b) for numeric zeros, NOT solve(). For periodic equations like sin(2πx)=c, enumerate points from the closed form over integer k. Examples: integral(exp(x)*sin(x), x), factor(x^2 - 5*x + 6), solve(x^2 - 3*x + 2 == 0, x), diff(sin(x)^2, x).trig_reduce(), find_root(cos(x)-0.5, 0, 2), latex(matrix([[1,2],[3,4]]).det()), is_prime(7919), plot(sin(x), x, -pi, pi)." },
-          timeout_sec: { type: "number", description: "Timeout in seconds. Default 60. Increase for large computations." }
+          timeout_sec: { type: "number", description: "Timeout in seconds. Default 60. Increase for large computations." },
+          task_type: {
+            type: "string",
+            enum: [
+              "auto", "evaluate", "simplify", "factor", "solve", "system",
+              "calculus", "limit", "series", "function_study", "linear_algebra",
+              "number_theory", "combinatorics", "probability", "geometry",
+              "plot", "validation", "mixed"
+            ],
+            description: "Optional classification used only to organize Sage execution and presentation."
+          },
+          phase: {
+            type: "string",
+            enum: ["prepare", "compute", "validate", "plot", "repair"],
+            description: "Optional phase of the current Sage workflow."
+          },
+          output_mode: {
+            type: "string",
+            enum: ["auto", "structured", "legacy"],
+            description: "Output contract. Default auto."
+          }
         },
         required: ["code"]
       }
