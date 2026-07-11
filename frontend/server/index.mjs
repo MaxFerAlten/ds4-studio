@@ -54,7 +54,13 @@ import { fetchWithBusyRetry } from "./backendRetry.mjs";
 import { readAmdSmiStatusCached } from "./amdSmi.mjs";
 import { AgentSessionStore, AGENT_SYSTEM_PROMPT, AGENT_TOOLS } from "./agentSession.mjs";
 import { appendPonyPolicy, buildPonyPolicy, normalizePonyMode, ponyCommandMessage } from "./agentPonyPolicy.mjs";
-import { checkBashFileReadFallback, executeTool, sageSessionDir, toolSage } from "./agentTools.mjs";
+import {
+  checkBashFileReadFallback,
+  executeTool,
+  sageSessionDir,
+  sanitizeSessionId,
+  toolSage
+} from "./agentTools.mjs";
 import { readContextConfig } from "./contextConfig.mjs";
 import { prepareContextInjection, contextStatusPayload } from "./agentContextIntegration.mjs";
 import { recordToolContext } from "./agentContextToolHooks.mjs";
@@ -1574,21 +1580,35 @@ app.get("/api/sage/status", asyncHandler(async (req, res) => {
 /**
  * Execute SageMath and return the result.
  * Used by the C agent (ds4-wrapper) to delegate sage execution via HTTP.
- * Body: { code, timeout_sec?, sessionId? }
+ * Body: { code, timeout_sec?, sessionId?, task_type?, phase?, output_mode?, attempt? }
  */
 app.post("/api/sage/exec", asyncHandler(async (req, res) => {
-  const { code, timeout_sec, sessionId } = req.body || {};
+  res.setHeader("X-DS4-Sage-Contract", "sage_result_v1");
+  const {
+    code,
+    timeout_sec,
+    sessionId,
+    task_type,
+    phase,
+    output_mode,
+    attempt
+  } = req.body || {};
   if (!code || typeof code !== "string" || !code.trim()) {
     return res.status(400).json({ error: "code is required" });
   }
 
   const args = {
     code,
-    timeout_sec: Number(timeout_sec) || 60
+    timeout_sec: Number(timeout_sec) || 60,
+    task_type,
+    phase,
+    output_mode
   };
   const opts = {
     sageCallLog,
     toolBlobStore,
+    sessionKey: sessionId || undefined,
+    sageAttempt: Number(attempt) || 1,
     sageWorkdir: sessionId
       ? sageSessionDir(fileWorkspace.root, sessionId)
       : undefined
@@ -1596,6 +1616,56 @@ app.post("/api/sage/exec", asyncHandler(async (req, res) => {
 
   const result = await toolSage(args, opts);
   res.json(result);
+}));
+
+const SAGE_ARTIFACT_CONTENT_TYPES = Object.freeze({
+  ".png": "image/png",
+  ".svg": "image/svg+xml",
+  ".pdf": "application/pdf",
+  ".csv": "text/csv; charset=utf-8",
+  ".json": "application/json; charset=utf-8"
+});
+
+app.get("/api/sage/artifacts/:sessionId/:fileName", asyncHandler(async (req, res) => {
+  const sessionId = sanitizeSessionId(req.params.sessionId);
+  const fileName = String(req.params.fileName || "");
+  if (!fileName || path.basename(fileName) !== fileName ||
+      path.win32.basename(fileName) !== fileName) {
+    return res.status(400).json({ error: "invalid artifact name" });
+  }
+
+  const contentType = SAGE_ARTIFACT_CONTENT_TYPES[path.extname(fileName).toLowerCase()];
+  if (!contentType) {
+    return res.status(400).json({ error: "unsupported artifact type" });
+  }
+
+  const artifactDir = sageSessionDir(fileWorkspace.root, sessionId);
+  let realDir;
+  let realFile;
+  let stats;
+  try {
+    realDir = await fs.realpath(artifactDir);
+    realFile = await fs.realpath(path.join(realDir, fileName));
+    const relative = path.relative(realDir, realFile);
+    if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+      return res.status(400).json({ error: "invalid artifact path" });
+    }
+    stats = await fs.stat(realFile);
+  } catch {
+    return res.status(404).json({ error: "artifact not found" });
+  }
+
+  if (!stats.isFile()) {
+    return res.status(404).json({ error: "artifact not found" });
+  }
+
+  res.setHeader("Content-Type", contentType);
+  res.setHeader("Cache-Control", "private, max-age=3600");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  if (path.extname(fileName).toLowerCase() === ".svg") {
+    res.setHeader("Content-Security-Policy", "sandbox");
+  }
+  return res.sendFile(realFile);
 }));
 
 /**
