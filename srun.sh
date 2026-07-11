@@ -48,6 +48,8 @@ Environment:
                        Disable the preset and use explicit environment settings.
   DS4_SERVER_PERFLEVEL=high|auto
                        ROCm performance level; use off/skip/none to bypass.
+  DS4_SKILL_AUTO=0     Disable automatic loading of soul/ethic skills at startup.
+                       Default is 1 (enabled). Set via GUI or environment variable.
 
 After startup, open the printed local URL in your browser.
 USAGE

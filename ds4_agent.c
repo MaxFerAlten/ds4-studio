@@ -7258,6 +7258,25 @@ static void test_tool_span_tracking(void) {
     free(w.tool_spans);
 }
 
+static void test_agent_read_soul_skill(void) {
+    char err[256] = {0};
+    char *content = agent_read_soul_skill(err, sizeof(err));
+    AGENT_TEST_ASSERT(content != NULL);
+    AGENT_TEST_ASSERT(strlen(content) > 50);
+    AGENT_TEST_ASSERT(strstr(content, "Soul of the Assistant") != NULL);
+    free(content);
+}
+
+static void test_agent_read_ethic_skill(void) {
+    char err[256] = {0};
+    char *content = agent_read_ethic_skill(err, sizeof(err));
+    AGENT_TEST_ASSERT(content != NULL);
+    AGENT_TEST_ASSERT(strlen(content) > 20);
+    AGENT_TEST_ASSERT(strstr(content, "Trasparenza") != NULL);
+    free(content);
+}
+
+
 static void ds4_agent_unit_tests_run(void) {
     test_agent_elide_noise_lines();
     test_system_prompt_reminder_digest();
@@ -7271,6 +7290,10 @@ static void ds4_agent_unit_tests_run(void) {
     test_agent_parse_native_slash_commands();
     test_agent_rejects_invalid_native_slash_commands();
     test_agent_loop_guard_publishes_warning();
+    test_agent_read_soul_skill();
+    test_agent_read_ethic_skill();
+
+
     test_tool_compress_read_passthrough();
 }
 #endif
@@ -11908,6 +11931,52 @@ static int agent_read_stdin_available(agent_input_buf *in, bool *eof) {
 static int run_agent_non_interactive(ds4_engine *engine, agent_config *cfg) {
     agent_worker worker;
     if (agent_worker_init(&worker, engine, cfg) != 0) return 1;
+    /* Auto‑load soul and ethic skills at startup if DS4_SKILL_AUTO != 0 */
+
+    const char *auto_env = getenv("DS4_SKILL_AUTO");
+
+    if (!auto_env || strcmp(auto_env, "0") != 0) {
+
+        char err[256] = {0};
+
+        char *content = agent_read_soul_skill(err, sizeof(err));
+
+        if (content) {
+
+             free(worker.soul_prompt);
+             worker.soul_prompt = content;
+             fprintf(stderr, "Soul skill loaded.\n");
+        } else {
+
+             fprintf(stderr, "warning: %s\n", err);
+        }
+
+    }
+
+     {
+         char err[256] = {0};
+         char *content = agent_read_ethic_skill(err, sizeof(err));
+         if (content) {
+             free(worker.ethic_prompt);
+             worker.ethic_prompt = content;
+             fprintf(stderr, "Ethic skill loaded.\n");
+         } else {
+             fprintf(stderr, "warning: %s\n", err);
+         }
+     }
+    {
+        char err[256] = {0};
+        char *content = agent_read_ethic_skill(err, sizeof(err));
+        if (content) {
+            free(worker.ethic_prompt);
+            worker.ethic_prompt = content;
+            fprintf(stderr, "Ethic skill loaded.\n");
+        } else {
+            fprintf(stderr, "warning: %s\n", err);
+        }
+    }
+
+
 
     const bool one_shot = cfg->gen.prompt != NULL;
     bool one_shot_submitted = false;
@@ -12062,6 +12131,52 @@ static int run_agent_non_interactive(ds4_engine *engine, agent_config *cfg) {
 static int run_agent(ds4_engine *engine, agent_config *cfg) {
     agent_worker worker;
     if (agent_worker_init(&worker, engine, cfg) != 0) return 1;
+    /* Auto‑load soul and ethic skills at startup if DS4_SKILL_AUTO != 0 */
+
+    const char *auto_env = getenv("DS4_SKILL_AUTO");
+
+    if (!auto_env || strcmp(auto_env, "0") != 0) {
+
+        char err[256] = {0};
+
+        char *content = agent_read_soul_skill(err, sizeof(err));
+
+        if (content) {
+
+             free(worker.soul_prompt);
+             worker.soul_prompt = content;
+             fprintf(stderr, "Soul skill loaded.\n");
+        } else {
+
+             fprintf(stderr, "warning: %s\n", err);
+        }
+
+    }
+
+     {
+         char err[256] = {0};
+         char *content = agent_read_ethic_skill(err, sizeof(err));
+         if (content) {
+             free(worker.ethic_prompt);
+             worker.ethic_prompt = content;
+             fprintf(stderr, "Ethic skill loaded.\n");
+         } else {
+             fprintf(stderr, "warning: %s\n", err);
+         }
+     }
+    {
+        char err[256] = {0};
+        char *content = agent_read_ethic_skill(err, sizeof(err));
+        if (content) {
+            free(worker.ethic_prompt);
+            worker.ethic_prompt = content;
+            fprintf(stderr, "Ethic skill loaded.\n");
+        } else {
+            fprintf(stderr, "warning: %s\n", err);
+        }
+    }
+
+
 
     char hist[PATH_MAX];
     const char *home = getenv("HOME");

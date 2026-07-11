@@ -321,7 +321,7 @@ int ds4_server_runtime_handle_completions(ds4_server_runtime *rt,
     char err_buf[160];
     const int ctx_size = ds4_session_ctx(s->session);
 
-    bool ok = parse_completion_request(s->engine, req->body, s->default_tokens,
+    bool ok = parse_completion_request(s, s->engine, req->body, s->default_tokens,
                                        ctx_size, &r, err_buf, sizeof(err_buf));
     if (!ok) {
         http_error(res->fd, res->enable_cors, 400, err_buf);

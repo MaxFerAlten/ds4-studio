@@ -173,6 +173,46 @@ int ds4_agent_runtime_init(ds4_agent_runtime **out,
         return -1;
     }
     rt->worker_valid = true;
+    /* Auto‑load soul and ethic skills at startup if DS4_SKILL_AUTO != 0 */
+
+    {
+        const char *auto_env = getenv("DS4_SKILL_AUTO");
+        if (!auto_env || strcmp(auto_env, "0") != 0) {
+            char err[256] = {0};
+            char *content = agent_read_soul_skill(err, sizeof(err));
+            if (content) {
+                free(rt->worker.soul_prompt);
+                rt->worker.soul_prompt = content;
+                fprintf(stderr, "Soul skill loaded.\n");
+            } else {
+                fprintf(stderr, "warning: %s\n", err);
+            }
+        }
+        {
+            char err[256] = {0};
+            char *content = agent_read_ethic_skill(err, sizeof(err));
+            if (content) {
+                free(rt->worker.ethic_prompt);
+                rt->worker.ethic_prompt = content;
+                fprintf(stderr, "Ethic skill loaded.\n");
+            } else {
+                fprintf(stderr, "warning: %s\n", err);
+            }
+        }
+    }
+    {
+        char err[256] = {0};
+        char *content = agent_read_ethic_skill(err, sizeof(err));
+        if (content) {
+            free(rt->worker.ethic_prompt);
+            rt->worker.ethic_prompt = content;
+            fprintf(stderr, "Ethic skill loaded.\n");
+        } else {
+            fprintf(stderr, "warning: %s\n", err);
+        }
+    }
+
+
 
     /* Wait for the worker to complete its startup and become initialized. */
     while (true) {
