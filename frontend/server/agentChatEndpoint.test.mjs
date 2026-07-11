@@ -224,3 +224,45 @@ test("JS agent enforces post-GitNexus analyze policy in the current turn", async
     /recordGitnexusAnalyzeResult\(\s*\{ tool: tc\.name, args: tc\.arguments \},\s*rawResult,\s*policyState\s*\)/
   );
 });
+
+test("JS agent emits additive compact Sage status and artifact events", async () => {
+  const source = await readFile(new URL("./index.mjs", import.meta.url), "utf8");
+
+  assert.match(source, /import \{ SageTurnTracker \} from "\.\/sageTurnTracker\.mjs"/);
+  assert.match(source, /process\.env\.DS4_SAGE_COMPACT_CHAT !== "0"/);
+  assert.match(source, /writeAgentSse\("agent_sage_status",/);
+  assert.match(source, /writeAgentSse\("agent_sage_artifact",/);
+  assert.match(
+    source,
+    /writeAgentSse\("agent_tool_call", \{[\s\S]*?name: tc\.name,[\s\S]*?hiddenByDefault: true[\s\S]*?\}\)/
+  );
+});
+
+test("JS agent keeps Sage model content private while preserving model context", async () => {
+  const source = await readFile(new URL("./index.mjs", import.meta.url), "utf8");
+  const start = source.indexOf("const runToolCall = async (tc) =>");
+  const end = source.indexOf("// --- Wrapper / native-agent passthrough", start);
+  const block = source.slice(start, end);
+
+  assert.match(
+    block,
+    /name: r\.name,\s*content: r\.displayContent,[\s\S]*?hiddenByDefault: true/
+  );
+  assert.doesNotMatch(block, /modelContent\s*:/);
+  assert.match(
+    block,
+    /fullMessages\.push\(\{\s*role: "tool",\s*tool_call_id: r\.id,\s*content: r\.content\s*\}\)/
+  );
+});
+
+test("JS agent isolates compact Sage from the generic loop guard and adds synthesis guidance", async () => {
+  const source = await readFile(new URL("./index.mjs", import.meta.url), "utf8");
+
+  assert.match(source, /if \(!compactSage\) \{\s*const decision = agentSession\.loopGuard\.checkAction/);
+  assert.match(
+    source,
+    /const progress = compactSage \? null : agentSession\.loopGuard\.recordProgress/
+  );
+  assert.match(source, /SageMath has completed the requested mathematical work\./);
+  assert.match(source, /SAGE_FINAL_SYNTHESIS_MISSING/);
+});

@@ -53,6 +53,8 @@ import { readRequestBody, requestHeadersForProxy } from "./proxy.mjs";
 import { fetchWithBusyRetry } from "./backendRetry.mjs";
 import { readAmdSmiStatusCached } from "./amdSmi.mjs";
 import { AgentSessionStore, AGENT_SYSTEM_PROMPT, AGENT_TOOLS } from "./agentSession.mjs";
+import { normalizeSagePhase } from "./sageResultContract.mjs";
+import { SageTurnTracker } from "./sageTurnTracker.mjs";
 import { appendPonyPolicy, buildPonyPolicy, normalizePonyMode, ponyCommandMessage } from "./agentPonyPolicy.mjs";
 import {
   checkBashFileReadFallback,
@@ -1928,6 +1930,46 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   }
 
+  const compactSageChat = process.env.DS4_SAGE_COMPACT_CHAT !== "0" &&
+    process.env.DS4_SAGE_STRUCTURED_RESULT !== "0";
+  const sageTracker = new SageTurnTracker();
+  let sageFinalStatusEmitted = false;
+
+  const sagePhaseState = (phase) => ({
+    prepare: "preparing",
+    compute: "computing",
+    validate: "validating",
+    plot: "plotting",
+    repair: "repairing"
+  })[normalizeSagePhase(phase)];
+
+  const writeSageStatus = (data) => {
+    if (!compactSageChat || !sageTracker.snapshot().runId) return;
+    writeAgentSse("agent_sage_status", {
+      runId: sageTracker.snapshot().runId,
+      taskType: sageTracker.snapshot().taskType,
+      ...data
+    });
+  };
+
+  const finalizeSageStatus = (status, summary, code) => {
+    if (sageFinalStatusEmitted || !sageTracker.snapshot().runId) return;
+    sageFinalStatusEmitted = true;
+    const snapshot = sageTracker.snapshot();
+    writeSageStatus({
+      state: status === "completed" ? "completed" : "failed",
+      status,
+      summary,
+      code,
+      attempt: snapshot.attempt,
+      executeCount: snapshot.executeCount,
+      repairCount: snapshot.repairCount,
+      validationCount: snapshot.validationCount,
+      plotCount: snapshot.plotCount,
+      artifactCount: snapshot.artifactCount
+    });
+  };
+
   try {
     // Deterministic tool planner: when the user explicitly asks to crawl/open
     // links, run the crawls ourselves and feed the results into the transcript
@@ -2224,6 +2266,7 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
         writeAgentSse("agent_error", {
           error: `[${intentDecision.type}] ${intentDecision.reason}\n${intentDecision.guidance}`
         });
+        finalizeSageStatus("failed", "Composizione finale non completata.", intentDecision.type);
         writeAgentSse("agent_done", { iterations: iteration, finish_reason: "loop_guard", totals: agentSession.usageTotals });
         break;
       }
@@ -2239,6 +2282,17 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
 
       // If no tool calls, we're done
       if (!toolCalls.length || finishReason !== "tool_calls") {
+        if (sageTracker.snapshot().runId) {
+          if (assistantContent.trim()) {
+            finalizeSageStatus("completed", "Risposta matematica completata.");
+          } else {
+            finalizeSageStatus(
+              "failed",
+              "SageMath ha terminato, ma manca la sintesi finale.",
+              "SAGE_FINAL_SYNTHESIS_MISSING"
+            );
+          }
+        }
         writeAgentSse("agent_done", {
           iterations: iteration,
           finish_reason: finishReason || "stop",
@@ -2268,11 +2322,63 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
       agentSession.readGuard.beginTurn();
 
       const runToolCall = async (tc) => {
-        writeAgentSse("agent_tool_call", {
-          id: tc.id,
-          name: tc.name,
-          arguments: tc.arguments
-        });
+        const isSage = tc.name === "sage";
+        const compactSage = isSage && compactSageChat &&
+          String(tc.arguments?.output_mode || "auto").toLowerCase() !== "legacy";
+        const sagePhase = normalizeSagePhase(tc.arguments?.phase);
+        let sageSnapshot = null;
+
+        if (compactSage) {
+          if (!sageTracker.snapshot().runId) {
+            sageTracker.begin({
+              runId: crypto.randomUUID(),
+              taskType: tc.arguments?.task_type
+            });
+          }
+          const callState = sageTracker.recordCall({ phase: sagePhase });
+          sageSnapshot = sageTracker.snapshot();
+          writeSageStatus({
+            callId: tc.id,
+            phase: sagePhase,
+            state: sagePhaseState(sagePhase),
+            status: callState.allowed ? "running" : "error",
+            attempt: sageSnapshot.attempt,
+            executeCount: sageSnapshot.executeCount,
+            repairCount: sageSnapshot.repairCount,
+            validationCount: sageSnapshot.validationCount,
+            plotCount: sageSnapshot.plotCount,
+            summary: callState.allowed
+              ? "Esecuzione SageMath in corso."
+              : "Budget della fase SageMath esaurito."
+          });
+          writeAgentSse("agent_tool_call", {
+            id: tc.id,
+            name: tc.name,
+            arguments: tc.arguments,
+            hiddenByDefault: true
+          });
+          if (!callState.allowed) {
+            return {
+              id: tc.id,
+              name: tc.name,
+              content: "Sage workflow budget exceeded for this phase.",
+              displayContent: "Budget SageMath esaurito.",
+              isError: true,
+              guarded: true,
+              hiddenByDefault: true,
+              runId: sageSnapshot.runId,
+              taskType: sageSnapshot.taskType,
+              phase: sagePhase,
+              validated: false
+            };
+          }
+        } else {
+          writeAgentSse("agent_tool_call", {
+            id: tc.id,
+            name: tc.name,
+            arguments: tc.arguments
+          });
+        }
 
         const policyDecision = checkPostGitnexusAnalyzeAction({
           tool: tc.name,
@@ -2318,7 +2424,7 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
         }
 
         // Loop guard: block repeated identical actions (same tool+target+args).
-        {
+        if (!compactSage) {
           const decision = agentSession.loopGuard.checkAction({
             tool: tc.name,
             target: tc.arguments?.path || tc.arguments?.query || tc.arguments?.command || tc.arguments?.url || "",
@@ -2346,6 +2452,7 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
           // tree: run sage in a per-session dir under the workspace that holds
           // history/sessions.
           sageWorkdir: tc.name === "sage" ? sageSessionDir(fileWorkspace.root, sessionKey) : undefined,
+          sageAttempt: compactSage ? sageSnapshot.attempt : undefined,
           sessionKey
         };
         const rawResult = await executeTool(tc.name, tc.arguments, opts);
@@ -2355,19 +2462,25 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
           policyState
         );
         if (!rawResult?.isError) {
+          const evidenceArgs = compactSage
+            ? { task_type: sageSnapshot.taskType, phase: sagePhase }
+            : tc.arguments || {};
+          const evidenceContent = compactSage
+            ? rawResult?.sageResult?.display?.summary || rawResult?.displayContent || "SageMath completed."
+            : rawResult?.content || "";
           turnEvidence.push([
             `tool: ${tc.name}`,
-            `arguments: ${JSON.stringify(tc.arguments || {})}`,
-            String(rawResult?.content || "").slice(0, 4000)
+            `arguments: ${JSON.stringify(evidenceArgs)}`,
+            String(evidenceContent).slice(0, 4000)
           ].join("\n"));
         }
 
         // Loop guard: stop if repeated steps yield no new observation.
-        const progress = agentSession.loopGuard.recordProgress("tool-result", {
-          tool: tc.name,
-          target: tc.arguments?.path || tc.arguments?.query || tc.arguments?.command || tc.arguments?.url || "",
-          content: String(rawResult.content || "")
-        });
+        const progress = compactSage ? null : agentSession.loopGuard.recordProgress("tool-result", {
+            tool: tc.name,
+            target: tc.arguments?.path || tc.arguments?.query || tc.arguments?.command || tc.arguments?.url || "",
+            content: String(rawResult.content || "")
+          });
         if (progress?.block) {
           // ContextWiki (§2): record the loop-guard trip in the ledger (gated).
           if (contextConfig.enabled || contextConfig.previewOnly) {
@@ -2393,7 +2506,7 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
           /^\[(READ_BATCH_SUMMARY_REQUIRED|DOC_READ_SUMMARY_REQUIRED|RAW_DOC_CONTEXT_SUMMARY_REQUIRED)\]/.test(
             String(rawResult?.content || "")
           );
-        if (!rawResult?.isError && !guardResult) {
+        if (!rawResult?.isError && !guardResult && !rawResult?.sageResult) {
           result = await compressToolResultForModel(
             tc.name,
             rawResult,
@@ -2416,6 +2529,69 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
           workspace: fileWorkspace.root
         }).catch(() => {});
 
+        if (compactSage) {
+          const validationPassed = sagePhase === "validate"
+            ? rawResult?.sageResult?.validation?.passed
+            : undefined;
+          sageSnapshot = sageTracker.recordResult({
+            phase: sagePhase,
+            isError: Boolean(result.isError),
+            validationPassed,
+            artifactCount: rawResult?.artifacts?.length || 0
+          });
+          writeSageStatus({
+            callId: tc.id,
+            phase: sagePhase,
+            state: sagePhaseState(sagePhase),
+            status: result.isError ? "error" : "done",
+            attempt: sageSnapshot.attempt,
+            executeCount: sageSnapshot.executeCount,
+            repairCount: sageSnapshot.repairCount,
+            validationCount: sageSnapshot.validationCount,
+            plotCount: sageSnapshot.plotCount,
+            artifactCount: sageSnapshot.artifactCount,
+            validationPassed: rawResult?.sageResult?.validation?.passed,
+            debugAvailable: Boolean(rawResult?.debug),
+            summary: rawResult?.displayContent ||
+              (result.isError ? "Esecuzione SageMath non completata." : "Esecuzione SageMath completata.")
+          });
+          for (const artifact of rawResult?.artifacts || []) {
+            writeAgentSse("agent_sage_artifact", {
+              runId: sageSnapshot.runId,
+              callId: tc.id,
+              taskType: sageSnapshot.taskType,
+              phase: sagePhase,
+              artifact
+            });
+          }
+          const validated = sagePhase === "validate" &&
+            rawResult?.sageResult?.validation?.passed === true && !result.isError;
+          if (validated) {
+            writeSageStatus({
+              callId: tc.id,
+              phase: sagePhase,
+              state: "composing",
+              status: "running",
+              attempt: sageSnapshot.attempt,
+              summary: "Preparazione della risposta finale."
+            });
+          }
+          return {
+            id: tc.id,
+            name: tc.name,
+            content: result.content,
+            displayContent: rawResult?.displayContent || "SageMath completato.",
+            isError: result.isError,
+            sageResult: rawResult?.sageResult,
+            artifacts: rawResult?.artifacts || [],
+            hiddenByDefault: true,
+            runId: sageSnapshot.runId,
+            taskType: sageSnapshot.taskType,
+            phase: sagePhase,
+            validated
+          };
+        }
+
         return { id: tc.id, name: tc.name, content: result.content, isError: result.isError };
       };
 
@@ -2426,29 +2602,69 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
           : await Promise.all(group.map(runToolCall));
 
         for (const r of results) {
-          writeAgentSse("agent_tool_result", {
-            id: r.id,
-            name: r.name,
-            content: r.content,
-            isError: r.isError,
-            guarded: Boolean(r.guarded)
-          });
+          if (r.name === "sage" && r.hiddenByDefault) {
+            writeAgentSse("agent_tool_result", {
+              id: r.id,
+              name: r.name,
+              content: r.displayContent,
+              isError: r.isError,
+              guarded: Boolean(r.guarded),
+              hiddenByDefault: true,
+              sage: {
+                contractVersion: r.sageResult?.contractVersion,
+                runId: r.runId,
+                taskType: r.taskType,
+                phase: r.phase,
+                status: r.sageResult?.status,
+                validationPassed: r.sageResult?.validation?.passed === true
+              }
+            });
+          } else {
+            writeAgentSse("agent_tool_result", {
+              id: r.id,
+              name: r.name,
+              content: r.content,
+              isError: r.isError,
+              guarded: Boolean(r.guarded)
+            });
+          }
           fullMessages.push({
             role: "tool",
             tool_call_id: r.id,
             content: r.content
           });
+          if (r.name === "sage" && r.validated) {
+            fullMessages.push({
+              role: "system",
+              content: [
+                "SageMath has completed the requested mathematical work.",
+                "Use only the validated Sage result as the source of numerical and symbolic facts.",
+                "Produce one coherent final answer.",
+                "Do not mention tool calls, retries, stdout, stderr, tracebacks, local paths, or internal phases.",
+                "Render formulas with $...$ and $$...$$.",
+                r.taskType === "function_study"
+                  ? "Use the supplied function-study report in its given section order. Do not omit graphs or change validated numbers."
+                  : null
+              ].filter(Boolean).join("\n")
+            });
+          }
         }
       }
     }
 
     if (iteration >= AGENT_MAX_ITERATIONS) {
+      finalizeSageStatus(
+        "failed",
+        "SageMath arrestato al limite massimo di iterazioni.",
+        "SAGE_MAX_ITERATIONS"
+      );
       writeAgentSse("agent_error", { error: `Agent reached maximum iterations (${AGENT_MAX_ITERATIONS})` });
     }
 
     res.end();
   } catch (err) {
     if (!res.writableEnded) {
+      finalizeSageStatus("failed", "Flusso SageMath interrotto da un errore.", "SAGE_AGENT_ERROR");
       writeAgentSse("agent_error", { error: err.message || String(err) });
       res.end();
     }
