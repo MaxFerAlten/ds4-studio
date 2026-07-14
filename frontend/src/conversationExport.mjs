@@ -1,4 +1,5 @@
 import { normalizeObsidianMath } from "./obsidianMath.mjs";
+import { resolveSageMarkdownImageLinks } from "./sage/sageArtifactLinks.mjs";
 
 export { normalizeObsidianMath } from "./obsidianMath.mjs";
 
@@ -81,9 +82,11 @@ function fenceBlock(content, language = "") {
   return `${fence}${language}\n${raw}\n${fence}`;
 }
 
-function toolCallsMarkdown(toolCalls) {
+function toolCallsMarkdown(toolCalls, { hideSage = false } = {}) {
   if (!Array.isArray(toolCalls) || !toolCalls.length) return "";
-  return toolCalls
+  const filtered = hideSage ? toolCalls.filter((call) => toolCallName(call) !== "sage") : toolCalls;
+  if (!filtered.length) return "";
+  return filtered
     .map((call) => {
       const name = toolCallName(call);
       const id = call?.id ? `\n\ncall_id: \`${call.id}\`` : "";
@@ -92,7 +95,8 @@ function toolCallsMarkdown(toolCalls) {
     .join("\n\n");
 }
 
-function toolResultMarkdown(message) {
+function toolResultMarkdown(message, { hideSage = false } = {}) {
+  if (hideSage && message.name === "sage") return "";
   const parts = [];
   if (message.tool_call_id) parts.push(`tool_call_id: \`${message.tool_call_id}\``);
   parts.push(fenceBlock(message.content || "", "text"));
@@ -122,10 +126,117 @@ export function exportConversationMarkdown(messages, opts = {}) {
  * No KaTeX normalization is applied; all content is preserved as-is.
  */
 export function exportConversationMarkdownRaw(messages, opts = {}) {
-  return buildConversationMarkdown(messages, { ...opts, mode: "raw" });
+  return buildConversationMarkdown(messages, {
+    ...opts,
+    mode: "raw",
+    hideCompactSageTrace: opts.hideCompactSageTrace ?? false
+  });
 }
 
-function buildConversationMarkdown(messages, { includeReasoning = false, metadata = null, mode = "obsidian" } = {}) {
+function latestSageArtifacts(sageActivities, runId = null) {
+  if (runId && sageActivities?.[runId]?.runId === runId) {
+    const artifacts = sageActivities[runId].artifacts;
+    return Array.isArray(artifacts) ? artifacts : [];
+  }
+  const activities = Object.values(
+    sageActivities && typeof sageActivities === "object" ? sageActivities : {}
+  );
+  for (let index = activities.length - 1; index >= 0; index--) {
+    const artifacts = activities[index]?.artifacts;
+    if (Array.isArray(artifacts) && artifacts.length) return artifacts;
+  }
+  return [];
+}
+
+function sageArtifactUrlsFromMarkdown(markdown) {
+  return Array.from(
+    String(markdown || "").matchAll(/!\[[^\]]*\]\((\/api\/sage\/artifacts\/[^)\s]+)\)/g),
+    (match) => match[1]
+  );
+}
+
+function artifactLooksLikeImage(artifact) {
+  const mediaType = String(artifact?.mediaType || "").toLowerCase();
+  if (mediaType.startsWith("image/")) return true;
+  return /\.(?:png|svg|jpe?g|gif|webp)(?:$|[?#])/i.test(String(artifact?.name || artifact?.url || ""));
+}
+
+function bytesToBase64(bytes) {
+  const BufferCtor = globalThis.Buffer;
+  if (BufferCtor?.from) return BufferCtor.from(bytes).toString("base64");
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  if (typeof globalThis.btoa !== "function") {
+    throw new Error("Base64 encoding is unavailable in this environment");
+  }
+  return globalThis.btoa(binary);
+}
+
+async function artifactDataUrl(artifact, fetchImpl) {
+  if (String(artifact.url || "").startsWith("data:image/")) return artifact.url;
+  if (typeof fetchImpl !== "function") throw new Error("Image fetch is unavailable");
+  const response = await fetchImpl(artifact.url);
+  if (!response?.ok) {
+    throw new Error(`Unable to embed Sage artifact: ${artifact.name || artifact.url}`);
+  }
+  const mediaType = String(
+    artifact.mediaType || response.headers?.get?.("content-type") || "application/octet-stream"
+  ).split(";", 1)[0].trim().toLowerCase();
+  if (!mediaType.startsWith("image/")) {
+    throw new Error(`Sage artifact is not an image: ${artifact.name || artifact.url}`);
+  }
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  return `data:${mediaType};base64,${bytesToBase64(bytes)}`;
+}
+
+export async function exportProfessionalMarkdown(
+  messages,
+  { sageActivities = {}, fetchImpl = globalThis.fetch } = {}
+) {
+  const editorial = [...(Array.isArray(messages) ? messages : [])]
+    .reverse()
+    .find((message) => (
+      message?.role === "assistant" &&
+      !message.agentNotice &&
+      typeof message.content === "string" &&
+      message.content.trim()
+    ));
+  if (!editorial) throw new Error("No editorial assistant response is available for export");
+
+  let body = resolveSageMarkdownImageLinks(normalizeExportText(editorial, "content")).trim();
+  if (!/^#\s+/m.test(body)) body = `# Elaborato matematico\n\n${body}`;
+
+  const artifacts = new Map();
+  for (const artifact of latestSageArtifacts(sageActivities, editorial.sageRunId)) {
+    if (artifact?.url && artifactLooksLikeImage(artifact)) artifacts.set(artifact.url, artifact);
+  }
+  for (const url of sageArtifactUrlsFromMarkdown(body)) {
+    if (!artifacts.has(url)) {
+      const encodedName = url.split("/").pop() || "grafico";
+      let name = encodedName;
+      try { name = decodeURIComponent(encodedName); } catch {}
+      artifacts.set(url, { name, url });
+    }
+  }
+
+  const appended = [];
+  for (const artifact of artifacts.values()) {
+    const referenced = body.includes(artifact.url);
+    const dataUrl = await artifactDataUrl(artifact, fetchImpl);
+    body = body.split(artifact.url).join(dataUrl);
+    if (!referenced) {
+      const alt = String(artifact.name || "Grafico").replace(/[\[\]\r\n]/g, " ");
+      appended.push(`![${alt}](${dataUrl})`);
+    }
+  }
+  if (appended.length) body += `\n\n## Grafici\n\n${appended.join("\n\n")}`;
+  return `${body.trim()}\n`;
+}
+
+function buildConversationMarkdown(messages, { includeReasoning = false, metadata = null, mode = "obsidian", hideCompactSageTrace = true } = {}) {
   const blocks = [mode === "raw" ? "# DS4 Conversation (raw)" : "# DS4 Conversation"];
 
   for (const message of messages || []) {
@@ -135,10 +246,11 @@ function buildConversationMarkdown(messages, { includeReasoning = false, metadat
     // Exception: notices flagged `exportable` (e.g. /crawl results) carry real
     // content the user wants in the export.
     if (message.agentNotice && !message.exportable) continue;
+    if (hideCompactSageTrace && message.role === "tool" && message.name === "sage") continue;
 
     const content = renderContent(message, "content", mode);
     const reasoning = renderContent(message, "reasoning", mode);
-    const toolCalls = toolCallsMarkdown(message.tool_calls);
+    const toolCalls = toolCallsMarkdown(message.tool_calls, { hideSage: hideCompactSageTrace });
     if (!content && !toolCalls && (!includeReasoning || !reasoning)) continue;
 
     const title = message.role === "tool" && message.name
@@ -147,8 +259,10 @@ function buildConversationMarkdown(messages, { includeReasoning = false, metadat
     const parts = [`## ${title}`];
     if (includeReasoning && reasoning) parts.push(`### Reasoning\n\n${reasoning}`);
     if (toolCalls) parts.push(toolCalls);
-    if (message.role === "tool") parts.push(toolResultMarkdown(message));
-    else if (content) parts.push(content);
+    if (message.role === "tool") {
+      const resultMd = toolResultMarkdown(message, { hideSage: hideCompactSageTrace });
+      if (resultMd) parts.push(resultMd);
+    } else if (content) parts.push(content);
     blocks.push(parts.join("\n\n"));
   }
 
@@ -216,4 +330,9 @@ export function parseConversationMarkdown(markdown) {
 export function markdownFileName(date = new Date()) {
   const stamp = date.toISOString().slice(0, 19).replace("T", "-").replaceAll(":", "-");
   return `ds4-conversation-${stamp}.md`;
+}
+
+export function professionalMarkdownFileName(date = new Date()) {
+  const stamp = date.toISOString().slice(0, 19).replace("T", "-").replaceAll(":", "-");
+  return `ds4-elaborato-pro-${stamp}.md`;
 }

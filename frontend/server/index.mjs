@@ -55,13 +55,23 @@ import { readAmdSmiStatusCached } from "./amdSmi.mjs";
 import { AgentSessionStore, AGENT_SYSTEM_PROMPT, AGENT_TOOLS } from "./agentSession.mjs";
 import { normalizeSagePhase } from "./sageResultContract.mjs";
 import { SageTurnTracker } from "./sageTurnTracker.mjs";
+import {
+  authoritativeSageFinalFromResult,
+  canonicalSageCommitPending,
+  guardSageFinalization,
+  sageArtifactKinds,
+  sageToolBlockDecision
+} from "./sageAgentLoopPolicy.mjs";
 import { appendPonyPolicy, buildPonyPolicy, normalizePonyMode, ponyCommandMessage } from "./agentPonyPolicy.mjs";
 import {
   checkBashFileReadFallback,
   executeTool,
+  findLatestSageImageArtifact,
+  resolveSageArtifactById,
+  sageRunDir,
   sageSessionDir,
-  sanitizeSessionId,
-  toolSage
+  sanitizeSageRunId,
+  sanitizeSessionId
 } from "./agentTools.mjs";
 import { readContextConfig } from "./contextConfig.mjs";
 import { prepareContextInjection, contextStatusPayload } from "./agentContextIntegration.mjs";
@@ -102,7 +112,17 @@ import { ResearchStateStore } from "./research/researchStateStore.mjs";
 import { ResearchModelClient } from "./research/researchModelClient.mjs";
 import { exportSession } from "./research/researchExport.mjs";
 import { CallDebugRecorder } from "./callDebug.mjs";
-import { sageState, SageCallLog, sageBinaryExists, sageResponds } from "./sageState.mjs";
+import {
+  SageCallLog,
+  activateSagePolicy,
+  applySagePolicyToMessages,
+  deactivateSagePolicy,
+  sageBinaryExists,
+  sagePolicyIsActive,
+  sageResponds,
+  sageState,
+  syncSageStateFromNativeCommand
+} from "./sageState.mjs";
 import { abortOnClientDisconnect } from "./clientDisconnect.mjs";
 
 const HTTP_DRAIN_GRACE_MS = 2000;
@@ -1079,7 +1099,17 @@ app.delete("/api/history/conversations", asyncHandler(async (_req, res) => {
 
 app.post("/api/export/conversation", asyncHandler(async (req, res) => {
   const messages = Array.isArray(req.body?.messages) ? req.body.messages : [];
-  if (!messages.length) return res.status(400).json({ error: "messages are required" });
+  const exportMode = String(req.body?.mode || "obsidian").trim();
+  const professionalMarkdown = typeof req.body?.markdown === "string"
+    ? req.body.markdown.trim()
+    : "";
+  if (exportMode === "professional") {
+    if (!professionalMarkdown) {
+      return res.status(400).json({ error: "markdown is required for professional export" });
+    }
+  } else if (!messages.length) {
+    return res.status(400).json({ error: "messages are required" });
+  }
 
   const rawDir = typeof req.body?.dir === "string" ? req.body.dir.trim() : "";
   if (!rawDir) return res.status(400).json({ error: "dir is required" });
@@ -1095,9 +1125,10 @@ app.post("/api/export/conversation", asyncHandler(async (req, res) => {
   }
 
   const includeReasoning = Boolean(req.body?.includeReasoning);
-  const exportMode = String(req.body?.mode || "obsidian").trim();
   const exporter = exportMode === "raw" ? exportConversationMarkdownRaw : exportConversationMarkdown;
-  const markdown = exporter(messages, { includeReasoning });
+  const markdown = exportMode === "professional"
+    ? `${professionalMarkdown}\n`
+    : exporter(messages, { includeReasoning });
 
   await fs.mkdir(resolvedDir, { recursive: true });
   const filePath = path.join(resolvedDir, fileNameRaw);
@@ -1536,6 +1567,29 @@ app.post("/api/agent/pony", asyncHandler(async (req, res) => {
 // SageMath control endpoints
 // ---------------------------------------------------------------------------
 
+const SAGE_NATIVE_POLICY_TIMEOUT_MS = 5 * 60 * 1000;
+
+async function nativeSagePolicyCommand(action) {
+  if (!wrapperEnabled()) return null;
+  return proxyNativeAgentCommand(
+    fetch,
+    backendBase(),
+    `/sage-pol ${action}`,
+    AbortSignal.timeout(Math.max(
+      config.wrapper?.modeSwitchTimeoutMs || 120000,
+      SAGE_NATIVE_POLICY_TIMEOUT_MS
+    ))
+  );
+}
+
+function nativeSagePolicyLoaded(result) {
+  return result?.ok === true && result?.payload?.data?.loaded === true;
+}
+
+function nativePolicyAlreadyInactive(result) {
+  return result?.status === 400 && /not active/i.test(String(result?.payload?.message || ""));
+}
+
 app.post("/api/sage/start", asyncHandler(async (req, res) => {
   // Check if sage binary exists
   if (!sageBinaryExists()) {
@@ -1556,47 +1610,144 @@ app.post("/api/sage/start", asyncHandler(async (req, res) => {
     });
   }
 
-  sageState.enabled = true;
+  try {
+    activateSagePolicy();
+  } catch (err) {
+    sageState.enabled = false;
+    return res.status(500).json({
+      active: false,
+      policyActive: false,
+      error: `Impossibile caricare skills/sage/SKILL.md: ${err.message}`
+    });
+  }
+
+  // A timed-out HTTP client does not cancel the synchronous native reset.
+  // Check status first so retrying /sage start reuses a policy that completed
+  // in the background instead of triggering another expensive context rebuild.
+  const nativeStatus = await nativeSagePolicyCommand("status");
+  const nativePolicyReused = nativeSagePolicyLoaded(nativeStatus);
+  const nativePolicy = nativePolicyReused
+    ? nativeStatus
+    : await nativeSagePolicyCommand("start");
+  if (nativePolicy && !nativePolicy.ok) {
+    deactivateSagePolicy();
+    return res.status(nativePolicy.status || 500).json({
+      active: false,
+      policyActive: false,
+      error: nativePolicy.payload?.message || nativePolicy.payload?.error ||
+        "Impossibile caricare la skill Sage nel contesto nativo."
+    });
+  }
+
   sageState.version = health.version;
   sageState.lastCheck = new Date().toISOString();
   res.json({
     active: true,
-    message: `SageMath attivato (${health.version || "versione sconosciuta"}). Usa tool sage nelle richieste agentiche.`
+    enabled: true,
+    policyActive: true,
+    nativePolicyActive: nativePolicy ? true : null,
+    nativePolicyReused,
+    policyPath: sageState.policyPath,
+    policyRevision: sageState.policyRevision,
+    message: nativePolicyReused
+      ? `SageMath attivo; skill Sage nativa già caricata (${health.version || "versione sconosciuta"}).`
+      : `SageMath e skill Sage attivati (${health.version || "versione sconosciuta"}).`
   });
 }));
 
 app.post("/api/sage/stop", asyncHandler(async (req, res) => {
-  sageState.enabled = false;
-  res.json({ active: false, message: "SageMath disattivato. Il tool sage non sarà più disponibile." });
+  const nativePolicy = await nativeSagePolicyCommand("stop");
+  if (nativePolicy && !nativePolicy.ok && !nativePolicyAlreadyInactive(nativePolicy)) {
+    return res.status(nativePolicy.status || 500).json({
+      active: true,
+      policyActive: true,
+      error: nativePolicy.payload?.message || nativePolicy.payload?.error ||
+        "Impossibile rimuovere la skill Sage dal contesto nativo."
+    });
+  }
+  deactivateSagePolicy();
+  res.json({
+    active: false,
+    enabled: false,
+    policyActive: false,
+    nativePolicyActive: nativePolicy ? false : null,
+    message: "SageMath e skill Sage disattivati."
+  });
 }));
 
 app.get("/api/sage/status", asyncHandler(async (req, res) => {
+  const nativePolicy = await nativeSagePolicyCommand("status");
+  const nativePolicyActive = nativePolicy?.ok
+    ? Boolean(nativePolicy.payload?.data?.loaded)
+    : null;
+  // Recover local state after a frontend restart or after the original HTTP
+  // request timed out while the native command continued to completion.
+  let localPolicyError = null;
+  if (nativePolicyActive === true && !sagePolicyIsActive()) {
+    try {
+      activateSagePolicy();
+    } catch (err) {
+      localPolicyError = err.message || String(err);
+    }
+  }
+  const localPolicyActive = sagePolicyIsActive();
+  const policyActive = nativePolicyActive ?? localPolicyActive;
   res.json({
     enabled: sageState.enabled,
+    active: sageState.enabled,
+    policyActive,
+    localPolicyActive,
+    nativePolicyActive,
+    policyError: localPolicyError || (nativePolicy && !nativePolicy.ok
+      ? nativePolicy.payload?.message || nativePolicy.payload?.error || `HTTP ${nativePolicy.status}`
+      : null),
     version: sageState.version,
     lastCheck: sageState.lastCheck,
-    binaryExists: sageBinaryExists()
+    policyPath: sageState.policyPath,
+    policyRevision: sageState.policyRevision,
+    binaryExists: sageBinaryExists(),
+    message: `SageMath ${sageState.enabled ? "attivo" : "inattivo"}; skill Sage ${policyActive ? "attiva" : "inattiva"}.`
   });
 }));
 
 /**
  * Execute SageMath and return the result.
  * Used by the C agent (ds4-wrapper) to delegate sage execution via HTTP.
- * Body: { code, timeout_sec?, sessionId?, task_type?, phase?, output_mode?, attempt? }
+ * Body: { code, timeout_sec?, sessionId?, runId?, task_type?, phase?, output_mode?, attempt? }
  */
 app.post("/api/sage/exec", asyncHandler(async (req, res) => {
-  res.setHeader("X-DS4-Sage-Contract", "sage_result_v1");
+  res.setHeader("X-DS4-Sage-Contract", "sage_result_v2");
   const {
     code,
     timeout_sec,
     sessionId,
+    runId: requestedRunId,
+    run_id,
     task_type,
     phase,
     output_mode,
-    attempt
+    attempt,
+    policyRevision: requestedPolicyRevision
   } = req.body || {};
   if (!code || typeof code !== "string" || !code.trim()) {
     return res.status(400).json({ error: "code is required" });
+  }
+  const runId = sanitizeSageRunId(requestedRunId || run_id || crypto.randomUUID());
+  if (requestedPolicyRevision &&
+      requestedPolicyRevision !== sageState.policyRevision) {
+    return res.status(409).json({
+      content: "SAGE_POLICY_REVISION_MISMATCH",
+      isError: true,
+      displayContent: "Sage policy revision mismatch.",
+      contractVersion: "sage_result_v2",
+      publishable: false,
+      authoritative: false,
+      validationPassed: false,
+      reportReady: false,
+      finalMarkdown: "",
+      runId,
+      state: "failed"
+    });
   }
 
   const args = {
@@ -1611,12 +1762,13 @@ app.post("/api/sage/exec", asyncHandler(async (req, res) => {
     toolBlobStore,
     sessionKey: sessionId || undefined,
     sageAttempt: Number(attempt) || 1,
-    sageWorkdir: sessionId
-      ? sageSessionDir(fileWorkspace.root, sessionId)
-      : undefined
+    runId,
+    phase,
+    policyRevision: requestedPolicyRevision || sageState.policyRevision,
+    sageWorkdir: sageRunDir(fileWorkspace.root, runId)
   };
 
-  const result = await toolSage(args, opts);
+  const result = await executeTool("sage", args, opts);
   res.json(result);
 }));
 
@@ -1628,7 +1780,52 @@ const SAGE_ARTIFACT_CONTENT_TYPES = Object.freeze({
   ".json": "application/json; charset=utf-8"
 });
 
+app.get("/api/sage/artifacts/by-name/:fileName", asyncHandler(async (req, res) => {
+  const fileName = String(req.params.fileName || "");
+  if (!fileName || path.basename(fileName) !== fileName ||
+      path.win32.basename(fileName) !== fileName) {
+    return res.status(400).json({ error: "invalid artifact name" });
+  }
+
+  const contentType = SAGE_ARTIFACT_CONTENT_TYPES[path.extname(fileName).toLowerCase()];
+  if (!contentType?.startsWith("image/")) {
+    return res.status(400).json({ error: "unsupported image artifact type" });
+  }
+
+  const artifact = await findLatestSageImageArtifact(fileWorkspace.root, fileName);
+  if (!artifact?.physicalPath) {
+    return res.status(404).json({ error: "artifact not found" });
+  }
+
+  res.setHeader("Content-Type", contentType);
+  res.setHeader("Cache-Control", "private, max-age=60");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  if (path.extname(fileName).toLowerCase() === ".svg") {
+    res.setHeader("Content-Security-Policy", "sandbox");
+  }
+  return res.sendFile(artifact.physicalPath);
+}));
+
 app.get("/api/sage/artifacts/:sessionId/:fileName", asyncHandler(async (req, res) => {
+  const artifactId = String(req.params.fileName || "");
+  if (/^sha256:[a-f0-9]{64}$/.test(artifactId)) {
+    const artifact = await resolveSageArtifactById(
+      fileWorkspace.root,
+      String(req.params.sessionId || ""),
+      artifactId
+    );
+    if (!artifact?.physicalPath) {
+      return res.status(404).json({ error: "artifact not found" });
+    }
+    res.setHeader("Content-Type", artifact.mediaType);
+    res.setHeader("Cache-Control", "private, max-age=31536000, immutable");
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    if (artifact.mediaType === "image/svg+xml") {
+      res.setHeader("Content-Security-Policy", "sandbox");
+    }
+    return res.sendFile(artifact.physicalPath);
+  }
+
   const sessionId = sanitizeSessionId(req.params.sessionId);
   const fileName = String(req.params.fileName || "");
   if (!fileName || path.basename(fileName) !== fileName ||
@@ -1765,6 +1962,7 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
         message.trim(),
         req.signal
       );
+      syncSageStateFromNativeCommand(message.trim(), result.payload);
       if (result.payload.active === false) {
         agentSessions.stop(agentSessionKey(req));
       }
@@ -1879,6 +2077,7 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
     ];
   }
   if (userMessage) fullMessages.push({ role: "user", content: String(userMessage) });
+  fullMessages = applySagePolicyToMessages(fullMessages);
 
   // ContextWiki (§8/§9): build a delta-safe context capsule and, when enabled,
   // inject it as an append-only user message. Default is preview-only (telemetry
@@ -1888,7 +2087,7 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
   // real payload below so the tools hash — and the delta path — stay consistent.
   const withContextTool = (base) => (contextConfig.enabled ? [...base, CONTEXT_SEARCH_TOOL] : base);
   const contextTools = withContextTool(
-    sageState.enabled ? AGENT_TOOLS : AGENT_TOOLS.filter((t) => t.function?.name !== "sage")
+    sagePolicyIsActive() ? AGENT_TOOLS : AGENT_TOOLS.filter((t) => t.function?.name !== "sage")
   );
   const contextInjection = await prepareContextInjection({
     sessionKey,
@@ -1932,8 +2131,13 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
 
   const compactSageChat = process.env.DS4_SAGE_COMPACT_CHAT !== "0" &&
     process.env.DS4_SAGE_STRUCTURED_RESULT !== "0";
+  const authoritativeSageChat = compactSageChat &&
+    process.env.DS4_SAGE_AUTHORITATIVE_LOOP !== "0";
   const sageTracker = new SageTurnTracker();
   let sageFinalStatusEmitted = false;
+  let authoritativeSageFinal = null;
+  let sageAuthoritativePublished = false;
+  let forceResetNextIteration = false;
 
   const sagePhaseState = (phase) => ({
     prepare: "preparing",
@@ -2056,7 +2260,7 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
       let basePayload = buildChatPayload({ ...reqParams, stream: true }, fullMessages);
       // Filter out sage tool if SageMath is not enabled
       basePayload.tools = withContextTool(
-        sageState.enabled ? AGENT_TOOLS : AGENT_TOOLS.filter((t) => t.function?.name !== "sage")
+        sagePolicyIsActive() ? AGENT_TOOLS : AGENT_TOOLS.filter((t) => t.function?.name !== "sage")
       );
       basePayload.stream = true;
       basePayload.stream_options = { include_usage: true };
@@ -2066,9 +2270,12 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
       // iteration so the stateful path is used automatically when supported,
       // and we fall back transparently when it is not.
       const allowDelta = await probeStatefulBackend();
+      const forceReset = forceResetNextIteration;
+      forceResetNextIteration = false;
       let modeChoice = agentSession.choosePayload(basePayload, {
         allowDelta,
-        userTurnPolicy: allowDelta ? "delta" : "reset"
+        userTurnPolicy: allowDelta ? "delta" : "reset",
+        forceReset
       });
       let backendRes;
       let retriedReset = false;
@@ -2136,6 +2343,10 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
       let currentToolCalls = new Map();
       let finishReason = null;
       let streamGuardBlocked = false;
+      const deferPotentialSageOutput = authoritativeSageChat &&
+        (sagePolicyIsActive() || Boolean(sageTracker.snapshot().runId));
+      const deferredAssistantText = [];
+      const deferredAssistantReasoning = [];
 
       for (;;) {
         if (controller.signal.aborted) break;
@@ -2193,14 +2404,18 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
             }
             const acceptedDelta = guarded.content.slice(assistantContent.length);
             assistantContent = guarded.content;
-            if (acceptedDelta) writeAgentSse("agent_text", { content: acceptedDelta });
+            if (acceptedDelta) {
+              if (deferPotentialSageOutput) deferredAssistantText.push(acceptedDelta);
+              else writeAgentSse("agent_text", { content: acceptedDelta });
+            }
           }
 
           // Reasoning
           const reasoning = delta.reasoning_content || delta.reasoning || "";
           if (reasoning) {
             assistantReasoning += reasoning;
-            writeAgentSse("agent_reasoning", { content: reasoning });
+            if (deferPotentialSageOutput) deferredAssistantReasoning.push(reasoning);
+            else writeAgentSse("agent_reasoning", { content: reasoning });
           }
 
           // Tool calls
@@ -2228,6 +2443,12 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
         try { parsedArgs = JSON.parse(tc.arguments || "{}"); } catch {}
         return { id: tc.id, name: tc.name, arguments: parsedArgs };
       });
+      const responseBelongsToSage = authoritativeSageChat &&
+        (toolCalls.some((tc) => tc.name === "sage") || Boolean(sageTracker.snapshot().runId));
+      if (!responseBelongsToSage) {
+        for (const content of deferredAssistantText) writeAgentSse("agent_text", { content });
+        for (const content of deferredAssistantReasoning) writeAgentSse("agent_reasoning", { content });
+      }
 
       // Build assistant message for session tracking
       const assistantMessage = {
@@ -2241,6 +2462,37 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
           type: "function",
           function: { name: tc.name, arguments: JSON.stringify(tc.arguments) }
         }));
+      }
+
+      const isFinalResponse = !toolCalls.length || finishReason !== "tool_calls";
+      if (isFinalResponse) {
+        const finalization = guardSageFinalization(sageTracker);
+        if (finalization.blocked) {
+          if (finalization.retryAllowed) {
+            fullMessages.push({ role: "system", content: finalization.guidance });
+            forceResetNextIteration = true;
+            writeSageStatus({
+              state: sageTracker.snapshot().state,
+              status: "blocked",
+              code: "SAGE_FINALIZATION_BLOCKED",
+              summary: "Finalizzazione prematura bloccata; manca una fase SageMath obbligatoria."
+            });
+            continue;
+          }
+
+          finalizeSageStatus(
+            "failed",
+            "Il risultato Sage non ha superato il gate di pubblicazione.",
+            "SAGE_FINALIZATION_BLOCKED"
+          );
+          writeAgentSse("agent_error", { error: "SAGE_FINALIZATION_BLOCKED" });
+          writeAgentSse("agent_done", {
+            iterations: iteration,
+            finish_reason: "sage_blocked",
+            totals: agentSession.usageTotals
+          });
+          break;
+        }
       }
 
       // Validate the completed response before committing it to continuation state.
@@ -2281,24 +2533,44 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
       fullMessages = agentSession.messages();
 
       // If no tool calls, we're done
-      if (!toolCalls.length || finishReason !== "tool_calls") {
-        if (sageTracker.snapshot().runId) {
-          if (assistantContent.trim()) {
-            finalizeSageStatus("completed", "Risposta matematica completata.");
-          } else {
-            finalizeSageStatus(
-              "failed",
-              "SageMath ha terminato, ma manca la sintesi finale.",
-              "SAGE_FINAL_SYNTHESIS_MISSING"
-            );
-          }
-        }
+      if (isFinalResponse) {
         writeAgentSse("agent_done", {
           iterations: iteration,
           finish_reason: finishReason || "stop",
           totals: agentSession.usageTotals
         });
         break;
+      }
+
+      const sageBlock = sageToolBlockDecision(toolCalls);
+      if (!sageBlock.allowed) {
+        writeAgentSse("agent_warning", {
+          type: sageBlock.code,
+          warning: sageBlock.message
+        });
+        for (const tc of toolCalls) {
+          const hiddenByDefault = tc.name === "sage";
+          writeAgentSse("agent_tool_call", {
+            id: tc.id,
+            name: tc.name,
+            arguments: tc.arguments,
+            hiddenByDefault
+          });
+          writeAgentSse("agent_tool_result", {
+            id: tc.id,
+            name: tc.name,
+            content: sageBlock.code,
+            isError: true,
+            guarded: true,
+            hiddenByDefault
+          });
+          fullMessages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: sageBlock.code
+          });
+        }
+        continue;
       }
 
       // Execute tool calls.  Group consecutive read-only tools (read, list,
@@ -2323,7 +2595,7 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
 
       const runToolCall = async (tc) => {
         const isSage = tc.name === "sage";
-        const compactSage = isSage && compactSageChat &&
+        const compactSage = isSage && authoritativeSageChat &&
           String(tc.arguments?.output_mode || "auto").toLowerCase() !== "legacy";
         const sagePhase = normalizeSagePhase(tc.arguments?.phase);
         let sageSnapshot = null;
@@ -2451,8 +2723,15 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
           // Keep sage-generated files (.sage.py, plots, …) out of the project
           // tree: run sage in a per-session dir under the workspace that holds
           // history/sessions.
-          sageWorkdir: tc.name === "sage" ? sageSessionDir(fileWorkspace.root, sessionKey) : undefined,
+          sageWorkdir: compactSage
+            ? sageRunDir(fileWorkspace.root, sageSnapshot.runId)
+            : tc.name === "sage"
+              ? sageSessionDir(fileWorkspace.root, sessionKey)
+              : undefined,
           sageAttempt: compactSage ? sageSnapshot.attempt : undefined,
+          runId: compactSage ? sageSnapshot.runId : undefined,
+          phase: compactSage ? sagePhase : undefined,
+          policyRevision: tc.name === "sage" ? sageState.policyRevision : undefined,
           sessionKey
         };
         const rawResult = await executeTool(tc.name, tc.arguments, opts);
@@ -2530,19 +2809,27 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
         }).catch(() => {});
 
         if (compactSage) {
-          const validationPassed = sagePhase === "validate"
-            ? rawResult?.sageResult?.validation?.passed
-            : undefined;
+          const artifactKinds = sageArtifactKinds(rawResult);
           sageSnapshot = sageTracker.recordResult({
             phase: sagePhase,
             isError: Boolean(result.isError),
-            validationPassed,
+            authoritative: rawResult?.authoritative === true,
+            validationPassed: rawResult?.validationPassed === true,
+            publishable: rawResult?.publishable === true,
+            reportReady: rawResult?.reportReady === true,
+            finalMarkdownReady: typeof rawResult?.finalMarkdown === "string" &&
+              rawResult.finalMarkdown.trim().length > 0,
+            artifactKinds,
             artifactCount: rawResult?.artifacts?.length || 0
           });
+          const finalCandidate = authoritativeSageFinalFromResult(rawResult);
+          if (finalCandidate && sageTracker.canFinalize()) {
+            authoritativeSageFinal = finalCandidate;
+          }
           writeSageStatus({
             callId: tc.id,
             phase: sagePhase,
-            state: sagePhaseState(sagePhase),
+            state: sageSnapshot.state,
             status: result.isError ? "error" : "done",
             attempt: sageSnapshot.attempt,
             executeCount: sageSnapshot.executeCount,
@@ -2550,7 +2837,7 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
             validationCount: sageSnapshot.validationCount,
             plotCount: sageSnapshot.plotCount,
             artifactCount: sageSnapshot.artifactCount,
-            validationPassed: rawResult?.sageResult?.validation?.passed,
+            validationPassed: rawResult?.validationPassed === true,
             debugAvailable: Boolean(rawResult?.debug),
             summary: rawResult?.displayContent ||
               (result.isError ? "Esecuzione SageMath non completata." : "Esecuzione SageMath completata.")
@@ -2565,8 +2852,9 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
             });
           }
           const validated = sagePhase === "validate" &&
-            rawResult?.sageResult?.validation?.passed === true && !result.isError;
-          if (validated) {
+            rawResult?.authoritative === true &&
+            rawResult?.validationPassed === true && !result.isError;
+          if (authoritativeSageFinal) {
             writeSageStatus({
               callId: tc.id,
               phase: sagePhase,
@@ -2576,10 +2864,13 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
               summary: "Preparazione della risposta finale."
             });
           }
+
           return {
             id: tc.id,
             name: tc.name,
-            content: result.content,
+            content: authoritativeSageFinal
+              ? "SAGE_AUTHORITATIVE_RESULT_READY"
+              : String(result.content ?? ""),
             displayContent: rawResult?.displayContent || "SageMath completato.",
             isError: result.isError,
             sageResult: rawResult?.sageResult,
@@ -2633,26 +2924,37 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
             tool_call_id: r.id,
             content: r.content
           });
-          if (r.name === "sage" && r.validated) {
-            fullMessages.push({
-              role: "system",
-              content: [
-                "SageMath has completed the requested mathematical work.",
-                "Use only the validated Sage result as the source of numerical and symbolic facts.",
-                "Produce one coherent final answer.",
-                "Do not mention tool calls, retries, stdout, stderr, tracebacks, local paths, or internal phases.",
-                "Render formulas with $...$ and $$...$$.",
-                r.taskType === "function_study"
-                  ? "Use the supplied function-study report in its given section order. Do not omit graphs or change validated numbers."
-                  : null
-              ].filter(Boolean).join("\n")
-            });
-          }
+        }
+
+        if (authoritativeSageFinal && sageTracker.canFinalize()) {
+          const content = authoritativeSageFinal.content;
+          writeAgentSse("agent_text", {
+            content,
+            authoritative: true,
+            runId: authoritativeSageFinal.runId
+          });
+          const finalMessage = {
+            role: "assistant",
+            content,
+            sageAuthoritative: true,
+            sageRunId: authoritativeSageFinal.runId
+          };
+          agentSession.commit(canonicalSageCommitPending(modeChoice.pending), finalMessage);
+          fullMessages = agentSession.messages();
+          finalizeSageStatus("completed", "Report SageMath validato.");
+          writeAgentSse("agent_done", {
+            iterations: iteration,
+            finish_reason: "sage_authoritative",
+            totals: agentSession.usageTotals
+          });
+          sageAuthoritativePublished = true;
+          break;
         }
       }
+      if (sageAuthoritativePublished) break;
     }
 
-    if (iteration >= AGENT_MAX_ITERATIONS) {
+    if (iteration >= AGENT_MAX_ITERATIONS && !sageAuthoritativePublished) {
       finalizeSageStatus(
         "failed",
         "SageMath arrestato al limite massimo di iterazioni.",
@@ -2714,6 +3016,7 @@ app.post("/api/native-agent/command", asyncHandler(async (req, res) => {
     AbortSignal.timeout(5 * 60 * 1000),
     crawlOptions
   );
+  syncSageStateFromNativeCommand(command, result.payload);
   if (result.payload.active === false) {
     agentSessions.stop(agentSessionKey(req));
   }

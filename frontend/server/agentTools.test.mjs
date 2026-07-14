@@ -37,6 +37,26 @@ test("read resolves relative paths from the configured workspace root", async ()
   });
 });
 
+test("Sage dispatch always enters the authoritative gateway", async () => {
+  let captured = null;
+  const marker = {
+    content: "gateway-marker",
+    isError: false,
+    contractVersion: "sage_result_v2",
+    publishable: false
+  };
+  const result = await executeTool("sage", { code: "1+1", phase: "compute" }, {
+    authoritativeSageExecutor: async (args, options) => {
+      captured = { args, options };
+      return marker;
+    }
+  });
+  assert.equal(result, marker);
+  assert.equal(captured.args.code, "1+1");
+  assert.equal(captured.args.phase, "compute");
+  assert.equal(typeof captured.options.rawExecutor, "function");
+});
+
 test("read prefixes and suffixes the result with a visible RANGE tag", async () => {
   await withTmpWorkspace(async (cwd) => {
     await writeFile(path.join(cwd, "ds4.h"), "alpha\nbeta\ngamma\ndelta\n", "utf8");
@@ -350,8 +370,12 @@ test("sage tool creates and runs inside the per-session workdir", { skip: !HAS_S
     );
     assert.equal(result.isError, false);
     assert.match(result.content, /Result:\s*8/);
-    // Sage actually ran in the per-session directory…
-    assert.match(result.content, new RegExp(`CWD:\\s*${sageWorkdir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+    // Public output confirms the isolated workdir without leaking its host path.
+    assert.match(result.content, /CWD:\s*\[sage-session\]/);
+    assert.doesNotMatch(
+      result.content,
+      new RegExp(sageWorkdir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    );
     // …and the directory exists under the workspace base, not the project tree.
     const dirStat = await stat(sageWorkdir);
     assert.equal(dirStat.isDirectory(), true);

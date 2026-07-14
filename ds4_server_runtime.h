@@ -2,6 +2,7 @@
 #define DS4_SERVER_RUNTIME_H
 
 #include "ds4.h"
+#include "ds4_default_skills.h"
 #include "ds4_kvstore.h"
 #include "ds4_wrapper.h"
 
@@ -64,5 +65,9 @@ int ds4_server_runtime_handle_completions(ds4_server_runtime *rt,
 int ds4_server_runtime_handle_server_metrics(ds4_server_runtime *rt,
                                              struct http_request *req,
                                              struct http_response *res);
+
+void ds4_server_runtime_get_default_skills_status(
+    ds4_server_runtime *rt,
+    ds4_default_skills_status *out);
 
 #endif

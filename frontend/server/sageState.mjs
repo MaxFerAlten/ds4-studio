@@ -12,6 +12,14 @@ import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import {
+  loadSagePolicy,
+  SAGE_POLICY_PATH
+} from "./sagePolicyLoader.mjs";
+
+export const DEFAULT_SAGE_SKILL_PATH = SAGE_POLICY_PATH;
+export const SAGE_POLICY_BEGIN = "<!-- ds4-sage-policy:start -->";
+export const SAGE_POLICY_END = "<!-- ds4-sage-policy:end -->";
 
 // ---------------------------------------------------------------------------
 // Sage call debug ring (in-memory + persisted NDJSON)
@@ -123,5 +131,68 @@ export function sageResponds() {
 export const sageState = {
   enabled: false,
   version: null,
-  lastCheck: null
+  lastCheck: null,
+  policyPrompt: null,
+  policyPath: DEFAULT_SAGE_SKILL_PATH,
+  policyRevision: null
 };
+
+export function activateSagePolicy({ skillPath = DEFAULT_SAGE_SKILL_PATH } = {}) {
+  const policy = loadSagePolicy({ policyPath: skillPath });
+  if (!policy.ready) throw new Error(`Sage policy is unavailable: ${policy.path}`);
+  sageState.enabled = true;
+  sageState.policyPrompt = policy.prompt;
+  sageState.policyPath = policy.path;
+  sageState.policyRevision = policy.revision;
+  return policy.prompt;
+}
+
+export function deactivateSagePolicy() {
+  sageState.enabled = false;
+  sageState.policyPrompt = null;
+  sageState.policyRevision = null;
+}
+
+export function sagePolicyIsActive() {
+  return sageState.enabled === true &&
+    typeof sageState.policyPrompt === "string" &&
+    sageState.policyPrompt.length > 0;
+}
+
+function isSagePolicyMessage(message) {
+  return message?.role === "system" &&
+    String(message.content || "").includes(SAGE_POLICY_BEGIN);
+}
+
+export function applySagePolicyToMessages(
+  messages,
+  { enabled = sageState.enabled, prompt = sageState.policyPrompt } = {}
+) {
+  const clean = (Array.isArray(messages) ? messages : []).filter(
+    (message) => !isSagePolicyMessage(message)
+  );
+  if (!enabled || typeof prompt !== "string" || !prompt.trim()) return clean;
+
+  const policyMessage = {
+    role: "system",
+    content: `${SAGE_POLICY_BEGIN}\n${prompt.trim()}\n${SAGE_POLICY_END}`
+  };
+  const firstSystem = clean.findIndex((message) => message?.role === "system");
+  const insertAt = firstSystem >= 0 ? firstSystem + 1 : 0;
+  return [...clean.slice(0, insertAt), policyMessage, ...clean.slice(insertAt)];
+}
+
+export function syncSageStateFromNativeCommand(
+  command,
+  payload,
+  { skillPath = DEFAULT_SAGE_SKILL_PATH } = {}
+) {
+  if (payload?.ok !== true) return false;
+  const match = String(command || "").trim().match(
+    /^\/(?:sage-pol|sage)\s+(start|stop)\s*$/i
+  );
+  if (!match) return false;
+  if (match[1].toLowerCase() === "start") activateSagePolicy({ skillPath });
+  else deactivateSagePolicy();
+  return true;
+}

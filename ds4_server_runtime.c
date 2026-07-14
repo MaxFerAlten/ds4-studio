@@ -75,7 +75,28 @@ int ds4_server_runtime_init(ds4_server_runtime **out,
     server_metrics_refresh_kv_snapshot(s);
     server_metrics_refresh_mtp_snapshot(s);
 
+    char skills_err[256] = {0};
+    if (!server_load_default_skills(s,
+                                    skills_err,
+                                    sizeof(skills_err))) {
+        snprintf(wrapper->last_error,
+                 sizeof(wrapper->last_error),
+                 "server default skill initialization failed: %s",
+                 skills_err[0] ? skills_err : "unknown error");
+
+        if (rt->opt.kv_disk_dir)
+            kv_cache_close(&s->kv);
+        pthread_mutex_destroy(&s->mu);
+        pthread_cond_destroy(&s->cv);
+        pthread_cond_destroy(&s->clients_cv);
+        pthread_mutex_destroy(&s->tool_mu);
+        pthread_mutex_destroy(&s->trace_mu);
+        free(rt);
+        return -1;
+    }
+
     if (pthread_create(&rt->worker, NULL, worker_main, s) != 0) {
+        server_free_default_skills(s);
         if (rt->opt.kv_disk_dir) kv_cache_close(&s->kv);
         pthread_mutex_destroy(&s->mu);
         pthread_cond_destroy(&s->cv);
@@ -116,8 +137,26 @@ void ds4_server_runtime_free(ds4_server_runtime *rt) {
     pthread_cond_destroy(&s->clients_cv);
     pthread_cond_destroy(&s->cv);
     pthread_mutex_destroy(&s->mu);
+    server_free_default_skills(s);
 
     free(rt);
+}
+
+void ds4_server_runtime_get_default_skills_status(
+    ds4_server_runtime *rt,
+    ds4_default_skills_status *out) {
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    if (!rt) return;
+
+    server *s = &rt->s;
+    out->enabled = s->default_skills_enabled;
+    out->soul_loaded = s->soul_skill != NULL;
+    out->ethic_loaded = s->ethic_skill != NULL;
+    out->soul_bytes = s->soul_skill ? strlen(s->soul_skill) : 0;
+    out->ethic_bytes = s->ethic_skill ? strlen(s->ethic_skill) : 0;
+    memcpy(out->revision, s->default_skills_revision,
+           sizeof(out->revision));
 }
 
 static int ds4_server_runtime_run_job(ds4_server_runtime *rt, request *r, int fd, bool enable_cors) {

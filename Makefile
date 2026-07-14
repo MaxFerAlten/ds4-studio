@@ -65,7 +65,7 @@ DS4_LINK_LIBS = $(ROCM_LDLIBS)
 endif
 endif
 
-.PHONY: all help clean test cpu cuda cuda-spark cuda-generic cuda-regression strix-halo rocm ds4-crawl-grounding-test
+.PHONY: all help clean test cpu cuda cuda-spark cuda-generic cuda-regression strix-halo rocm ds4-crawl-grounding-test test-skill-autoload certify-skill-autoload
 
 ifeq ($(UNAME_S),Darwin)
 all: ds4 ds4-server ds4-bench ds4-eval ds4-agent
@@ -233,22 +233,23 @@ ds4_wrapper_state.o: ds4_wrapper_state.c ds4_wrapper_state.h ds4_wrapper.h ds4_w
 ds4_wrapper_http.o: ds4_wrapper_http.c ds4_wrapper_http.h ds4_wrapper_metrics.h ds4_wrapper_state.h ds4_server_runtime.h ds4_agent_runtime.h
 	$(CC) $(CFLAGS) -c -o $@ ds4_wrapper_http.c
 
-ds4_wrapper_metrics.o: ds4_wrapper_metrics.c ds4_wrapper_metrics.h
+ds4_wrapper_metrics.o: ds4_wrapper_metrics.c ds4_wrapper_metrics.h \
+    ds4_server_runtime.h ds4_agent_runtime.h ds4_default_skills.h
 	$(CC) $(CFLAGS) -c -o $@ ds4_wrapper_metrics.c
 
 ds4_agent_session_store.o: ds4_agent_session_store.c ds4_agent_session_store.h ds4.h ds4_kvstore.h
 	$(CC) $(CFLAGS) -c -o $@ ds4_agent_session_store.c
 
-ds4_server_runtime.o: ds4_server_runtime.c ds4_server_runtime.h ds4_wrapper.h ds4.h ds4_kvstore.h ds4_server.c
+ds4_server_runtime.o: ds4_server_runtime.c ds4_server_runtime.h ds4_wrapper.h ds4.h ds4_kvstore.h ds4_server.c ds4_default_skills.h
 	$(CC) $(CFLAGS) -Wno-unused-function -c -o $@ ds4_server_runtime.c
 
-ds4_agent_runtime.o: ds4_agent_runtime.c ds4_agent_runtime.h ds4_wrapper.h ds4_agent_session_store.h ds4_agent.c ds4_crawl_client.h ds4_crawl_grounding.h
+ds4_agent_runtime.o: ds4_agent_runtime.c ds4_agent_runtime.h ds4_wrapper.h ds4_agent_session_store.h ds4_agent.c ds4_crawl_client.h ds4_crawl_grounding.h ds4_default_skills.h
 	$(CC) $(CFLAGS) -Wno-unused-function -c -o $@ ds4_agent_runtime.c
 
-ds4_test.o: tests/ds4_test.c ds4_server.c ds4.h ds4_ssd.h ds4_distributed.h ds4_help.h ds4_kvstore.h rax.h
+ds4_test.o: tests/ds4_test.c ds4_server.c ds4.h ds4_ssd.h ds4_distributed.h ds4_help.h ds4_kvstore.h rax.h ds4_default_skills.h
 	$(CC) $(CFLAGS) -Wno-unused-function -c -o $@ tests/ds4_test.c
 
-ds4_agent_test.o: tests/ds4_agent_test.c ds4_agent.c ds4.h ds4_ssd.h ds4_distributed.h ds4_help.h ds4_kvstore.h ds4_web.h ds4_crawl_client.h ds4_crawl_grounding.h linenoise.h
+ds4_agent_test.o: tests/ds4_agent_test.c ds4_agent.c ds4.h ds4_ssd.h ds4_distributed.h ds4_help.h ds4_kvstore.h ds4_web.h ds4_crawl_client.h ds4_crawl_grounding.h linenoise.h ds4_default_skills.h
 	$(CC) $(CFLAGS) -Wno-unused-function -c -o $@ tests/ds4_agent_test.c
 
 tests/cuda_long_context_smoke.o: tests/cuda_long_context_smoke.c ds4_gpu.h
@@ -297,17 +298,23 @@ else
 	$(DS4_LINK) -o $@ ds4_test.o ds4_help.o ds4_kvstore.o rax.o $(BUF_OBJS) $(CORE_OBJS) $(DS4_LINK_LIBS)
 endif
 
-ds4_agent_test: ds4_agent_test.o ds4_help.o ds4_crawl_client.o ds4_crawl_grounding.o ds4_web.o ds4_kvstore.o ds4_context_blob.o ds4_tool_compress.o linenoise.o $(BUF_OBJS) $(CORE_OBJS)
+ds4_agent_test: ds4_agent_test.o ds4_help.o ds4_crawl_client.o ds4_crawl_grounding.o ds4_web.o ds4_kvstore.o ds4_context_blob.o ds4_tool_compress.o linenoise.o $(BUF_OBJS) $(CPU_CORE_OBJS)
 ifeq ($(UNAME_S),Darwin)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ ds4_agent_test.o ds4_help.o ds4_crawl_client.o ds4_crawl_grounding.o ds4_web.o ds4_kvstore.o ds4_context_blob.o ds4_tool_compress.o linenoise.o $(BUF_OBJS) $(CORE_OBJS) $(METAL_LDLIBS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ ds4_agent_test.o ds4_help.o ds4_crawl_client.o ds4_crawl_grounding.o ds4_web.o ds4_kvstore.o ds4_context_blob.o ds4_tool_compress.o linenoise.o $(BUF_OBJS) $(CPU_CORE_OBJS) $(METAL_LDLIBS)
 else
-	$(DS4_LINK) -o $@ ds4_agent_test.o ds4_help.o ds4_crawl_client.o ds4_crawl_grounding.o ds4_web.o ds4_kvstore.o ds4_context_blob.o ds4_tool_compress.o linenoise.o $(BUF_OBJS) $(CORE_OBJS) $(DS4_LINK_LIBS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ ds4_agent_test.o ds4_help.o ds4_crawl_client.o ds4_crawl_grounding.o ds4_web.o ds4_kvstore.o ds4_context_blob.o ds4_tool_compress.o linenoise.o $(BUF_OBJS) $(CPU_CORE_OBJS) -lm -pthread
 endif
 
 test: ds4_test ds4_agent_test ds4-eval q4k-dot-test ds4-crawl-grounding-test
 	./ds4-eval --self-test-extractors
 	./ds4_agent_test
 	./ds4_test
+
+test-skill-autoload:
+	./tests/test_skill_autoload.sh
+
+certify-skill-autoload:
+	./tests/certify_skill_autoload_live.sh
 
 q4k-dot-test: tests/test_q4k_dot.c
 	$(CC) -O2 -Wall -Wextra -std=c99 -o tests/test_q4k_dot tests/test_q4k_dot.c -lm -pthread

@@ -232,6 +232,21 @@ export const AGENT_COMMANDS = [
   { name: "/pony lite", desc: "Use light lean-agent guidance" },
   { name: "/pony full", desc: "Use full lean-agent guidance" },
   { name: "/pony ultra", desc: "Use aggressive YAGNI guidance" },
+  { name: "/metacognition start", desc: "Enable the metacognition skill" },
+  { name: "/metacognition stop", desc: "Disable the metacognition skill" },
+  { name: "/metacognition status", desc: "Show metacognition skill status" },
+  { name: "/soul start", desc: "Enable the soul skill" },
+  { name: "/soul stop", desc: "Disable the soul skill" },
+  { name: "/soul status", desc: "Show soul skill status" },
+  { name: "/ethic start", desc: "Enable the ethic skill" },
+  { name: "/ethic stop", desc: "Disable the ethic skill" },
+  { name: "/ethic status", desc: "Show ethic skill status" },
+  { name: "/sage-pol start", desc: "Enable the Sage policy skill" },
+  { name: "/sage-pol stop", desc: "Disable the Sage policy skill" },
+  { name: "/sage-pol status", desc: "Show Sage policy skill status" },
+  { name: "/sage start", desc: "Enable SageMath and its policy skill" },
+  { name: "/sage stop", desc: "Disable SageMath and its policy skill" },
+  { name: "/sage status", desc: "Show SageMath and policy status" },
 ];
 
 export const CHECKBOX_FIELDS = new Set([
@@ -429,4 +444,40 @@ export function clearStoredSession() {
   try {
     window.localStorage.removeItem(SESSION_STORAGE_KEY);
   } catch {}
+}
+
+export async function requestFreshNativeAgentSession(
+  fetchImpl,
+  agentHeaders = {}
+) {
+  if (typeof fetchImpl !== "function") {
+    throw new TypeError("fetchImpl must be a function");
+  }
+
+  const response = await fetchImpl("/api/native-agent/command", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...agentHeaders
+    },
+    body: JSON.stringify({ command: "/new" })
+  });
+
+  const text = await response.text();
+  let payload;
+  try {
+    payload = text ? JSON.parse(text) : {};
+  } catch {
+    payload = { ok: false, message: text || `HTTP ${response.status}` };
+  }
+
+  if (!response.ok || payload.ok !== true || payload.active !== true) {
+    throw new Error(
+      payload.message ||
+      payload.error ||
+      `Native agent /new failed with HTTP ${response.status}`
+    );
+  }
+
+  return payload;
 }

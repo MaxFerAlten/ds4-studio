@@ -7,6 +7,7 @@ import {
   canShowMermaidFullscreen,
   MermaidFullscreen
 } from "./MermaidFullscreen.mjs";
+import { resolveSageMarkdownImageLinks } from "./sage/sageArtifactLinks.mjs";
 
 const remarkPlugins = [remarkGfm, remarkMath];
 const rehypePlugins = [rehypeKatex];
@@ -531,13 +532,14 @@ export function normalizeMathDelimiters(content) {
 }
 
 export const MessageContent = memo(function MessageContent({ content }) {
+  const resolvedContent = resolveSageMarkdownImageLinks(content);
   return createElement(
     "div",
     { className: "message-content" },
     createElement(
       ReactMarkdown,
       { remarkPlugins, rehypePlugins, components: markdownComponents },
-      normalizeMathDelimiters(markIncompleteMermaidFences(content))
+      normalizeMathDelimiters(markIncompleteMermaidFences(resolvedContent))
     )
   );
 });

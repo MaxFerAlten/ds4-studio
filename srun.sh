@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export DS4_SKILLS_DIR="${DS4_SKILLS_DIR:-$ROOT_DIR/skills}"
 source "$ROOT_DIR/scripts/rocm_settings.sh"
 
 FRONTEND_DIR="$ROOT_DIR/frontend"
@@ -50,6 +51,8 @@ Environment:
                        ROCm performance level; use off/skip/none to bypass.
   DS4_SKILL_AUTO=0     Disable automatic loading of soul/ethic skills at startup.
                        Default is 1 (enabled). Set via GUI or environment variable.
+  DS4_SKILLS_DIR=path  Absolute path to the skills directory.
+                       Default: $ROOT_DIR/skills
 
 After startup, open the printed local URL in your browser.
 USAGE

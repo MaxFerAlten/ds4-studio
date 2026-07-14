@@ -1,4 +1,6 @@
 #include "ds4_wrapper_metrics.h"
+#include "ds4_agent_runtime.h"
+#include "ds4_server_runtime.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -131,6 +133,54 @@ char *ds4_wrapper_status_json(const ds4_wrapper *w) {
         w->last_freeze_ms,
         w->last_thaw_ms,
         w->last_switch_ms);
+
+    /* Default skills status */
+    {
+        ds4_default_skills_status server_skills = {0};
+        ds4_default_skills_status agent_skills = {0};
+
+        ds4_server_runtime_get_default_skills_status(
+            w->server_rt, &server_skills);
+        ds4_agent_runtime_get_default_skills_status(
+            w->agent_rt, &agent_skills);
+
+        met_buf_puts(&b, ",\"default_skills\":{");
+        met_buf_printf(&b,
+            "\"server\":{"
+            "\"runtime_initialized\":%s,"
+            "\"enabled\":%s,"
+            "\"soul_loaded\":%s,"
+            "\"ethic_loaded\":%s,"
+            "\"soul_bytes\":%zu,"
+            "\"ethic_bytes\":%zu,"
+            "\"revision\":\"%.40s\""
+            "},",
+            w->server_rt ? "true" : "false",
+            server_skills.enabled ? "true" : "false",
+            server_skills.soul_loaded ? "true" : "false",
+            server_skills.ethic_loaded ? "true" : "false",
+            server_skills.soul_bytes,
+            server_skills.ethic_bytes,
+            server_skills.revision);
+        met_buf_printf(&b,
+            "\"agent\":{"
+            "\"runtime_initialized\":%s,"
+            "\"enabled\":%s,"
+            "\"soul_loaded\":%s,"
+            "\"ethic_loaded\":%s,"
+            "\"soul_bytes\":%zu,"
+            "\"ethic_bytes\":%zu,"
+            "\"revision\":\"%.40s\""
+            "}"
+            "}",
+            w->agent_rt ? "true" : "false",
+            agent_skills.enabled ? "true" : "false",
+            agent_skills.soul_loaded ? "true" : "false",
+            agent_skills.ethic_loaded ? "true" : "false",
+            agent_skills.soul_bytes,
+            agent_skills.ethic_bytes,
+            agent_skills.revision);
+    }
 
     if (w->last_error[0]) {
         met_buf_puts(&b, ",\"last_error\":\"");

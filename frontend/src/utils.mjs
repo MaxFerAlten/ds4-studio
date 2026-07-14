@@ -284,6 +284,13 @@ export function parseAgentInput(text, agentMode) {
     return { type: "sageControl", action: sageControl[1].toLowerCase() };
   }
 
+  // Sage policy skill toggle — loads/unloads skills/sage/SKILL.md
+  const sagePol = trimmed.match(/^\/sage-pol\s+(start|stop|status)\s*$/i);
+  if (sagePol) {
+    const action = sagePol[1].toLowerCase();
+    return { type: "native", command: `/sage-pol ${action}` };
+  }
+
   const gitnexus = trimmed.match(/^\/gitnexus\s+(start|stop|status)\s*$/i);
   if (gitnexus) {
     if (!agentMode) return { type: "gitnexus", action: "inactive" };
@@ -407,12 +414,11 @@ export function withAgentPriming(messages, requestText) {
   return `${preamble}\nNew user request:\n${requestText}`;
 }
 
-// The /metacognition, /soul and /ethic skill toggles rebuild the native agent
-// session from a new system prompt (ds4_agent_runtime_new), which drops the
-// live conversation from the agent's context. After one of these we re-arm
-// priming so the next turn replays the transcript into the fresh session.
-// /new and /switch intentionally move to a different session, so they are
-// excluded. Case-sensitive to mirror the runtime's own command parsing.
+// Policy start/stop commands rebuild the native agent session from a new
+// system prompt, which drops the live conversation from the agent's context.
+// Status is read-only; /new and /switch intentionally change sessions.
+// Case-sensitive to mirror the runtime's own command parsing.
 export function commandRebuildsSessionKeepingContext(command) {
-  return /^\/(metacognition|soul|ethic)\b/.test(String(command || "").trim());
+  const normalized = String(command || "").trim();
+  return /^\/(metacognition|soul|ethic|sage-pol|sage)\s+(start|stop)\b/.test(normalized);
 }

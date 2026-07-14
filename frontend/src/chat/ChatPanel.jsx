@@ -2,11 +2,12 @@ import { memo } from "react";
 import { Download, Plus, Square, Send } from "lucide-react";
 import { MessageContent } from "../MessageContent.mjs";
 import { ResearchPanel } from "../research/ResearchPanel.jsx";
+import { SageActivityCard } from "../sage/SageActivityCard.jsx";
 
 /* Memoized: typing in the composer re-renders ChatPanel on every keystroke,
  * but messages/messagesRef are unchanged, so the whole list (and every
  * ReactMarkdown parse inside MessageContent) is skipped. */
-const MessagesList = memo(function MessagesList({ messages, messagesRef }) {
+const MessagesList = memo(function MessagesList({ messages, messagesRef, sageActivities }) {
   return (
     <div className="messages" ref={messagesRef} data-agent-id="chat-messages">
       {messages.map((message, index) => (
@@ -18,9 +19,12 @@ const MessagesList = memo(function MessagesList({ messages, messagesRef }) {
               <MessageContent content={message.reasoning} />
             </details>
           ) : null}
+          {message.sageRunId && sageActivities?.[message.sageRunId] ? (
+            <SageActivityCard activity={sageActivities[message.sageRunId]} />
+          ) : null}
           {message.tool_calls ? (
             <div className="tool-calls-container">
-              {message.tool_calls.map(tc => (
+              {message.tool_calls.filter((tc) => tc.name !== "sage").map(tc => (
                 <div key={tc.id} className="tool-call-block">
                   <div className="tool-call-header">Tool Call: <code>{tc.name}</code></div>
                   <pre className="tool-call-args">{tc.arguments}</pre>
@@ -32,13 +36,15 @@ const MessagesList = memo(function MessagesList({ messages, messagesRef }) {
             </div>
           ) : null}
           {message.role === "tool" ? (
-            <div className={`tool-result-block ${message.isError ? "error" : ""} ${message.guarded ? "guarded" : ""}`}>
-              <div className="tool-result-header">
-                Tool Result: <code>{message.name}</code>
-                {message.guarded ? <span className="tool-result-guard">guarded</span> : null}
+            message.name === "sage" && message.hiddenByDefault ? null : (
+              <div className={`tool-result-block ${message.isError ? "error" : ""} ${message.guarded ? "guarded" : ""}`}>
+                <div className="tool-result-header">
+                  Tool Result: <code>{message.name}</code>
+                  {message.guarded ? <span className="tool-result-guard">guarded</span> : null}
+                </div>
+                <pre className="tool-result-content">{message.content}</pre>
               </div>
-              <pre className="tool-result-content">{message.content}</pre>
-            </div>
+            )
           ) : (
             <MessageContent content={message.content} />
           )}
@@ -68,6 +74,7 @@ export function ChatPanel({
   config,
   researchMode, setResearchMode,
   selectedResearchSessionId, setSelectedResearchSessionId,
+  sageActivities,
   canSend,
   filteredSuggestions,
   setActiveSuggestionIndex,
@@ -76,7 +83,7 @@ export function ChatPanel({
   activeIndex,
   sendMessage,
   toggleAgentMode,
-  startNewSession, downloadConversation,
+  startNewSession, downloadConversation, downloadProfessionalConversation,
   uploadFile,
   abortGeneration,
   handleInputChange, handleSelectSuggestion,
@@ -131,7 +138,7 @@ export function ChatPanel({
           onHistoryChange={handleResearchHistoryChange}
         />
       ) : null}
-      <MessagesList messages={messages} messagesRef={messagesRef} />
+      <MessagesList messages={messages} messagesRef={messagesRef} sageActivities={sageActivities} />
       <div className="export-row">
         <button
           type="button"
@@ -142,6 +149,16 @@ export function ChatPanel({
         >
           <Download size={16} />
           Export MD
+        </button>
+        <button
+          type="button"
+          onClick={downloadProfessionalConversation}
+          disabled={!messages.length}
+          title="Export only the professional editorial answer with Sage graphs embedded as base64"
+          data-agent-id="chat-export-pro-button"
+        >
+          <Download size={16} />
+          Export Pro MD
         </button>
         {exportNotice ? (
           <div className={`export-notice ${exportNotice.kind}`} role="status" aria-live="polite">
