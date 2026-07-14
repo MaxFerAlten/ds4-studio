@@ -3,7 +3,9 @@ import test from "node:test";
 import {
   exportConversationMarkdown,
   exportConversationMarkdownRaw,
+  exportProfessionalMarkdown,
   markdownFileName,
+  professionalMarkdownFileName,
   parseConversationMarkdown,
   parseConversationMetadata
 } from "./conversationExport.mjs";
@@ -215,6 +217,64 @@ test("wraps bare math fence body into $$ display math", () => {
 
 test("generates stable markdown file names", () => {
   assert.equal(markdownFileName(new Date("2026-05-24T12:34:56Z")), "ds4-conversation-2026-05-24-12-34-56.md");
+  assert.equal(
+    professionalMarkdownFileName(new Date("2026-05-24T12:34:56Z")),
+    "ds4-elaborato-pro-2026-05-24-12-34-56.md"
+  );
+});
+
+test("professional export keeps only editorial output and embeds Sage graphs as base64", async () => {
+  const artifactUrl = "/api/sage/artifacts/session/function.png";
+  const markdown = await exportProfessionalMarkdown([
+    { role: "user", content: "Studia la funzione" },
+    { role: "assistant", content: "tentativo", reasoning: "ragionamento interno" },
+    { role: "tool", name: "sage", content: "stdout interno" },
+    {
+      role: "assistant",
+      content: `# Studio della funzione\n\nRisultato verificato.\n\n![Grafico](${artifactUrl})`,
+      reasoning: "non esportare questo"
+    },
+    { role: "assistant", content: "Sage attivo", agentNotice: true }
+  ], {
+    sageActivities: {
+      run1: { artifacts: [{ name: "function.png", url: artifactUrl, mediaType: "image/png" }] }
+    },
+    fetchImpl: async (url) => {
+      assert.equal(url, artifactUrl);
+      return {
+        ok: true,
+        headers: { get: () => "image/png" },
+        arrayBuffer: async () => Uint8Array.from([80, 78, 71]).buffer
+      };
+    }
+  });
+
+  assert.match(markdown, /^# Studio della funzione/);
+  assert.match(markdown, /data:image\/png;base64,UE5H/);
+  assert.doesNotMatch(markdown, /Studia la funzione|tentativo|ragionamento interno|stdout interno|non esportare questo|Sage attivo/);
+  assert.doesNotMatch(markdown, /\/api\/sage\/artifacts/);
+});
+
+test("professional export resolves relative Sage graphs before embedding them", async () => {
+  const expectedUrl = "/api/sage/artifacts/by-name/function_plot.png";
+  const markdown = await exportProfessionalMarkdown([
+    {
+      role: "assistant",
+      content: "# Studio della funzione\n\n![Grafico](function_plot.png)"
+    }
+  ], {
+    fetchImpl: async (url) => {
+      assert.equal(url, expectedUrl);
+      return {
+        ok: true,
+        headers: { get: () => "image/png" },
+        arrayBuffer: async () => Uint8Array.from([80, 78, 71]).buffer
+      };
+    }
+  });
+
+  assert.match(markdown, /!\[Grafico\]\(data:image\/png;base64,UE5H\)/);
+  assert.doesNotMatch(markdown, /function_plot\.png|\/api\/sage\/artifacts/);
 });
 
 test("agent-mode client notices are not serialised as assistant turns", () => {
@@ -549,6 +609,88 @@ test("CERTIFICATION: anti-loop guard limits", () => {
   assert.equal(MAX_EMPTY_RESULTS, 5, "stop after 5 empty results");
   assert.equal(MAX_SIMILAR_COMMANDS, 4, "stop after 4 similar commands");
   assert.equal(RING_SIZE, 8, "ring buffer of 8 fingerprints");
+});
+
+test("standard export hides Sage trace while preserving the canonical report", () => {
+  const messages = [
+    {
+      role: "assistant",
+      content: null,
+      tool_calls: [{ id: "sage-1", name: "sage", arguments: { code: "secret" } }]
+    },
+    {
+      role: "tool",
+      name: "sage",
+      tool_call_id: "sage-1",
+      hiddenByDefault: true,
+      content: "stdout /tmp/sage.py Traceback private"
+    },
+    {
+      role: "assistant",
+      content: "# Report\n\n$$\nx^2\n$$\n\n![Grafico](/api/sage/artifacts/run-1/sha256%3Aabc)",
+      sageAuthoritative: true,
+      sageRunId: "run-1"
+    }
+  ];
+
+  const markdown = exportConversationMarkdown(messages);
+  assert.match(markdown, /# Report/);
+  assert.match(markdown, /\$\$\nx\^2\n\$\$/);
+  assert.match(markdown, /!\[Grafico\]/);
+  assert.doesNotMatch(markdown, /Tool Call: sage|Tool: sage|secret|stdout|Traceback|\/tmp/);
+});
+
+test("raw export preserves Sage trace for debugging", () => {
+  const messages = [
+    {
+      role: "assistant",
+      content: null,
+      tool_calls: [{ id: "sage-1", name: "sage", arguments: { code: "1+1" } }]
+    },
+    {
+      role: "tool",
+      name: "sage",
+      tool_call_id: "sage-1",
+      hiddenByDefault: true,
+      content: "stdout: 2"
+    }
+  ];
+
+  const markdown = exportConversationMarkdownRaw(messages);
+  assert.match(markdown, /Tool Call: sage/);
+  assert.match(markdown, /Tool: sage/);
+  assert.match(markdown, /stdout: 2/);
+});
+
+test("professional export selects artifacts from the canonical report run only", async () => {
+  const requested = [];
+  const runOneUrl = "/api/sage/artifacts/run-1/sha256%3A" + "a".repeat(64);
+  const runTwoUrl = "/api/sage/artifacts/run-2/sha256%3A" + "b".repeat(64);
+  const markdown = await exportProfessionalMarkdown([
+    {
+      role: "assistant",
+      content: `# Report\n\n![Funzione](${runOneUrl})`,
+      sageAuthoritative: true,
+      sageRunId: "run-1"
+    }
+  ], {
+    sageActivities: {
+      "run-1": { runId: "run-1", artifacts: [{ name: "one.png", url: runOneUrl, mediaType: "image/png" }] },
+      "run-2": { runId: "run-2", artifacts: [{ name: "two.png", url: runTwoUrl, mediaType: "image/png" }] }
+    },
+    fetchImpl: async (url) => {
+      requested.push(url);
+      return {
+        ok: true,
+        headers: { get: () => "image/png" },
+        arrayBuffer: async () => Uint8Array.from([80, 78, 71]).buffer
+      };
+    }
+  });
+
+  assert.deepEqual(requested, [runOneUrl]);
+  assert.match(markdown, /data:image\/png;base64,UE5H/);
+  assert.doesNotMatch(markdown, /run-2|two\.png|\/api\/sage\/artifacts/);
 });
 
 test("CERTIFICATION: end-to-end — full conversation round-trip", () => {

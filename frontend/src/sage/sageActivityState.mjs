@@ -103,7 +103,7 @@ function applyStepEvent(steps, ids, status, detail) {
   const lastTarget = indexes.length ? indexes[indexes.length - 1] : -1;
 
   return steps.map((step, index) => {
-    if (index < furthest && (step.status === "pending" || step.status === "running")) {
+    if (index < furthest && (step.status === "running" || (step.status === "pending" && index < (furthest - 1)))) {
       return { ...step, status: "done" };
     }
     if (!indexes.includes(index)) return { ...step };
@@ -215,13 +215,18 @@ export function applySageArtifact(activity, event = {}) {
   const current = activity || createSageActivity(event);
   const artifact = event.artifact || event;
   if (!artifact || !artifact.name || !artifact.url) return current;
-  const key = artifact.url || artifact.name;
+  const eventRunId = String(event.runId || artifact.runId || "");
+  if ((current.runId && eventRunId && current.runId !== eventRunId) ||
+      (artifact.runId && eventRunId && artifact.runId !== eventRunId)) {
+    return current;
+  }
+  const key = artifact.artifactId || artifact.url || artifact.name;
   const artifacts = (current.artifacts || []).filter(
-    (item) => (item.url || item.name) !== key
+    (item) => (item.artifactId || item.url || item.name) !== key
   );
   return {
     ...current,
-    runId: event.runId || current.runId,
+    runId: eventRunId || current.runId,
     artifacts: [...artifacts, { ...artifact }],
     plotSeen: true
   };

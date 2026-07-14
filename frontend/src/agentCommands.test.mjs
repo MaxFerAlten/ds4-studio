@@ -61,6 +61,20 @@ test("parses pony controls only as agent-scoped commands", () => {
   assert.deepEqual(parseAgentInput("/pony start", false), { type: "pony", action: "inactive" });
 });
 
+test("routes sage policy controls through the native command endpoint", () => {
+  for (const action of ["start", "stop", "status"]) {
+    const command = `/sage-pol ${action}`;
+    assert.deepEqual(parseAgentInput(command, false), {
+      type: "native",
+      command
+    });
+    assert.deepEqual(parseAgentInput(command.toUpperCase(), true), {
+      type: "native",
+      command
+    });
+  }
+});
+
 test("canonicalizes agent aliases and preserves arguments", () => {
   assert.deepEqual(parseAgentInput("/agent save", false), {
     type: "native",

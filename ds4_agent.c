@@ -1,4 +1,5 @@
 #include "ds4.h"
+#include "ds4_default_skills.h"
 #include "ds4_distributed.h"
 #include "ds4_help.h"
 #include "ds4_kvstore.h"
@@ -121,6 +122,37 @@ typedef struct {
 
 typedef struct agent_bash_job agent_bash_job;
 
+/* Sage turn state — the native mirror of frontend/server/sageTurnTracker.mjs.
+ * It is the only authority allowed to release a Sage-produced final answer. */
+typedef enum {
+    AGENT_SAGE_IDLE = 0,
+    AGENT_SAGE_PREPARED,
+    AGENT_SAGE_COMPUTED,
+    AGENT_SAGE_REPAIRING,
+    AGENT_SAGE_VALIDATED,
+    AGENT_SAGE_PLOTTED,
+    AGENT_SAGE_READY,
+    AGENT_SAGE_FAILED
+} agent_sage_state;
+
+typedef struct {
+    agent_sage_state state;
+    int execute_count;
+    int repair_count;
+    int validation_count;
+    int plot_count;
+    int finalization_block_count;
+    bool used;
+    bool authoritative;
+    bool validation_passed;
+    bool publishable;
+    bool report_ready;
+    bool final_markdown_ready;
+    char run_id[64];
+    char task_type[32];
+    char failure_code[96];
+} agent_sage_turn_state;
+
 typedef struct {
     ds4_engine *engine;
     agent_config *cfg;
@@ -193,6 +225,15 @@ typedef struct {
     /* Ethic skill: content injected via /ethic start */
     char *ethic_prompt;
 
+    /* Sage skill: content injected via /sage start */
+    char *sage_prompt;
+    char sage_policy_revision[41];
+    char *sage_final_markdown;
+    uint64_t sage_turn_sequence;
+
+    bool default_skills_enabled;
+    char default_skills_revision[41];
+
     char *context_blob_dir;
 
     /* Anti-loop guard: ring buffer of recent tool command fingerprints.
@@ -204,6 +245,7 @@ typedef struct {
     int loop_guard_consecutive_empty;
     int loop_guard_consecutive_identical;
     int loop_guard_consecutive_malformed;
+    int loop_guard_consecutive_defensive;
     int loop_guard_max_tool_rounds;
 
     /* Loop guard user confirmation: when the guard triggers, the worker
@@ -211,6 +253,12 @@ typedef struct {
     bool loop_guard_awaiting_user;
     bool loop_guard_awaiting_user_answered;
     bool loop_guard_awaiting_user_continue;
+
+    /* Sage turn state — reset at start of each new user turn. */
+    agent_sage_turn_state sage_turn;
+    int sage_consecutive_rounds; /* anti-loop: counts consecutive sage calls */
+    int sage_total_calls;        /* anti-loop: total sage calls in this turn */
+    double sage_turn_start_sec;  /* anti-loop: wall-clock start of sage turn */
 
     /* Wrapper embedding hook: when set, agent_publish() forwards published
      * bytes to this callback on the worker thread (before locking w->mu) so the
@@ -231,6 +279,15 @@ typedef struct agent_tail_capture {
     size_t len;
     size_t total;
 } agent_tail_capture;
+
+/* Full, per-round capture used only after a Sage call has started.  Unlike the
+ * history tail capture this buffer is lossless: premature model prose must be
+ * discardable without leaking even its prefix to the client. */
+typedef struct {
+    char *ptr;
+    size_t len;
+    size_t cap;
+} agent_deferred_output;
 
 typedef enum {
     AGENT_MD_PENDING_NONE,
@@ -276,6 +333,7 @@ typedef struct {
     size_t utf8_pending_len;
     size_t utf8_pending_need;
     agent_tail_capture *capture;
+    agent_deferred_output *deferred;
 } agent_token_renderer;
 
 typedef struct {
@@ -429,6 +487,174 @@ static char *xstrdup(const char *s) {
     return p;
 }
 
+static const char *agent_sage_phase_normalize(const char *phase) {
+    if (!phase || !phase[0]) return "compute";
+    if (!strcmp(phase, "prepare") || !strcmp(phase, "compute") ||
+        !strcmp(phase, "repair") || !strcmp(phase, "validate") ||
+        !strcmp(phase, "plot"))
+        return phase;
+    /* Match normalizeSagePhase(): an unknown phase falls back to compute. */
+    return "compute";
+}
+
+static const char *agent_sage_state_name(agent_sage_state state) {
+    switch (state) {
+    case AGENT_SAGE_IDLE: return "idle";
+    case AGENT_SAGE_PREPARED: return "prepared";
+    case AGENT_SAGE_COMPUTED: return "computed";
+    case AGENT_SAGE_REPAIRING: return "repairing";
+    case AGENT_SAGE_VALIDATED: return "validated";
+    case AGENT_SAGE_PLOTTED: return "plotted";
+    case AGENT_SAGE_READY: return "ready";
+    case AGENT_SAGE_FAILED: return "failed";
+    }
+    return "failed";
+}
+
+static void agent_sage_turn_reset(agent_sage_turn_state *s) {
+    if (!s) return;
+    memset(s, 0, sizeof(*s));
+    s->state = AGENT_SAGE_IDLE;
+    snprintf(s->task_type, sizeof(s->task_type), "auto");
+}
+
+static void agent_sage_turn_fail(agent_sage_turn_state *s, const char *code) {
+    if (!s) return;
+    s->state = AGENT_SAGE_FAILED;
+    s->publishable = false;
+    snprintf(s->failure_code, sizeof(s->failure_code), "%s",
+             code && code[0] ? code : "SAGE_FINALIZATION_BLOCKED");
+}
+
+static bool agent_sage_turn_before_call(agent_sage_turn_state *s,
+                                        const char *phase,
+                                        char *err, size_t err_len) {
+    if (!s) {
+        snprintf(err, err_len, "SAGE_PHASE_TRANSITION_INVALID");
+        return false;
+    }
+    const char *p = agent_sage_phase_normalize(phase);
+    bool allowed = false;
+    if (!strcmp(p, "compute")) {
+        allowed = (s->state == AGENT_SAGE_IDLE ||
+                   s->state == AGENT_SAGE_PREPARED) &&
+                  s->execute_count < 1;
+        if (allowed) {
+            s->execute_count++;
+            s->state = AGENT_SAGE_PREPARED;
+        }
+    } else if (!strcmp(p, "repair")) {
+        allowed = (s->state == AGENT_SAGE_COMPUTED ||
+                   s->state == AGENT_SAGE_REPAIRING) &&
+                  s->repair_count < 5;
+        if (allowed) {
+            s->repair_count++;
+            s->state = AGENT_SAGE_REPAIRING;
+        }
+    } else if (!strcmp(p, "validate")) {
+        allowed = s->state == AGENT_SAGE_COMPUTED &&
+                  s->validation_count < 1;
+        if (allowed) s->validation_count++;
+    } else if (!strcmp(p, "plot")) {
+        allowed = (s->state == AGENT_SAGE_VALIDATED ||
+                   s->state == AGENT_SAGE_PLOTTED) &&
+                  s->plot_count < 3;
+        if (allowed) s->plot_count++;
+    }
+    if (!allowed) {
+        snprintf(err, err_len, "SAGE_PHASE_TRANSITION_INVALID");
+        return false;
+    }
+    s->used = true;
+    return true;
+}
+
+static void agent_sage_turn_after_result(agent_sage_turn_state *s,
+                                         const char *phase,
+                                         bool is_error,
+                                         bool authoritative,
+                                         bool validation_passed,
+                                         bool publishable,
+                                         bool report_ready,
+                                         bool final_markdown_ready) {
+    if (!s) return;
+    const char *p = agent_sage_phase_normalize(phase);
+    if (is_error) {
+        if (!strcmp(p, "compute")) {
+            s->state = AGENT_SAGE_COMPUTED;
+        } else if (!strcmp(p, "repair") && s->repair_count < 5) {
+            s->state = AGENT_SAGE_COMPUTED;
+        } else {
+            agent_sage_turn_fail(s, "SAGE_EXECUTION_FAILED");
+        }
+        return;
+    }
+    if (!strcmp(p, "compute") || !strcmp(p, "repair")) {
+        s->state = AGENT_SAGE_COMPUTED;
+        return;
+    }
+    if (!strcmp(p, "validate")) {
+        s->authoritative = authoritative;
+        s->validation_passed = validation_passed;
+        s->publishable = publishable;
+        s->report_ready = report_ready;
+        s->final_markdown_ready = final_markdown_ready;
+        if (!authoritative || !validation_passed || !publishable ||
+            !report_ready || !final_markdown_ready) {
+            agent_sage_turn_fail(s, "SAGE_RESULT_NOT_PUBLISHABLE");
+            return;
+        }
+        /* Artifact provenance and required plots are already part of the HTTP
+         * publication gate; a publishable v2 response is therefore ready. */
+        s->state = AGENT_SAGE_READY;
+        return;
+    }
+    if (!strcmp(p, "plot")) {
+        if (authoritative && validation_passed && publishable &&
+            report_ready && final_markdown_ready) {
+            s->authoritative = true;
+            s->validation_passed = true;
+            s->publishable = true;
+            s->report_ready = true;
+            s->final_markdown_ready = true;
+            s->state = AGENT_SAGE_READY;
+        } else if (s->plot_count >= 3) {
+            agent_sage_turn_fail(s, "SAGE_ARTIFACT_MISSING");
+        } else {
+            s->state = AGENT_SAGE_PLOTTED;
+        }
+    }
+}
+
+static bool agent_sage_turn_can_finalize(const agent_sage_turn_state *s) {
+    return s && s->state == AGENT_SAGE_READY && s->authoritative &&
+           s->validation_passed && s->publishable && s->report_ready &&
+           s->final_markdown_ready;
+}
+
+static int agent_sage_turn_attempt(const agent_sage_turn_state *s) {
+    int attempt = s ? s->execute_count + s->repair_count : 0;
+    return attempt > 0 ? attempt : 1;
+}
+
+static pthread_mutex_t agent_sage_run_id_mu = PTHREAD_MUTEX_INITIALIZER;
+static uint64_t agent_sage_run_id_nonce;
+
+static bool agent_sage_turn_ensure_run_id(agent_worker *w) {
+    if (!w) return false;
+    if (w->sage_turn.run_id[0]) return true;
+    pthread_mutex_lock(&agent_sage_run_id_mu);
+    uint64_t nonce = ++agent_sage_run_id_nonce;
+    pthread_mutex_unlock(&agent_sage_run_id_mu);
+    uint64_t sequence = ++w->sage_turn_sequence;
+    const char *sha = w->session_sha[0] ? w->session_sha : "000000000000";
+    int n = snprintf(w->sage_turn.run_id, sizeof(w->sage_turn.run_id),
+                     "sage-%.12s-%llu-%llu", sha,
+                     (unsigned long long)sequence,
+                     (unsigned long long)nonce);
+    return n > 0 && (size_t)n < sizeof(w->sage_turn.run_id);
+}
+
 static char *xstrndup(const char *s, size_t n) {
     char *p = xmalloc(n + 1);
     memcpy(p, s, n);
@@ -527,6 +753,8 @@ typedef enum {
     AGENT_SLASH_METACOGNITION,
     AGENT_SLASH_SOUL,
     AGENT_SLASH_ETHIC,
+    AGENT_SLASH_SAGE_POL,
+    AGENT_SLASH_SAGE,
 } agent_slash_command_kind;
 
 typedef struct {
@@ -601,6 +829,20 @@ static DS4_MAYBE_UNUSED bool agent_parse_slash_command(const char *input,
         if (arg_len) memcpy(out->arg, arg, arg_len + 1);
         return true;
     }
+    else if (!strcmp(command, "/sage-pol")) {
+        out->kind = AGENT_SLASH_SAGE_POL;
+        size_t arg_len = strlen(arg);
+        if (arg_len >= sizeof(out->arg)) return false;
+        if (arg_len) memcpy(out->arg, arg, arg_len + 1);
+        return true;
+    }
+    else if (!strcmp(command, "/sage")) {
+        out->kind = AGENT_SLASH_SAGE;
+        size_t arg_len = strlen(arg);
+        if (arg_len >= sizeof(out->arg)) return false;
+        if (arg_len) memcpy(out->arg, arg, arg_len + 1);
+        return true;
+    }
     else return false;
 
     if (out->kind == AGENT_SLASH_POWER) {
@@ -658,7 +900,8 @@ static bool agent_slash_command_known(const char *cmd) {
            agent_slash_command_with_args(cmd, "/gitnexus") ||
            agent_slash_command_with_args(cmd, "/metacognition") ||
            agent_slash_command_with_args(cmd, "/soul") ||
-           agent_slash_command_with_args(cmd, "/ethic");
+           agent_slash_command_with_args(cmd, "/ethic") ||
+            agent_slash_command_with_args(cmd, "/sage-pol");
 }
 
 static uint64_t parse_u64(const char *s, const char *opt) {
@@ -1060,7 +1303,10 @@ static const char agent_tools_prompt_after_edit[] =
     "      \"type\": \"object\",\n"
     "      \"properties\": {\n"
     "        \"code\": {\"type\": \"string\", \"description\": \"SageMath code to execute. Define var('x') first for symbolic variables. Use diff(f,x) for derivatives, diff(f,x,2) for second derivative, find_root(f,a,b) for numeric zeros (NEVER solve() for degree>=3). Use latex(expr) to get LaTeX output. Examples: diff(sin(x)^2,x).trig_reduce(), find_root(cos(x)-0.5,0,2), latex(integrate(exp(x)*sin(x),x)).\"},\n"
-    "        \"timeout_sec\": {\"type\": \"number\", \"description\": \"Timeout in seconds. Default 60. Increase for large computations.\"}\n"
+    "        \"timeout_sec\": {\"type\": \"number\", \"description\": \"Timeout in seconds. Default 60. Increase for large computations.\"},\n"
+    "        \"task_type\": {\"type\": \"string\", \"enum\": [\"auto\",\"evaluate\",\"simplify\",\"factor\",\"solve\",\"system\",\"calculus\",\"limit\",\"series\",\"function_study\",\"linear_algebra\",\"number_theory\",\"combinatorics\",\"probability\",\"geometry\",\"plot\",\"validation\",\"mixed\"], \"description\": \"Optional classification of the Sage task.\"},\n"
+    "        \"phase\": {\"type\": \"string\", \"enum\": [\"prepare\",\"compute\",\"validate\",\"plot\",\"repair\"], \"description\": \"Optional phase of the Sage workflow.\"},\n"
+    "        \"output_mode\": {\"type\": \"string\", \"enum\": [\"auto\",\"structured\",\"legacy\"], \"description\": \"Output contract version hint.\"}\n"
     "      },\n"
     "      \"required\": [\"code\"]\n"
     "    }\n"
@@ -1424,6 +1670,43 @@ static void agent_worker_maybe_append_datetime_context(agent_worker *w) {
     w->datetime_context_injected = true;
 }
 
+static const char *agent_sage_turn_next_phase(const agent_sage_turn_state *s) {
+    if (!s) return "compute";
+    switch (s->state) {
+    case AGENT_SAGE_IDLE:
+    case AGENT_SAGE_PREPARED: return "compute";
+    case AGENT_SAGE_COMPUTED: return "validate (or repair)";
+    case AGENT_SAGE_REPAIRING: return "repair, then validate";
+    case AGENT_SAGE_VALIDATED:
+    case AGENT_SAGE_PLOTTED: return "plot";
+    case AGENT_SAGE_READY: return "finalize authoritative Markdown";
+    case AGENT_SAGE_FAILED: return "none; stop with the controlled error";
+    }
+    return "none";
+}
+
+static char *agent_build_sage_turn_reminder(const agent_worker *w) {
+    if (!w) return xstrdup("");
+    char reminder[1200];
+    int n = snprintf(reminder, sizeof(reminder),
+        "[DS4 SAGE ACTIVE CONTRACT]\n"
+        "The Sage runtime controls phase order and validation.\n"
+        "Do not claim PASS.\n"
+        "Do not alter authoritative formulas, intervals, labels, or numbers.\n"
+        "Do not answer finally unless the runtime reports publishable=true.\n"
+        "Current state: %s.\n"
+        "Allowed next phase: %s.\n"
+        "Run ID: %s. Policy revision: %s.\n"
+        "[/DS4 SAGE ACTIVE CONTRACT]",
+        agent_sage_state_name(w->sage_turn.state),
+        agent_sage_turn_next_phase(&w->sage_turn),
+        w->sage_turn.run_id[0] ? w->sage_turn.run_id : "pending",
+        w->sage_policy_revision[0] ? w->sage_policy_revision : "unavailable");
+    if (n < 0 || (size_t)n >= sizeof(reminder))
+        return xstrdup("[DS4 SAGE ACTIVE CONTRACT]\nSage finalization is blocked until runtime validation.\n[/DS4 SAGE ACTIVE CONTRACT]");
+    return xstrdup(reminder);
+}
+
 /* The full tool/system reminder is separate from DSML syntax errors: it is a
  * pressure-controlled refresh of the same trusted prompt shape used at startup.
  * The built-in prompt is tokenized as rendered chat so DSML markers stay native
@@ -1457,6 +1740,16 @@ static void agent_worker_maybe_append_system_prompt_reminder(agent_worker *w) {
         ds4_tokenize_text(w->engine,
             "\n[End additional system instructions reminder.]\n\n",
             &w->transcript);
+    }
+    if (w->sage_turn.used &&
+        !agent_sage_turn_can_finalize(&w->sage_turn) &&
+        w->sage_turn.state != AGENT_SAGE_FAILED) {
+        char *sage_reminder = agent_build_sage_turn_reminder(w);
+        ds4_chat_append_message(w->engine, &w->transcript,
+                                "system", sage_reminder);
+        agent_trace_text(w, "sage-turn-reminder", sage_reminder,
+                         strlen(sage_reminder));
+        free(sage_reminder);
     }
     agent_worker_note_system_prompt_seen(w);
 }
@@ -2018,8 +2311,29 @@ static char *agent_tail_capture_take(agent_tail_capture *t, size_t *len) {
     return out;
 }
 
+static void agent_deferred_output_append(agent_deferred_output *out,
+                                         const char *s, size_t n) {
+    if (!out || !s || !n) return;
+    if (out->len + n + 1 > out->cap) {
+        size_t cap = out->cap ? out->cap * 2 : 4096;
+        while (cap < out->len + n + 1) cap *= 2;
+        out->ptr = xrealloc(out->ptr, cap);
+        out->cap = cap;
+    }
+    memcpy(out->ptr + out->len, s, n);
+    out->len += n;
+    out->ptr[out->len] = '\0';
+}
+
+static void agent_deferred_output_free(agent_deferred_output *out) {
+    if (!out) return;
+    free(out->ptr);
+    memset(out, 0, sizeof(*out));
+}
+
 static void renderer_write(agent_token_renderer *r, const char *s, size_t n) {
     if (r->capture) agent_tail_capture_append(r->capture, s, n);
+    else if (r->deferred) agent_deferred_output_append(r->deferred, s, n);
     else agent_publish(r->worker, s, n);
 }
 
@@ -4399,37 +4713,261 @@ static bool agent_kv_save_path(agent_worker *w, const char *path,
 static int agent_read_file_bytes(const char *path, char **data, size_t *len,
                                  char *err, size_t errlen);
 
+static bool agent_default_skills_enabled(void) {
+    const char *value = getenv("DS4_SKILL_AUTO");
+    return !value || strcmp(value, "0") != 0;
+}
+
+static bool agent_sage_policy_auto_enabled(void) {
+    const char *value = getenv("DS4_SAGE_POLICY_AUTO");
+    return !value || strcmp(value, "0") != 0;
+}
+
+static bool agent_sage_authoritative_loop_enabled(void) {
+    const char *value = getenv("DS4_SAGE_AUTHORITATIVE_LOOP");
+    return !value || strcmp(value, "0") != 0;
+}
+
+static const char *agent_skills_dir(void) {
+    const char *value = getenv("DS4_SKILLS_DIR");
+    return value && value[0] ? value : "skills";
+}
+
+static bool agent_skill_path(char *out, size_t out_len,
+                             const char *group, char *err, size_t err_len) {
+    int n = snprintf(out, out_len, "%s/%s/SKILL.md",
+                     agent_skills_dir(), group);
+    if (n < 0 || (size_t)n >= out_len) {
+        snprintf(err, err_len, "skill path too long for %s", group);
+        return false;
+    }
+    return true;
+}
+
 static char *agent_read_metacognition_skill(char *err, size_t err_len) {
-    const char *path = "skills/metacognition/SKILL.md";
+    char path[PATH_MAX];
+    if (!agent_skill_path(path, sizeof(path), "metacognition", err, err_len))
+        return NULL;
+
     char *data = NULL;
     size_t len = 0;
-    if (agent_read_file_bytes(path, &data, &len, err, err_len) == 0 && data) {
+    if (agent_read_file_bytes(path, &data, &len, err, err_len) == 0 && data)
         return data;
-    }
-    snprintf(err, err_len, "metacognition skill file not found at %s", path);
+
+    snprintf(err, err_len, "metacognition skill file not found at %.200s", path);
     return NULL;
 }
 
 static char *agent_read_soul_skill(char *err, size_t err_len) {
-    const char *path = "skills/soul/SKILL.md";
+    char path[PATH_MAX];
+    if (!agent_skill_path(path, sizeof(path), "soul", err, err_len))
+        return NULL;
+
     char *data = NULL;
     size_t len = 0;
-    if (agent_read_file_bytes(path, &data, &len, err, err_len) == 0 && data) {
+    if (agent_read_file_bytes(path, &data, &len, err, err_len) == 0 && data)
         return data;
-    }
-    snprintf(err, err_len, "soul skill file not found at %s", path);
+
+    snprintf(err, err_len, "soul skill file not found at %.200s", path);
     return NULL;
 }
 
 static char *agent_read_ethic_skill(char *err, size_t err_len) {
-    const char *path = "skills/ethic/SKILL.md";
+    char path[PATH_MAX];
+    if (!agent_skill_path(path, sizeof(path), "ethic", err, err_len))
+        return NULL;
+
     char *data = NULL;
     size_t len = 0;
-    if (agent_read_file_bytes(path, &data, &len, err, err_len) == 0 && data) {
+    if (agent_read_file_bytes(path, &data, &len, err, err_len) == 0 && data)
         return data;
-    }
-    snprintf(err, err_len, "ethic skill file not found at %s", path);
+
+    snprintf(err, err_len, "ethic skill file not found at %.200s", path);
     return NULL;
+}
+
+static char *agent_read_sage_skill(char *err, size_t err_len) {
+    char path[PATH_MAX];
+    if (!agent_skill_path(path, sizeof(path), "sage", err, err_len))
+        return NULL;
+
+    char *data = NULL;
+    size_t len = 0;
+    if (agent_read_file_bytes(path, &data, &len, err, err_len) == 0 && data)
+        return data;
+
+    snprintf(err, err_len, "sage skill file not found at %.200s", path);
+    return NULL;
+}
+
+static void agent_worker_clear_sage_policy(agent_worker *w) {
+    if (!w) return;
+    free(w->sage_prompt);
+    w->sage_prompt = NULL;
+    w->sage_policy_revision[0] = '\0';
+}
+
+static bool agent_worker_load_sage_policy(agent_worker *w,
+                                          bool respect_auto,
+                                          char *err, size_t err_len) {
+    if (!w) {
+        snprintf(err, err_len, "agent worker is NULL");
+        return false;
+    }
+    if (respect_auto && !agent_sage_policy_auto_enabled()) {
+        agent_worker_clear_sage_policy(w);
+        return true;
+    }
+
+    char read_err[256] = {0};
+    char *prompt = agent_read_sage_skill(read_err, sizeof(read_err));
+    if (!prompt) {
+        agent_worker_clear_sage_policy(w);
+        snprintf(err, err_len, "%s", read_err[0] ? read_err :
+                 "Sage policy is unavailable");
+        return false;
+    }
+
+    char revision[41];
+    ds4_kvstore_sha1_bytes_hex(prompt, strlen(prompt), revision);
+    free(w->sage_prompt);
+    w->sage_prompt = prompt;
+    memcpy(w->sage_policy_revision, revision, sizeof(revision));
+    return true;
+}
+
+static bool agent_worker_restore_sage_policy(agent_worker *w,
+                                             char *err, size_t err_len) {
+    return agent_worker_load_sage_policy(w, true, err, err_len);
+}
+
+static bool agent_worker_activate_sage_policy(agent_worker *w,
+                                              char *err, size_t err_len) {
+    return agent_worker_load_sage_policy(w, false, err, err_len);
+}
+
+static char *agent_build_default_skills_block(const char *soul,
+                                              const char *ethic) {
+    agent_buf b = {0};
+
+    agent_buf_puts(&b, DS4_SOUL_BEGIN);
+    agent_buf_puts(&b, "\n");
+    agent_buf_puts(&b, soul ? soul : "");
+    if (soul && soul[0] && soul[strlen(soul) - 1] != '\n')
+        agent_buf_puts(&b, "\n");
+    agent_buf_puts(&b, DS4_SOUL_END);
+
+    agent_buf_puts(&b, "\n\n");
+
+    agent_buf_puts(&b, DS4_ETHIC_BEGIN);
+    agent_buf_puts(&b, "\n");
+    agent_buf_puts(&b, ethic ? ethic : "");
+    if (ethic && ethic[0] && ethic[strlen(ethic) - 1] != '\n')
+        agent_buf_puts(&b, "\n");
+    agent_buf_puts(&b, DS4_ETHIC_END);
+
+    return agent_buf_take(&b);
+}
+
+static bool agent_worker_restore_default_skills(agent_worker *w,
+                                                char *err,
+                                                size_t err_len) {
+    if (!w) {
+        snprintf(err, err_len, "agent worker is NULL");
+        return false;
+    }
+
+    if (!agent_default_skills_enabled()) {
+        free(w->soul_prompt);
+        free(w->ethic_prompt);
+        w->soul_prompt = NULL;
+        w->ethic_prompt = NULL;
+        w->default_skills_enabled = false;
+        w->default_skills_revision[0] = '\0';
+        return true;
+    }
+
+    char soul_err[256] = {0};
+    char ethic_err[256] = {0};
+    char *new_soul = agent_read_soul_skill(soul_err, sizeof(soul_err));
+    if (!new_soul) {
+        snprintf(err, err_len, "%s", soul_err);
+        return false;
+    }
+
+    char *new_ethic = agent_read_ethic_skill(ethic_err, sizeof(ethic_err));
+    if (!new_ethic) {
+        free(new_soul);
+        snprintf(err, err_len, "%s", ethic_err);
+        return false;
+    }
+
+    char *block = agent_build_default_skills_block(new_soul, new_ethic);
+    if (!block) {
+        free(new_soul);
+        free(new_ethic);
+        snprintf(err, err_len, "failed to build default skills block");
+        return false;
+    }
+
+    char revision[41];
+    ds4_kvstore_sha1_bytes_hex(block, strlen(block), revision);
+    free(block);
+
+    free(w->soul_prompt);
+    free(w->ethic_prompt);
+    w->soul_prompt = new_soul;
+    w->ethic_prompt = new_ethic;
+    w->default_skills_enabled = true;
+    memcpy(w->default_skills_revision, revision, sizeof(revision));
+    return true;
+}
+
+static char *agent_worker_build_system_text(const agent_worker *w) {
+    if (w->default_skills_enabled &&
+        (!w->soul_prompt || !w->ethic_prompt)) {
+        return NULL;
+    }
+
+    agent_buf b = {0};
+    const char *base = w->cfg->gen.system;
+
+    if (base && base[0]) {
+        agent_buf_puts(&b, base);
+    }
+
+    if (w->metacognition_prompt) {
+        if (b.len) agent_buf_puts(&b, "\n\n");
+        agent_buf_puts(&b, DS4_METACOGNITION_BEGIN);
+        agent_buf_puts(&b, "\n");
+        agent_buf_puts(&b, w->metacognition_prompt);
+        if (w->metacognition_prompt[0] &&
+            w->metacognition_prompt[
+                strlen(w->metacognition_prompt) - 1] != '\n')
+            agent_buf_puts(&b, "\n");
+        agent_buf_puts(&b, DS4_METACOGNITION_END);
+    }
+
+    if (w->soul_prompt || w->ethic_prompt) {
+        char *defaults = agent_build_default_skills_block(
+            w->soul_prompt, w->ethic_prompt);
+        if (b.len) agent_buf_puts(&b, "\n\n");
+        agent_buf_puts(&b, defaults);
+        free(defaults);
+    }
+
+    if (w->sage_prompt) {
+        if (b.len) agent_buf_puts(&b, "\n\n");
+        agent_buf_puts(&b, DS4_SAGE_BEGIN);
+        agent_buf_puts(&b, "\n");
+        agent_buf_puts(&b, w->sage_prompt);
+        if (w->sage_prompt[0] &&
+            w->sage_prompt[strlen(w->sage_prompt) - 1] != '\n')
+            agent_buf_puts(&b, "\n");
+        agent_buf_puts(&b, DS4_SAGE_END);
+    }
+
+    return agent_buf_take(&b);
 }
 
 static void agent_worker_build_system_tokens(agent_worker *w, ds4_tokens *out) {
@@ -4438,30 +4976,9 @@ static void agent_worker_build_system_tokens(agent_worker *w, ds4_tokens *out) {
         effective_think_mode(w->cfg) == DS4_THINK_MAX)
         ds4_chat_append_max_effort_prefix(w->engine, out);
 
-    /* Collect all active skill prompts */
-    char *meta = w->metacognition_prompt;
-    char *soul = w->soul_prompt;
-    char *ethic = w->ethic_prompt;
-
-    if (meta || soul || ethic) {
-        size_t base_len = strlen(w->cfg->gen.system ? w->cfg->gen.system : "");
-        size_t meta_len = meta ? strlen(meta) : 0;
-        size_t soul_len = soul ? strlen(soul) : 0;
-        size_t ethic_len = ethic ? strlen(ethic) : 0;
-        size_t total = base_len + meta_len + soul_len + ethic_len;
-        char *combined = xmalloc(total + 1);
-        combined[0] = '\0';
-        if (w->cfg->gen.system) memcpy(combined, w->cfg->gen.system, base_len + 1);
-        char *p = combined + base_len;
-        if (meta) { memcpy(p, meta, meta_len); p += meta_len; }
-        if (soul) { memcpy(p, soul, soul_len); p += soul_len; }
-        if (ethic) { memcpy(p, ethic, ethic_len); p += ethic_len; }
-        *p = '\0';
-        agent_append_system_prompt(w->engine, out, combined);
-        free(combined);
-    } else {
-        agent_append_system_prompt(w->engine, out, w->cfg->gen.system);
-    }
+    char *system_text = agent_worker_build_system_text(w);
+    agent_append_system_prompt(w->engine, out, system_text);
+    free(system_text);
 }
 
 static void agent_publish_system_status(agent_worker *w, const char *msg) {
@@ -4766,6 +5283,25 @@ static bool agent_worker_reset_to_sysprompt(agent_worker *w, char *err, size_t e
     free(text);
     ds4_tokens_free(&sys);
     return true;
+}
+
+static bool agent_worker_new_default_session(agent_worker *w,
+                                             char *err,
+                                             size_t err_len) {
+    if (!agent_worker_restore_default_skills(w, err, err_len))
+        return false;
+
+    char sage_err[256] = {0};
+    if (!agent_worker_restore_sage_policy(w, sage_err, sizeof(sage_err))) {
+        /* Sage is fail-closed, but a missing optional policy must not make the
+         * general coding agent unavailable. */
+        agent_trace(w, "sage policy unavailable during new session: %s",
+                    sage_err[0] ? sage_err : "unknown error");
+        agent_publish_system_status(
+            w, "Sage policy unavailable; Sage calls will be rejected.");
+    }
+
+    return agent_worker_reset_to_sysprompt(w, err, err_len);
 }
 
 static bool agent_worker_should_stop(agent_worker *w) {
@@ -6867,6 +7403,41 @@ static void agent_test_assert(bool cond, const char *expr,
 #define AGENT_TEST_ASSERT(expr) \
     agent_test_assert((expr), #expr, __FILE__, __LINE__)
 
+static char *agent_shell_quote(const char *s);
+
+static void test_agent_shell_quote_preserves_sage_json(void) {
+    const char *json =
+        "{\"code\":\"var('x')\\nf(x) = x^2\",\"task_type\":\"function_study\"}";
+    char *quoted = agent_shell_quote(json);
+    AGENT_TEST_ASSERT(quoted != NULL);
+    if (!quoted) return;
+
+    char command[1024];
+    int n = snprintf(command, sizeof(command), "printf %%s %s", quoted);
+    AGENT_TEST_ASSERT(n > 0 && (size_t)n < sizeof(command));
+    if (n <= 0 || (size_t)n >= sizeof(command)) {
+        free(quoted);
+        return;
+    }
+
+    FILE *fp = popen(command, "r");
+    AGENT_TEST_ASSERT(fp != NULL);
+    if (!fp) {
+        free(quoted);
+        return;
+    }
+    char output[512] = {0};
+    size_t got = fread(output, 1, sizeof(output) - 1, fp);
+    output[got] = '\0';
+    int status = pclose(fp);
+
+    AGENT_TEST_ASSERT(status >= 0 && WIFEXITED(status));
+    AGENT_TEST_ASSERT(status >= 0 && WIFEXITED(status) &&
+                      WEXITSTATUS(status) == 0);
+    AGENT_TEST_ASSERT(!strcmp(output, json));
+    free(quoted);
+}
+
 static void test_agent_edit_upto_tail_newline_is_not_part_of_anchor(void) {
     const char *data =
         "CFLAGS = -Wall -Wextra -g\n"
@@ -6965,6 +7536,17 @@ static void test_agent_parse_native_slash_commands(void) {
     AGENT_TEST_ASSERT(agent_parse_slash_command("/ethic stop", &parsed));
     AGENT_TEST_ASSERT(parsed.kind == AGENT_SLASH_ETHIC);
     AGENT_TEST_ASSERT(!strcmp(parsed.arg, "stop"));
+    AGENT_TEST_ASSERT(agent_parse_slash_command("/sage-pol status", &parsed));
+    AGENT_TEST_ASSERT(parsed.kind == AGENT_SLASH_SAGE_POL);
+    AGENT_TEST_ASSERT(!strcmp(parsed.arg, "status"));
+    AGENT_TEST_ASSERT(agent_parse_slash_command("/metacognition status", &parsed));
+    AGENT_TEST_ASSERT(parsed.kind == AGENT_SLASH_METACOGNITION);
+    AGENT_TEST_ASSERT(agent_parse_slash_command("/soul status", &parsed));
+    AGENT_TEST_ASSERT(parsed.kind == AGENT_SLASH_SOUL);
+    AGENT_TEST_ASSERT(agent_parse_slash_command("/ethic status", &parsed));
+    AGENT_TEST_ASSERT(parsed.kind == AGENT_SLASH_ETHIC);
+    AGENT_TEST_ASSERT(agent_parse_slash_command("/sage status", &parsed));
+    AGENT_TEST_ASSERT(parsed.kind == AGENT_SLASH_SAGE);
 }
 
 static void test_agent_rejects_invalid_native_slash_commands(void) {
@@ -7276,8 +7858,543 @@ static void test_agent_read_ethic_skill(void) {
     free(content);
 }
 
+static void test_agent_read_sage_skill(void) {
+    char err[256] = {0};
+    char *content = agent_read_sage_skill(err, sizeof(err));
+    AGENT_TEST_ASSERT(content != NULL);
+    AGENT_TEST_ASSERT(strlen(content) > 20);
+    AGENT_TEST_ASSERT(strstr(content, "SageMath") != NULL ||
+                      strstr(content, "sage") != NULL);
+    free(content);
+}
+
+static int test_count_substring(const char *text, const char *needle) {
+    int count = 0;
+    const char *p = text;
+    while ((p = strstr(p, needle)) != NULL) {
+        count++;
+        p += strlen(needle);
+    }
+    return count;
+}
+
+static void test_agent_default_skills_load_both(void) {
+    char template[] = "/tmp/ds4-skills-test-XXXXXX";
+    char *root = mkdtemp(template);
+    AGENT_TEST_ASSERT(root != NULL);
+
+    char soul_dir[PATH_MAX], ethic_dir[PATH_MAX], sage_dir[PATH_MAX];
+    snprintf(soul_dir, sizeof(soul_dir), "%s/soul", root);
+    snprintf(ethic_dir, sizeof(ethic_dir), "%s/ethic", root);
+    snprintf(sage_dir, sizeof(sage_dir), "%s/sage", root);
+    mkdir(soul_dir, 0755);
+    mkdir(ethic_dir, 0755);
+    mkdir(sage_dir, 0755);
+
+    char soul_path[PATH_MAX], ethic_path[PATH_MAX], sage_path[PATH_MAX];
+    snprintf(soul_path, sizeof(soul_path), "%s/SKILL.md", soul_dir);
+    snprintf(ethic_path, sizeof(ethic_path), "%s/SKILL.md", ethic_dir);
+    snprintf(sage_path, sizeof(sage_path), "%s/SKILL.md", sage_dir);
+
+    FILE *f = fopen(soul_path, "w");
+    AGENT_TEST_ASSERT(f != NULL);
+    fprintf(f, "Test Soul content\n");
+    fclose(f);
+
+    f = fopen(ethic_path, "w");
+    AGENT_TEST_ASSERT(f != NULL);
+    fprintf(f, "Test Ethic content\n");
+    fclose(f);
+
+    f = fopen(sage_path, "w");
+    AGENT_TEST_ASSERT(f != NULL);
+    fprintf(f, "Test Sage content\n");
+    fclose(f);
+
+    setenv("DS4_SKILLS_DIR", root, 1);
+    unsetenv("DS4_SKILL_AUTO");
+
+    agent_worker w;
+    memset(&w, 0, sizeof(w));
+
+    char err[256] = {0};
+    bool ok = agent_worker_restore_default_skills(&w, err, sizeof(err));
+    AGENT_TEST_ASSERT(ok);
+    AGENT_TEST_ASSERT(w.default_skills_enabled);
+    AGENT_TEST_ASSERT(w.soul_prompt != NULL);
+    AGENT_TEST_ASSERT(w.ethic_prompt != NULL);
+    AGENT_TEST_ASSERT(strcmp(w.soul_prompt, "Test Soul content\n") == 0);
+    AGENT_TEST_ASSERT(strcmp(w.ethic_prompt, "Test Ethic content\n") == 0);
+    AGENT_TEST_ASSERT(strlen(w.default_skills_revision) == 40);
+
+    unsetenv("DS4_SKILLS_DIR");
+}
+
+static void test_agent_default_skills_disabled_by_zero(void) {
+    char template[] = "/tmp/ds4-skills-test-XXXXXX";
+    char *root = mkdtemp(template);
+    AGENT_TEST_ASSERT(root != NULL);
+
+    char soul_dir[PATH_MAX], ethic_dir[PATH_MAX];
+    snprintf(soul_dir, sizeof(soul_dir), "%s/soul", root);
+    snprintf(ethic_dir, sizeof(ethic_dir), "%s/ethic", root);
+    mkdir(soul_dir, 0755);
+    mkdir(ethic_dir, 0755);
+
+    char soul_path[PATH_MAX], ethic_path[PATH_MAX];
+    snprintf(soul_path, sizeof(soul_path), "%s/SKILL.md", soul_dir);
+    snprintf(ethic_path, sizeof(ethic_path), "%s/SKILL.md", ethic_dir);
+
+    FILE *f = fopen(soul_path, "w");
+    AGENT_TEST_ASSERT(f != NULL);
+    fprintf(f, "soul\n");
+    fclose(f);
+
+    f = fopen(ethic_path, "w");
+    AGENT_TEST_ASSERT(f != NULL);
+    fprintf(f, "ethic\n");
+    fclose(f);
+
+    setenv("DS4_SKILLS_DIR", root, 1);
+    setenv("DS4_SKILL_AUTO", "0", 1);
+
+    agent_worker w;
+    memset(&w, 0, sizeof(w));
+    w.soul_prompt = strdup("OLD_SOUL");
+    w.ethic_prompt = strdup("OLD_ETHIC");
+
+    char err[256] = {0};
+    bool ok = agent_worker_restore_default_skills(&w, err, sizeof(err));
+    AGENT_TEST_ASSERT(ok);
+    AGENT_TEST_ASSERT(!w.default_skills_enabled);
+    AGENT_TEST_ASSERT(w.soul_prompt == NULL);
+    AGENT_TEST_ASSERT(w.ethic_prompt == NULL);
+    AGENT_TEST_ASSERT(w.default_skills_revision[0] == '\0');
+
+    unsetenv("DS4_SKILLS_DIR");
+    unsetenv("DS4_SKILL_AUTO");
+    { char _cmd[PATH_MAX + 16]; snprintf(_cmd, sizeof(_cmd), "rm -rf %s", root); (void)system(_cmd); };
+}
+
+static void test_agent_default_skills_nonzero_value_enables(void) {
+    const char *values[] = {"1", "false", "yes", "true", NULL};
+    for (int i = 0; values[i]; i++) {
+        char template[] = "/tmp/ds4-skills-test-XXXXXX";
+        char *root = mkdtemp(template);
+        AGENT_TEST_ASSERT(root != NULL);
+
+        char soul_dir[PATH_MAX], ethic_dir[PATH_MAX];
+        snprintf(soul_dir, sizeof(soul_dir), "%s/soul", root);
+        snprintf(ethic_dir, sizeof(ethic_dir), "%s/ethic", root);
+        mkdir(soul_dir, 0755);
+        mkdir(ethic_dir, 0755);
+
+        char soul_path[PATH_MAX], ethic_path[PATH_MAX];
+        snprintf(soul_path, sizeof(soul_path), "%s/SKILL.md", soul_dir);
+        snprintf(ethic_path, sizeof(ethic_path), "%s/SKILL.md", ethic_dir);
+
+        FILE *f = fopen(soul_path, "w");
+        AGENT_TEST_ASSERT(f != NULL);
+        fprintf(f, "soul\n");
+        fclose(f);
+
+        f = fopen(ethic_path, "w");
+        AGENT_TEST_ASSERT(f != NULL);
+        fprintf(f, "ethic\n");
+        fclose(f);
+
+        setenv("DS4_SKILLS_DIR", root, 1);
+        setenv("DS4_SKILL_AUTO", values[i], 1);
+
+        agent_worker w;
+        memset(&w, 0, sizeof(w));
+
+        char err[256] = {0};
+        bool ok = agent_worker_restore_default_skills(&w, err, sizeof(err));
+        AGENT_TEST_ASSERT(ok);
+        AGENT_TEST_ASSERT(w.default_skills_enabled);
+
+        free(w.soul_prompt);
+        free(w.ethic_prompt);
+        unsetenv("DS4_SKILLS_DIR");
+        unsetenv("DS4_SKILL_AUTO");
+        { char _cmd[PATH_MAX + 16]; snprintf(_cmd, sizeof(_cmd), "rm -rf %s", root); (void)system(_cmd); };
+    }
+}
+
+static void test_agent_default_skills_missing_ethic_is_atomic(void) {
+    char template[] = "/tmp/ds4-skills-test-XXXXXX";
+    char *root = mkdtemp(template);
+    AGENT_TEST_ASSERT(root != NULL);
+
+    char soul_dir[PATH_MAX], ethic_dir[PATH_MAX];
+    snprintf(soul_dir, sizeof(soul_dir), "%s/soul", root);
+    snprintf(ethic_dir, sizeof(ethic_dir), "%s/ethic", root);
+    mkdir(soul_dir, 0755);
+    mkdir(ethic_dir, 0755);
+
+    char soul_path[PATH_MAX];
+    snprintf(soul_path, sizeof(soul_path), "%s/SKILL.md", soul_dir);
+
+    FILE *f = fopen(soul_path, "w");
+    AGENT_TEST_ASSERT(f != NULL);
+    fprintf(f, "soul\n");
+    fclose(f);
+
+    setenv("DS4_SKILLS_DIR", root, 1);
+    unsetenv("DS4_SKILL_AUTO");
+
+    agent_worker w;
+    memset(&w, 0, sizeof(w));
+    w.soul_prompt = strdup("OLD_SOUL");
+    w.ethic_prompt = strdup("OLD_ETHIC");
+
+    char err[256] = {0};
+    bool ok = agent_worker_restore_default_skills(&w, err, sizeof(err));
+    AGENT_TEST_ASSERT(!ok);
+    AGENT_TEST_ASSERT(w.soul_prompt != NULL);
+    AGENT_TEST_ASSERT(strcmp(w.soul_prompt, "OLD_SOUL") == 0);
+    AGENT_TEST_ASSERT(w.ethic_prompt != NULL);
+    AGENT_TEST_ASSERT(strcmp(w.ethic_prompt, "OLD_ETHIC") == 0);
+
+    free(w.soul_prompt);
+    free(w.ethic_prompt);
+    unsetenv("DS4_SKILLS_DIR");
+    { char _cmd[PATH_MAX + 16]; snprintf(_cmd, sizeof(_cmd), "rm -rf %s", root); (void)system(_cmd); };
+}
+
+static void test_agent_system_text_has_one_delimited_policy_block(void) {
+    agent_worker w;
+    memset(&w, 0, sizeof(w));
+
+    agent_config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.gen.system = "BASE SYSTEM";
+    w.cfg = &cfg;
+
+    w.metacognition_prompt = strdup("META CONTENT");
+    w.soul_prompt = strdup("SOUL CONTENT");
+    w.ethic_prompt = strdup("ETHIC CONTENT");
+
+    char *text = agent_worker_build_system_text(&w);
+    AGENT_TEST_ASSERT(text != NULL);
+
+    AGENT_TEST_ASSERT(test_count_substring(text, DS4_METACOGNITION_BEGIN) == 1);
+    AGENT_TEST_ASSERT(test_count_substring(text, DS4_METACOGNITION_END) == 1);
+    AGENT_TEST_ASSERT(test_count_substring(text, DS4_SOUL_BEGIN) == 1);
+    AGENT_TEST_ASSERT(test_count_substring(text, DS4_SOUL_END) == 1);
+    AGENT_TEST_ASSERT(test_count_substring(text, DS4_ETHIC_BEGIN) == 1);
+    AGENT_TEST_ASSERT(test_count_substring(text, DS4_ETHIC_END) == 1);
+
+    const char *base = strstr(text, "BASE SYSTEM");
+    const char *meta_begin = strstr(text, DS4_METACOGNITION_BEGIN);
+    const char *soul_begin = strstr(text, DS4_SOUL_BEGIN);
+    const char *ethic_begin = strstr(text, DS4_ETHIC_BEGIN);
+    AGENT_TEST_ASSERT(base != NULL);
+    AGENT_TEST_ASSERT(meta_begin != NULL);
+    AGENT_TEST_ASSERT(soul_begin != NULL);
+    AGENT_TEST_ASSERT(ethic_begin != NULL);
+    AGENT_TEST_ASSERT(base < meta_begin);
+    AGENT_TEST_ASSERT(meta_begin < soul_begin);
+    AGENT_TEST_ASSERT(soul_begin < ethic_begin);
+
+    AGENT_TEST_ASSERT(strstr(text, "BASE SYSTEMMETA") == NULL);
+    AGENT_TEST_ASSERT(strstr(text, "META CONTENTSOUL") == NULL);
+    AGENT_TEST_ASSERT(strstr(text, "SOUL CONTENTETHIC") == NULL);
+
+    free(text);
+    free(w.metacognition_prompt);
+    free(w.soul_prompt);
+    free(w.ethic_prompt);
+}
+
+static void test_agent_new_default_session_restores_default_skills(void) {
+    char template[] = "/tmp/ds4-skills-test-XXXXXX";
+    char *root = mkdtemp(template);
+    AGENT_TEST_ASSERT(root != NULL);
+
+    char soul_dir[PATH_MAX], ethic_dir[PATH_MAX];
+    snprintf(soul_dir, sizeof(soul_dir), "%s/soul", root);
+    snprintf(ethic_dir, sizeof(ethic_dir), "%s/ethic", root);
+    mkdir(soul_dir, 0755);
+    mkdir(ethic_dir, 0755);
+
+    char soul_path[PATH_MAX], ethic_path[PATH_MAX];
+    snprintf(soul_path, sizeof(soul_path), "%s/SKILL.md", soul_dir);
+    snprintf(ethic_path, sizeof(ethic_path), "%s/SKILL.md", ethic_dir);
+
+    FILE *f = fopen(soul_path, "w");
+    AGENT_TEST_ASSERT(f != NULL);
+    fprintf(f, "restored soul\n");
+    fclose(f);
+
+    f = fopen(ethic_path, "w");
+    AGENT_TEST_ASSERT(f != NULL);
+    fprintf(f, "restored ethic\n");
+    fclose(f);
+
+    setenv("DS4_SKILLS_DIR", root, 1);
+    unsetenv("DS4_SKILL_AUTO");
+
+    agent_worker w;
+    memset(&w, 0, sizeof(w));
+
+    char err[256] = {0};
+    bool ok = agent_worker_restore_default_skills(&w, err, sizeof(err));
+    AGENT_TEST_ASSERT(ok);
+    AGENT_TEST_ASSERT(w.soul_prompt != NULL);
+
+    free(w.soul_prompt);
+    w.soul_prompt = NULL;
+
+    ok = agent_worker_restore_default_skills(&w, err, sizeof(err));
+    AGENT_TEST_ASSERT(ok);
+    AGENT_TEST_ASSERT(w.soul_prompt != NULL);
+    AGENT_TEST_ASSERT(strcmp(w.soul_prompt, "restored soul\n") == 0);
+
+    free(w.soul_prompt);
+    free(w.ethic_prompt);
+    unsetenv("DS4_SKILLS_DIR");
+    { char _cmd[PATH_MAX + 16]; snprintf(_cmd, sizeof(_cmd), "rm -rf %s", root); (void)system(_cmd); };
+}
+
+static void test_agent_default_skills_revision_changes_with_content(void) {
+    char template[] = "/tmp/ds4-skills-test-XXXXXX";
+    char *root = mkdtemp(template);
+    AGENT_TEST_ASSERT(root != NULL);
+
+    char soul_dir[PATH_MAX], ethic_dir[PATH_MAX];
+    snprintf(soul_dir, sizeof(soul_dir), "%s/soul", root);
+    snprintf(ethic_dir, sizeof(ethic_dir), "%s/ethic", root);
+    mkdir(soul_dir, 0755);
+    mkdir(ethic_dir, 0755);
+
+    char soul_path[PATH_MAX], ethic_path[PATH_MAX];
+    snprintf(soul_path, sizeof(soul_path), "%s/SKILL.md", soul_dir);
+    snprintf(ethic_path, sizeof(ethic_path), "%s/SKILL.md", ethic_dir);
+
+    FILE *f = fopen(soul_path, "w");
+    AGENT_TEST_ASSERT(f != NULL);
+    fprintf(f, "soul v1\n");
+    fclose(f);
+
+    f = fopen(ethic_path, "w");
+    AGENT_TEST_ASSERT(f != NULL);
+    fprintf(f, "ethic v1\n");
+    fclose(f);
+
+    setenv("DS4_SKILLS_DIR", root, 1);
+    unsetenv("DS4_SKILL_AUTO");
+
+    agent_worker w;
+    memset(&w, 0, sizeof(w));
+
+    char err[256] = {0};
+    bool ok = agent_worker_restore_default_skills(&w, err, sizeof(err));
+    AGENT_TEST_ASSERT(ok);
+    char rev1[41];
+    memcpy(rev1, w.default_skills_revision, sizeof(rev1));
+
+    f = fopen(ethic_path, "w");
+    AGENT_TEST_ASSERT(f != NULL);
+    fprintf(f, "ethic v2\n");
+    fclose(f);
+
+    ok = agent_worker_restore_default_skills(&w, err, sizeof(err));
+    AGENT_TEST_ASSERT(ok);
+    AGENT_TEST_ASSERT(strcmp(rev1, w.default_skills_revision) != 0);
+
+    free(w.soul_prompt);
+    free(w.ethic_prompt);
+    unsetenv("DS4_SKILLS_DIR");
+    { char _cmd[PATH_MAX + 16]; snprintf(_cmd, sizeof(_cmd), "rm -rf %s", root); (void)system(_cmd); };
+}
+
+
+static void test_agent_sage_contract_parsing(void);
+static void test_agent_sage_run_ids_and_request_body(void);
+static void test_agent_sage_native_exact_final_fixture(void);
+
+static void test_agent_sage_native_transitions(void) {
+    char err[96] = {0};
+    agent_sage_turn_state s;
+
+    unsetenv("DS4_SAGE_AUTHORITATIVE_LOOP");
+    AGENT_TEST_ASSERT(agent_sage_authoritative_loop_enabled());
+    setenv("DS4_SAGE_AUTHORITATIVE_LOOP", "0", 1);
+    AGENT_TEST_ASSERT(!agent_sage_authoritative_loop_enabled());
+    unsetenv("DS4_SAGE_AUTHORITATIVE_LOOP");
+
+    agent_sage_turn_reset(&s);
+    AGENT_TEST_ASSERT(s.state == AGENT_SAGE_IDLE);
+    AGENT_TEST_ASSERT(!s.used);
+    AGENT_TEST_ASSERT(!agent_sage_turn_before_call(
+        &s, "validate", err, sizeof(err)));
+
+    agent_sage_turn_reset(&s);
+    AGENT_TEST_ASSERT(agent_sage_turn_before_call(
+        &s, "compute", err, sizeof(err)));
+    AGENT_TEST_ASSERT(s.state == AGENT_SAGE_PREPARED);
+    AGENT_TEST_ASSERT(s.execute_count == 1);
+    AGENT_TEST_ASSERT(s.used);
+    AGENT_TEST_ASSERT(!agent_sage_turn_before_call(
+        &s, "compute", err, sizeof(err)));
+    agent_sage_turn_after_result(&s, "compute", false,
+                                 false, false, false, false, false);
+    AGENT_TEST_ASSERT(s.state == AGENT_SAGE_COMPUTED);
+
+    AGENT_TEST_ASSERT(agent_sage_turn_before_call(
+        &s, "repair", err, sizeof(err)));
+    agent_sage_turn_after_result(&s, "repair", false,
+                                 false, false, false, false, false);
+    AGENT_TEST_ASSERT(agent_sage_turn_before_call(
+        &s, "repair", err, sizeof(err)));
+    agent_sage_turn_after_result(&s, "repair", false,
+                                 false, false, false, false, false);
+    AGENT_TEST_ASSERT(agent_sage_turn_before_call(
+        &s, "repair", err, sizeof(err)));
+    agent_sage_turn_after_result(&s, "repair", false,
+                                 false, false, false, false, false);
+    AGENT_TEST_ASSERT(agent_sage_turn_before_call(
+        &s, "repair", err, sizeof(err)));
+    agent_sage_turn_after_result(&s, "repair", false,
+                                 false, false, false, false, false);
+    AGENT_TEST_ASSERT(agent_sage_turn_before_call(
+        &s, "repair", err, sizeof(err)));
+    agent_sage_turn_after_result(&s, "repair", false,
+                                 false, false, false, false, false);
+    AGENT_TEST_ASSERT(s.repair_count == 5);
+    AGENT_TEST_ASSERT(!agent_sage_turn_before_call(
+        &s, "repair", err, sizeof(err)));
+
+    AGENT_TEST_ASSERT(agent_sage_turn_before_call(
+        &s, "validate", err, sizeof(err)));
+    agent_sage_turn_after_result(&s, "validate", false,
+                                 true, true, true, true, true);
+    AGENT_TEST_ASSERT(s.state == AGENT_SAGE_READY);
+    AGENT_TEST_ASSERT(agent_sage_turn_can_finalize(&s));
+
+    agent_sage_turn_reset(&s);
+    AGENT_TEST_ASSERT(agent_sage_turn_before_call(
+        &s, "compute", err, sizeof(err)));
+    agent_sage_turn_after_result(&s, "compute", false,
+                                 false, false, false, false, false);
+    AGENT_TEST_ASSERT(agent_sage_turn_before_call(
+        &s, "validate", err, sizeof(err)));
+    agent_sage_turn_after_result(&s, "validate", false,
+                                 false, true, true, true, true);
+    AGENT_TEST_ASSERT(s.state == AGENT_SAGE_FAILED);
+    AGENT_TEST_ASSERT(!agent_sage_turn_can_finalize(&s));
+
+    agent_sage_turn_reset(&s);
+    AGENT_TEST_ASSERT(agent_sage_turn_before_call(
+        &s, "compute", err, sizeof(err)));
+    agent_sage_turn_after_result(&s, "compute", false,
+                                 false, false, false, false, false);
+    AGENT_TEST_ASSERT(agent_sage_turn_before_call(
+        &s, "validate", err, sizeof(err)));
+    agent_sage_turn_after_result(&s, "validate", false,
+                                 true, true, false, true, true);
+    AGENT_TEST_ASSERT(s.state == AGENT_SAGE_FAILED);
+    AGENT_TEST_ASSERT(!agent_sage_turn_can_finalize(&s));
+
+    s.finalization_block_count = 2;
+    snprintf(s.run_id, sizeof(s.run_id), "stale");
+    agent_sage_turn_reset(&s);
+    AGENT_TEST_ASSERT(s.finalization_block_count == 0);
+    AGENT_TEST_ASSERT(s.run_id[0] == '\0');
+    AGENT_TEST_ASSERT(!s.authoritative && !s.publishable &&
+                      !s.final_markdown_ready);
+}
+
+static void test_agent_sage_policy_autoload(void) {
+    char template[] = "/tmp/ds4-sage-policy-test-XXXXXX";
+    char *root = mkdtemp(template);
+    AGENT_TEST_ASSERT(root != NULL);
+    if (!root) return;
+    char dir[PATH_MAX], path[PATH_MAX];
+    snprintf(dir, sizeof(dir), "%s/sage", root);
+    snprintf(path, sizeof(path), "%s/SKILL.md", dir);
+    mkdir(dir, 0755);
+    FILE *f = fopen(path, "w");
+    AGENT_TEST_ASSERT(f != NULL);
+    if (!f) return;
+    fputs("canonical sage policy v1\n", f);
+    fclose(f);
+
+    setenv("DS4_SKILLS_DIR", root, 1);
+    unsetenv("DS4_SAGE_POLICY_AUTO");
+    agent_worker w;
+    memset(&w, 0, sizeof(w));
+    char err[256] = {0};
+    AGENT_TEST_ASSERT(agent_worker_restore_sage_policy(
+        &w, err, sizeof(err)));
+    AGENT_TEST_ASSERT(w.sage_prompt != NULL);
+    AGENT_TEST_ASSERT(strlen(w.sage_policy_revision) == 40);
+    char first_revision[41];
+    memcpy(first_revision, w.sage_policy_revision, sizeof(first_revision));
+
+    f = fopen(path, "w");
+    AGENT_TEST_ASSERT(f != NULL);
+    if (f) {
+        fputs("canonical sage policy v2\n", f);
+        fclose(f);
+    }
+    AGENT_TEST_ASSERT(agent_worker_restore_sage_policy(
+        &w, err, sizeof(err)));
+    AGENT_TEST_ASSERT(strcmp(first_revision, w.sage_policy_revision) != 0);
+
+    setenv("DS4_SAGE_POLICY_AUTO", "0", 1);
+    AGENT_TEST_ASSERT(agent_worker_restore_sage_policy(
+        &w, err, sizeof(err)));
+    AGENT_TEST_ASSERT(w.sage_prompt == NULL);
+    AGENT_TEST_ASSERT(w.sage_policy_revision[0] == '\0');
+    AGENT_TEST_ASSERT(agent_worker_activate_sage_policy(
+        &w, err, sizeof(err)));
+    AGENT_TEST_ASSERT(w.sage_prompt != NULL);
+
+    unlink(path);
+    unsetenv("DS4_SAGE_POLICY_AUTO");
+    AGENT_TEST_ASSERT(!agent_worker_restore_sage_policy(
+        &w, err, sizeof(err)));
+    AGENT_TEST_ASSERT(w.sage_prompt == NULL);
+    AGENT_TEST_ASSERT(w.sage_policy_revision[0] == '\0');
+
+    unsetenv("DS4_SKILLS_DIR");
+    rmdir(dir);
+    rmdir(root);
+}
+
+static void test_agent_sage_reminder_and_deferred_output(void) {
+    agent_worker w;
+    memset(&w, 0, sizeof(w));
+    agent_sage_turn_reset(&w.sage_turn);
+    w.sage_turn.used = true;
+    w.sage_turn.state = AGENT_SAGE_COMPUTED;
+    snprintf(w.sage_turn.run_id, sizeof(w.sage_turn.run_id), "sage-test-1");
+    snprintf(w.sage_policy_revision, sizeof(w.sage_policy_revision),
+             "0123456789012345678901234567890123456789");
+    char *reminder = agent_build_sage_turn_reminder(&w);
+    AGENT_TEST_ASSERT(strlen(reminder) < 1200);
+    AGENT_TEST_ASSERT(strstr(reminder, "Current state: computed") != NULL);
+    AGENT_TEST_ASSERT(strstr(reminder, "validate (or repair)") != NULL);
+    AGENT_TEST_ASSERT(strstr(reminder, "SageMath") == NULL);
+    free(reminder);
+
+    agent_deferred_output deferred = {0};
+    agent_token_renderer renderer = {
+        .worker = &w,
+        .deferred = &deferred,
+    };
+    renderer_write(&renderer, "unvalidated secret", 18);
+    AGENT_TEST_ASSERT(w.out_len == 0);
+    AGENT_TEST_ASSERT(deferred.ptr != NULL);
+    AGENT_TEST_ASSERT(!strcmp(deferred.ptr, "unvalidated secret"));
+    agent_deferred_output_free(&deferred);
+}
 
 static void ds4_agent_unit_tests_run(void) {
+    test_agent_shell_quote_preserves_sage_json();
     test_agent_elide_noise_lines();
     test_system_prompt_reminder_digest();
     test_tool_span_tracking();
@@ -7292,6 +8409,20 @@ static void ds4_agent_unit_tests_run(void) {
     test_agent_loop_guard_publishes_warning();
     test_agent_read_soul_skill();
     test_agent_read_ethic_skill();
+    test_agent_read_sage_skill();
+    test_agent_default_skills_load_both();
+    test_agent_default_skills_disabled_by_zero();
+    test_agent_default_skills_nonzero_value_enables();
+    test_agent_default_skills_missing_ethic_is_atomic();
+    test_agent_system_text_has_one_delimited_policy_block();
+    test_agent_new_default_session_restores_default_skills();
+    test_agent_default_skills_revision_changes_with_content();
+    test_agent_sage_native_transitions();
+    test_agent_sage_policy_autoload();
+    test_agent_sage_reminder_and_deferred_output();
+    test_agent_sage_contract_parsing();
+    test_agent_sage_run_ids_and_request_body();
+    test_agent_sage_native_exact_final_fixture();
 
 
     test_tool_compress_read_passthrough();
@@ -8368,12 +9499,38 @@ static char *agent_tool_retrieve_context_blob(agent_worker *w,
 /* --------------------------------------------------------------------------
  * JSON helpers for HTTP-based tool delegation
  * --------------------------------------------------------------------------
- * Minimal JSON string escape: wraps a string in double quotes and escapes
+ * Quote an arbitrary string as one POSIX-shell argument.  JSON escaping does
+ * not escape apostrophes, so wrapping a JSON body in raw single quotes breaks
+ * as soon as Sage code contains normal syntax such as var('x'). */
+static char *agent_shell_quote(const char *s) {
+    if (!s) s = "";
+    size_t len = strlen(s);
+    if (len > (SIZE_MAX - 3) / 4) return NULL;
+    char *out = malloc(len * 4 + 3);
+    if (!out) return NULL;
+
+    char *w = out;
+    *w++ = '\'';
+    for (const char *p = s; *p; p++) {
+        if (*p == '\'') {
+            memcpy(w, "'\\''", 4);
+            w += 4;
+        } else {
+            *w++ = *p;
+        }
+    }
+    *w++ = '\'';
+    *w = '\0';
+    return out;
+}
+
+/* Minimal JSON string escape: wraps a string in double quotes and escapes
  * " \ \n \t \b \f and control chars.  Returns a newly allocated buffer or
  * NULL on OOM. */
 static char *agent_json_escape(const char *s, size_t len) {
     if (!s) return xstrdup("\"\"");
-    size_t cap = len * 2 + 3;
+    if (len > (SIZE_MAX - 3) / 6) return NULL;
+    size_t cap = len * 6 + 3;
     char *buf = malloc(cap);
     if (!buf) return NULL;
     size_t pos = 0;
@@ -8396,107 +9553,279 @@ static char *agent_json_escape(const char *s, size_t len) {
                 }
                 break;
         }
-        if (pos + 8 > cap) {
-            free(buf);
-            return NULL;
-        }
     }
     buf[pos++] = '"';
     buf[pos] = '\0';
     return buf;
 }
 
-/* Minimal JSON string value extractor.  Given a buffer containing a JSON object
- * response, extracts the value of a top-level string key.  The key must be a
- * JSON string literal at the top level (depth 1).  Returns a newly allocated
- * string or NULL on failure.  The caller must free the result. */
-static char *agent_json_extract_string(const char *json, const char *key) {
+static const char *agent_json_top_level_value(const char *json,
+                                               const char *key) {
     if (!json || !key) return NULL;
-    /* Build the search pattern: "key": "  (key, colon, space, quote) */
-    size_t key_len = strlen(key);
-    /* Search for "<key>":" or "<key>": " (with optional whitespace) */
-    const char *p = json;
-    while (*p) {
-        /* Look for the key in quotes */
-        if (*p == '"') {
+    const size_t key_len = strlen(key);
+    int depth = 0;
+    for (const char *p = json; *p; ) {
+        if (*p == '{' || *p == '[') {
+            depth++;
             p++;
-            if (strncmp(p, key, key_len) == 0 && p[key_len] == '"') {
-                p += key_len + 1;
-                /* Skip whitespace */
-                while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
-                if (*p != ':') continue;
-                p++;
-                /* Skip whitespace after colon */
-                while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
-                if (*p != '"') continue;
-                p++; /* skip opening quote */
-                /* Extract until closing unescaped quote */
-                size_t out_len = 0;
-                size_t out_cap = 256;
-                char *out = malloc(out_cap);
-                if (!out) return NULL;
-                while (*p && *p != '"') {
-                    if (*p == '\\' && p[1]) {
-                        p++;
-                        switch (*p) {
-                            case '"': out[out_len++] = '"'; break;
-                            case '\\': out[out_len++] = '\\'; break;
-                            case 'n': out[out_len++] = '\n'; break;
-                            case 't': out[out_len++] = '\t'; break;
-                            case 'r': out[out_len++] = '\r'; break;
-                            default: out[out_len++] = *p; break;
-                        }
-                        p++;
-                    } else {
-                        out[out_len++] = *p++;
-                    }
-                    if (out_len + 4 > out_cap) {
-                        char *tmp = realloc(out, out_cap * 2);
-                        if (!tmp) { free(out); return NULL; }
-                        out = tmp;
-                        out_cap *= 2;
-                    }
-                }
-                out[out_len] = '\0';
-                return out;
-            }
-            p += key_len;
-            while (*p && *p != '"') p++;
-            if (*p) p++;
-        } else {
+            continue;
+        }
+        if (*p == '}' || *p == ']') {
+            depth--;
+            p++;
+            continue;
+        }
+        if (*p != '"') {
+            p++;
+            continue;
+        }
+        const char *start = ++p;
+        bool escaped = false;
+        while (*p) {
+            if (!escaped && *p == '"') break;
+            if (!escaped && *p == '\\') escaped = true;
+            else escaped = false;
             p++;
         }
+        if (!*p) return NULL;
+        const char *end = p++;
+        if (depth != 1 || (size_t)(end - start) != key_len ||
+            memcmp(start, key, key_len) != 0)
+            continue;
+        const char *q = p;
+        while (*q == ' ' || *q == '\t' || *q == '\n' || *q == '\r') q++;
+        if (*q != ':') continue;
+        q++;
+        while (*q == ' ' || *q == '\t' || *q == '\n' || *q == '\r') q++;
+        return q;
     }
     return NULL;
 }
 
-/* Extract a boolean value from a top-level JSON key.  Returns true if the
- * value is `true` (case-sensitive), false otherwise. */
-static bool agent_json_extract_bool(const char *json, const char *key) {
-    if (!json || !key) return false;
-    size_t key_len = strlen(key);
-    const char *p = json;
-    while (*p) {
-        if (*p == '"') {
-            p++;
-            if (strncmp(p, key, key_len) == 0 && p[key_len] == '"') {
-                p += key_len + 1;
-                while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
-                if (*p != ':') continue;
-                p++;
-                while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
-                if (strncmp(p, "true", 4) == 0) return true;
-                return false;
+/* Extract a top-level JSON string.  Express emits UTF-8 directly, so decoding
+ * the JSON control escapes preserves finalMarkdown byte-for-byte. */
+static char *agent_json_extract_string(const char *json, const char *key) {
+    const char *p = agent_json_top_level_value(json, key);
+    if (!p || *p != '"') return NULL;
+    p++;
+    size_t out_len = 0, out_cap = 256;
+    char *out = malloc(out_cap);
+    if (!out) return NULL;
+    while (*p && *p != '"') {
+        char c = *p++;
+        if (c == '\\' && *p) {
+            switch (*p++) {
+            case '"': c = '"'; break;
+            case '\\': c = '\\'; break;
+            case '/': c = '/'; break;
+            case 'b': c = '\b'; break;
+            case 'f': c = '\f'; break;
+            case 'n': c = '\n'; break;
+            case 'r': c = '\r'; break;
+            case 't': c = '\t'; break;
+            default: free(out); return NULL;
             }
-            p += key_len;
-            while (*p && *p != '"') p++;
-            if (*p) p++;
-        } else {
-            p++;
         }
+        if (out_len + 2 > out_cap) {
+            size_t cap = out_cap * 2;
+            char *tmp = realloc(out, cap);
+            if (!tmp) { free(out); return NULL; }
+            out = tmp;
+            out_cap = cap;
+        }
+        out[out_len++] = c;
     }
-    return false;
+    if (*p != '"') { free(out); return NULL; }
+    out[out_len] = '\0';
+    return out;
 }
+
+/* Extract a top-level JSON boolean. Missing and false are both fail-closed. */
+static bool agent_json_extract_bool(const char *json, const char *key) {
+    const char *p = agent_json_top_level_value(json, key);
+    return p && !strncmp(p, "true", 4) &&
+           !(isalnum((unsigned char)p[4]) || p[4] == '_');
+}
+
+typedef struct {
+    char *content;
+    char *display_content;
+    char *contract_version;
+    char *run_id;
+    char *state;
+    char *final_markdown;
+    bool is_error;
+    bool publishable;
+    bool authoritative;
+    bool validation_passed;
+    bool report_ready;
+} agent_sage_http_result;
+
+static void agent_sage_http_result_free(agent_sage_http_result *r) {
+    if (!r) return;
+    free(r->content);
+    free(r->display_content);
+    free(r->contract_version);
+    free(r->run_id);
+    free(r->state);
+    free(r->final_markdown);
+    memset(r, 0, sizeof(*r));
+}
+
+static void agent_sage_http_result_parse(const char *json,
+                                         agent_sage_http_result *r) {
+    memset(r, 0, sizeof(*r));
+    r->content = agent_json_extract_string(json, "content");
+    r->display_content = agent_json_extract_string(json, "displayContent");
+    r->contract_version = agent_json_extract_string(json, "contractVersion");
+    r->run_id = agent_json_extract_string(json, "runId");
+    r->state = agent_json_extract_string(json, "state");
+    r->final_markdown = agent_json_extract_string(json, "finalMarkdown");
+    r->is_error = agent_json_extract_bool(json, "isError");
+    r->publishable = agent_json_extract_bool(json, "publishable");
+    r->authoritative = agent_json_extract_bool(json, "authoritative");
+    r->validation_passed = agent_json_extract_bool(json, "validationPassed");
+    r->report_ready = agent_json_extract_bool(json, "reportReady");
+}
+
+static bool agent_sage_http_result_is_ready(
+    const agent_sage_http_result *r, const char *expected_run_id) {
+    return r && !r->is_error && r->contract_version &&
+           !strcmp(r->contract_version, "sage_result_v2") &&
+           r->run_id && expected_run_id &&
+           !strcmp(r->run_id, expected_run_id) &&
+           r->state && !strcmp(r->state, "ready") &&
+           r->publishable && r->authoritative && r->validation_passed &&
+           r->report_ready && r->final_markdown && r->final_markdown[0];
+}
+
+static char *agent_sage_request_body(const agent_worker *w,
+                                     const char *code, int timeout,
+                                     const char *task_type,
+                                     const char *phase,
+                                     const char *output_mode) {
+    if (!w || !code || !w->sage_turn.run_id[0]) return NULL;
+    char *e_code = agent_json_escape(code, strlen(code));
+    char *e_task = agent_json_escape(task_type && task_type[0] ? task_type : "auto",
+                                     strlen(task_type && task_type[0] ? task_type : "auto"));
+    char *e_phase = agent_json_escape(phase, strlen(phase));
+    char *e_mode = agent_json_escape(output_mode && output_mode[0] ? output_mode : "auto",
+                                     strlen(output_mode && output_mode[0] ? output_mode : "auto"));
+    char *e_run = agent_json_escape(w->sage_turn.run_id,
+                                    strlen(w->sage_turn.run_id));
+    char *e_revision = agent_json_escape(w->sage_policy_revision,
+                                         strlen(w->sage_policy_revision));
+    if (!e_code || !e_task || !e_phase || !e_mode || !e_run || !e_revision) {
+        free(e_code); free(e_task); free(e_phase); free(e_mode);
+        free(e_run); free(e_revision);
+        return NULL;
+    }
+    int needed = snprintf(NULL, 0,
+        "{\"code\":%s,\"timeout_sec\":%d,\"task_type\":%s,"
+        "\"phase\":%s,\"output_mode\":%s,\"sessionId\":%s,"
+        "\"runId\":%s,\"attempt\":%d,\"policyRevision\":%s}",
+        e_code, timeout, e_task, e_phase, e_mode, e_run, e_run,
+        agent_sage_turn_attempt(&w->sage_turn), e_revision);
+    char *body = needed > 0 ? malloc((size_t)needed + 1) : NULL;
+    if (body) {
+        snprintf(body, (size_t)needed + 1,
+            "{\"code\":%s,\"timeout_sec\":%d,\"task_type\":%s,"
+            "\"phase\":%s,\"output_mode\":%s,\"sessionId\":%s,"
+            "\"runId\":%s,\"attempt\":%d,\"policyRevision\":%s}",
+            e_code, timeout, e_task, e_phase, e_mode, e_run, e_run,
+            agent_sage_turn_attempt(&w->sage_turn), e_revision);
+    }
+    free(e_code); free(e_task); free(e_phase); free(e_mode);
+    free(e_run); free(e_revision);
+    return body;
+}
+
+#ifdef DS4_AGENT_TEST
+static void test_agent_sage_contract_parsing(void) {
+    const char *valid =
+        "{\"sageResult\":{\"publishable\":false,\"state\":\"failed\"},"
+        "\"content\":\"legacy content\",\"isError\":false,"
+        "\"displayContent\":\"done\","
+        "\"contractVersion\":\"sage_result_v2\","
+        "\"publishable\":true,\"authoritative\":true,"
+        "\"validationPassed\":true,\"reportReady\":true,"
+        "\"finalMarkdown\":\"# Exact\\n$x=1$\","
+        "\"runId\":\"sage-run-1\",\"state\":\"ready\"}";
+    agent_sage_http_result r;
+    agent_sage_http_result_parse(valid, &r);
+    AGENT_TEST_ASSERT(!r.is_error);
+    AGENT_TEST_ASSERT(!strcmp(r.content, "legacy content"));
+    AGENT_TEST_ASSERT(!strcmp(r.final_markdown, "# Exact\n$x=1$"));
+    AGENT_TEST_ASSERT(agent_sage_http_result_is_ready(&r, "sage-run-1"));
+    AGENT_TEST_ASSERT(!agent_sage_http_result_is_ready(&r, "other-run"));
+    agent_sage_http_result_free(&r);
+
+    const char *invalid[] = {
+        "{\"content\":\"old\",\"isError\":false,\"contractVersion\":\"sage_result_v1\",\"publishable\":true,\"authoritative\":true,\"validationPassed\":true,\"reportReady\":true,\"finalMarkdown\":\"x\",\"runId\":\"r\",\"state\":\"ready\"}",
+        "{\"content\":\"missing contract\",\"isError\":false,\"publishable\":true,\"authoritative\":true,\"validationPassed\":true,\"reportReady\":true,\"finalMarkdown\":\"x\",\"runId\":\"r\",\"state\":\"ready\"}",
+        "{\"contractVersion\":\"sage_result_v2\",\"publishable\":false,\"authoritative\":true,\"validationPassed\":true,\"reportReady\":true,\"finalMarkdown\":\"x\",\"runId\":\"r\",\"state\":\"ready\"}",
+        "{\"contractVersion\":\"sage_result_v2\",\"publishable\":true,\"authoritative\":false,\"validationPassed\":true,\"reportReady\":true,\"finalMarkdown\":\"x\",\"runId\":\"r\",\"state\":\"ready\"}",
+        "{\"contractVersion\":\"sage_result_v2\",\"publishable\":true,\"authoritative\":true,\"validationPassed\":false,\"reportReady\":true,\"finalMarkdown\":\"x\",\"runId\":\"r\",\"state\":\"ready\"}",
+        "{\"contractVersion\":\"sage_result_v2\",\"publishable\":true,\"authoritative\":true,\"validationPassed\":true,\"reportReady\":true,\"finalMarkdown\":\"\",\"runId\":\"r\",\"state\":\"ready\"}",
+        "{\"contractVersion\":\"sage_result_v2\"}",
+        NULL
+    };
+    for (int i = 0; invalid[i]; i++) {
+        agent_sage_http_result_parse(invalid[i], &r);
+        AGENT_TEST_ASSERT(!agent_sage_http_result_is_ready(&r, "r"));
+        if (i == 0) {
+            AGENT_TEST_ASSERT(r.content != NULL);
+            AGENT_TEST_ASSERT(!strcmp(r.content, "old"));
+        }
+        agent_sage_http_result_free(&r);
+    }
+}
+
+static void test_agent_sage_run_ids_and_request_body(void) {
+    agent_worker a, b;
+    memset(&a, 0, sizeof(a));
+    memset(&b, 0, sizeof(b));
+    agent_sage_turn_reset(&a.sage_turn);
+    agent_sage_turn_reset(&b.sage_turn);
+    snprintf(a.session_sha, sizeof(a.session_sha),
+             "0123456789abcdef0123456789abcdef01234567");
+    snprintf(b.session_sha, sizeof(b.session_sha), "%s", a.session_sha);
+    snprintf(a.sage_policy_revision, sizeof(a.sage_policy_revision),
+             "0123456789012345678901234567890123456789");
+    snprintf(b.sage_policy_revision, sizeof(b.sage_policy_revision), "%s",
+             a.sage_policy_revision);
+    AGENT_TEST_ASSERT(agent_sage_turn_ensure_run_id(&a));
+    AGENT_TEST_ASSERT(agent_sage_turn_ensure_run_id(&b));
+    AGENT_TEST_ASSERT(strcmp(a.sage_turn.run_id, b.sage_turn.run_id) != 0);
+    AGENT_TEST_ASSERT(strlen(a.sage_turn.run_id) < sizeof(a.sage_turn.run_id));
+    AGENT_TEST_ASSERT(strspn(a.sage_turn.run_id,
+                            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_") ==
+                      strlen(a.sage_turn.run_id));
+
+    char first[64];
+    snprintf(first, sizeof(first), "%s", a.sage_turn.run_id);
+    agent_sage_turn_reset(&a.sage_turn);
+    AGENT_TEST_ASSERT(agent_sage_turn_ensure_run_id(&a));
+    AGENT_TEST_ASSERT(strcmp(first, a.sage_turn.run_id) != 0);
+
+    char err[96] = {0};
+    agent_sage_turn_reset(&a.sage_turn);
+    AGENT_TEST_ASSERT(agent_sage_turn_before_call(
+        &a.sage_turn, "compute", err, sizeof(err)));
+    AGENT_TEST_ASSERT(agent_sage_turn_ensure_run_id(&a));
+    char *body = agent_sage_request_body(
+        &a, "var('x')\n1+1", 60, "function_study", "compute", "structured");
+    AGENT_TEST_ASSERT(body != NULL);
+    if (body) {
+        AGENT_TEST_ASSERT(strstr(body, "\"sessionId\":\"sage-") != NULL);
+        AGENT_TEST_ASSERT(strstr(body, "\"runId\":\"sage-") != NULL);
+        AGENT_TEST_ASSERT(strstr(body, "\"attempt\":1") != NULL);
+        AGENT_TEST_ASSERT(strstr(body, "\"policyRevision\":\"012345") != NULL);
+        AGENT_TEST_ASSERT(strstr(body, "sage-" "native") == NULL);
+        free(body);
+    }
+}
+#endif
 
 /* Sage tool implementation that delegates execution to the Node frontend server
  * via HTTP POST /api/sage/exec.  Replaces the local popen-based agent_tool_sage
@@ -8506,101 +9835,342 @@ static bool agent_json_extract_bool(const char *json, const char *key) {
 static char *agent_tool_sage_via_http(agent_worker *w, const agent_tool_call *call) {
     const char *code = agent_tool_arg_value(call, "code");
     if (!code || !code[0]) return xstrdup("Tool error: sage requires code\n");
+    if (!w->sage_prompt || !w->sage_policy_revision[0]) {
+        return xstrdup(
+            "Tool error: SAGE_POLICY_UNAVAILABLE. Run /sage start or "
+            "/sage-pol start before using SageMath.\n");
+    }
+
+    /* Early rejection: if we've already made too many sage calls, reject immediately. */
+    if (w->sage_total_calls >= 3) {
+        return xstrdup(
+            "FINAL: Too many sage calls already. DO NOT call sage again. "
+            "Use the results already obtained to produce your analysis.\n");
+    }
+
+    /* Early rejection: if we've made 2+ consecutive sage calls, reject immediately. */
+    if (w->sage_consecutive_rounds >= 2) {
+        return xstrdup(
+            "FINAL: Too many consecutive sage calls. DO NOT call sage again. "
+            "Use the results already obtained to produce your analysis.\n");
+    }
 
     int timeout = agent_parse_int_default(agent_tool_arg_value(call, "timeout_sec"),
                                           60, 1, 24 * 3600);
+
+    /* Read optional structured-sage parameters (empty string → omit from JSON). */
+    const char *task_type = agent_tool_arg_value(call, "task_type");
+    const char *phase_arg = agent_tool_arg_value(call, "phase");
+    const char *phase     = agent_sage_phase_normalize(phase_arg);
+    const char *output_mode = agent_tool_arg_value(call, "output_mode");
+    const bool authoritative_loop = agent_sage_authoritative_loop_enabled();
 
     int port = w->cfg->frontend_port;
     if (port <= 0) {
         return xstrdup("Tool error: sage HTTP backend unavailable (FRONTEND_PORT not set)\n");
     }
 
-    /* Build JSON request body with proper string escaping. */
-    char *escaped_code = agent_json_escape(code, strlen(code));
-    if (!escaped_code) return xstrdup("Tool error: sage memory error\n");
-
-    char *body = NULL;
-    {
-        int body_needed = snprintf(NULL, 0,
-            "{\"code\":%s,\"timeout_sec\":%d}",
-            escaped_code, timeout);
-        if (body_needed <= 0) {
-            free(escaped_code);
-            return xstrdup("Tool error: sage request encoding error\n");
+    char transition_err[96] = {0};
+    if (authoritative_loop) {
+        if (!agent_sage_turn_before_call(&w->sage_turn, phase,
+                                         transition_err,
+                                         sizeof(transition_err))) {
+            agent_buf b = {0};
+            agent_buf_puts(&b, "Tool error: ");
+            agent_buf_puts(&b, transition_err);
+            agent_buf_puts(&b, "\n");
+            return agent_buf_take(&b);
         }
-        body = malloc((size_t)body_needed + 1);
-        if (!body) {
-            free(escaped_code);
+    }
+    if (!authoritative_loop ||
+        (w->sage_turn.execute_count == 1 &&
+         w->sage_turn.repair_count == 0 &&
+         w->sage_turn.validation_count == 0)) {
+        snprintf(w->sage_turn.task_type, sizeof(w->sage_turn.task_type),
+                 "%s", task_type && task_type[0] ? task_type : "auto");
+    }
+    if (!agent_sage_turn_ensure_run_id(w)) {
+        agent_sage_turn_fail(&w->sage_turn, "SAGE_RUN_ID_UNAVAILABLE");
+        return xstrdup("Tool error: SAGE_RUN_ID_UNAVAILABLE\n");
+    }
+
+    char *body = agent_sage_request_body(
+        w, code, timeout, w->sage_turn.task_type, phase, output_mode);
+    if (!body) {
+        agent_sage_turn_fail(&w->sage_turn, "SAGE_REQUEST_ENCODING_FAILED");
+        return xstrdup("Tool error: sage request encoding error\n");
+    }
+
+    char *body_arg = agent_shell_quote(body);
+    free(body);
+    body = body_arg;
+    if (!body) return xstrdup("Tool error: sage request quoting failed\n");
+
+    /* Publish the same immutable run ID used by the HTTP request/artifacts. */
+    {
+        char json_buf[512];
+        int jn = snprintf(json_buf, sizeof(json_buf),
+            "{\"runId\":\"%s\",\"state\":\"%s\",\"status\":\"running\","
+            "\"attempt\":%d,\"policyRevision\":\"%s\",\"mode\":\"%s\"}",
+            w->sage_turn.run_id, agent_sage_state_name(w->sage_turn.state),
+            agent_sage_turn_attempt(&w->sage_turn),
+            w->sage_policy_revision,
+            authoritative_loop ? "authoritative" : "legacy");
+        if (jn > 0 && (size_t)jn < sizeof(json_buf)) {
+            w->current_event_type = 5; /* DS4_AGENT_EVENT_SAGE_STATUS */
+            agent_publish(w, json_buf, (size_t)jn);
+            w->current_event_type = 0;
+        }
+    }
+
+    /* Retry configuration — exponential backoff for transient connection errors.
+     * MAX_ATTEMPTS=4 → delays ~0.5s, 1s, 2s, 4s = up to ~7.5s total wait. */
+#define SAGE_RETRY_MAX_ATTEMPTS  4
+#define SAGE_RETRY_BASE_DELAY_US 500000  /* 0.5 seconds in microseconds */
+
+    int attempt;
+    agent_buf result = {0};
+    int exit_code = -1;
+
+    for (attempt = 1; attempt <= SAGE_RETRY_MAX_ATTEMPTS; attempt++) {
+        /* Build curl command each attempt because body is reused.  --max-time
+         * adds a safety margin beyond the Sage timeout so a hung Node process
+         * does not wedge the worker. */
+        int curl_timeout = timeout + 10;
+        if (curl_timeout < 30) curl_timeout = 30;
+        int cmd_needed = snprintf(NULL, 0,
+            "curl -s -X POST http://127.0.0.1:%d/api/sage/exec "
+            "-H 'Content-Type: application/json' "
+            "-d %s --max-time %d 2>/dev/null",
+            port, body, curl_timeout);
+        if (cmd_needed <= 0) {
+            free(body);
+            if (authoritative_loop)
+                agent_sage_turn_after_result(&w->sage_turn, phase, true,
+                                             false, false, false, false, false);
+            return xstrdup("Tool error: sage HTTP command encoding failed\n");
+        }
+        char *cmd = malloc((size_t)cmd_needed + 1);
+        if (!cmd) {
+            free(body);
+            if (authoritative_loop)
+                agent_sage_turn_after_result(&w->sage_turn, phase, true,
+                                             false, false, false, false, false);
             return xstrdup("Tool error: sage memory error\n");
         }
-        snprintf(body, (size_t)body_needed + 1,
-            "{\"code\":%s,\"timeout_sec\":%d}",
-            escaped_code, timeout);
-    }
-    free(escaped_code);
+        snprintf(cmd, (size_t)cmd_needed + 1,
+            "curl -s -X POST http://127.0.0.1:%d/api/sage/exec "
+            "-H 'Content-Type: application/json' "
+            "-d %s --max-time %d 2>/dev/null",
+            port, body, curl_timeout);
 
-    /* Build curl command.  --max-time adds a safety margin beyond the Sage
-     * timeout so a hung Node process does not wedge the worker. */
-    char cmd[8192];
-    int curl_timeout = timeout + 10;
-    if (curl_timeout < 30) curl_timeout = 30;
-    snprintf(cmd, sizeof(cmd),
-        "curl -s -X POST http://127.0.0.1:%d/api/sage/exec "
-        "-H 'Content-Type: application/json' "
-        "-d '%s' --max-time %d 2>/dev/null",
-        port, body, curl_timeout);
-
-    agent_publishf_system_status(w, "Running Sage via HTTP...");
-
-    agent_buf result = {0};
-    char buf[4096];
-    FILE *fp = popen(cmd, "r");
-    if (!fp) {
-        free(body);
-        return xstrdup("Tool error: sage HTTP backend unavailable (popen failed)\n");
-    }
-    while (fgets(buf, sizeof(buf), fp)) agent_buf_puts(&result, buf);
-    int status = pclose(fp);
-
-    /* Check for curl errors */
-    int exit_code = (status >= 0 && WIFEXITED(status)) ? WEXITSTATUS(status) : -1;
-    if (exit_code == 0 && result.ptr) {
-        /* Parse JSON response */
-        char *content = agent_json_extract_string(result.ptr, "content");
-        bool is_error = agent_json_extract_bool(result.ptr, "isError");
-
-        if (content && !is_error) {
-            free(result.ptr);
+        FILE *fp = popen(cmd, "r");
+        free(cmd);
+        if (!fp) {
+            if (attempt < SAGE_RETRY_MAX_ATTEMPTS) {
+                usleep(SAGE_RETRY_BASE_DELAY_US << (attempt - 1));
+                continue;
+            }
             free(body);
-            return content;
+            if (authoritative_loop)
+                agent_sage_turn_after_result(&w->sage_turn, phase, true,
+                                             false, false, false, false, false);
+            return xstrdup("Tool error: sage HTTP backend unavailable (popen failed)\n");
         }
-        free(content);
-        if (is_error && result.ptr) {
-            /* Try to get the error content for a more informative message */
-            char *err_content = agent_json_extract_string(result.ptr, "content");
+
+        agent_buf result_local = {0};
+        char buf[4096];
+        while (fgets(buf, sizeof(buf), fp)) agent_buf_puts(&result_local, buf);
+        int status = pclose(fp);
+
+        exit_code = (status >= 0 && WIFEXITED(status)) ? WEXITSTATUS(status) : -1;
+
+        /* Successful response */
+        if (exit_code == 0 && result_local.ptr) {
+            agent_sage_http_result parsed;
+            agent_sage_http_result_parse(result_local.ptr, &parsed);
+            if (!authoritative_loop) {
+                if (parsed.content && !parsed.is_error) {
+                    char *content = parsed.content;
+                    parsed.content = NULL;
+                    char json_buf[512];
+                    int jn = snprintf(json_buf, sizeof(json_buf),
+                        "{\"runId\":\"%s\",\"state\":\"completed\","
+                        "\"status\":\"completed\",\"mode\":\"legacy\","
+                        "\"summary\":\"SageMath legacy phase completed.\"}",
+                        w->sage_turn.run_id);
+                    if (jn > 0 && (size_t)jn < sizeof(json_buf)) {
+                        w->current_event_type = 5;
+                        agent_publish(w, json_buf, (size_t)jn);
+                        w->current_event_type = 0;
+                    }
+                    agent_sage_http_result_free(&parsed);
+                    free(result_local.ptr);
+                    free(body);
+                    return content;
+                }
+                agent_buf b = {0};
+                agent_buf_puts(&b, "Tool error: sage legacy computation failed");
+                if (parsed.content) {
+                    agent_buf_puts(&b, ": ");
+                    agent_buf_puts(&b, parsed.content);
+                }
+                agent_buf_puts(&b, "\n");
+                agent_sage_http_result_free(&parsed);
+                free(result_local.ptr);
+                free(body);
+                return agent_buf_take(&b);
+            }
+            bool contract_v2 = parsed.contract_version &&
+                !strcmp(parsed.contract_version, "sage_result_v2");
+            bool run_matches = parsed.run_id &&
+                !strcmp(parsed.run_id, w->sage_turn.run_id);
+            bool ready = !strcmp(phase, "validate") &&
+                agent_sage_http_result_is_ready(
+                    &parsed, w->sage_turn.run_id);
+            bool response_error = parsed.is_error || !contract_v2 ||
+                                  !run_matches;
+
+            agent_sage_turn_after_result(
+                &w->sage_turn, phase, response_error,
+                parsed.authoritative, parsed.validation_passed,
+                parsed.publishable, parsed.report_ready,
+                parsed.final_markdown && parsed.final_markdown[0]);
+
+            if (ready) {
+                free(w->sage_final_markdown);
+                w->sage_final_markdown = parsed.final_markdown;
+                parsed.final_markdown = NULL;
+                /* after_result already set every gate bit and READY. */
+                char json_buf[640];
+                int jn = snprintf(json_buf, sizeof(json_buf),
+                    "{\"runId\":\"%s\",\"state\":\"ready\","
+                    "\"status\":\"completed\",\"attempt\":%d,"
+                    "\"policyRevision\":\"%s\","
+                    "\"summary\":\"Report SageMath validato.\"}",
+                    w->sage_turn.run_id,
+                    agent_sage_turn_attempt(&w->sage_turn),
+                    w->sage_policy_revision);
+                if (jn > 0 && (size_t)jn < sizeof(json_buf)) {
+                    w->current_event_type = 5;
+                    agent_publish(w, json_buf, (size_t)jn);
+                    w->current_event_type = 0;
+                }
+                agent_sage_http_result_free(&parsed);
+                free(result_local.ptr);
+                free(body);
+                return xstrdup("Sage authoritative report ready.\n");
+            }
+
+            if (!strcmp(phase, "validate")) {
+                agent_sage_turn_fail(&w->sage_turn,
+                                     "SAGE_RESULT_NOT_PUBLISHABLE");
+                agent_sage_http_result_free(&parsed);
+                free(result_local.ptr);
+                free(body);
+                return xstrdup("Tool error: SAGE_RESULT_NOT_PUBLISHABLE\n");
+            }
+
+            if (parsed.content && !response_error) {
+                char *content = parsed.content;
+                parsed.content = NULL;
+                char json_buf[640];
+                int jn = snprintf(json_buf, sizeof(json_buf),
+                    "{\"runId\":\"%s\",\"state\":\"%s\","
+                    "\"status\":\"completed\",\"attempt\":%d,"
+                    "\"policyRevision\":\"%s\","
+                    "\"summary\":\"SageMath phase completed.\"}",
+                    w->sage_turn.run_id,
+                    agent_sage_state_name(w->sage_turn.state),
+                    agent_sage_turn_attempt(&w->sage_turn),
+                    w->sage_policy_revision);
+                if (jn > 0 && (size_t)jn < sizeof(json_buf)) {
+                    w->current_event_type = 5;
+                    agent_publish(w, json_buf, (size_t)jn);
+                    w->current_event_type = 0;
+                }
+                agent_sage_http_result_free(&parsed);
+                free(result_local.ptr);
+                free(body);
+                return content;
+            }
+
             agent_buf b = {0};
             agent_buf_puts(&b, "Tool error: sage computation failed");
-            if (err_content) {
+            if (!contract_v2) agent_buf_puts(&b, ": SAGE_RESULT_NOT_PUBLISHABLE");
+            else if (!run_matches) agent_buf_puts(&b, ": SAGE_RUN_ID_MISMATCH");
+            else if (parsed.content) {
                 agent_buf_puts(&b, ": ");
-                agent_buf_puts(&b, err_content);
-                free(err_content);
+                agent_buf_puts(&b, parsed.content);
             }
             agent_buf_puts(&b, "\n");
-            free(result.ptr);
+            agent_sage_http_result_free(&parsed);
+            free(result_local.ptr);
             free(body);
             return agent_buf_take(&b);
         }
-        /* Fall through to error handling */
+
+        /* Transient connection errors worth retrying:
+         *   curl exit 2  → connection refused / DNS failure
+         *   curl exit 28 → timeout
+         *   curl exit 52 → server returned nothing
+         *   curl exit 55 → send failure
+         * Also retry on empty output without an error code (server not ready). */
+        bool transient = (exit_code == 2 || exit_code == 7 ||
+                          exit_code == 9 || exit_code == 18 ||
+                          exit_code == 22 || exit_code == 25 ||
+                          exit_code == 26 || exit_code == 27 ||
+                          exit_code == 28 ||
+                          exit_code == 47 || exit_code == 48 ||
+                          exit_code == 49 || exit_code == 50 ||
+                          exit_code == 51 || exit_code == 52 ||
+                          exit_code == 53 || exit_code == 55 ||
+                          exit_code == 56 || exit_code == 58 ||
+                          exit_code == 60 || exit_code == 61);
+
+        if (transient && attempt < SAGE_RETRY_MAX_ATTEMPTS) {
+            /* Backoff: 0.5s, 1s, 2s, then fall through to final error */
+            usleep(SAGE_RETRY_BASE_DELAY_US << (attempt - 1));
+            free(result_local.ptr);
+            continue;
+        }
+
+        /* Non-transient or last attempt — stash result for final error below */
+        free(result.ptr);
+        result = result_local;
+        break;
     }
 
-    free(result.ptr);
+    /* All attempts exhausted — produce a clear error message. */
+    free(body);
+    if (authoritative_loop)
+        agent_sage_turn_after_result(&w->sage_turn, phase, true,
+                                     false, false, false, false, false);
+    if (result.ptr) {
+        char *err_content = agent_json_extract_string(result.ptr, "content");
+        agent_buf b = {0};
+        agent_buf_puts(&b, "Tool error: sage HTTP request failed");
+        if (exit_code > 0) {
+            char code_str[32];
+            snprintf(code_str, sizeof(code_str), " (curl exit %d)", exit_code);
+            agent_buf_puts(&b, code_str);
+        }
+        if (err_content) {
+            agent_buf_puts(&b, ": ");
+            agent_buf_puts(&b, err_content);
+            free(err_content);
+        }
+        agent_buf_puts(&b, "\n");
+        free(result.ptr);
+        return agent_buf_take(&b);
+    }
     if (exit_code > 0) {
         char msg[128];
-        snprintf(msg, sizeof(msg), "Tool error: sage HTTP request failed (curl exit %d)\n", exit_code);
-        free(body);
+        snprintf(msg, sizeof(msg),
+            "Tool error: sage HTTP request failed after %d retries (curl exit %d)\n",
+            SAGE_RETRY_MAX_ATTEMPTS - 1, exit_code);
         return xstrdup(msg);
     }
-    free(body);
     return xstrdup("Tool error: sage HTTP backend error (no output)\n");
 }
 
@@ -8654,66 +10224,147 @@ static char *agent_tool_pageagent_via_http(agent_worker *w, const agent_tool_cal
     free(escaped_name);
     free(args_json.ptr);
 
-    /* Build curl POST command.  Single quotes around -d payload are safe because
-     * agent_json_escape never produces unescaped single quotes. */
-    char cmd[8192];
-    int body_len = body.ptr ? (int)body.len : 2;
-    if (body_len > 8000) {
+    if (body.len > 8000) {
         free(body.ptr);
         return xstrdup("Tool error: page agent request too large\n");
     }
-    snprintf(cmd, sizeof(cmd),
-        "curl -s -X POST http://127.0.0.1:%d/api/pageagent/tool "
-        "-H 'Content-Type: application/json' "
-        "-d '%s' --max-time 30 2>/dev/null",
-        port, body.ptr ? body.ptr : "{}");
+    char *body_arg = agent_shell_quote(body.ptr ? body.ptr : "{}");
     free(body.ptr);
+    body.ptr = body_arg;
+    body.len = body_arg ? strlen(body_arg) : 0;
+    if (!body.ptr) return xstrdup("Tool error: page agent request quoting failed\n");
 
-    agent_publishf_system_status(w, "Running %s via HTTP...", name);
+    /* Retry configuration — exponential backoff for transient connection errors.
+     * MAX_ATTEMPTS=4 → delays ~0.5s, 1s, 2s, 4s = up to ~7.5s total wait. */
 
-    /* Execute curl and parse JSON response (same pattern as sage). */
+    int attempt;
     agent_buf result = {0};
-    char buf[4096];
-    FILE *fp = popen(cmd, "r");
-    if (!fp) {
-        char msg[256];
-        snprintf(msg, sizeof(msg), "Tool error: %s HTTP backend unavailable (popen failed)\n", name);
-        return xstrdup(msg);
-    }
-    while (fgets(buf, sizeof(buf), fp)) agent_buf_puts(&result, buf);
-    int status = pclose(fp);
-    int exit_code = (status >= 0 && WIFEXITED(status)) ? WEXITSTATUS(status) : -1;
+    int exit_code = -1;
 
-    if (exit_code == 0 && result.ptr) {
-        char *content = agent_json_extract_string(result.ptr, "content");
-        bool is_error = agent_json_extract_bool(result.ptr, "isError");
-
-        if (content && !is_error) {
-            free(result.ptr);
-            return content;
+    for (attempt = 1; attempt <= SAGE_RETRY_MAX_ATTEMPTS; attempt++) {
+        /* The body is already quoted as one shell argument, including any
+         * apostrophes found in page text or action arguments. */
+        int cmd_needed = snprintf(NULL, 0,
+            "curl -s -X POST http://127.0.0.1:%d/api/pageagent/tool "
+            "-H 'Content-Type: application/json' "
+            "-d %s --max-time 30 2>/dev/null",
+            port, body.ptr);
+        if (cmd_needed <= 0) {
+            free(body.ptr);
+            return xstrdup("Tool error: page agent HTTP command encoding failed\n");
         }
-        free(content);
-        if (is_error && result.ptr) {
-            char *err_content = agent_json_extract_string(result.ptr, "content");
-            agent_buf b = {0};
-            char header[256];
-            snprintf(header, sizeof(header), "Tool error: %s failed", name);
-            agent_buf_puts(&b, header);
-            if (err_content) {
-                agent_buf_puts(&b, ": ");
-                agent_buf_puts(&b, err_content);
-                free(err_content);
+        char *cmd = malloc((size_t)cmd_needed + 1);
+        if (!cmd) {
+            free(body.ptr);
+            return xstrdup("Tool error: page agent memory error\n");
+        }
+        snprintf(cmd, (size_t)cmd_needed + 1,
+            "curl -s -X POST http://127.0.0.1:%d/api/pageagent/tool "
+            "-H 'Content-Type: application/json' "
+            "-d %s --max-time 30 2>/dev/null",
+            port, body.ptr);
+
+        agent_publishf_system_status(w, "Running %s via HTTP...", name);
+
+        FILE *fp = popen(cmd, "r");
+        free(cmd);
+        if (!fp) {
+            if (attempt < SAGE_RETRY_MAX_ATTEMPTS) {
+                usleep(SAGE_RETRY_BASE_DELAY_US << (attempt - 1));
+                continue;
             }
-            agent_buf_puts(&b, "\n");
-            free(result.ptr);
-            return agent_buf_take(&b);
+            char msg[256];
+            snprintf(msg, sizeof(msg), "Tool error: %s HTTP backend unavailable (popen failed)\n", name);
+            free(body.ptr);
+            return xstrdup(msg);
         }
+
+        agent_buf result_local = {0};
+        char buf[4096];
+        while (fgets(buf, sizeof(buf), fp)) agent_buf_puts(&result_local, buf);
+        int status = pclose(fp);
+
+        exit_code = (status >= 0 && WIFEXITED(status)) ? WEXITSTATUS(status) : -1;
+
+        /* Successful response */
+        if (exit_code == 0 && result_local.ptr) {
+            char *content = agent_json_extract_string(result_local.ptr, "content");
+            bool is_error = agent_json_extract_bool(result_local.ptr, "isError");
+
+            if (content && !is_error) {
+                free(result_local.ptr);
+                free(body.ptr);
+                return content;
+            }
+            free(content);
+            if (is_error && result_local.ptr) {
+                char *err_content = agent_json_extract_string(result_local.ptr, "content");
+                agent_buf b = {0};
+                char header[256];
+                snprintf(header, sizeof(header), "Tool error: %s failed", name);
+                agent_buf_puts(&b, header);
+                if (err_content) {
+                    agent_buf_puts(&b, ": ");
+                    agent_buf_puts(&b, err_content);
+                    free(err_content);
+                }
+                agent_buf_puts(&b, "\n");
+                free(result_local.ptr);
+                free(body.ptr);
+                return agent_buf_take(&b);
+            }
+            /* Fall through — empty response treated as transient below */
+        }
+
+        /* Transient connection errors worth retrying (same codes as sage tool). */
+        bool transient = (exit_code == 2 || exit_code == 7 ||
+                          exit_code == 9 || exit_code == 18 ||
+                          exit_code == 22 || exit_code == 25 ||
+                          exit_code == 26 || exit_code == 27 ||
+                          exit_code == 47 || exit_code == 48 ||
+                          exit_code == 49 || exit_code == 50 ||
+                          exit_code == 51 || exit_code == 53 ||
+                          exit_code == 56 || exit_code == 58 ||
+                          exit_code == 60 || exit_code == 61);
+
+        if (transient && attempt < SAGE_RETRY_MAX_ATTEMPTS) {
+            usleep(SAGE_RETRY_BASE_DELAY_US << (attempt - 1));
+            free(result_local.ptr);
+            continue;
+        }
+
+        /* Non-transient or last attempt — stash result for final error below */
+        free(result.ptr);
+        result = result_local;
+        break;
     }
 
-    free(result.ptr);
+    free(body.ptr);
+    if (result.ptr) {
+        char *err_content = agent_json_extract_string(result.ptr, "content");
+        agent_buf b = {0};
+        char header[256];
+        snprintf(header, sizeof(header), "Tool error: %s HTTP request failed", name);
+        agent_buf_puts(&b, header);
+        if (exit_code > 0) {
+            char code_str[32];
+            snprintf(code_str, sizeof(code_str), " (curl exit %d)", exit_code);
+            agent_buf_puts(&b, code_str);
+        }
+        if (err_content) {
+            agent_buf_puts(&b, ": ");
+            agent_buf_puts(&b, err_content);
+            free(err_content);
+        }
+        agent_buf_puts(&b, "\n");
+        free(result.ptr);
+        return agent_buf_take(&b);
+    }
     if (exit_code > 0) {
         char msg[256];
-        snprintf(msg, sizeof(msg), "Tool error: %s HTTP request failed (curl exit %d)\n", name, exit_code);
+        snprintf(msg, sizeof(msg),
+            "Tool error: %s HTTP request failed after %d retries (curl exit %d)\n",
+            name, SAGE_RETRY_MAX_ATTEMPTS - 1, exit_code);
         return xstrdup(msg);
     }
     return xstrdup("Tool error: page agent HTTP backend error (no output)\n");
@@ -8900,6 +10551,46 @@ static char *agent_execute_tool_call(agent_worker *w, const agent_tool_call *cal
     if (!strcmp(call->name, "bash")) {
         const char *cmd = agent_tool_arg_value(call, "command");
         if (!cmd || !cmd[0]) return xstrdup("Tool error: bash requires command\n");
+        /* Intercept "sage ..." commands: redirect to the proper sage tool. */
+        const char *p = cmd;
+        while (*p == ' ' || *p == '\t') p++;
+        if (strncmp(p, "sage ", 5) == 0 || strncmp(p, "sage\n", 5) == 0 ||
+            strncmp(p, "/usr/local/bin/sage", 19) == 0) {
+            return xstrdup(
+                "Tool error: do not use bash to run sage. "
+                "Use the sage tool with code parameter instead.\n");
+        }
+        /* Block diagnostic commands during sage turns to prevent
+         * interleaving non-sage calls that reset the loop counter. */
+        if (w->sage_turn.used && !agent_sage_turn_can_finalize(&w->sage_turn)) {
+            const char *diag[] = {"ps ", "ps\n", "free", "df ", "df\n",
+                                  "ls ", "ls\n", "top", "htop", "uptime",
+                                  "whoami", "id ", "pwd", "date", "cal",
+                                  "wc ", "head", "tail", "cat ", "less ",
+                                  "more ", "file ", "stat ", "du ", "du\n",
+                                  "du -", "find ", "locate", "which ",
+                                  "whereis", "lsof", "netstat", "ss ",
+                                  "ip ", "ifconfig", "ping ", "traceroute",
+                                  "nslookup", "dig ", "host ",
+                                  "uname", "arch", "lscpu", "lsblk",
+                                  "lsusb", "lspci", "lsmod",
+                                  "dmesg", "journalctl", "sysctl",
+                                  "vmstat", "iostat", "sar ",
+                                  "mpstat", "pidstat", "perf ",
+                                  "strace", "ltrace", "time ",
+                                  "timeout", "nohup", "screen",
+                                  "tmux", "jobs", "fg ", "bg ",
+                                  "kill", "killall", "pkill",
+                                  "nice", "renice", "ionice",
+                                  NULL};
+            for (int i = 0; diag[i]; i++) {
+                if (strncmp(p, diag[i], strlen(diag[i])) == 0) {
+                    return xstrdup(
+                        "Tool error: diagnostic commands not allowed during "
+                        "Sage analysis. Focus on the math, not system state.\n");
+                }
+            }
+        }
         int timeout = agent_parse_timeout(agent_tool_arg_value(call, "timeout_sec"));
         int refresh = agent_parse_int_default(agent_tool_arg_value(call, "refresh_sec"),
                                               60, 1, 3600);
@@ -8948,6 +10639,14 @@ static char *agent_execute_tool_call(agent_worker *w, const agent_tool_call *cal
  * combined result so the model can associate observations with calls. */
 static char *agent_execute_tool_calls(agent_worker *w, const agent_tool_calls *calls) {
     agent_buf all = {0};
+    int sage_calls = 0;
+    for (int i = 0; i < calls->len; i++) {
+        if (calls->v[i].name && !strcmp(calls->v[i].name, "sage"))
+            sage_calls++;
+    }
+    if (sage_calls && calls->len != 1) {
+        return xstrdup("Tool error: SAGE_MIXED_TOOL_BLOCK_FORBIDDEN\n");
+    }
     for (int i = 0; i < calls->len; i++) {
         char *res = agent_execute_tool_call(w, &calls->v[i]);
         char hdr[128];
@@ -9649,6 +11348,105 @@ static void worker_set_greedy_sampling(agent_worker *w, bool greedy) {
     pthread_mutex_unlock(&w->mu);
 }
 
+/* ── Fabrication detection ───────────────────────────────────────────────
+ * Scans generated text for simulated tool-result blocks that bypass real
+ * tool execution (e.g., fake <search_results> written as plain prose).
+ * Returns true if a fabricated block is found.
+ *
+ * ds4-pony: pattern-matching only; upgrade trigger = NLP-based detector. */
+static bool agent_is_fabricated_result(const char *text, size_t len) {
+    /* Markers that should ONLY appear after a real tool execution. */
+    static const char *fake_markers[] = {
+        "<search_results>",
+        "</search_results>",
+        "<crawl_results>",
+        "</crawl_results>",
+        "<tool_results>",
+        "</tool_results>",
+    };
+    int n = sizeof(fake_markers) / sizeof(fake_markers[0]);
+    for (int i = 0; i < n; i++) {
+        const char *m = fake_markers[i];
+        size_t mlen = strlen(m);
+        if (mlen > len) continue;
+        const char *p = text;
+        while ((p = strstr(p, m)) != NULL) {
+            /* Check it's not inside a legitimate DSML tool result wrapper
+             * by verifying the surrounding context isn't a proper tool stanza. */
+            return true;   /* bare marker → fabrication */
+        }
+    }
+    return false;
+}
+
+/* ── Defensive-loop phrase detection ────────────────────────────────────
+ * Returns true if the generated text contains patterns typical of an agent
+ * defending a fabrication instead of admitting it.
+ *
+ * ds4-pony: simple substring list; upgrade trigger = NLP classifier. */
+static bool agent_is_defensive_text(const char *text, size_t len) {
+    static const char *defense_phrases[] = {
+        "I did search",      "i did search",
+        "the block shows",   "the search results show",
+        "as proof",          "prova che ho cercato",
+        "ho cercato",        "la ricerca ha prodotto",
+        "sostengo di aver",  "continuo a sostenere",
+    };
+    int n = sizeof(defense_phrases) / sizeof(defense_phrases[0]);
+    for (int i = 0; i < n; i++) {
+        if (strlen(defense_phrases[i]) > len) continue;
+        if (strstr(text, defense_phrases[i]) != NULL)
+            return true;
+    }
+    return false;
+}
+
+static bool agent_sage_publish_authoritative_final(agent_worker *w,
+                                                   bool append_transcript) {
+    if (!w || !agent_sage_turn_can_finalize(&w->sage_turn) ||
+        !w->sage_final_markdown || !w->sage_final_markdown[0])
+        return false;
+    if (append_transcript) {
+        ds4_chat_append_message(w->engine, &w->transcript, "assistant",
+                                w->sage_final_markdown);
+    }
+    w->current_event_type = 0;
+    agent_publish(w, w->sage_final_markdown,
+                  strlen(w->sage_final_markdown));
+    return true;
+}
+
+#ifdef DS4_AGENT_TEST
+static void test_agent_sage_native_exact_final_fixture(void) {
+    static const char expected[] =
+        "# Runtime report\n\n$$f'(x)=3x^2$$\n\nExact: 0.3333333333333333";
+    agent_worker w;
+    memset(&w, 0, sizeof(w));
+    w.wake_fd[0] = -1;
+    w.wake_fd[1] = -1;
+    pthread_mutex_init(&w.mu, NULL);
+    agent_sage_turn_reset(&w.sage_turn);
+    w.sage_turn.state = AGENT_SAGE_READY;
+    w.sage_turn.used = true;
+    w.sage_turn.authoritative = true;
+    w.sage_turn.validation_passed = true;
+    w.sage_turn.publishable = true;
+    w.sage_turn.report_ready = true;
+    w.sage_turn.final_markdown_ready = true;
+    w.sage_final_markdown = xstrdup(expected);
+
+    AGENT_TEST_ASSERT(agent_sage_publish_authoritative_final(&w, false));
+    AGENT_TEST_ASSERT(w.out != NULL);
+    AGENT_TEST_ASSERT(w.out_len == strlen(expected));
+    AGENT_TEST_ASSERT(!memcmp(w.out, expected, strlen(expected)));
+    AGENT_TEST_ASSERT(!agent_sage_publish_authoritative_final(NULL, false));
+
+    free(w.sage_final_markdown);
+    free(w.out);
+    pthread_mutex_destroy(&w.mu);
+}
+#endif
+
 /* Run one user turn until the assistant stops or returns a tool call.  Tool
  * results are appended to the transcript and the loop continues, which gives
  * the model native DSML tool iteration without a client/server protocol. */
@@ -9664,6 +11462,10 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
     w->status.turn_prefill_sec = 0.0;
     w->status.turn_decode_sec = 0.0;
     w->status.error[0] = '\0';
+    /* Reset all turn-scoped Sage authority and owned final output. */
+    free(w->sage_final_markdown);
+    w->sage_final_markdown = NULL;
+    agent_sage_turn_reset(&w->sage_turn);
     agent_wake_locked(w);
     pthread_mutex_unlock(&w->mu);
 
@@ -9712,6 +11514,9 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
     w->loop_guard_consecutive_identical = 0;
     w->loop_guard_consecutive_malformed = 0;
     w->loop_guard_ring_pos = 0;
+    w->sage_consecutive_rounds = 0;
+    w->sage_total_calls = 0;
+    w->sage_turn_start_sec = 0.0;
     for (int tool_round = 0; ; tool_round++) {
         if (tool_round >= w->loop_guard_max_tool_rounds) {
             agent_buf b = {0};
@@ -9816,6 +11621,9 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
         }
 
         bool use_color = isatty(STDOUT_FILENO) != 0;
+        agent_deferred_output deferred_output = {0};
+        bool defer_sage_output = w->sage_turn.used &&
+                                 !agent_sage_turn_can_finalize(&w->sage_turn);
         agent_token_renderer renderer = {
             .engine = w->engine,
             .worker = w,
@@ -9824,6 +11632,7 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
             .in_think = ds4_think_mode_enabled(think_mode),
             .use_color = use_color,
             .last_output_newline = true,
+            .deferred = defer_sage_output ? &deferred_output : NULL,
         };
         agent_dsml_parser dsml = {.state = AGENT_DSML_SEARCH};
         agent_stream_renderer stream = {
@@ -9841,6 +11650,9 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
         bool early_tool_error = false;
         int generated = 0;
         double t0 = now_sec();
+        /* Accumulator for post-generation fabrication/defensive scan.
+         * Freed after scanning; empty in tool-call paths to avoid waste. */
+        agent_buf gen_text = {0};
 
         pthread_mutex_lock(&w->mu);
         w->status.state = AGENT_WORKER_GENERATING;
@@ -9889,14 +11701,18 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
                 if (worker_force_generated_text(w, "[upto]\n", max_tokens,
                                                 &generated, t0, &stream,
                                                 err, sizeof(err)) != 0) {
+                    agent_deferred_output_free(&deferred_output);
                     agent_dsml_parser_free(&dsml);
                     agent_set_error(w, err);
                     return 1;
                 }
             } else {
+                /* Accumulate for post-generation scan (fabrication/defensive). */
+                agent_buf_append(&gen_text, text, text_len);
                 free(text);
                 if (worker_accept_generated_token(w, token, &generated, t0,
                                                   &stream, err, sizeof(err)) != 0) {
+                    agent_deferred_output_free(&deferred_output);
                     agent_dsml_parser_free(&dsml);
                     agent_set_error(w, err);
                     return 1;
@@ -9936,10 +11752,14 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
         bool interrupted = worker_should_interrupt(w);
         agent_stream_text(&stream, NULL, 0, true);
         renderer_finish(&renderer);
+        /* Sage continuation output is intentionally never flushed: only the
+         * validated runtime Markdown may become client-visible. */
+        agent_deferred_output_free(&deferred_output);
         worker_set_greedy_sampling(w, false);
         if (interrupted) {
             ds4_tokens_push(&w->transcript, ds4_token_eos(w->engine));
             agent_dsml_parser_free(&dsml);
+            free(gen_text.ptr);
             agent_publish_system_status(w, "Stopped by user");
             worker_clear_interrupt(w);
             agent_set_status(w, AGENT_WORKER_IDLE);
@@ -9971,16 +11791,106 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
 
         ds4_tokens_push(&w->transcript, ds4_token_eos(w->engine));
 
+        /* Once Sage has been used, ordinary model prose is never an eligible
+         * final answer.  Its rendered bytes were captured above rather than
+         * streamed.  Give the model one state-aware retry, then fail closed. */
         if (!got_tool && !malformed_tool && !early_tool_error &&
-            !degenerate_repetition) {
-            if (generated >= max_tokens && max_tokens < cfg->gen.n_predict)
-                agent_publish_system_status(w,
-                    "Risposta troncata: contesto esaurito. Apri una nuova "
-                    "sessione o usa /strip.");
+            !degenerate_repetition && w->sage_turn.used &&
+            !agent_sage_turn_can_finalize(&w->sage_turn)) {
+            w->sage_turn.finalization_block_count++;
+            if (w->sage_turn.finalization_block_count == 1 &&
+                w->sage_turn.state != AGENT_SAGE_FAILED) {
+                agent_worker_append_tool_result(
+                    w,
+                    "SAGE_FINALIZATION_BLOCKED: complete the allowed next Sage phase.\n");
+                free(gen_text.ptr);
+                agent_dsml_parser_free(&dsml);
+                continue;
+            }
+            agent_sage_turn_fail(&w->sage_turn,
+                                 "SAGE_FINALIZATION_BLOCKED");
+            agent_worker_append_tool_result(
+                w,
+                "SAGE_FINALIZATION_BLOCKED: authoritative validation was not completed.\n");
+            agent_publish_system_status(
+                w,
+                "SAGE_FINALIZATION_BLOCKED: no unvalidated mathematical answer was published.");
+            free(gen_text.ptr);
             agent_dsml_parser_free(&dsml);
             agent_set_status(w, AGENT_WORKER_IDLE);
             return 0;
         }
+
+        /* ── Fabrication & defensive-loop check on plain-text responses ─── */
+        if (!got_tool && !malformed_tool && !early_tool_error &&
+            !degenerate_repetition) {
+            bool fabricated = gen_text.ptr && gen_text.len > 0 &&
+                agent_is_fabricated_result(gen_text.ptr, gen_text.len);
+            bool defensive = gen_text.ptr && gen_text.len > 0 &&
+                agent_is_defensive_text(gen_text.ptr, gen_text.len);
+
+            if (fabricated) {
+                /* Fabrication detected: inject error and continue loop so the
+                 * model can correct itself. */
+                w->loop_guard_consecutive_defensive++;
+                agent_buf b = {0};
+                agent_buf_puts(&b,
+                    "Tool error: simulated result detected — you wrote "
+                    "<search_results>, <crawl_results> or <tool_results> "
+                    "without executing a real tool call. Do not simulate "
+                    "tool output. Use the proper DSML syntax to invoke the "
+                    "tool, then report its real result.\n");
+                char *err_result = agent_buf_take(&b);
+                ds4_chat_append_message(w->engine, &w->transcript,
+                                        "tool", err_result);
+                free(err_result);
+                free(gen_text.ptr);
+                agent_dsml_parser_free(&dsml);
+                /* Continue the tool round loop instead of returning. */
+                goto fabrication_continue;
+            }
+
+            if (defensive && w->loop_guard_consecutive_defensive >= 3) {
+                /* Too many defensive turns without admission → force stop. */
+                agent_buf b = {0};
+                agent_buf_puts(&b,
+                    "Tool error: loop detected — repeated defensive responses "
+                    "without admitting the error. Stop defending and answer "
+                    "directly with what was learned so far:\n"
+                    "[OBSERVATION] what was learned\n"
+                    "[COMPRESSED] <= 10 lines\n"
+                    "[TARGET_SELECTED] the single next thing to try\n"
+                    "[VERDICT] GO / STOP / RETEST\n");
+                char *loop_err = agent_buf_take(&b);
+                agent_publish_system_status(w,
+                    "Loop guard: difesa ripetuta senza ammissione — arresto.");
+                ds4_chat_append_message(w->engine, &w->transcript,
+                                        "tool", loop_err);
+                free(loop_err);
+                free(gen_text.ptr);
+                agent_dsml_parser_free(&dsml);
+                agent_set_status(w, AGENT_WORKER_IDLE);
+                return 0;
+            }
+
+            if (defensive) {
+                w->loop_guard_consecutive_defensive++;
+            } else {
+                w->loop_guard_consecutive_defensive = 0;
+            }
+
+            /* No fabrication or excessive defensiveness → normal return. */
+            if (generated >= max_tokens && max_tokens < cfg->gen.n_predict)
+                agent_publish_system_status(w,
+                    "Risposta troncata: contesto esaurito. Apri una nuova "
+                    "sessione o usa /strip.");
+            free(gen_text.ptr);
+            agent_dsml_parser_free(&dsml);
+            agent_set_status(w, AGENT_WORKER_IDLE);
+            return 0;
+        }
+fabrication_continue:
+        free(gen_text.ptr);
 
         char *tool_result;
         if (early_tool_error) {
@@ -10072,6 +11982,64 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
             }
         }
         agent_worker_append_tool_result(w, append_result);
+
+        /* Sage-specific anti-loop: count consecutive and total sage calls.
+         * A non-sage tool call resets the consecutive counter only.
+         * Hard-stop at >=6 consecutive, >=8 total, or >=180s wall-clock. */
+        if (dsml.calls.len > 0 && dsml.calls.v[0].name &&
+            !strcmp(dsml.calls.v[0].name, "sage")) {
+            w->sage_consecutive_rounds++;
+            w->sage_total_calls++;
+            if (w->sage_turn_start_sec <= 0.0)
+                w->sage_turn_start_sec = now_sec();
+            bool stop = false;
+            char reason[128] = {0};
+            if (w->sage_consecutive_rounds >= 4) {
+                stop = true;
+                snprintf(reason, sizeof(reason),
+                    "too many consecutive Sage calls (>=4)");
+            } else if (w->sage_total_calls >= 5) {
+                stop = true;
+                snprintf(reason, sizeof(reason),
+                    "too many total Sage calls (>=5)");
+            } else if (w->sage_turn_start_sec > 0.0 &&
+                       now_sec() - w->sage_turn_start_sec >= 120.0) {
+                stop = true;
+                snprintf(reason, sizeof(reason),
+                    "Sage turn exceeded 120s time limit");
+            }
+            if (stop) {
+                agent_buf b = {0};
+                agent_buf_puts(&b, "FINAL: sage loop detected — ");
+                agent_buf_puts(&b, reason);
+                agent_buf_puts(&b,
+                    ". DO NOT call sage again. Produce your best analysis now using the results already obtained.\n");
+                char *loop_err = agent_buf_take(&b);
+                agent_publish_system_status(w,
+                    "Sage loop guard: limit exceeded — arresto.");
+                ds4_chat_append_message(w->engine, &w->transcript, "tool", loop_err);
+                free(loop_err);
+                free(compressed_result);
+                free(tool_result);
+                agent_dsml_parser_free(&dsml);
+                agent_set_status(w, AGENT_WORKER_IDLE);
+                return 0;
+            }
+        } else {
+            w->sage_consecutive_rounds = 0;
+        }
+
+        if (agent_sage_turn_can_finalize(&w->sage_turn) &&
+            w->sage_final_markdown && w->sage_final_markdown[0]) {
+            /* Commit and publish exactly the runtime-owned Markdown.  There is
+             * deliberately no subsequent model round and no model rewrite. */
+            (void)agent_sage_publish_authoritative_final(w, true);
+            free(compressed_result);
+            free(tool_result);
+            agent_dsml_parser_free(&dsml);
+            agent_set_status(w, AGENT_WORKER_IDLE);
+            return 0;
+        }
         free(compressed_result);
 
         /* Malformed-DSML loop guard. Runs every round, including the
@@ -10213,6 +12181,9 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
                 w->loop_guard_consecutive_identical = 0;
                 w->loop_guard_consecutive_malformed = 0;
                 w->loop_guard_ring_pos = 0;
+                w->sage_consecutive_rounds = 0;
+                w->sage_total_calls = 0;
+                w->sage_turn_start_sec = 0.0;
                 /* Publish a note so the user sees we resumed */
                 agent_publish(w, "\n[loop-guard] User chose to continue, resetting guard.\n", 56);
             }
@@ -11657,6 +13628,11 @@ static void runtime_help(void) {
     puts("  /history [N] Show N recent user turns from the current session.");
     puts("  /power N     Set GPU duty cycle percentage, 1..100.");
     puts("  /new         Start a fresh session from the system prompt.");
+    puts("  /metacognition start|stop|status  Manage the metacognition skill.");
+    puts("  /soul start|stop|status  Manage the soul skill.");
+    puts("  /ethic start|stop|status  Manage the ethic skill.");
+    puts("  /sage-pol start|stop|status  Manage the Sage policy skill.");
+    puts("  /sage start|stop|status  Manage SageMath and its policy skill.");
     puts("  /quit, /exit Exit.");
     puts("  Ctrl+C       Interrupt generation; clear edited text.");
     puts("  Enter        Queue text while the agent is busy.");
@@ -11745,6 +13721,19 @@ static int agent_worker_init(agent_worker *w, ds4_engine *engine, agent_config *
             return -1;
         }
     }
+    char skills_err[256] = {0};
+    if (!agent_worker_restore_default_skills(w, skills_err,
+                                             sizeof(skills_err))) {
+        fprintf(stderr, "ds4-agent: default skill initialization failed: %s\n",
+                skills_err[0] ? skills_err : "unknown error");
+        return -1;
+    }
+    char sage_err[256] = {0};
+    if (!agent_worker_restore_sage_policy(w, sage_err, sizeof(sage_err))) {
+        fprintf(stderr,
+                "ds4-agent: Sage policy unavailable; general agent remains active: %s\n",
+                sage_err[0] ? sage_err : "unknown error");
+    }
     if (pthread_create(&w->thread, NULL, worker_main, w) != 0) return -1;
     return 0;
 }
@@ -11769,6 +13758,8 @@ static void agent_worker_free(agent_worker *w) {
     free(w->metacognition_prompt);
     free(w->soul_prompt);
     free(w->ethic_prompt);
+    free(w->sage_prompt);
+    free(w->sage_final_markdown);
     if (w->wake_fd[0] >= 0) close(w->wake_fd[0]);
     if (w->wake_fd[1] >= 0) close(w->wake_fd[1]);
     if (w->trace) fclose(w->trace);
@@ -11931,52 +13922,6 @@ static int agent_read_stdin_available(agent_input_buf *in, bool *eof) {
 static int run_agent_non_interactive(ds4_engine *engine, agent_config *cfg) {
     agent_worker worker;
     if (agent_worker_init(&worker, engine, cfg) != 0) return 1;
-    /* Auto‑load soul and ethic skills at startup if DS4_SKILL_AUTO != 0 */
-
-    const char *auto_env = getenv("DS4_SKILL_AUTO");
-
-    if (!auto_env || strcmp(auto_env, "0") != 0) {
-
-        char err[256] = {0};
-
-        char *content = agent_read_soul_skill(err, sizeof(err));
-
-        if (content) {
-
-             free(worker.soul_prompt);
-             worker.soul_prompt = content;
-             fprintf(stderr, "Soul skill loaded.\n");
-        } else {
-
-             fprintf(stderr, "warning: %s\n", err);
-        }
-
-    }
-
-     {
-         char err[256] = {0};
-         char *content = agent_read_ethic_skill(err, sizeof(err));
-         if (content) {
-             free(worker.ethic_prompt);
-             worker.ethic_prompt = content;
-             fprintf(stderr, "Ethic skill loaded.\n");
-         } else {
-             fprintf(stderr, "warning: %s\n", err);
-         }
-     }
-    {
-        char err[256] = {0};
-        char *content = agent_read_ethic_skill(err, sizeof(err));
-        if (content) {
-            free(worker.ethic_prompt);
-            worker.ethic_prompt = content;
-            fprintf(stderr, "Ethic skill loaded.\n");
-        } else {
-            fprintf(stderr, "warning: %s\n", err);
-        }
-    }
-
-
 
     const bool one_shot = cfg->gen.prompt != NULL;
     bool one_shot_submitted = false;
@@ -12131,52 +14076,6 @@ static int run_agent_non_interactive(ds4_engine *engine, agent_config *cfg) {
 static int run_agent(ds4_engine *engine, agent_config *cfg) {
     agent_worker worker;
     if (agent_worker_init(&worker, engine, cfg) != 0) return 1;
-    /* Auto‑load soul and ethic skills at startup if DS4_SKILL_AUTO != 0 */
-
-    const char *auto_env = getenv("DS4_SKILL_AUTO");
-
-    if (!auto_env || strcmp(auto_env, "0") != 0) {
-
-        char err[256] = {0};
-
-        char *content = agent_read_soul_skill(err, sizeof(err));
-
-        if (content) {
-
-             free(worker.soul_prompt);
-             worker.soul_prompt = content;
-             fprintf(stderr, "Soul skill loaded.\n");
-        } else {
-
-             fprintf(stderr, "warning: %s\n", err);
-        }
-
-    }
-
-     {
-         char err[256] = {0};
-         char *content = agent_read_ethic_skill(err, sizeof(err));
-         if (content) {
-             free(worker.ethic_prompt);
-             worker.ethic_prompt = content;
-             fprintf(stderr, "Ethic skill loaded.\n");
-         } else {
-             fprintf(stderr, "warning: %s\n", err);
-         }
-     }
-    {
-        char err[256] = {0};
-        char *content = agent_read_ethic_skill(err, sizeof(err));
-        if (content) {
-            free(worker.ethic_prompt);
-            worker.ethic_prompt = content;
-            fprintf(stderr, "Ethic skill loaded.\n");
-        } else {
-            fprintf(stderr, "warning: %s\n", err);
-        }
-    }
-
-
 
     char hist[PATH_MAX];
     const char *home = getenv("HOME");
@@ -12535,8 +14434,12 @@ static int run_agent(ds4_engine *engine, agent_config *cfg) {
                                 }
                             }
                         }
+                    } else if (!strncmp(arg, "status", 6) &&
+                               (arg[6] == '\0' || arg[6] == ' ' || arg[6] == '\t')) {
+                        printf("Metacognition skill is %s.\n",
+                               worker.metacognition_prompt ? "active" : "inactive");
                     } else {
-                        printf("usage: /metacognition start|stop\n");
+                        printf("usage: /metacognition start|stop|status\n");
                     }
                 } else if (!strncmp(cmd, "/soul", 5) &&
                            (cmd[5] == '\0' || cmd[5] == ' ' || cmd[5] == '\t')) {
@@ -12580,8 +14483,12 @@ static int run_agent(ds4_engine *engine, agent_config *cfg) {
                                 }
                             }
                         }
+                    } else if (!strncmp(arg, "status", 6) &&
+                               (arg[6] == '\0' || arg[6] == ' ' || arg[6] == '\t')) {
+                        printf("Soul skill is %s.\n",
+                               worker.soul_prompt ? "active" : "inactive");
                     } else {
-                        printf("usage: /soul start|stop\n");
+                        printf("usage: /soul start|stop|status\n");
                     }
                 } else if (!strncmp(cmd, "/ethic", 6) &&
                            (cmd[6] == '\0' || cmd[6] == ' ' || cmd[6] == '\t')) {
@@ -12625,8 +14532,109 @@ static int run_agent(ds4_engine *engine, agent_config *cfg) {
                                 }
                             }
                         }
+                    } else if (!strncmp(arg, "status", 6) &&
+                               (arg[6] == '\0' || arg[6] == ' ' || arg[6] == '\t')) {
+                        printf("Ethic skill is %s.\n",
+                               worker.ethic_prompt ? "active" : "inactive");
                     } else {
-                        printf("usage: /ethic start|stop\n");
+                        printf("usage: /ethic start|stop|status\n");
+                    }
+                } else if (!strncmp(cmd, "/sage-pol", 9) &&
+                           (cmd[9] == '\0' || cmd[9] == ' ' || cmd[9] == '\t')) {
+                    char *arg = cmd + 9;
+                    while (*arg == ' ' || *arg == '\t') arg++;
+                    if (!strncmp(arg, "start", 5) &&
+                        (arg[5] == '\0' || arg[5] == ' ' || arg[5] == '\t')) {
+                        char err[256] = {0};
+                        if (!agent_worker_activate_sage_policy(
+                                &worker, err, sizeof(err))) {
+                            printf("sage-pol: %s\n", err);
+                        } else {
+                            editor_restore_terminal_layout(&editor);
+                            if (agent_maybe_save_before_leaving_session(&worker)) {
+                                char rerr[160] = {0};
+                                if (!agent_worker_reset_to_sysprompt(&worker, rerr, sizeof(rerr))) {
+                                    printf("sage-pol: session reset failed: %s\n", rerr);
+                                } else {
+                                    show_welcome_after_restart = true;
+                                    printf("Sage skill activated.\n");
+                                }
+                            }
+                        }
+                    } else if (!strncmp(arg, "stop", 4) &&
+                               (arg[4] == '\0' || arg[4] == ' ' || arg[4] == '\t')) {
+                        if (!worker.sage_prompt) {
+                            printf("Sage skill is not active.\n");
+                        } else {
+                            agent_worker_clear_sage_policy(&worker);
+                            editor_restore_terminal_layout(&editor);
+                            if (agent_maybe_save_before_leaving_session(&worker)) {
+                                char rerr[160] = {0};
+                                if (!agent_worker_reset_to_sysprompt(&worker, rerr, sizeof(rerr))) {
+                                    printf("sage-pol: session reset failed: %s\n", rerr);
+                                } else {
+                                    show_welcome_after_restart = true;
+                                    printf("Sage skill deactivated.\n");
+                                }
+                            }
+                        }
+                    } else if (!strncmp(arg, "status", 6) &&
+                               (arg[6] == '\0' || arg[6] == ' ' || arg[6] == '\t')) {
+                        printf("Sage skill is %s%s%s.\n",
+                               worker.sage_prompt ? "active" : "inactive",
+                               worker.sage_policy_revision[0] ? "; revision " : "",
+                               worker.sage_policy_revision);
+                    } else {
+                        printf("usage: /sage-pol start|stop|status\n");
+                    }
+
+} else if (!strncmp(cmd, "/sage", 5) &&
+                           (cmd[5] == '\0' || cmd[5] == ' ' || cmd[5] == '\t')) {
+                    char *arg = cmd + 5;
+                    while (*arg == ' ' || *arg == '\t') arg++;
+                    if (!strncmp(arg, "start", 5) &&
+                        (arg[5] == '\0' || arg[5] == ' ' || arg[5] == '\t')) {
+                        char err[256] = {0};
+                        if (!agent_worker_activate_sage_policy(
+                                &worker, err, sizeof(err))) {
+                            printf("sage: %s\n", err);
+                        } else {
+                            editor_restore_terminal_layout(&editor);
+                            if (agent_maybe_save_before_leaving_session(&worker)) {
+                                char rerr[160] = {0};
+                                if (!agent_worker_reset_to_sysprompt(&worker, rerr, sizeof(rerr))) {
+                                    printf("sage: session reset failed: %s\n", rerr);
+                                } else {
+                                    show_welcome_after_restart = true;
+                                    printf("Sage skill activated.\n");
+                                }
+                            }
+                        }
+                    } else if (!strncmp(arg, "stop", 4) &&
+                               (arg[4] == '\0' || arg[4] == ' ' || arg[4] == '\t')) {
+                        if (!worker.sage_prompt) {
+                            printf("Sage skill is not active.\n");
+                        } else {
+                            agent_worker_clear_sage_policy(&worker);
+                            editor_restore_terminal_layout(&editor);
+                            if (agent_maybe_save_before_leaving_session(&worker)) {
+                                char rerr[160] = {0};
+                                if (!agent_worker_reset_to_sysprompt(&worker, rerr, sizeof(rerr))) {
+                                    printf("sage: session reset failed: %s\n", rerr);
+                                } else {
+                                    show_welcome_after_restart = true;
+                                    printf("Sage skill deactivated.\n");
+                                }
+                            }
+                        }
+                    } else if (!strncmp(arg, "status", 6) &&
+                               (arg[6] == '\0' || arg[6] == ' ' || arg[6] == '\t')) {
+                        printf("Sage skill is %s%s%s.\n",
+                               worker.sage_prompt ? "active" : "inactive",
+                               worker.sage_policy_revision[0] ? "; revision " : "",
+                               worker.sage_policy_revision);
+                    } else {
+                        printf("usage: /sage start|stop|status\n");
                     }
                 } else if (cmd[0] == '/' && !agent_slash_command_known(cmd)) {
                     ssize_t ignored = write(STDOUT_FILENO, "\a", 1);
@@ -12656,7 +14664,7 @@ static int run_agent(ds4_engine *engine, agent_config *cfg) {
                     editor_restore_terminal_layout(&editor);
                     if (agent_maybe_save_before_leaving_session(&worker)) {
                         char err[160] = {0};
-                        if (!agent_worker_reset_to_sysprompt(&worker, err, sizeof(err))) {
+                        if (!agent_worker_new_default_session(&worker, err, sizeof(err))) {
                             printf("new session failed: %s\n", err);
                         } else {
                             show_welcome_after_restart = true;

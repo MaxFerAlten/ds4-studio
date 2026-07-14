@@ -79,18 +79,22 @@ test("withAgentPriming wraps the new request below the history block", () => {
 });
 
 test("skill toggles re-arm priming; session-changing and other commands do not", () => {
-  // /metacognition, /soul, /ethic rebuild the native session from a new system
+  // Policy start/stop commands rebuild the native session from a new system
   // prompt and drop the live conversation — priming must replay it.
   for (const cmd of [
     "/soul start", "/soul stop", "/ethic start", "/ethic stop",
-    "/metacognition start", "/metacognition stop", "  /soul start  "
+    "/metacognition start", "/metacognition stop",
+    "/sage-pol start", "/sage-pol stop", "/sage start", "/sage stop",
+    "  /soul start  "
   ]) {
     assert.equal(commandRebuildsSessionKeepingContext(cmd), true, cmd);
   }
-  // /new and /switch intentionally move sessions; everything else is unrelated.
+  // Status is read-only; /new and /switch intentionally move sessions.
   for (const cmd of [
     "/new", "/switch abc123", "/save", "/list", "/pony start",
-    "/crawl https://x", "/soulmate start", "soul start", "", null, undefined
+    "/crawl https://x", "/metacognition status", "/soul status",
+    "/ethic status", "/sage-pol status", "/sage status", "/soulmate start",
+    "soul start", "", null, undefined
   ]) {
     assert.equal(commandRebuildsSessionKeepingContext(cmd), false, String(cmd));
   }

@@ -26,6 +26,15 @@ test("keeps dollar signs inside code blocks as code text", () => {
   assert.doesNotMatch(html, /katex/);
 });
 
+test("renders relative Sage graph links through the artifact endpoint", () => {
+  const html = renderToStaticMarkup(createElement(MessageContent, {
+    content: "![Grafico di f](function_plot.png)"
+  }));
+
+  assert.match(html, /src="\/api\/sage\/artifacts\/by-name\/function_plot\.png"/);
+  assert.doesNotMatch(html, /src="function_plot\.png"/);
+});
+
 test("renders Mermaid fenced blocks as diagram placeholders", () => {
   const html = renderToStaticMarkup(
     createElement(MessageContent, {

@@ -34,7 +34,8 @@ import {
   SESSION_STORAGE_KEY,
   readStoredSession,
   writeStoredSession,
-  clearStoredSession
+  clearStoredSession,
+  requestFreshNativeAgentSession
 } from "./appLogic.mjs";
 
 // ── Data constants ───────────────────────────────────────────────────────
@@ -340,4 +341,99 @@ test("buildChatMessages tolerates null/undefined entries", () => {
     undefined
   ]);
   assert.deepEqual(out, [{ role: "user", content: "ciao" }]);
+});
+
+// ── requestFreshNativeAgentSession ──────────────────────────────────────
+
+test("requestFreshNativeAgentSession sends a silent native /new", async () => {
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push({ url, options });
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        ok: true,
+        active: true,
+        command: "new"
+      })
+    };
+  };
+
+  const payload = await requestFreshNativeAgentSession(
+    fetchImpl,
+    { "X-Agent-Session-Key": "test-session" }
+  );
+
+  assert.equal(payload.active, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "/api/native-agent/command");
+  assert.equal(calls[0].options.method, "POST");
+  assert.equal(
+    calls[0].options.headers["Content-Type"],
+    "application/json"
+  );
+  assert.equal(
+    calls[0].options.headers["X-Agent-Session-Key"],
+    "test-session"
+  );
+  assert.deepEqual(
+    JSON.parse(calls[0].options.body),
+    { command: "/new" }
+  );
+});
+
+test("requestFreshNativeAgentSession never calls agent stop", async () => {
+  const urls = [];
+  const fetchImpl = async (url) => {
+    urls.push(url);
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ ok: true, active: true })
+    };
+  };
+
+  await requestFreshNativeAgentSession(fetchImpl, {});
+  assert.deepEqual(urls, ["/api/native-agent/command"]);
+  assert.ok(!urls.includes("/api/agent/stop"));
+});
+
+test("requestFreshNativeAgentSession rejects non-2xx", async () => {
+  const fetchImpl = async () => ({
+    ok: false,
+    status: 500,
+    text: async () => "Internal Server Error"
+  });
+
+  await assert.rejects(
+    () => requestFreshNativeAgentSession(fetchImpl, {}),
+    /Internal Server Error/
+  );
+});
+
+test("requestFreshNativeAgentSession rejects payload ok:false", async () => {
+  const fetchImpl = async () => ({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify({ ok: false, active: true, message: "fail" })
+  });
+
+  await assert.rejects(
+    () => requestFreshNativeAgentSession(fetchImpl, {}),
+    /fail/
+  );
+});
+
+test("requestFreshNativeAgentSession rejects payload active:false", async () => {
+  const fetchImpl = async () => ({
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify({ ok: true, active: false, message: "not ready" })
+  });
+
+  await assert.rejects(
+    () => requestFreshNativeAgentSession(fetchImpl, {}),
+    /not ready/
+  );
 });

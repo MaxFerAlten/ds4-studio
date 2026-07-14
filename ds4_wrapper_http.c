@@ -62,9 +62,11 @@ static const char *agent_event_name(ds4_agent_event_type type) {
     case DS4_AGENT_EVENT_TOOL_RESULT:return "agent_tool_result";
     case DS4_AGENT_EVENT_STATUS:     return "agent_status";
     case DS4_AGENT_EVENT_USAGE:      return "agent_usage";
-    case DS4_AGENT_EVENT_DONE:       return "agent_done";
-    case DS4_AGENT_EVENT_ERROR:      return "agent_error";
-    default:                         return "agent_text";
+    case DS4_AGENT_EVENT_DONE:            return "agent_done";
+    case DS4_AGENT_EVENT_ERROR:           return "agent_error";
+    case DS4_AGENT_EVENT_SAGE_STATUS:     return "agent_sage_status";
+    case DS4_AGENT_EVENT_SAGE_ARTIFACT:   return "agent_sage_artifact";
+    default:                              return "agent_text";
     }
 }
 

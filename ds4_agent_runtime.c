@@ -99,7 +99,21 @@ static void runtime_publish_cb(void *ud, const char *s, size_t n) {
     else if (etype == 2) type = DS4_AGENT_EVENT_TOOL_CALL;
     else if (etype == 3) type = DS4_AGENT_EVENT_TOOL_RESULT;
     else if (etype == 4) type = DS4_AGENT_EVENT_STATUS;
+    else if (etype == 5) type = DS4_AGENT_EVENT_SAGE_STATUS;
+    else if (etype == 6) type = DS4_AGENT_EVENT_SAGE_ARTIFACT;
     else                 type = DS4_AGENT_EVENT_TEXT;
+
+    /* For sage status/artifact events the published text is already valid
+     * JSON — pass it through directly without wrapping. */
+    if (etype == 5 || etype == 6) {
+        char *copy = xmalloc(clean_len + 1);
+        memcpy(copy, clean, clean_len + 1);
+        ds4_agent_event ev = { .type = type, .json_payload = copy };
+        rt->cb(rt->cb_ud, &ev);
+        free(copy);
+        free(clean);
+        return;
+    }
 
     /* Build a minimal JSON payload: {"content":"..."} */
     size_t json_cap = clean_len * 6 + 64;
@@ -173,46 +187,6 @@ int ds4_agent_runtime_init(ds4_agent_runtime **out,
         return -1;
     }
     rt->worker_valid = true;
-    /* Auto‑load soul and ethic skills at startup if DS4_SKILL_AUTO != 0 */
-
-    {
-        const char *auto_env = getenv("DS4_SKILL_AUTO");
-        if (!auto_env || strcmp(auto_env, "0") != 0) {
-            char err[256] = {0};
-            char *content = agent_read_soul_skill(err, sizeof(err));
-            if (content) {
-                free(rt->worker.soul_prompt);
-                rt->worker.soul_prompt = content;
-                fprintf(stderr, "Soul skill loaded.\n");
-            } else {
-                fprintf(stderr, "warning: %s\n", err);
-            }
-        }
-        {
-            char err[256] = {0};
-            char *content = agent_read_ethic_skill(err, sizeof(err));
-            if (content) {
-                free(rt->worker.ethic_prompt);
-                rt->worker.ethic_prompt = content;
-                fprintf(stderr, "Ethic skill loaded.\n");
-            } else {
-                fprintf(stderr, "warning: %s\n", err);
-            }
-        }
-    }
-    {
-        char err[256] = {0};
-        char *content = agent_read_ethic_skill(err, sizeof(err));
-        if (content) {
-            free(rt->worker.ethic_prompt);
-            rt->worker.ethic_prompt = content;
-            fprintf(stderr, "Ethic skill loaded.\n");
-        } else {
-            fprintf(stderr, "warning: %s\n", err);
-        }
-    }
-
-
 
     /* Wait for the worker to complete its startup and become initialized. */
     while (true) {
@@ -577,21 +551,15 @@ int ds4_agent_runtime_new(ds4_agent_runtime *rt, char *err, size_t err_len) {
         snprintf(err, err_len, "runtime not initialized");
         return -1;
     }
+
     rt->worker.session = rt->wrapper->active_session;
     if (!rt->worker.session) {
         snprintf(err, err_len, "no active agent session");
         return -1;
     }
-    if (!agent_worker_reset_to_sysprompt(&rt->worker, err, err_len))
-        return -1;
 
-    /* Clear session identity. */
-    free(rt->worker.session_title);
-    rt->worker.session_title = NULL;
-    memset(rt->worker.session_sha, 0, sizeof(rt->worker.session_sha));
-    rt->worker.session_created_at = 0;
-    rt->worker.session_dirty = false;
-    return 0;
+    return agent_worker_new_default_session(&rt->worker,
+                                            err, err_len) ? 0 : -1;
 }
 
 int ds4_agent_runtime_compact(ds4_agent_runtime *rt, char *err, size_t err_len) {
@@ -613,6 +581,23 @@ int ds4_agent_runtime_compact(ds4_agent_runtime *rt, char *err, size_t err_len) 
 /* =========================================================================
  * Native slash-command dispatcher
  * ========================================================================= */
+
+static int runtime_rebuild_current_system_prompt(
+    ds4_agent_runtime *rt, char *err, size_t err_len) {
+    if (!rt || !rt->worker_valid) {
+        snprintf(err, err_len, "runtime not initialized");
+        return -1;
+    }
+
+    rt->worker.session = rt->wrapper->active_session;
+    if (!rt->worker.session) {
+        snprintf(err, err_len, "no active agent session");
+        return -1;
+    }
+
+    return agent_worker_reset_to_sysprompt(&rt->worker,
+                                           err, err_len) ? 0 : -1;
+}
 
 typedef struct {
     agent_buf output;
@@ -644,6 +629,8 @@ static const char *runtime_command_name(agent_slash_command_kind kind) {
     case AGENT_SLASH_METACOGNITION: return "metacognition";
     case AGENT_SLASH_SOUL:    return "soul";
     case AGENT_SLASH_ETHIC:   return "ethic";
+    case AGENT_SLASH_SAGE_POL: return "sage-pol";
+    case AGENT_SLASH_SAGE:    return "sage";
     default:                  return "unknown";
     }
 }
@@ -945,7 +932,11 @@ int ds4_agent_runtime_command(ds4_agent_runtime *rt, const char *command,
             "  /history [N] Show N recent user turns from the current session.\n"
             "  /power N     Set GPU duty cycle percentage, 1..100.\n"
             "  /new         Start a fresh session from the system prompt.\n"
-            "  /metacognition start|stop  Inject or remove the metacognition skill.\n"
+            "  /metacognition start|stop|status  Manage the metacognition skill.\n"
+            "  /soul start|stop|status  Manage the soul skill.\n"
+            "  /ethic start|stop|status  Manage the ethic skill.\n"
+            "  /sage-pol start|stop|status  Manage the Sage policy skill.\n"
+            "  /sage start|stop|status  Manage SageMath and its policy skill.\n"
             "  /quit, /exit Save if needed and return to server mode.");
         break;
 
@@ -1091,7 +1082,7 @@ int ds4_agent_runtime_command(ds4_agent_runtime *rt, const char *command,
             free(rt->worker.metacognition_prompt);
             rt->worker.metacognition_prompt = content;
             if (!runtime_command_save_if_dirty(rt, result)) return -1;
-            if (ds4_agent_runtime_new(rt, rerr, sizeof(rerr)) != 0)
+            if (runtime_rebuild_current_system_prompt(rt, rerr, sizeof(rerr)) != 0)
                 return runtime_command_fail(result, 500, "session reset failed: %s",
                                             rerr[0] ? rerr : "unknown error");
             runtime_command_set_message(result, "Metacognition skill activated.");
@@ -1103,13 +1094,20 @@ int ds4_agent_runtime_command(ds4_agent_runtime *rt, const char *command,
             free(rt->worker.metacognition_prompt);
             rt->worker.metacognition_prompt = NULL;
             if (!runtime_command_save_if_dirty(rt, result)) return -1;
-            if (ds4_agent_runtime_new(rt, err, sizeof(err)) != 0)
+            if (runtime_rebuild_current_system_prompt(rt, err, sizeof(err)) != 0)
                 return runtime_command_fail(result, 500, "session reset failed: %s",
                                             err[0] ? err : "unknown error");
             runtime_command_set_message(result, "Metacognition skill deactivated.");
+        } else if (!strncmp(arg, "status", 6) &&
+                   (arg[6] == '\0' || arg[6] == ' ' || arg[6] == '\t')) {
+            bool loaded = rt->worker.metacognition_prompt != NULL;
+            runtime_command_set_message(result, "Metacognition skill is %s.",
+                                        loaded ? "active" : "inactive");
+            runtime_command_set_data_json(result, "{\"loaded\":%s}",
+                                          loaded ? "true" : "false");
         } else {
             return runtime_command_fail(result, 400,
-                                        "usage: /metacognition start|stop");
+                                        "usage: /metacognition start|stop|status");
         }
         break;
     }
@@ -1126,7 +1124,7 @@ int ds4_agent_runtime_command(ds4_agent_runtime *rt, const char *command,
             free(rt->worker.soul_prompt);
             rt->worker.soul_prompt = content;
             if (!runtime_command_save_if_dirty(rt, result)) return -1;
-            if (ds4_agent_runtime_new(rt, rerr, sizeof(rerr)) != 0)
+            if (runtime_rebuild_current_system_prompt(rt, rerr, sizeof(rerr)) != 0)
                 return runtime_command_fail(result, 500, "session reset failed: %s",
                                             rerr[0] ? rerr : "unknown error");
             runtime_command_set_message(result, "Soul skill activated.");
@@ -1138,13 +1136,20 @@ int ds4_agent_runtime_command(ds4_agent_runtime *rt, const char *command,
             free(rt->worker.soul_prompt);
             rt->worker.soul_prompt = NULL;
             if (!runtime_command_save_if_dirty(rt, result)) return -1;
-            if (ds4_agent_runtime_new(rt, err, sizeof(err)) != 0)
+            if (runtime_rebuild_current_system_prompt(rt, err, sizeof(err)) != 0)
                 return runtime_command_fail(result, 500, "session reset failed: %s",
                                             err[0] ? err : "unknown error");
             runtime_command_set_message(result, "Soul skill deactivated.");
+        } else if (!strncmp(arg, "status", 6) &&
+                   (arg[6] == '\0' || arg[6] == ' ' || arg[6] == '\t')) {
+            bool loaded = rt->worker.soul_prompt != NULL;
+            runtime_command_set_message(result, "Soul skill is %s.",
+                                        loaded ? "active" : "inactive");
+            runtime_command_set_data_json(result, "{\"loaded\":%s}",
+                                          loaded ? "true" : "false");
         } else {
             return runtime_command_fail(result, 400,
-                                        "usage: /soul start|stop");
+                                        "usage: /soul start|stop|status");
         }
         break;
     }
@@ -1161,7 +1166,7 @@ int ds4_agent_runtime_command(ds4_agent_runtime *rt, const char *command,
             free(rt->worker.ethic_prompt);
             rt->worker.ethic_prompt = content;
             if (!runtime_command_save_if_dirty(rt, result)) return -1;
-            if (ds4_agent_runtime_new(rt, rerr, sizeof(rerr)) != 0)
+            if (runtime_rebuild_current_system_prompt(rt, rerr, sizeof(rerr)) != 0)
                 return runtime_command_fail(result, 500, "session reset failed: %s",
                                             rerr[0] ? rerr : "unknown error");
             runtime_command_set_message(result, "Ethic skill activated.");
@@ -1173,13 +1178,104 @@ int ds4_agent_runtime_command(ds4_agent_runtime *rt, const char *command,
             free(rt->worker.ethic_prompt);
             rt->worker.ethic_prompt = NULL;
             if (!runtime_command_save_if_dirty(rt, result)) return -1;
-            if (ds4_agent_runtime_new(rt, err, sizeof(err)) != 0)
+            if (runtime_rebuild_current_system_prompt(rt, err, sizeof(err)) != 0)
                 return runtime_command_fail(result, 500, "session reset failed: %s",
                                             err[0] ? err : "unknown error");
             runtime_command_set_message(result, "Ethic skill deactivated.");
+        } else if (!strncmp(arg, "status", 6) &&
+                   (arg[6] == '\0' || arg[6] == ' ' || arg[6] == '\t')) {
+            bool loaded = rt->worker.ethic_prompt != NULL;
+            runtime_command_set_message(result, "Ethic skill is %s.",
+                                        loaded ? "active" : "inactive");
+            runtime_command_set_data_json(result, "{\"loaded\":%s}",
+                                          loaded ? "true" : "false");
         } else {
             return runtime_command_fail(result, 400,
-                                        "usage: /ethic start|stop");
+                                        "usage: /ethic start|stop|status");
+        }
+        break;
+    }
+
+    case AGENT_SLASH_SAGE_POL: {
+        char *arg = parsed.arg;
+        while (*arg == ' ' || *arg == '\t') arg++;
+        if (!strncmp(arg, "start", 5) &&
+            (arg[5] == '\0' || arg[5] == ' ' || arg[5] == '\t')) {
+            char rerr[256] = {0};
+            char *content = agent_read_sage_skill(rerr, sizeof(rerr));
+            if (!content)
+                return runtime_command_fail(result, 404, "%s", rerr);
+            free(rt->worker.sage_prompt);
+            rt->worker.sage_prompt = content;
+            if (!runtime_command_save_if_dirty(rt, result)) return -1;
+            if (runtime_rebuild_current_system_prompt(rt, rerr, sizeof(rerr)) != 0)
+                return runtime_command_fail(result, 500, "session reset failed: %s",
+                                            rerr[0] ? rerr : "unknown error");
+            runtime_command_set_message(result, "Sage skill activated.");
+        } else if (!strncmp(arg, "stop", 4) &&
+                   (arg[4] == '\0' || arg[4] == ' ' || arg[4] == '\t')) {
+            if (!rt->worker.sage_prompt)
+                return runtime_command_fail(result, 400,
+                                            "Sage skill is not active.");
+            free(rt->worker.sage_prompt);
+            rt->worker.sage_prompt = NULL;
+            if (!runtime_command_save_if_dirty(rt, result)) return -1;
+            if (runtime_rebuild_current_system_prompt(rt, err, sizeof(err)) != 0)
+                return runtime_command_fail(result, 500, "session reset failed: %s",
+                                            err[0] ? err : "unknown error");
+            runtime_command_set_message(result, "Sage skill deactivated.");
+        } else if (!strncmp(arg, "status", 6) &&
+                   (arg[6] == '\0' || arg[6] == ' ' || arg[6] == '\t')) {
+            bool loaded = rt->worker.sage_prompt != NULL;
+            runtime_command_set_message(result, "Sage skill is %s.",
+                                        loaded ? "active" : "inactive");
+            runtime_command_set_data_json(result, "{\"loaded\":%s}",
+                                          loaded ? "true" : "false");
+        } else {
+            return runtime_command_fail(result, 400,
+                                        "usage: /sage-pol start|stop|status");
+        }
+        break;
+    }
+
+    case AGENT_SLASH_SAGE: {
+        char *arg = parsed.arg;
+        while (*arg == ' ' || *arg == '\t') arg++;
+        if (!strncmp(arg, "start", 5) &&
+            (arg[5] == '\0' || arg[5] == ' ' || arg[5] == '\t')) {
+            char rerr[256] = {0};
+            char *content = agent_read_sage_skill(rerr, sizeof(rerr));
+            if (!content)
+                return runtime_command_fail(result, 404, "%s", rerr);
+            free(rt->worker.sage_prompt);
+            rt->worker.sage_prompt = content;
+            if (!runtime_command_save_if_dirty(rt, result)) return -1;
+            if (runtime_rebuild_current_system_prompt(rt, rerr, sizeof(rerr)) != 0)
+                return runtime_command_fail(result, 500, "session reset failed: %s",
+                                            rerr[0] ? rerr : "unknown error");
+            runtime_command_set_message(result, "Sage skill activated.");
+        } else if (!strncmp(arg, "stop", 4) &&
+                   (arg[4] == '\0' || arg[4] == ' ' || arg[4] == '\t')) {
+            if (!rt->worker.sage_prompt)
+                return runtime_command_fail(result, 400,
+                                            "Sage skill is not active.");
+            free(rt->worker.sage_prompt);
+            rt->worker.sage_prompt = NULL;
+            if (!runtime_command_save_if_dirty(rt, result)) return -1;
+            if (runtime_rebuild_current_system_prompt(rt, err, sizeof(err)) != 0)
+                return runtime_command_fail(result, 500, "session reset failed: %s",
+                                            err[0] ? err : "unknown error");
+            runtime_command_set_message(result, "Sage skill deactivated.");
+        } else if (!strncmp(arg, "status", 6) &&
+                   (arg[6] == '\0' || arg[6] == ' ' || arg[6] == '\t')) {
+            bool loaded = rt->worker.sage_prompt != NULL;
+            runtime_command_set_message(result, "Sage skill is %s.",
+                                        loaded ? "active" : "inactive");
+            runtime_command_set_data_json(result, "{\"loaded\":%s}",
+                                          loaded ? "true" : "false");
+        } else {
+            return runtime_command_fail(result, 400,
+                                        "usage: /sage start|stop|status");
         }
         break;
     }
@@ -1207,6 +1303,25 @@ int ds4_agent_runtime_command(ds4_agent_runtime *rt, const char *command,
 
     result->ok = true;
     return 0;
+}
+
+void ds4_agent_runtime_get_default_skills_status(
+    ds4_agent_runtime *rt,
+    ds4_default_skills_status *out) {
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    if (!rt || !rt->worker_valid) return;
+
+    out->enabled = rt->worker.default_skills_enabled;
+    out->soul_loaded = rt->worker.soul_prompt != NULL;
+    out->ethic_loaded = rt->worker.ethic_prompt != NULL;
+    out->soul_bytes = rt->worker.soul_prompt
+        ? strlen(rt->worker.soul_prompt) : 0;
+    out->ethic_bytes = rt->worker.ethic_prompt
+        ? strlen(rt->worker.ethic_prompt) : 0;
+    memcpy(out->revision,
+           rt->worker.default_skills_revision,
+           sizeof(out->revision));
 }
 
 void ds4_agent_runtime_get_compression_metrics(ds4_agent_runtime *rt,

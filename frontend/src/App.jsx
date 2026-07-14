@@ -5,7 +5,14 @@ import { commandLineFromConfig } from "../server/commandBuilder.mjs";
 import { REQUEST_DEFAULTS } from "../server/defaultConfig.mjs";
 import { buildChatPayload, isAutoMaxTokens } from "../server/requestPayload.mjs";
 import { backendHealthLabel, backendStartupDetail, streamFailureNotice, formatNativeAgentNotice, parseAgentInput, withAgentPriming, commandRebuildsSessionKeepingContext, historyHasPersistableAssistant, sessionHasAgentMetadata, sessionsExposeMetadata, clearStoredExportIncludeReasoning, readStoredExportDir, readStoredExportIncludeReasoning, writeStoredExportDir, writeStoredExportIncludeReasoning, createDeltaBatcher, documentIsVisible, clearCallDebug, fetchCallDebug } from "./utils.mjs";
-import { exportConversationMarkdown, markdownFileName } from "./conversationExport.mjs";
+import {
+  exportConversationMarkdown,
+  exportConversationMarkdownRaw,
+  exportProfessionalMarkdown,
+  markdownFileName,
+  professionalMarkdownFileName
+} from "./conversationExport.mjs";
+import { applySageStatus, applySageArtifact, finalizeSageActivity, toolResultMessages } from "./sage/sageActivityState.mjs";
 import { startProxy as startPageAgentProxy, stopProxy as stopPageAgentProxy } from "./pageagent/pageAgentProxy.mjs";
 import { ChatPanel } from "./chat/ChatPanel.jsx";
 import { RequestPanel, ProfilePanel, StartupPanel, StrategyPanel, LogsPanel, MetricsPanel, CompressionPanel, CallDebugPanel, PageAgentPanel } from "./panels/RightRailPanels.jsx";
@@ -17,7 +24,8 @@ import {
   appendAssistantDelta, replaceAssistantMessage,
   appendAssistantNotice, appendTransientNotice, buildChatMessages, injectSearchResults, searchResultsBlock,
   parseSseData, formatMetric, initialExportSettings,
-  readStoredSession, writeStoredSession, clearStoredSession
+  readStoredSession, writeStoredSession, clearStoredSession,
+  requestFreshNativeAgentSession
 } from "./appLogic.mjs";
 import {
   createLiveStatsTracker,
@@ -234,6 +242,7 @@ export default function App() {
   const [pageAgentMode, setPageAgentMode] = useState(false);
   const [searchStrategy, setSearchStrategy] = useState("F");
   const [searchChunkTokens, setSearchChunkTokens] = useState(25000);
+  const [sageActivities, setSageActivities] = useState({});
   const [attachedDoc, setAttachedDoc] = useState(null);
   const [chunkProgress, setChunkProgress] = useState(null);
   const [exportSettings, setExportSettings] = useState(initialExportSettings);
@@ -603,6 +612,7 @@ export default function App() {
     }
     setMessages(loadedMessages);
     setCurrentSessionFileName(data.session.fileName);
+    setSageActivities({});
     setHistoryAutoLoaded(true);
     lastSavedHistorySignatureRef.current = JSON.stringify({
       dir: historyConfig.dir,
@@ -647,6 +657,7 @@ export default function App() {
       if (currentSessionFileName === fileName) {
         setCurrentSessionFileName(null);
         setMessages([]);
+        setSageActivities({});
         lastSavedHistorySignatureRef.current = "";
         clearStoredSession();
       }
@@ -666,6 +677,7 @@ export default function App() {
       setHistoryStatus(`Deleted ${data.deleted ?? 0} sessions`);
       setCurrentSessionFileName(null);
       setMessages([]);
+      setSageActivities({});
       lastSavedHistorySignatureRef.current = "";
       clearStoredSession();
     } catch (err) {
@@ -675,18 +687,31 @@ export default function App() {
     }
   }
 
-  function startNewSession() {
+  async function startNewSession() {
     if (generationBusy) return;
+
     if (agentMode) {
-      fetch("/api/agent/stop", { method: "POST", headers: AGENT_HEADERS })
-        .then((res) => res.json())
-        .then((data) => setAgentStatus(data))
-        .catch(() => {});
-      setAgentMode(false);
-      setAgentStatus(null);
+      try {
+        const payload = await requestFreshNativeAgentSession(
+          fetch,
+          AGENT_HEADERS
+        );
+        setAgentMode(true);
+        setAgentStatus((prev) => ({
+          ...(prev || {}),
+          ...payload,
+          active: true
+        }));
+        agentPrimingPendingRef.current = false;
+      } catch (err) {
+        setHistoryStatus(`New session failed: ${err.message}`);
+        return;
+      }
     }
+
     setMessages([]);
     setCurrentSessionFileName(null);
+    setSageActivities({});
     setAttachedDoc(null);
     setChunkProgress(null);
     handleInputChange("");
@@ -739,6 +764,46 @@ export default function App() {
     link.remove();
     URL.revokeObjectURL(url);
     showExportNotice("ok", `Downloaded: ${fileName}`);
+  }
+
+  function browserDownloadProfessionalMarkdown(markdown, fileName) {
+    const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    showExportNotice("ok", `Downloaded: ${fileName}`);
+  }
+
+  async function downloadProfessionalConversation() {
+    if (!messages.length) return;
+    try {
+      showExportNotice("info", "Preparing professional Markdown...");
+      const markdown = await exportProfessionalMarkdown(messages, {
+        sageActivities,
+        fetchImpl: fetch
+      });
+      const fileName = professionalMarkdownFileName();
+      if (!exportDir) {
+        browserDownloadProfessionalMarkdown(markdown, fileName);
+        return;
+      }
+      setExportDirStatus(`Saving to ${exportDir}/${fileName}...`);
+      const data = await jsonFetch("/api/export/conversation", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "professional", markdown, dir: exportDir, fileName })
+      });
+      setExportDirStatus(`Saved: ${data.file.filePath}`);
+      showExportNotice("ok", `Saved: ${data.file.filePath}`);
+    } catch (err) {
+      setExportDirStatus(`Professional export error: ${err.message}`);
+      showExportNotice("warn", `Professional export failed: ${err.message}`);
+    }
   }
 
   function exportMarkdown(includeReasoning, mode) {
@@ -874,6 +939,15 @@ export default function App() {
     fetch("/v1/cancel", { method: "POST" }).catch(() => {});
     abortRef.current.abort();
     abortRef.current = null;
+    setSageActivities((prev) => {
+      const next = { ...prev };
+      for (const [runId, activity] of Object.entries(next)) {
+        if (activity && activity.state !== "completed" && activity.state !== "failed") {
+          next[runId] = finalizeSageActivity(activity);
+        }
+      }
+      return next;
+    });
     setMessages(appendTransientNotice(notice));
   }
 
@@ -1288,12 +1362,27 @@ export default function App() {
 
   async function callSageControl(action) {
     try {
+      const options = action === "status"
+        ? { method: "GET", headers: AGENT_HEADERS }
+        : {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...AGENT_HEADERS }
+          };
       const res = await fetch("/api/sage/" + action, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...AGENT_HEADERS }
+        ...options
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      if (
+        action !== "status" &&
+        data.nativePolicyActive !== null &&
+        messages.some((message) => (
+          message && !message.agentNotice &&
+          (message.role === "user" || message.role === "assistant")
+        ))
+      ) {
+        agentPrimingPendingRef.current = true;
+      }
       setMessages((prev) => [
         ...prev,
         {
@@ -1777,6 +1866,7 @@ export default function App() {
             deltaBatcher.push("", reasoning);
           } else if (event === "agent_tool_call") {
             deltaBatcher.flush();
+            if (data.name === "sage" && data.hiddenByDefault !== false) return;
             setMessages((prev) => {
               const last = prev[prev.length - 1];
               if (last.role !== "assistant") return prev;
@@ -1808,11 +1898,30 @@ export default function App() {
             });
           } else if (event === "agent_tool_result") {
             deltaBatcher.flush();
-            setMessages((prev) => [
+            if (data.name === "sage" && data.hiddenByDefault !== false) {
+              setSageActivities((prev) => {
+                const runId = data.sage?.runId || Object.keys(prev).find((k) => prev[k]?.state !== "completed");
+                if (!runId) return prev;
+                return { ...prev, [runId]: finalizeSageActivity(prev[runId]) };
+              });
+              return;
+            }
+            const toolMsgs = toolResultMessages(data);
+            if (toolMsgs.length) {
+              setMessages((prev) => [...prev, ...toolMsgs]);
+            }
+          } else if (event === "agent_sage_status") {
+            deltaBatcher.flush();
+            setSageActivities((prev) => ({
               ...prev,
-              { role: "tool", tool_call_id: data.id, name: data.name, content: data.content, isError: data.isError, guarded: data.guarded },
-              { role: "assistant", content: "", reasoning: "" }
-            ]);
+              [data.runId]: applySageStatus(prev[data.runId], data)
+            }));
+          } else if (event === "agent_sage_artifact") {
+            deltaBatcher.flush();
+            setSageActivities((prev) => ({
+              ...prev,
+              [data.runId]: applySageArtifact(prev[data.runId], data)
+            }));
           } else if (event === "agent_usage") {
             totalPromptTokens += data.prompt_tokens || 0;
             totalCompletionTokens += data.completion_tokens || 0;
@@ -1845,6 +1954,15 @@ export default function App() {
             setGenerationBusy(false);
           } else if (event === "agent_done") {
             deltaBatcher.flush();
+            setSageActivities((prev) => {
+              const next = { ...prev };
+              for (const [runId, activity] of Object.entries(next)) {
+                if (activity && activity.state !== "completed" && activity.state !== "failed") {
+                  next[runId] = finalizeSageActivity(activity);
+                }
+              }
+              return next;
+            });
             setGenerationBusy(false);
           }
         }
@@ -2146,6 +2264,7 @@ export default function App() {
           setResearchMode={setResearchMode}
           selectedResearchSessionId={selectedResearchSessionId}
           setSelectedResearchSessionId={setSelectedResearchSessionId}
+          sageActivities={sageActivities}
           canSend={canSend}
           filteredSuggestions={filteredSuggestions}
           setActiveSuggestionIndex={setActiveSuggestionIndex}
@@ -2156,6 +2275,7 @@ export default function App() {
           toggleAgentMode={toggleAgentMode}
           startNewSession={startNewSession}
           downloadConversation={downloadConversation}
+          downloadProfessionalConversation={downloadProfessionalConversation}
           uploadFile={uploadFile}
           abortGeneration={abortGeneration}
           handleInputChange={handleInputChange}

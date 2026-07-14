@@ -4,12 +4,23 @@
 // binary is present.
 
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { test } from "node:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { SageCallLog, sageBinaryExists, sageResponds, sageState } from "./sageState.mjs";
+import {
+  SageCallLog,
+  activateSagePolicy,
+  applySagePolicyToMessages,
+  deactivateSagePolicy,
+  sageBinaryExists,
+  sagePolicyIsActive,
+  sageResponds,
+  sageState,
+  syncSageStateFromNativeCommand
+} from "./sageState.mjs";
 
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "ds4-sage-test-"));
@@ -77,6 +88,59 @@ test("sageState exposes the shared mutable holder", () => {
   assert.ok("enabled" in sageState);
   assert.ok("version" in sageState);
   assert.ok("lastCheck" in sageState);
+  assert.ok("policyPrompt" in sageState);
+  assert.ok("policyRevision" in sageState);
+});
+
+test("Sage policy activation loads the skill and injects one scoped system message", () => {
+  const dir = tmpDir();
+  const skillPath = path.join(dir, "SKILL.md");
+  fs.writeFileSync(skillPath, "# Sage policy\nOnly verified editorial output.");
+
+  activateSagePolicy({ skillPath });
+  assert.equal(sagePolicyIsActive(), true);
+  assert.equal(
+    sageState.policyRevision,
+    createHash("sha1").update("# Sage policy\nOnly verified editorial output.").digest("hex")
+  );
+
+  const once = applySagePolicyToMessages([
+    { role: "system", content: "base" },
+    { role: "user", content: "calcola" }
+  ]);
+  const twice = applySagePolicyToMessages(once);
+  assert.equal(twice.length, 3);
+  assert.equal(twice.filter((message) => /ds4-sage-policy:start/.test(message.content)).length, 1);
+  assert.match(twice[1].content, /Only verified editorial output/);
+
+  deactivateSagePolicy();
+  assert.equal(sagePolicyIsActive(), false);
+  assert.equal(sageState.policyRevision, null);
+  assert.deepEqual(applySagePolicyToMessages(twice), [
+    { role: "system", content: "base" },
+    { role: "user", content: "calcola" }
+  ]);
+});
+
+test("successful native sage policy commands synchronize tool and prompt state", () => {
+  const dir = tmpDir();
+  const skillPath = path.join(dir, "SKILL.md");
+  fs.writeFileSync(skillPath, "# Sage policy\nVerified output.");
+
+  assert.equal(syncSageStateFromNativeCommand(
+    "/sage-pol start",
+    { ok: true },
+    { skillPath }
+  ), true);
+  assert.equal(sagePolicyIsActive(), true);
+
+  assert.equal(syncSageStateFromNativeCommand(
+    "/sage-pol stop",
+    { ok: true },
+    { skillPath }
+  ), true);
+  assert.equal(sagePolicyIsActive(), false);
+  assert.equal(syncSageStateFromNativeCommand("/sage-pol start", { ok: false }), false);
 });
 
 test("sageResponds resolves to a health-check shape", { skip: !sageBinaryExists() }, async () => {

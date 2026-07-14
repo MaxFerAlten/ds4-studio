@@ -1,6 +1,7 @@
 #ifndef DS4_AGENT_RUNTIME_H
 #define DS4_AGENT_RUNTIME_H
 
+#include "ds4_default_skills.h"
 #include "ds4_wrapper.h"
 
 #include <stdbool.h>
@@ -14,7 +15,9 @@ typedef enum {
     DS4_AGENT_EVENT_STATUS,
     DS4_AGENT_EVENT_USAGE,
     DS4_AGENT_EVENT_DONE,
-    DS4_AGENT_EVENT_ERROR
+    DS4_AGENT_EVENT_ERROR,
+    DS4_AGENT_EVENT_SAGE_STATUS,
+    DS4_AGENT_EVENT_SAGE_ARTIFACT
 } ds4_agent_event_type;
 
 typedef struct {
@@ -89,5 +92,9 @@ typedef struct {
 
 void ds4_agent_runtime_get_compression_metrics(ds4_agent_runtime *rt,
                                                ds4_agent_compression_metrics *out);
+
+void ds4_agent_runtime_get_default_skills_status(
+    ds4_agent_runtime *rt,
+    ds4_default_skills_status *out);
 
 #endif

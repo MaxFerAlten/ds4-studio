@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  SAGE_LEGACY_RESULT_CONTRACT_VERSION,
   SAGE_RESULT_CONTRACT_VERSION,
   buildLegacySageResult,
   normalizeSagePhase,
@@ -14,8 +15,10 @@ function minimalResult(overrides = {}) {
   return {
     contractVersion: SAGE_RESULT_CONTRACT_VERSION,
     tool: "sage",
+    runId: "run-1",
     taskType: "auto",
     phase: "compute",
+    state: "ready",
     status: "ok",
     attempt: 1,
     display: {
@@ -27,7 +30,15 @@ function minimalResult(overrides = {}) {
     model: { content: "4", latex: [], facts: [] },
     report: null,
     artifacts: [],
-    validation: { passed: true, checks: [], warnings: [] },
+    execution: { ok: true, exitCode: 0, timedOut: false },
+    validation: {
+      authoritative: true,
+      passed: true,
+      checks: [{ code: "EXECUTION_OK", passed: true, message: "ok", evidence: {} }],
+      errors: [],
+      warnings: []
+    },
+    publication: { publishable: true, markdown: "4", reasonCodes: [] },
     debug: {
       exitCode: 0,
       signal: null,
@@ -69,6 +80,84 @@ test("normalizes Sage phases", () => {
 test("accepts a valid minimal envelope", () => {
   assert.deepEqual(validateSageResult(minimalResult()).errors, []);
   assert.equal(validateSageResult(minimalResult()).ok, true);
+});
+
+test("uses v2 as the authoritative contract and keeps v1 as legacy", () => {
+  assert.equal(SAGE_RESULT_CONTRACT_VERSION, "sage_result_v2");
+  assert.equal(SAGE_LEGACY_RESULT_CONTRACT_VERSION, "sage_result_v1");
+});
+
+test("rejects a non-authoritative validation pass", () => {
+  const value = minimalResult({
+    validation: {
+      authoritative: false,
+      passed: true,
+      checks: [{ code: "CLAIM", passed: true }],
+      errors: []
+    }
+  });
+  const result = validateSageResult(value);
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((error) => error.code === "NON_AUTHORITATIVE_PASS"));
+});
+
+test("rejects a validation pass without checks", () => {
+  const value = minimalResult({
+    validation: { authoritative: true, passed: true, checks: [], errors: [] }
+  });
+  const result = validateSageResult(value);
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((error) => error.code === "VALIDATION_CHECKS_EMPTY"));
+});
+
+test("rejects a validation pass with a failed check", () => {
+  const value = minimalResult({
+    validation: {
+      authoritative: true,
+      passed: true,
+      checks: [{ code: "FAILED", passed: false }],
+      errors: []
+    }
+  });
+  const result = validateSageResult(value);
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((error) => error.code === "VALIDATION_CHECK_FAILED"));
+});
+
+test("rejects publishable results without Markdown", () => {
+  const result = validateSageResult(minimalResult({
+    publication: { publishable: true, markdown: "", reasonCodes: [] }
+  }));
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((error) => error.code === "FINAL_MARKDOWN_MISSING"));
+});
+
+test("rejects publishable results without authoritative validation", () => {
+  const result = validateSageResult(minimalResult({
+    validation: {
+      authoritative: false,
+      passed: false,
+      checks: [],
+      errors: ["NOT_VALIDATED"]
+    }
+  }));
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((error) => error.code === "INVALID_PUBLICATION_AUTHORITY"));
+});
+
+test("accepts v1 only as a non-publishable legacy result", () => {
+  const legacy = buildLegacySageResult({ stdout: "2", stderr: "", exitCode: 0 });
+  assert.equal(legacy.contractVersion, SAGE_LEGACY_RESULT_CONTRACT_VERSION);
+  assert.equal(validateSageResult(legacy).ok, true);
+  assert.equal(legacy.validation.authoritative, false);
+  assert.equal(legacy.validation.passed, false);
+  assert.equal(legacy.publication.publishable, false);
+});
+
+test("rejects an unknown Sage state", () => {
+  const result = validateSageResult(minimalResult({ state: "imagined" }));
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((error) => error.path === "state"));
 });
 
 test("rejects a wrong contract version", () => {
@@ -147,4 +236,9 @@ test("public result omits model content, report, and debug previews", () => {
   assert.equal("report" in publicResult, false);
   assert.equal("stdoutPreview" in publicResult.debug, false);
   assert.equal(publicResult.display.summary, "Calcolo completato.");
+  assert.equal(publicResult.runId, "run-1");
+  assert.equal(publicResult.state, "ready");
+  assert.equal(publicResult.validation.authoritative, true);
+  assert.equal(publicResult.publication.publishable, true);
+  assert.equal(publicResult.publication.markdown, "4");
 });

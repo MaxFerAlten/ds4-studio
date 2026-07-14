@@ -85,6 +85,22 @@ test("Sage artifacts are added once and make the plot step visible", () => {
   assert.ok(visibleSageSteps(activity).some((step) => step.id === "plot"));
 });
 
+test("Sage activity ignores artifacts belonging to another run", () => {
+  const activity = createSageActivity({ runId: "run-current" });
+  const next = applySageArtifact(activity, {
+    runId: "run-other",
+    artifact: {
+      runId: "run-other",
+      artifactId: `sha256:${"a".repeat(64)}`,
+      name: "function_plot.png",
+      url: `/api/sage/artifacts/run-other/${encodeURIComponent(`sha256:${"a".repeat(64)}`)}`
+    }
+  });
+
+  assert.equal(next, activity);
+  assert.deepEqual(next.artifacts, []);
+});
+
 test("two repair calls are represented as two ordered corrections", () => {
   let activity = applySageStatus(null, {
     runId: "run-repair",

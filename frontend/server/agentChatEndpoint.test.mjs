@@ -6,6 +6,13 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { AgentSessionStore } from "./agentSession.mjs";
+import {
+  authoritativeSageFinalFromResult,
+  canonicalSageCommitPending,
+  guardSageFinalization,
+  sageToolBlockDecision
+} from "./sageAgentLoopPolicy.mjs";
+import { SageTurnTracker } from "./sageTurnTracker.mjs";
 
 // ── Helpers to simulate the wrapper-path logic ─────────────────────────
 
@@ -255,7 +262,7 @@ test("JS agent keeps Sage model content private while preserving model context",
   );
 });
 
-test("JS agent isolates compact Sage from the generic loop guard and adds synthesis guidance", async () => {
+test("JS agent isolates authoritative Sage from the generic loop guard and blocks synthesis", async () => {
   const source = await readFile(new URL("./index.mjs", import.meta.url), "utf8");
 
   assert.match(source, /if \(!compactSage\) \{\s*const decision = agentSession\.loopGuard\.checkAction/);
@@ -263,6 +270,136 @@ test("JS agent isolates compact Sage from the generic loop guard and adds synthe
     source,
     /const progress = compactSage \? null : agentSession\.loopGuard\.recordProgress/
   );
-  assert.match(source, /SageMath has completed the requested mathematical work\./);
-  assert.match(source, /SAGE_FINAL_SYNTHESIS_MISSING/);
+  assert.doesNotMatch(source, /SageMath has completed the requested mathematical work\./);
+  assert.match(source, /SAGE_FINALIZATION_BLOCKED/);
+});
+
+function computedSageTracker() {
+  const tracker = new SageTurnTracker();
+  tracker.begin({ runId: "run-1", taskType: "evaluate" });
+  assert.equal(tracker.recordCall({ phase: "compute" }).allowed, true);
+  tracker.recordResult({ phase: "compute", isError: false });
+  return tracker;
+}
+
+function validateSageTracker(tracker, overrides = {}) {
+  assert.equal(tracker.recordCall({ phase: "validate" }).allowed, true);
+  tracker.recordResult({
+    phase: "validate",
+    authoritative: true,
+    validationPassed: true,
+    publishable: true,
+    reportReady: true,
+    finalMarkdownReady: true,
+    ...overrides
+  });
+  return tracker;
+}
+
+test("compute followed by final text is blocked and permits only one retry", () => {
+  const tracker = computedSageTracker();
+  const first = guardSageFinalization(tracker);
+  const second = guardSageFinalization(tracker);
+
+  assert.equal(first.blocked, true);
+  assert.equal(first.retryAllowed, true);
+  assert.equal(second.blocked, true);
+  assert.equal(second.retryAllowed, false);
+  assert.equal(tracker.snapshot().failureCode, "SAGE_FINALIZATION_BLOCKED");
+});
+
+test("non-authoritative validation and publication=false block final text", () => {
+  const nonAuthoritative = validateSageTracker(computedSageTracker(), {
+    authoritative: false
+  });
+  const nonPublishable = validateSageTracker(computedSageTracker(), {
+    publishable: false
+  });
+
+  assert.equal(guardSageFinalization(nonAuthoritative).blocked, true);
+  assert.equal(guardSageFinalization(nonPublishable).blocked, true);
+});
+
+test("ready Sage and non-Sage final text remain allowed", () => {
+  const ready = validateSageTracker(computedSageTracker());
+  const idle = new SageTurnTracker();
+
+  assert.deepEqual(guardSageFinalization(ready), { blocked: false });
+  assert.deepEqual(guardSageFinalization(idle), { blocked: false });
+});
+
+test("authoritative final preserves finalMarkdown byte for byte", () => {
+  const markdown = "# Risultato\n\n$x = 2$  \n";
+  const final = authoritativeSageFinalFromResult({
+    publishable: true,
+    authoritative: true,
+    validationPassed: true,
+    finalMarkdown: markdown,
+    runId: "run-1",
+    sageResult: { contractVersion: "sage_result_v2" }
+  });
+
+  assert.equal(final.content, markdown);
+  assert.equal(final.runId, "run-1");
+  assert.doesNotMatch(final.content, /A validated mathematical report/);
+});
+
+test("canonical Sage commit stores exactly one final assistant", () => {
+  const store = new AgentSessionStore();
+  store.start("sage-canonical");
+  const session = store.get("sage-canonical");
+  const requestMessages = [
+    { role: "system", content: "system" },
+    { role: "user", content: "2+2" }
+  ];
+  const selected = session.choosePayload(
+    { messages: requestMessages, tools: [] },
+    { allowDelta: true, userTurnPolicy: "delta" }
+  );
+  session.commit(selected.pending, {
+    role: "assistant",
+    content: null,
+    tool_calls: [{
+      id: "sage-1",
+      type: "function",
+      function: { name: "sage", arguments: "{}" }
+    }]
+  });
+
+  const markdown = "# Canonico\n\n4";
+  session.commit(canonicalSageCommitPending(selected.pending), {
+    role: "assistant",
+    content: markdown,
+    sageAuthoritative: true,
+    sageRunId: "run-1"
+  });
+
+  const assistants = session.messages().filter((message) => message.role === "assistant");
+  assert.equal(assistants.length, 1);
+  assert.equal(assistants[0].content, markdown);
+});
+
+test("mixed Sage tool blocks are rejected while a single Sage is allowed", () => {
+  assert.equal(sageToolBlockDecision([
+    { name: "sage" }, { name: "read" }
+  ]).code, "SAGE_MIXED_TOOL_BLOCK_FORBIDDEN");
+  assert.equal(sageToolBlockDecision([
+    { name: "sage" }, { name: "bash" }
+  ]).code, "SAGE_MIXED_TOOL_BLOCK_FORBIDDEN");
+  assert.equal(sageToolBlockDecision([
+    { name: "sage" }, { name: "sage" }
+  ]).code, "SAGE_MIXED_TOOL_BLOCK_FORBIDDEN");
+  assert.deepEqual(sageToolBlockDecision([{ name: "sage" }]), { allowed: true });
+  assert.deepEqual(sageToolBlockDecision([
+    { name: "read" }, { name: "list" }
+  ]), { allowed: true });
+});
+
+test("authoritative Sage loop publishes directly without legacy synthesis prompt", async () => {
+  const source = await readFile(new URL("./index.mjs", import.meta.url), "utf8");
+
+  assert.match(source, /finish_reason: "sage_authoritative"/);
+  assert.match(source, /canonicalSageCommitPending\(modeChoice\.pending\)/);
+  assert.doesNotMatch(source, /A validated mathematical report is available below\./);
+  assert.doesNotMatch(source, /SageMath has completed the requested mathematical work\./);
 });

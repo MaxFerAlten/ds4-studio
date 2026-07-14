@@ -1,4 +1,5 @@
-export const SAGE_RESULT_CONTRACT_VERSION = "sage_result_v1";
+export const SAGE_RESULT_CONTRACT_VERSION = "sage_result_v2";
+export const SAGE_LEGACY_RESULT_CONTRACT_VERSION = "sage_result_v1";
 
 export const SAGE_TASK_TYPES = new Set([
   "auto",
@@ -30,6 +31,16 @@ export const SAGE_PHASES = new Set([
 ]);
 
 const SAGE_STATUSES = new Set(["ok", "error", "timeout", "cancelled"]);
+const SAGE_STATES = new Set([
+  "idle",
+  "prepared",
+  "computed",
+  "repairing",
+  "validated",
+  "plotted",
+  "ready",
+  "failed"
+]);
 const DEBUG_PREVIEW_BYTES = 8 * 1024;
 
 const PHASE_LABELS = {
@@ -85,7 +96,9 @@ export function validateSageResult(value) {
     return { ok: false, errors, value };
   }
 
-  if (value.contractVersion !== SAGE_RESULT_CONTRACT_VERSION) {
+  const isAuthoritativeContract = value.contractVersion === SAGE_RESULT_CONTRACT_VERSION;
+  const isLegacyContract = value.contractVersion === SAGE_LEGACY_RESULT_CONTRACT_VERSION;
+  if (!isAuthoritativeContract && !isLegacyContract) {
     addError("INVALID_CONTRACT_VERSION", "contractVersion", "Unsupported Sage result contract.");
   }
   if (value.tool !== "sage") {
@@ -105,10 +118,110 @@ export function validateSageResult(value) {
   if (!Array.isArray(value.artifacts)) {
     addError("INVALID_ARTIFACTS", "artifacts", "Artifacts must be an array.");
   }
-  if (value.validation != null &&
-      (typeof value.validation !== "object" ||
-       typeof value.validation.passed !== "boolean")) {
+  if (!value.validation || typeof value.validation !== "object" ||
+      typeof value.validation.passed !== "boolean") {
     addError("INVALID_VALIDATION", "validation.passed", "Validation passed must be boolean.");
+  }
+
+  if (isAuthoritativeContract) {
+    if (typeof value.runId !== "string" || !value.runId.trim()) {
+      addError("INVALID_RUN_ID", "runId", "An authoritative Sage result requires a run ID.");
+    }
+    if (!SAGE_STATES.has(value.state)) {
+      addError("INVALID_STATE", "state", "Sage result state is invalid.");
+    }
+    if (!value.execution || typeof value.execution !== "object" ||
+        typeof value.execution.ok !== "boolean" ||
+        typeof value.execution.timedOut !== "boolean" ||
+        !(value.execution.exitCode == null || Number.isInteger(value.execution.exitCode))) {
+      addError("INVALID_EXECUTION", "execution", "Execution status is incomplete.");
+    }
+
+    const validation = value.validation;
+    const checks = Array.isArray(validation?.checks) ? validation.checks : null;
+    if (typeof validation?.authoritative !== "boolean") {
+      addError(
+        "INVALID_VALIDATION_AUTHORITY",
+        "validation.authoritative",
+        "Validation authority must be boolean."
+      );
+    }
+    if (!checks) {
+      addError("INVALID_VALIDATION_CHECKS", "validation.checks", "Validation checks must be an array.");
+    } else if (checks.some((check) => !check || typeof check !== "object" ||
+        typeof check.passed !== "boolean")) {
+      addError("INVALID_VALIDATION_CHECK", "validation.checks", "Every validation check needs a result.");
+    }
+    if (!Array.isArray(validation?.errors)) {
+      addError("INVALID_VALIDATION_ERRORS", "validation.errors", "Validation errors must be an array.");
+    }
+    if (validation?.passed === true) {
+      if (validation.authoritative !== true) {
+        addError(
+          "NON_AUTHORITATIVE_PASS",
+          "validation.authoritative",
+          "A validation pass must be runtime-authoritative."
+        );
+      }
+      if (!checks?.length) {
+        addError(
+          "VALIDATION_CHECKS_EMPTY",
+          "validation.checks",
+          "A validation pass requires at least one check."
+        );
+      } else if (checks.some((check) => check?.passed !== true)) {
+        addError(
+          "VALIDATION_CHECK_FAILED",
+          "validation.checks",
+          "A validation pass cannot contain a failed check."
+        );
+      }
+    }
+
+    const publication = value.publication;
+    if (!publication || typeof publication !== "object" ||
+        typeof publication.publishable !== "boolean" ||
+        typeof publication.markdown !== "string" ||
+        !Array.isArray(publication.reasonCodes)) {
+      addError("INVALID_PUBLICATION", "publication", "Publication status is incomplete.");
+    } else if (publication.publishable) {
+      const authoritativePass = value.execution?.ok === true &&
+        validation?.authoritative === true &&
+        validation?.passed === true &&
+        Boolean(checks?.length) &&
+        checks.every((check) => check?.passed === true);
+      if (!authoritativePass) {
+        addError(
+          "INVALID_PUBLICATION_AUTHORITY",
+          "publication.publishable",
+          "Publication requires an authoritative validation pass."
+        );
+      }
+      if (!publication.markdown.trim()) {
+        addError(
+          "FINAL_MARKDOWN_MISSING",
+          "publication.markdown",
+          "Publishable results require final Markdown."
+        );
+      }
+    }
+  }
+
+  if (isLegacyContract) {
+    if (value.validation?.authoritative === true || value.validation?.passed === true) {
+      addError(
+        "LEGACY_RESULT_NOT_AUTHORITATIVE",
+        "validation",
+        "Legacy execution cannot be authoritative."
+      );
+    }
+    if (value.publication?.publishable === true) {
+      addError(
+        "LEGACY_RESULT_NOT_PUBLISHABLE",
+        "publication.publishable",
+        "Legacy execution cannot be published authoritatively."
+      );
+    }
   }
 
   if (value.report?.kind === "function_study_v1") {
@@ -152,10 +265,12 @@ export function buildLegacySageResult(input = {}) {
   const durationMs = Math.max(0, Number(input.durationMs) || 0);
 
   return {
-    contractVersion: SAGE_RESULT_CONTRACT_VERSION,
+    contractVersion: SAGE_LEGACY_RESULT_CONTRACT_VERSION,
     tool: "sage",
+    runId: input.runId == null ? null : String(input.runId),
     taskType,
     phase,
+    state: status === "ok" ? "computed" : "failed",
     status,
     attempt,
     display: {
@@ -173,10 +288,26 @@ export function buildLegacySageResult(input = {}) {
     },
     report: null,
     artifacts: [],
+    execution: {
+      ok: status === "ok",
+      exitCode,
+      timedOut: killed
+    },
     validation: {
-      passed: status === "ok",
+      authoritative: false,
+      passed: false,
       checks: [],
-      warnings: status === "ok" ? [] : ["SageMath execution did not complete successfully."]
+      errors: status === "ok"
+        ? ["LEGACY_EXECUTION_NOT_MATHEMATICALLY_VALIDATED"]
+        : ["SAGE_EXECUTION_FAILED"],
+      warnings: []
+    },
+    publication: {
+      publishable: false,
+      markdown: "",
+      reasonCodes: [
+        status === "ok" ? "LEGACY_RESULT_NOT_AUTHORITATIVE" : "EXECUTION_FAILED"
+      ]
     },
     debug: {
       exitCode,
@@ -207,15 +338,34 @@ export function publicSageResult(value) {
   return {
     contractVersion: value.contractVersion,
     tool: value.tool,
+    runId: value.runId ?? null,
     taskType: value.taskType,
     phase: value.phase,
+    state: value.state ?? null,
     status: value.status,
     attempt: value.attempt,
     display: value.display ? { ...value.display } : null,
     artifacts: Array.isArray(value.artifacts)
       ? value.artifacts.map((artifact) => ({ ...artifact }))
       : [],
-    validation: value.validation ? { ...value.validation } : null,
+    validation: value.validation
+      ? {
+          ...value.validation,
+          checks: Array.isArray(value.validation.checks)
+            ? value.validation.checks.map((check) => ({ ...check }))
+            : [],
+          errors: Array.isArray(value.validation.errors) ? [...value.validation.errors] : [],
+          warnings: Array.isArray(value.validation.warnings) ? [...value.validation.warnings] : []
+        }
+      : null,
+    publication: value.publication
+      ? {
+          ...value.publication,
+          reasonCodes: Array.isArray(value.publication.reasonCodes)
+            ? [...value.publication.reasonCodes]
+            : []
+        }
+      : null,
     debug
   };
 }

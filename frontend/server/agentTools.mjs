@@ -11,6 +11,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,8 +29,7 @@ import {
   SAGE_RESULT_CONTRACT_VERSION,
   buildLegacySageResult,
   normalizeSagePhase,
-  normalizeSageTaskType,
-  validateSageResult
+  normalizeSageTaskType
 } from "./sageResultContract.mjs";
 
 const DEFAULT_TIMEOUT_SEC = 30;
@@ -132,6 +132,18 @@ export function sageSessionDir(base, sessionId) {
   return path.join(path.resolve(base), `sage_${sanitizeSessionId(sessionId)}`);
 }
 
+export function sanitizeSageRunId(runId) {
+  const cleaned = String(runId || "")
+    .trim()
+    .replace(/[^A-Za-z0-9_-]/g, "_")
+    .slice(0, 128);
+  return cleaned || "invalid-run";
+}
+
+export function sageRunDir(base, runId) {
+  return path.join(path.resolve(base), "sage_runs", sanitizeSageRunId(runId));
+}
+
 /**
  * Resolve a tool-supplied path against the workspace root.  Throws when the
  * resolved path escapes the workspace and the sandbox is enabled.
@@ -232,8 +244,11 @@ export async function executeTool(name, args = {}, options = {}) {
         return await toolSearch(args, options);
       case "list":
         return await toolList(args, options);
-      case "sage":
-        return await toolSage(args, options);
+      case "sage": {
+        const { executeAuthoritativeSage } = await import("./sageAuthoritativeExecutor.mjs");
+        const executor = options.authoritativeSageExecutor ?? executeAuthoritativeSage;
+        return await executor(args, { ...options, rawExecutor: toolSage });
+      }
       case "web_search":
         return await toolWebSearch(args, options);
       case "web_read":
@@ -1125,6 +1140,20 @@ const SAGE_ARTIFACT_MEDIA_TYPES = Object.freeze({
   ".json": "application/json"
 });
 
+function sageArtifactKind(name) {
+  const normalized = String(name || "").toLowerCase().replace(/[^a-z0-9]+/g, "_");
+  if (normalized.includes("first_derivative") || normalized.includes("derivative_1")) {
+    return "first_derivative_plot";
+  }
+  if (normalized.includes("second_derivative") || normalized.includes("derivative_2")) {
+    return "second_derivative_plot";
+  }
+  if (normalized.includes("function_plot") || normalized === "plot_png") {
+    return "function_plot";
+  }
+  return normalized.replace(/_(png|svg|pdf|csv|json)$/, "") || "artifact";
+}
+
 function sageArtifactMaxBytes() {
   const configured = Number(process.env.DS4_SAGE_MAX_ARTIFACT_BYTES);
   return Number.isFinite(configured) && configured > 0
@@ -1139,7 +1168,7 @@ function pathIsInside(parent, candidate) {
 
 export async function listSageArtifacts(
   dir,
-  { sessionId = "default", maxBytes = sageArtifactMaxBytes() } = {}
+  { sessionId = "default", runId = null, maxBytes = sageArtifactMaxBytes() } = {}
 ) {
   const artifacts = new Map();
   let root;
@@ -1163,14 +1192,26 @@ export async function listSageArtifacts(
       if (!pathIsInside(root, physicalPath)) continue;
       const stats = await fs.stat(physicalPath);
       if (!stats.isFile() || stats.size <= 0 || stats.size > maxBytes) continue;
+      const bytes = runId ? await fs.readFile(physicalPath) : null;
+      const sha256 = bytes ? createHash("sha256").update(bytes).digest("hex") : null;
+      const artifactId = sha256 ? `sha256:${sha256}` : null;
+      const safeRunId = runId ? sanitizeSageRunId(runId) : null;
       artifacts.set(entry.name, {
+        artifactId,
+        runId: safeRunId,
+        kind: sageArtifactKind(entry.name),
         name: entry.name,
         physicalPath,
         size: stats.size,
+        sizeBytes: stats.size,
         mtimeMs: stats.mtimeMs,
         ino: stats.ino,
         mediaType,
-        url: `/api/sage/artifacts/${encodeURIComponent(sanitizeSessionId(sessionId))}/${encodeURIComponent(entry.name)}`
+        sha256,
+        createdAt: new Date(stats.birthtimeMs > 0 ? stats.birthtimeMs : stats.mtimeMs).toISOString(),
+        url: runId
+          ? `/api/sage/artifacts/${encodeURIComponent(safeRunId)}/${encodeURIComponent(artifactId)}`
+          : `/api/sage/artifacts/${encodeURIComponent(sanitizeSessionId(sessionId))}/${encodeURIComponent(entry.name)}`
       });
     } catch {
       // An artifact that disappears or cannot be resolved is not publishable.
@@ -1179,22 +1220,103 @@ export async function listSageArtifacts(
   return artifacts;
 }
 
+export async function resolveSageArtifactById(workspace, runId, artifactId) {
+  const sourceRunId = String(runId || "");
+  if (sanitizeSageRunId(sourceRunId) !== sourceRunId ||
+      !/^sha256:[a-f0-9]{64}$/.test(String(artifactId || ""))) {
+    return null;
+  }
+  const artifacts = await listSageArtifacts(sageRunDir(workspace, sourceRunId), {
+    runId: sourceRunId
+  });
+  for (const artifact of artifacts.values()) {
+    if (artifact.artifactId === artifactId && artifact.runId === sourceRunId) return artifact;
+  }
+  return null;
+}
+
+export async function findLatestSageImageArtifact(workspace, fileName) {
+  const name = String(fileName || "");
+  if (!name || path.basename(name) !== name || path.win32.basename(name) !== name) return null;
+  const mediaType = SAGE_ARTIFACT_MEDIA_TYPES[path.extname(name).toLowerCase()];
+  if (!mediaType?.startsWith("image/")) return null;
+
+  let entries;
+  try {
+    entries = await fs.readdir(path.resolve(workspace), { withFileTypes: true });
+  } catch {
+    return null;
+  }
+
+  let latest = null;
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith("sage_")) continue;
+    const artifacts = await listSageArtifacts(path.join(workspace, entry.name), {
+      sessionId: entry.name.slice("sage_".length) || "default"
+    });
+    const artifact = artifacts.get(name);
+    if (!artifact || (latest && artifact.mtimeMs <= latest.mtimeMs)) continue;
+    latest = artifact;
+  }
+  return latest;
+}
+
 export function diffSageArtifacts(before, after) {
   const created = [];
   for (const [name, artifact] of after instanceof Map ? after : []) {
     const previous = before instanceof Map ? before.get(name) : null;
-    if (previous && previous.size === artifact.size &&
-        previous.mtimeMs === artifact.mtimeMs && previous.ino === artifact.ino) {
+    const contentUnchanged = previous?.sha256 && artifact.sha256
+      ? previous.sha256 === artifact.sha256
+      : previous && previous.size === artifact.size &&
+        previous.mtimeMs === artifact.mtimeMs && previous.ino === artifact.ino;
+    if (contentUnchanged) {
       continue;
     }
     created.push({
+      artifactId: artifact.artifactId,
+      runId: artifact.runId,
+      kind: artifact.kind,
       name: artifact.name,
       url: artifact.url,
       mediaType: artifact.mediaType,
-      size: artifact.size
+      sha256: artifact.sha256,
+      size: artifact.size,
+      sizeBytes: artifact.sizeBytes,
+      createdAt: artifact.createdAt
     });
   }
   return created.sort((left, right) => left.name.localeCompare(right.name));
+}
+
+export function mergeCurrentRunSageArtifacts(previous, changed, currentFiles) {
+  const merged = new Map();
+  for (const artifact of Array.isArray(previous) ? previous : []) {
+    const current = currentFiles instanceof Map ? currentFiles.get(artifact?.name) : null;
+    if (current?.artifactId && current.artifactId === artifact?.artifactId &&
+        current.runId === artifact?.runId) {
+      merged.set(artifact.name, { ...artifact });
+    }
+  }
+  for (const artifact of Array.isArray(changed) ? changed : []) {
+    if (artifact?.name) merged.set(artifact.name, { ...artifact });
+  }
+  return [...merged.values()].sort((left, right) => left.name.localeCompare(right.name));
+}
+
+const SAGE_RUN_ARTIFACT_REGISTRY_LIMIT = 512;
+const sageRunArtifactRegistry = new Map();
+
+function rememberCurrentRunSageArtifacts(runId, changed, currentFiles) {
+  const key = sanitizeSageRunId(runId);
+  const artifacts = mergeCurrentRunSageArtifacts(
+    sageRunArtifactRegistry.get(key), changed, currentFiles
+  );
+  sageRunArtifactRegistry.delete(key);
+  sageRunArtifactRegistry.set(key, artifacts.map((artifact) => ({ ...artifact })));
+  while (sageRunArtifactRegistry.size > SAGE_RUN_ARTIFACT_REGISTRY_LIMIT) {
+    sageRunArtifactRegistry.delete(sageRunArtifactRegistry.keys().next().value);
+  }
+  return artifacts;
 }
 
 export function extractSageMeta(stdout) {
@@ -1249,8 +1371,13 @@ function sageModelContent({ stdout, latexOutput, report, artifacts, status, cwd 
   }
   if (artifacts.length) {
     parts.push([
-      "Artifacts:",
-      ...artifacts.map((artifact) => `- [${artifact.name}](${artifact.url})`)
+      "Artifacts (use these exact application URLs; never replace them with bare or local paths):",
+      ...artifacts.map((artifact) => {
+        const name = String(artifact.name || "Sage artifact").replace(/[\[\]\r\n]/g, " ");
+        return String(artifact.mediaType || "").startsWith("image/")
+          ? `- ![${name}](${artifact.url})`
+          : `- [${name}](${artifact.url})`;
+      })
     ].join("\n"));
   }
   if (!parts.length) {
@@ -1261,7 +1388,28 @@ function sageModelContent({ stdout, latexOutput, report, artifacts, status, cwd 
   return parts.join("\n\n");
 }
 
-function structuredSageResult({
+function sanitizeClaimedValidation(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const checks = Array.isArray(value.checks)
+    ? value.checks.slice(0, 50).map((check) => {
+        if (!check || typeof check !== "object") return { passed: false };
+        return {
+          code: String(check.code ?? check.name ?? "MODEL_CLAIM").slice(0, 96),
+          passed: check.passed === true,
+          message: String(check.message ?? "").slice(0, 512)
+        };
+      })
+    : [];
+  return {
+    passed: value.passed === true,
+    checks,
+    errors: Array.isArray(value.errors)
+      ? value.errors.slice(0, 50).map((error) => String(error).slice(0, 512))
+      : []
+  };
+}
+
+export function structuredSageResult({
   stdout,
   stderr,
   exitCode,
@@ -1302,52 +1450,33 @@ function structuredSageResult({
 
   if (!meta || meta.contractVersion !== SAGE_RESULT_CONTRACT_VERSION) return fallback;
 
-  const validation = meta.validation && typeof meta.validation === "object" &&
-      typeof meta.validation.passed === "boolean"
-    ? {
-        ...meta.validation,
-        checks: Array.isArray(meta.validation.checks) ? meta.validation.checks : [],
-        warnings: Array.isArray(meta.validation.warnings) ? meta.validation.warnings : []
-      }
-    : fallback.validation;
-  const report = meta.report ?? null;
-  const candidate = {
-    ...fallback,
-    display: {
-      ...fallback.display,
-      summary: fallback.status === "ok"
-        ? report
-          ? "Report matematico preparato."
-          : artifacts.length
-            ? "Calcolo completato con artefatti."
-            : fallback.display.summary
+  const candidateReport = meta.candidateReport ?? meta.report ?? null;
+  const claimedValidation = sanitizeClaimedValidation(
+    meta.claimedValidation ?? meta.validation
+  );
+  fallback.candidateReport = candidateReport;
+  fallback.reportAuthority = candidateReport ? "model_candidate" : null;
+  fallback.debug.claimedValidation = claimedValidation;
+  fallback.display.summary = fallback.status === "ok"
+    ? candidateReport
+      ? "Report matematico candidato preparato."
+      : artifacts.length
+        ? "Calcolo completato con artefatti."
         : fallback.display.summary
-    },
-    model: {
-      content: sageModelContent({
-        stdout,
-        latexOutput,
-        report,
-        artifacts,
-        status: fallback.status,
-        cwd
-      }),
-      latex: latexOutput ? [latexOutput] : [],
-      facts: []
-    },
-    report,
-    artifacts,
-    validation
+    : fallback.display.summary;
+  fallback.model = {
+    content: sageModelContent({
+      stdout,
+      latexOutput,
+      report: candidateReport,
+      artifacts,
+      status: fallback.status,
+      cwd
+    }),
+    latex: latexOutput ? [latexOutput] : [],
+    facts: []
   };
-  const checked = validateSageResult(candidate);
-  if (!checked.ok) {
-    fallback.debug.metaValidationErrors = checked.errors.map((error) => ({
-      code: error.code,
-      path: error.path
-    }));
-    return fallback;
-  }
-  return candidate;
+  return fallback;
 }
 
 /**
@@ -1383,8 +1512,25 @@ export async function toolSage(args, options) {
   }
   const sageCallLog = options.sageCallLog;
   const beforeFiles = structuredEnabled
-    ? await listSageArtifacts(cwd, { sessionId: options.sessionKey })
+    ? await listSageArtifacts(cwd, {
+        sessionId: options.sessionKey,
+        runId: options.runId || null
+      })
     : new Map();
+  const externalArtifactRoots = structuredEnabled
+    ? [...new Set([
+        workspaceRoot(options),
+        path.basename(cwd).startsWith("sage_") ? path.dirname(cwd) : null
+      ].filter(Boolean).map((root) => path.resolve(root)))]
+        .filter((root) => root !== path.resolve(cwd))
+    : [];
+  const beforeExternalFiles = new Map();
+  for (const root of externalArtifactRoots) {
+    beforeExternalFiles.set(
+      root,
+      await listSageArtifacts(root, { sessionId: options.sessionKey })
+    );
+  }
 
   // Wrap the user code so Sage can run either a single expression or a full
   // multi-statement Sage script.  We preparse the submitted Sage syntax before
@@ -1394,7 +1540,11 @@ export async function toolSage(args, options) {
   // assigns `result` or `__result__`, that value is also rendered as LaTeX.
   const userCodeLiteral = JSON.stringify(code);
   const structuredPrelude = structuredEnabled
-    ? "__ds4_report__ = None\n__ds4_validation__ = None"
+    ? [
+        "__ds4_report__ = None",
+        "__ds4_claimed_validation__ = None",
+        "__ds4_validation__ = None"
+      ].join("\n")
     : "";
   const structuredEpilogue = structuredEnabled
     ? `
@@ -1402,8 +1552,12 @@ import json as __ds4_json__
 print("${SAGE_META_BEGIN}")
 print(__ds4_json__.dumps({
     "contractVersion": "${SAGE_RESULT_CONTRACT_VERSION}",
-    "report": __ds4_report__,
-    "validation": __ds4_validation__
+    "candidateReport": __ds4_report__,
+    "claimedValidation": (
+        __ds4_claimed_validation__
+        if __ds4_claimed_validation__ is not None
+        else __ds4_validation__
+    )
 }, default=str))
 print("${SAGE_META_END}")`
     : "";
@@ -1568,8 +1722,42 @@ ${structuredEpilogue}
           return;
         }
 
-        const afterFiles = await listSageArtifacts(cwd, { sessionId: options.sessionKey });
-        const artifacts = diffSageArtifacts(beforeFiles, afterFiles);
+        let afterFiles = await listSageArtifacts(cwd, {
+          sessionId: options.sessionKey,
+          runId: options.runId || null
+        });
+        let copiedExternalArtifact = false;
+        for (const root of externalArtifactRoots) {
+          const afterExternalFiles = await listSageArtifacts(root, {
+            sessionId: options.sessionKey
+          });
+          const externalArtifacts = diffSageArtifacts(
+            beforeExternalFiles.get(root),
+            afterExternalFiles
+          );
+          for (const artifact of externalArtifacts) {
+            const source = afterExternalFiles.get(artifact.name)?.physicalPath;
+            if (!source) continue;
+            try {
+              await fs.copyFile(source, path.join(cwd, artifact.name));
+              copiedExternalArtifact = true;
+            } catch {
+              // The original Sage result remains usable even if publication fails.
+            }
+          }
+        }
+        if (copiedExternalArtifact) {
+          afterFiles = await listSageArtifacts(cwd, {
+            sessionId: options.sessionKey,
+            runId: options.runId || null
+          });
+        }
+        const changedArtifacts = diffSageArtifacts(beforeFiles, afterFiles);
+        const artifacts = options.runId && exitCode === 0 && !killed
+          ? rememberCurrentRunSageArtifacts(
+              options.runId, changedArtifacts, afterFiles
+            )
+          : changedArtifacts;
         const sageResult = structuredSageResult({
           stdout: extracted.cleanStdout,
           stderr,

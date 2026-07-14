@@ -1111,6 +1111,104 @@ pre {
   vertical-align: middle;
 }
 
+.sage-activity {
+  border: 1px solid #2a5a3a;
+  border-radius: 8px;
+  background: #0e1a14;
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+
+.sage-activity-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 7px 9px;
+}
+
+.sage-activity-title {
+  color: #9ed0ff;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.sage-activity-state {
+  color: #a0c4a0;
+  font-size: 11px;
+}
+
+.sage-activity-steps {
+  list-style: none;
+  margin: 0;
+  padding: 6px 9px;
+}
+
+.sage-activity-step {
+  align-items: center;
+  display: flex;
+  font-size: 12px;
+  gap: 6px;
+  padding: 2px 0;
+}
+
+.sage-step-icon {
+  width: 14px;
+  text-align: center;
+}
+
+.sage-activity-step.pending .sage-step-icon { color: #556; }
+.sage-activity-step.running .sage-step-icon { color: #6a6; }
+.sage-activity-step.done .sage-step-icon { color: #4a4; }
+.sage-activity-step.error .sage-step-icon { color: #c44; }
+
+.sage-step-label { color: #d5e0ed; }
+.sage-step-detail { color: #8a9; font-size: 11px; margin-left: 4px; }
+
+.sage-activity-footer {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  color: #7a8a7a;
+  font-size: 11px;
+  padding: 5px 9px;
+}
+
+.sage-artifact-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 9px 6px;
+}
+
+.sage-artifact-list a {
+  color: #9ed0ff;
+  font-size: 12px;
+  text-decoration: underline;
+}
+
+.sage-activity-error {
+  background: #231317;
+  border-top: 1px solid #803636;
+  color: #e8a0a0;
+  font-size: 12px;
+  padding: 5px 9px;
+}
+
+.sage-debug {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 11px;
+  padding: 4px 9px;
+}
+
+.sage-debug pre {
+  background: #0b1018;
+  color: #d5e0ed;
+  font-size: 11px;
+  max-height: 200px;
+  overflow: auto;
+  padding: 6px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
 .message-content {
   line-height: 1.45;
   overflow-wrap: anywhere;
