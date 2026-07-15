@@ -1315,10 +1315,13 @@ void ds4_agent_runtime_get_default_skills_status(
     out->enabled = rt->worker.default_skills_enabled;
     out->soul_loaded = rt->worker.soul_prompt != NULL;
     out->ethic_loaded = rt->worker.ethic_prompt != NULL;
+    out->structure_loaded = rt->worker.structure_prompt != NULL;
     out->soul_bytes = rt->worker.soul_prompt
         ? strlen(rt->worker.soul_prompt) : 0;
     out->ethic_bytes = rt->worker.ethic_prompt
         ? strlen(rt->worker.ethic_prompt) : 0;
+    out->structure_bytes = rt->worker.structure_prompt
+        ? strlen(rt->worker.structure_prompt) : 0;
     memcpy(out->revision,
            rt->worker.default_skills_revision,
            sizeof(out->revision));

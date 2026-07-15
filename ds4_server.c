@@ -7754,6 +7754,7 @@ struct server {
     /* Loaded SKILL.md content (NULL if not loaded). */
     char *soul_skill;
     char *ethic_skill;
+    char *structure_skill;
     char *sage_skill;
     bool default_skills_enabled;
     char default_skills_revision[41];
@@ -7762,7 +7763,7 @@ struct server {
 /* Prepend soul and ethic skill content as synthetic system messages in msgs.
  * Skill strings come from the server struct (loaded at startup). */
 static void server_inject_skills(server *s, chat_msgs *msgs) {
-    if (!s || (!s->soul_skill && !s->ethic_skill && !s->sage_skill)) return;
+    if (!s || (!s->soul_skill && !s->ethic_skill && !s->structure_skill && !s->sage_skill)) return;
 
     /* Insert at position 0 so skills appear before any client system message. */
     int insert_at = 0;
@@ -7791,6 +7792,18 @@ static void server_inject_skills(server *s, chat_msgs *msgs) {
         }
         insert_at++;
     }
+    if (s->structure_skill) {
+        chat_msg msg = {0};
+        msg.role = xstrdup("system");
+        msg.content = xstrdup(s->structure_skill);
+        chat_msgs_push(msgs, msg);
+        if (msgs->len > 1) {
+            chat_msg tmp = msgs->v[msgs->len - 1];
+            for (int i = msgs->len - 1; i > insert_at; i--) msgs->v[i] = msgs->v[i - 1];
+            msgs->v[insert_at] = tmp;
+        }
+        insert_at++;
+    }
     if (s->sage_skill) {
         chat_msg msg = {0};
         msg.role = xstrdup("system");
@@ -7810,23 +7823,26 @@ static bool server_load_default_skills(server *s, char *err, size_t err_len) {
     (void)err; (void)err_len;
     const char *auto_env = getenv("DS4_SKILL_AUTO");
     if (auto_env && !strcmp(auto_env, "0")) {
-        free(s->soul_skill);  s->soul_skill = NULL;
-        free(s->ethic_skill); s->ethic_skill = NULL;
-        free(s->sage_skill);  s->sage_skill = NULL;
+        free(s->soul_skill);      s->soul_skill = NULL;
+        free(s->ethic_skill);     s->ethic_skill = NULL;
+        free(s->structure_skill); s->structure_skill = NULL;
+        free(s->sage_skill);      s->sage_skill = NULL;
         s->default_skills_enabled = false;
         s->default_skills_revision[0] = '\0';
         return true;
     }
 
-    char soul_err[256] = {0}, ethic_err[256] = {0}, sage_err[256] = {0};
+    char soul_err[256] = {0}, ethic_err[256] = {0}, structure_err[256] = {0}, sage_err[256] = {0};
     char *soul = server_read_file("skills/soul/SKILL.md", soul_err, sizeof(soul_err));
     char *ethic = server_read_file("skills/ethic/SKILL.md", ethic_err, sizeof(ethic_err));
+    char *structure = server_read_file("skills/structure/SKILL.md", structure_err, sizeof(structure_err));
     char *sage = server_read_file("skills/sage/SKILL.md", sage_err, sizeof(sage_err));
 
     /* Compute revision over concatenated skill content (same scheme as agent). */
     buf b = {0};
     if (soul) buf_puts(&b, soul);
     if (ethic) buf_puts(&b, ethic);
+    if (structure) buf_puts(&b, structure);
     if (sage) buf_puts(&b, sage);
     char revision[41];
     ds4_kvstore_sha1_bytes_hex(b.ptr ? b.ptr : "", b.len, revision);
@@ -7834,9 +7850,11 @@ static bool server_load_default_skills(server *s, char *err, size_t err_len) {
 
     free(s->soul_skill);
     free(s->ethic_skill);
+    free(s->structure_skill);
     free(s->sage_skill);
     s->soul_skill = soul;
     s->ethic_skill = ethic;
+    s->structure_skill = structure;
     s->sage_skill = sage;
     s->default_skills_enabled = true;
     memcpy(s->default_skills_revision, revision, sizeof(revision));
@@ -7844,9 +7862,10 @@ static bool server_load_default_skills(server *s, char *err, size_t err_len) {
 }
 
 static void server_free_default_skills(server *s) {
-    free(s->soul_skill);  s->soul_skill = NULL;
-    free(s->ethic_skill); s->ethic_skill = NULL;
-    free(s->sage_skill);  s->sage_skill = NULL;
+    free(s->soul_skill);      s->soul_skill = NULL;
+    free(s->ethic_skill);     s->ethic_skill = NULL;
+    free(s->structure_skill); s->structure_skill = NULL;
+    free(s->sage_skill);      s->sage_skill = NULL;
     s->default_skills_enabled = false;
     s->default_skills_revision[0] = '\0';
 }

@@ -5,14 +5,16 @@
 # 2. User confirmation mechanism works (non-interactive falls back to stop)
 # 3. Code compiles without errors
 
-set -e
+set -euo pipefail
 
 echo "=== Loop Guard Certification Test ==="
 echo ""
 
 # Step 1: Verify variable rename
 echo "1. Checking variable rename..."
-cd /mnt/samsung_ai/COPARATOR/ds4-studio
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+PROJECT_ROOT="$SCRIPT_DIR"
+cd "$PROJECT_ROOT"
 if grep -q "loop_guard_consecutive_identical" ds4_agent.c; then
     echo "   ✅ Variable renamed to loop_guard_consecutive_identical"
 else
@@ -24,6 +26,45 @@ if grep -q "loop_guard_consecutive_similar" ds4_agent.c; then
     exit 1
 else
     echo "   ✅ Old name loop_guard_consecutive_similar removed"
+fi
+
+echo ""
+echo "1c. Checking canonical read fingerprints..."
+
+for symbol in \
+    AGENT_LOOP_GUARD_FINGERPRINT_SIZE \
+    AGENT_LOOP_GUARD_IDENTICAL_LIMIT \
+    AGENT_LOOP_GUARD_EMPTY_LIMIT \
+    agent_loop_guard_fingerprint_call; do
+    if grep -q "$symbol" ds4_agent.c; then
+        echo "   ✅ $symbol present"
+    else
+        echo "   ❌ Missing $symbol"
+        exit 1
+    fi
+done
+
+if grep -A25 -B4 'agent_loop_guard_fingerprint_call' ds4_agent.c \
+    | grep -q 'start_line'; then
+    echo "   ✅ read fingerprint includes start_line"
+else
+    echo "   ❌ read fingerprint does not include start_line"
+    exit 1
+fi
+
+if grep -A25 -B4 'agent_loop_guard_fingerprint_call' ds4_agent.c \
+    | grep -q 'max_lines'; then
+    echo "   ✅ read fingerprint includes max_lines"
+else
+    echo "   ❌ read fingerprint does not include max_lines"
+    exit 1
+fi
+
+if grep -q 'commands in a row.*AGENT_LOOP_GUARD_RING_SIZE' ds4_agent.c; then
+    echo "   ❌ UI still reports ring size as the identical-command limit"
+    exit 1
+else
+    echo "   ✅ UI no longer uses ring size as stop threshold"
 fi
 
 echo ""
@@ -100,7 +141,11 @@ fi
 
 # Step 6: Verify binary compiles
 echo ""
-echo "6. Checking binary compiles..."
+echo "6. Building targeted native tests and agent binary..."
+make ds4_agent_test && make rocm
+
+echo ""
+echo "6b. Checking binary compiles..."
 if file ds4-agent | grep -q "ELF"; then
     echo "   ✅ ds4-agent binary is a valid ELF"
 else
@@ -110,7 +155,11 @@ fi
 
 # Step 7: Verify new symbols in binary
 echo ""
-echo "7. Checking symbols in binary..."
+echo "7. Running native ds4-agent regression tests..."
+./ds4_agent_test
+
+echo ""
+echo "7b. Checking symbols in binary..."
 if nm ds4-agent 2>/dev/null | grep -q "loop_guard"; then
     echo "   ✅ loop_guard symbols found in binary"
 else
@@ -120,10 +169,12 @@ fi
 echo ""
 echo "=== Loop Guard Certification Test: PASSED ==="
 echo ""
-echo "Summary of changes:"
-echo "  • Renamed loop_guard_consecutive_similar → loop_guard_consecutive_identical"
-echo "  • Added user confirmation fields (loop_guard_awaiting_user*)"
-echo "  • Non-interactive mode: stops immediately"
-echo "  • Interactive mode: asks user to continue or stop"
-echo "  • If user continues: counters reset, processing resumes"
-echo "  • If user stops or timeout: loop error reported, turn ends"
+echo "Summary of certified behavior:"
+echo "  • read fingerprints include path, start_line, max_lines, whole, and raw"
+echo "  • progressive ranges of the same file do not count as identical"
+echo "  • only immediately consecutive identical fingerprints accumulate"
+echo "  • exactly repeated reads still reach the configured stop threshold"
+echo "  • stale ring cells do not affect a new turn"
+echo "  • UI reports AGENT_LOOP_GUARD_IDENTICAL_LIMIT, not ring capacity"
+echo "  • interactive confirmation behavior remains present"
+echo "  • non-interactive mode still stops on a certified loop"

@@ -2141,7 +2141,14 @@ export default function App() {
       if (!request.stream) {
         const data = await res.json();
         const message = data.choices?.[0]?.message || {};
-        setMessages(replaceAssistantMessage(message.content || "", message.reasoning_content || message.reasoning || ""));
+        const content = message.content || "";
+        if (content.includes("<｜DSML｜tool_calls>") || content.includes("<DSML｜tool_calls>") ||
+            content.includes("<tool_calls>") || content.includes("<tool_call>") ||
+            content.includes("<｜DSML｜invoke") || content.includes("<DSML｜invoke")) {
+          setMessages(replaceAssistantMessage("⚠️ Per eseguire azioni agentiche (leggere file, analizzare codice, eseguire comandi) devi prima attivare l'Agent Mode.\n\nDigita **`/agent start`** nella chat per iniziare.", ""));
+        } else {
+          setMessages(replaceAssistantMessage(content, message.reasoning_content || message.reasoning || ""));
+        }
         if (data.usage) {
           const tEnd = performance.now();
           const totalS = (tEnd - tRequestStart) / 1000;
@@ -2159,6 +2166,9 @@ export default function App() {
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
+      let accumulatedText = "";
+      let intercepted = false;
+
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -2186,7 +2196,32 @@ export default function App() {
             const live = updateLiveStats(liveStats, { content, reasoning, nowMs: tDelta });
             liveStats = live.tracker;
             setRuntimeStats(live.stats);
-            deltaBatcher.push(content, reasoning);
+
+            accumulatedText += content;
+            if (!intercepted && (accumulatedText.includes("<｜DSML｜tool_calls>") || accumulatedText.includes("<DSML｜tool_calls>") ||
+                accumulatedText.includes("<tool_calls>") || accumulatedText.includes("<tool_call>") ||
+                accumulatedText.includes("<｜DSML｜invoke") || accumulatedText.includes("<DSML｜invoke"))) {
+              intercepted = true;
+              deltaBatcher.cancel();
+              setMessages((prev) => {
+                const last = prev[prev.length - 1];
+                if (last && last.role === "assistant") {
+                  return [
+                    ...prev.slice(0, -1),
+                    {
+                      role: "assistant",
+                      content: "⚠️ Per eseguire azioni agentiche (leggere file, analizzare codice, eseguire comandi) devi prima attivare l'Agent Mode.\n\nDigita **`/agent start`** nella chat per iniziare.",
+                      agentNotice: true
+                    }
+                  ];
+                }
+                return prev;
+              });
+            }
+
+            if (!intercepted) {
+              deltaBatcher.push(content, reasoning);
+            }
           }
         }
       }
