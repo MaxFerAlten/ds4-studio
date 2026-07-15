@@ -225,6 +225,9 @@ typedef struct {
     /* Ethic skill: content injected via /ethic start */
     char *ethic_prompt;
 
+    /* Structure skill: content injected via /structure start */
+    char *structure_prompt;
+
     /* Sage skill: content injected via /sage start */
     char *sage_prompt;
     char sage_policy_revision[41];
@@ -236,11 +239,16 @@ typedef struct {
 
     char *context_blob_dir;
 
-    /* Anti-loop guard: ring buffer of recent tool command fingerprints.
-     * Used to detect sterile grep/find/read loops where the same command
-     * repeats with no progress. */
+    /* Anti-loop guard: ring buffer of recent canonical tool-call fingerprints.
+     * The stop counter tracks only an identical fingerprint repeated immediately
+     * and consecutively.  Read fingerprints include the effective line range and
+     * output mode so progressive pagination is treated as forward progress. */
 #define AGENT_LOOP_GUARD_RING_SIZE 8
-    char loop_guard_ring[AGENT_LOOP_GUARD_RING_SIZE][128];
+#define AGENT_LOOP_GUARD_FINGERPRINT_SIZE 128
+#define AGENT_LOOP_GUARD_IDENTICAL_LIMIT 4
+#define AGENT_LOOP_GUARD_EMPTY_LIMIT 10
+    char loop_guard_ring[AGENT_LOOP_GUARD_RING_SIZE]
+                        [AGENT_LOOP_GUARD_FINGERPRINT_SIZE];
     int loop_guard_ring_pos;
     int loop_guard_consecutive_empty;
     int loop_guard_consecutive_identical;
@@ -1510,6 +1518,7 @@ static char *agent_build_tools_prompt(void) {
 
 static const char agent_dsml_syntax_reminder[] =
     "DSML syntax reminder:\n"
+    "CRITICAL FOR REASONING MODELS: If you use <think> tags, you MUST close them with </think> BEFORE starting tool calls.\n"
     "<｜DSML｜tool_calls>\n"
     "<｜DSML｜invoke name=\"$TOOL_NAME\">\n"
     "<｜DSML｜parameter name=\"$PARAMETER_NAME\" string=\"true|false\">$PARAMETER_VALUE</｜DSML｜parameter>\n"
@@ -4786,6 +4795,20 @@ static char *agent_read_ethic_skill(char *err, size_t err_len) {
     return NULL;
 }
 
+static char *agent_read_structure_skill(char *err, size_t err_len) {
+    char path[PATH_MAX];
+    if (!agent_skill_path(path, sizeof(path), "structure", err, err_len))
+        return NULL;
+
+    char *data = NULL;
+    size_t len = 0;
+    if (agent_read_file_bytes(path, &data, &len, err, err_len) == 0 && data)
+        return data;
+
+    snprintf(err, err_len, "structure skill file not found at %.200s", path);
+    return NULL;
+}
+
 static char *agent_read_sage_skill(char *err, size_t err_len) {
     char path[PATH_MAX];
     if (!agent_skill_path(path, sizeof(path), "sage", err, err_len))
@@ -4847,7 +4870,8 @@ static bool agent_worker_activate_sage_policy(agent_worker *w,
 }
 
 static char *agent_build_default_skills_block(const char *soul,
-                                              const char *ethic) {
+                                              const char *ethic,
+                                              const char *structure) {
     agent_buf b = {0};
 
     agent_buf_puts(&b, DS4_SOUL_BEGIN);
@@ -4866,6 +4890,15 @@ static char *agent_build_default_skills_block(const char *soul,
         agent_buf_puts(&b, "\n");
     agent_buf_puts(&b, DS4_ETHIC_END);
 
+    agent_buf_puts(&b, "\n\n");
+
+    agent_buf_puts(&b, DS4_STRUCTURE_BEGIN);
+    agent_buf_puts(&b, "\n");
+    agent_buf_puts(&b, structure ? structure : "");
+    if (structure && structure[0] && structure[strlen(structure) - 1] != '\n')
+        agent_buf_puts(&b, "\n");
+    agent_buf_puts(&b, DS4_STRUCTURE_END);
+
     return agent_buf_take(&b);
 }
 
@@ -4880,8 +4913,10 @@ static bool agent_worker_restore_default_skills(agent_worker *w,
     if (!agent_default_skills_enabled()) {
         free(w->soul_prompt);
         free(w->ethic_prompt);
+        free(w->structure_prompt);
         w->soul_prompt = NULL;
         w->ethic_prompt = NULL;
+        w->structure_prompt = NULL;
         w->default_skills_enabled = false;
         w->default_skills_revision[0] = '\0';
         return true;
@@ -4902,10 +4937,20 @@ static bool agent_worker_restore_default_skills(agent_worker *w,
         return false;
     }
 
-    char *block = agent_build_default_skills_block(new_soul, new_ethic);
+    char structure_err[256] = {0};
+    char *new_structure = agent_read_structure_skill(structure_err, sizeof(structure_err));
+    if (!new_structure) {
+        free(new_soul);
+        free(new_ethic);
+        snprintf(err, err_len, "%s", structure_err);
+        return false;
+    }
+
+    char *block = agent_build_default_skills_block(new_soul, new_ethic, new_structure);
     if (!block) {
         free(new_soul);
         free(new_ethic);
+        free(new_structure);
         snprintf(err, err_len, "failed to build default skills block");
         return false;
     }
@@ -4916,8 +4961,10 @@ static bool agent_worker_restore_default_skills(agent_worker *w,
 
     free(w->soul_prompt);
     free(w->ethic_prompt);
+    free(w->structure_prompt);
     w->soul_prompt = new_soul;
     w->ethic_prompt = new_ethic;
+    w->structure_prompt = new_structure;
     w->default_skills_enabled = true;
     memcpy(w->default_skills_revision, revision, sizeof(revision));
     return true;
@@ -4925,7 +4972,7 @@ static bool agent_worker_restore_default_skills(agent_worker *w,
 
 static char *agent_worker_build_system_text(const agent_worker *w) {
     if (w->default_skills_enabled &&
-        (!w->soul_prompt || !w->ethic_prompt)) {
+        (!w->soul_prompt || !w->ethic_prompt || !w->structure_prompt)) {
         return NULL;
     }
 
@@ -4948,9 +4995,9 @@ static char *agent_worker_build_system_text(const agent_worker *w) {
         agent_buf_puts(&b, DS4_METACOGNITION_END);
     }
 
-    if (w->soul_prompt || w->ethic_prompt) {
+    if (w->soul_prompt || w->ethic_prompt || w->structure_prompt) {
         char *defaults = agent_build_default_skills_block(
-            w->soul_prompt, w->ethic_prompt);
+            w->soul_prompt, w->ethic_prompt, w->structure_prompt);
         if (b.len) agent_buf_puts(&b, "\n\n");
         agent_buf_puts(&b, defaults);
         free(defaults);
@@ -7391,6 +7438,11 @@ static int agent_ngram_ban_candidates(const agent_recent_tokens *r,
 }
 
 #ifdef DS4_AGENT_TEST
+static bool agent_loop_guard_fingerprint_call(const agent_tool_call *call,
+                                               char *out,
+                                               size_t out_cap);
+static bool agent_loop_guard_record(agent_worker *w,
+                                    const char *fingerprint);
 static int agent_test_failures;
 
 static void agent_test_assert(bool cond, const char *expr,
@@ -7592,6 +7644,211 @@ static void test_agent_loop_guard_publishes_warning(void) {
 
     free(w.out);
     pthread_mutex_destroy(&w.mu);
+}
+
+static agent_tool_call test_agent_make_read_call(const char *path,
+                                                  const char *start_line,
+                                                  const char *max_lines,
+                                                  const char *whole,
+                                                  const char *raw) {
+    agent_tool_call call = {0};
+    call.name = xstrdup("read");
+
+    if (path) {
+        agent_tool_call_add_arg(&call, "path", path, strlen(path), true);
+    }
+    if (start_line) {
+        agent_tool_call_add_arg(&call, "start_line",
+                                start_line, strlen(start_line), false);
+    }
+    if (max_lines) {
+        agent_tool_call_add_arg(&call, "max_lines",
+                                max_lines, strlen(max_lines), false);
+    }
+    if (whole) {
+        agent_tool_call_add_arg(&call, "whole",
+                                whole, strlen(whole), false);
+    }
+    if (raw) {
+        agent_tool_call_add_arg(&call, "raw",
+                                raw, strlen(raw), false);
+    }
+
+    return call;
+}
+
+static void test_agent_loop_guard_distinguishes_read_ranges(void) {
+    static const char *starts[] = {"1", "501", "1001", "1501", "2001"};
+    agent_worker w;
+    memset(&w, 0, sizeof(w));
+
+    char previous[AGENT_LOOP_GUARD_FINGERPRINT_SIZE] = {0};
+
+    for (size_t i = 0; i < sizeof(starts) / sizeof(starts[0]); i++) {
+        agent_tool_call call = test_agent_make_read_call(
+            "frontend/server/sageOrchestratorBridge.test.mjs",
+            starts[i], "500", "false", "false");
+
+        char fingerprint[AGENT_LOOP_GUARD_FINGERPRINT_SIZE];
+        AGENT_TEST_ASSERT(agent_loop_guard_fingerprint_call(
+            &call, fingerprint, sizeof(fingerprint)));
+
+        if (i > 0) {
+            AGENT_TEST_ASSERT(strcmp(previous, fingerprint) != 0);
+        }
+
+        AGENT_TEST_ASSERT(!agent_loop_guard_record(&w, fingerprint));
+        AGENT_TEST_ASSERT(w.loop_guard_consecutive_identical == 1);
+
+        snprintf(previous, sizeof(previous), "%s", fingerprint);
+        agent_tool_call_free(&call);
+    }
+
+    AGENT_TEST_ASSERT(
+        w.loop_guard_consecutive_identical < AGENT_LOOP_GUARD_IDENTICAL_LIMIT);
+}
+
+static void test_agent_loop_guard_blocks_exact_repeated_read_range(void) {
+    agent_worker w;
+    memset(&w, 0, sizeof(w));
+
+    agent_tool_call call = test_agent_make_read_call(
+        "frontend/server/sageOrchestratorBridge.test.mjs",
+        "1", "500", "false", "false");
+
+    char fingerprint[AGENT_LOOP_GUARD_FINGERPRINT_SIZE];
+    AGENT_TEST_ASSERT(agent_loop_guard_fingerprint_call(
+        &call, fingerprint, sizeof(fingerprint)));
+
+    for (int i = 1; i <= AGENT_LOOP_GUARD_IDENTICAL_LIMIT; i++) {
+        const bool repeated = agent_loop_guard_record(&w, fingerprint);
+        AGENT_TEST_ASSERT(repeated == (i > 1));
+        AGENT_TEST_ASSERT(w.loop_guard_consecutive_identical == i);
+    }
+
+    AGENT_TEST_ASSERT(
+        w.loop_guard_consecutive_identical >= AGENT_LOOP_GUARD_IDENTICAL_LIMIT);
+
+    agent_tool_call_free(&call);
+}
+
+static void test_agent_loop_guard_requires_immediate_consecutivity(void) {
+    agent_worker w;
+    memset(&w, 0, sizeof(w));
+
+    agent_tool_call call_a = test_agent_make_read_call(
+        "frontend/server/sageOrchestratorBridge.test.mjs",
+        "1", "500", "false", "false");
+    agent_tool_call call_b = test_agent_make_read_call(
+        "frontend/server/sageOrchestratorBridge.test.mjs",
+        "501", "500", "false", "false");
+
+    char fp_a[AGENT_LOOP_GUARD_FINGERPRINT_SIZE];
+    char fp_b[AGENT_LOOP_GUARD_FINGERPRINT_SIZE];
+
+    AGENT_TEST_ASSERT(agent_loop_guard_fingerprint_call(
+        &call_a, fp_a, sizeof(fp_a)));
+    AGENT_TEST_ASSERT(agent_loop_guard_fingerprint_call(
+        &call_b, fp_b, sizeof(fp_b)));
+    AGENT_TEST_ASSERT(strcmp(fp_a, fp_b) != 0);
+
+    AGENT_TEST_ASSERT(!agent_loop_guard_record(&w, fp_a));
+    AGENT_TEST_ASSERT(w.loop_guard_consecutive_identical == 1);
+
+    AGENT_TEST_ASSERT(!agent_loop_guard_record(&w, fp_b));
+    AGENT_TEST_ASSERT(w.loop_guard_consecutive_identical == 1);
+
+    AGENT_TEST_ASSERT(!agent_loop_guard_record(&w, fp_a));
+    AGENT_TEST_ASSERT(w.loop_guard_consecutive_identical == 1);
+
+    agent_tool_call_free(&call_a);
+    agent_tool_call_free(&call_b);
+}
+
+static void test_agent_loop_guard_canonicalizes_read_defaults(void) {
+    agent_tool_call implicit = test_agent_make_read_call(
+        "doc/example.md", NULL, NULL, NULL, NULL);
+
+    char default_lines[32];
+    snprintf(default_lines, sizeof(default_lines), "%d",
+             AGENT_READ_DEFAULT_LINES);
+
+    agent_tool_call explicit_call = test_agent_make_read_call(
+        "doc/example.md", "1", default_lines, "false", "false");
+
+    char fp_implicit[AGENT_LOOP_GUARD_FINGERPRINT_SIZE];
+    char fp_explicit[AGENT_LOOP_GUARD_FINGERPRINT_SIZE];
+
+    AGENT_TEST_ASSERT(agent_loop_guard_fingerprint_call(
+        &implicit, fp_implicit, sizeof(fp_implicit)));
+    AGENT_TEST_ASSERT(agent_loop_guard_fingerprint_call(
+        &explicit_call, fp_explicit, sizeof(fp_explicit)));
+    AGENT_TEST_ASSERT(strcmp(fp_implicit, fp_explicit) == 0);
+
+    agent_tool_call_free(&implicit);
+    agent_tool_call_free(&explicit_call);
+}
+
+static void test_agent_loop_guard_distinguishes_read_modes(void) {
+    agent_tool_call normal = test_agent_make_read_call(
+        "doc/example.md", "1", "500", "false", "false");
+    agent_tool_call raw = test_agent_make_read_call(
+        "doc/example.md", "1", "500", "false", "true");
+    agent_tool_call whole = test_agent_make_read_call(
+        "doc/example.md", "1", "500", "true", "false");
+
+    char fp_normal[AGENT_LOOP_GUARD_FINGERPRINT_SIZE];
+    char fp_raw[AGENT_LOOP_GUARD_FINGERPRINT_SIZE];
+    char fp_whole[AGENT_LOOP_GUARD_FINGERPRINT_SIZE];
+
+    AGENT_TEST_ASSERT(agent_loop_guard_fingerprint_call(
+        &normal, fp_normal, sizeof(fp_normal)));
+    AGENT_TEST_ASSERT(agent_loop_guard_fingerprint_call(
+        &raw, fp_raw, sizeof(fp_raw)));
+    AGENT_TEST_ASSERT(agent_loop_guard_fingerprint_call(
+        &whole, fp_whole, sizeof(fp_whole)));
+
+    AGENT_TEST_ASSERT(strcmp(fp_normal, fp_raw) != 0);
+    AGENT_TEST_ASSERT(strcmp(fp_normal, fp_whole) != 0);
+    AGENT_TEST_ASSERT(strcmp(fp_raw, fp_whole) != 0);
+
+    agent_tool_call_free(&normal);
+    agent_tool_call_free(&raw);
+    agent_tool_call_free(&whole);
+}
+
+static void test_agent_loop_guard_whole_read_ignores_max_lines(void) {
+    agent_tool_call a = test_agent_make_read_call(
+        "doc/example.md", "1", "500", "true", "false");
+    agent_tool_call b = test_agent_make_read_call(
+        "doc/example.md", "1", "2000", "true", "false");
+
+    char fp_a[AGENT_LOOP_GUARD_FINGERPRINT_SIZE];
+    char fp_b[AGENT_LOOP_GUARD_FINGERPRINT_SIZE];
+
+    AGENT_TEST_ASSERT(agent_loop_guard_fingerprint_call(
+        &a, fp_a, sizeof(fp_a)));
+    AGENT_TEST_ASSERT(agent_loop_guard_fingerprint_call(
+        &b, fp_b, sizeof(fp_b)));
+    AGENT_TEST_ASSERT(strcmp(fp_a, fp_b) == 0);
+
+    agent_tool_call_free(&a);
+    agent_tool_call_free(&b);
+}
+
+static void test_agent_loop_guard_ignores_stale_ring_on_new_turn(void) {
+    agent_worker w;
+    memset(&w, 0, sizeof(w));
+
+    snprintf(w.loop_guard_ring[0],
+             sizeof(w.loop_guard_ring[0]),
+             "%s",
+             "stale-fingerprint");
+    w.loop_guard_ring_pos = 0;
+    w.loop_guard_consecutive_identical = 0;
+
+    AGENT_TEST_ASSERT(!agent_loop_guard_record(&w, "stale-fingerprint"));
+    AGENT_TEST_ASSERT(w.loop_guard_consecutive_identical == 1);
 }
 
 static char *test_tc_make_lines(size_t target_bytes) {
@@ -7883,18 +8140,21 @@ static void test_agent_default_skills_load_both(void) {
     char *root = mkdtemp(template);
     AGENT_TEST_ASSERT(root != NULL);
 
-    char soul_dir[PATH_MAX], ethic_dir[PATH_MAX], sage_dir[PATH_MAX];
+    char soul_dir[PATH_MAX], ethic_dir[PATH_MAX], sage_dir[PATH_MAX], structure_dir[PATH_MAX];
     snprintf(soul_dir, sizeof(soul_dir), "%s/soul", root);
     snprintf(ethic_dir, sizeof(ethic_dir), "%s/ethic", root);
     snprintf(sage_dir, sizeof(sage_dir), "%s/sage", root);
+    snprintf(structure_dir, sizeof(structure_dir), "%s/structure", root);
     mkdir(soul_dir, 0755);
     mkdir(ethic_dir, 0755);
     mkdir(sage_dir, 0755);
+    mkdir(structure_dir, 0755);
 
-    char soul_path[PATH_MAX], ethic_path[PATH_MAX], sage_path[PATH_MAX];
+    char soul_path[PATH_MAX], ethic_path[PATH_MAX], sage_path[PATH_MAX], structure_path[PATH_MAX];
     snprintf(soul_path, sizeof(soul_path), "%s/SKILL.md", soul_dir);
     snprintf(ethic_path, sizeof(ethic_path), "%s/SKILL.md", ethic_dir);
     snprintf(sage_path, sizeof(sage_path), "%s/SKILL.md", sage_dir);
+    snprintf(structure_path, sizeof(structure_path), "%s/SKILL.md", structure_dir);
 
     FILE *f = fopen(soul_path, "w");
     AGENT_TEST_ASSERT(f != NULL);
@@ -7909,6 +8169,11 @@ static void test_agent_default_skills_load_both(void) {
     f = fopen(sage_path, "w");
     AGENT_TEST_ASSERT(f != NULL);
     fprintf(f, "Test Sage content\n");
+    fclose(f);
+
+    f = fopen(structure_path, "w");
+    AGENT_TEST_ASSERT(f != NULL);
+    fprintf(f, "Test Structure content\n");
     fclose(f);
 
     setenv("DS4_SKILLS_DIR", root, 1);
@@ -7935,15 +8200,18 @@ static void test_agent_default_skills_disabled_by_zero(void) {
     char *root = mkdtemp(template);
     AGENT_TEST_ASSERT(root != NULL);
 
-    char soul_dir[PATH_MAX], ethic_dir[PATH_MAX];
+    char soul_dir[PATH_MAX], ethic_dir[PATH_MAX], structure_dir[PATH_MAX];
     snprintf(soul_dir, sizeof(soul_dir), "%s/soul", root);
     snprintf(ethic_dir, sizeof(ethic_dir), "%s/ethic", root);
+    snprintf(structure_dir, sizeof(structure_dir), "%s/structure", root);
     mkdir(soul_dir, 0755);
     mkdir(ethic_dir, 0755);
+    mkdir(structure_dir, 0755);
 
-    char soul_path[PATH_MAX], ethic_path[PATH_MAX];
+    char soul_path[PATH_MAX], ethic_path[PATH_MAX], structure_path[PATH_MAX];
     snprintf(soul_path, sizeof(soul_path), "%s/SKILL.md", soul_dir);
     snprintf(ethic_path, sizeof(ethic_path), "%s/SKILL.md", ethic_dir);
+    snprintf(structure_path, sizeof(structure_path), "%s/SKILL.md", structure_dir);
 
     FILE *f = fopen(soul_path, "w");
     AGENT_TEST_ASSERT(f != NULL);
@@ -7953,6 +8221,11 @@ static void test_agent_default_skills_disabled_by_zero(void) {
     f = fopen(ethic_path, "w");
     AGENT_TEST_ASSERT(f != NULL);
     fprintf(f, "ethic\n");
+    fclose(f);
+
+    f = fopen(structure_path, "w");
+    AGENT_TEST_ASSERT(f != NULL);
+    fprintf(f, "structure\n");
     fclose(f);
 
     setenv("DS4_SKILLS_DIR", root, 1);
@@ -7983,15 +8256,18 @@ static void test_agent_default_skills_nonzero_value_enables(void) {
         char *root = mkdtemp(template);
         AGENT_TEST_ASSERT(root != NULL);
 
-        char soul_dir[PATH_MAX], ethic_dir[PATH_MAX];
+        char soul_dir[PATH_MAX], ethic_dir[PATH_MAX], structure_dir[PATH_MAX];
         snprintf(soul_dir, sizeof(soul_dir), "%s/soul", root);
         snprintf(ethic_dir, sizeof(ethic_dir), "%s/ethic", root);
+        snprintf(structure_dir, sizeof(structure_dir), "%s/structure", root);
         mkdir(soul_dir, 0755);
         mkdir(ethic_dir, 0755);
+        mkdir(structure_dir, 0755);
 
-        char soul_path[PATH_MAX], ethic_path[PATH_MAX];
+        char soul_path[PATH_MAX], ethic_path[PATH_MAX], structure_path[PATH_MAX];
         snprintf(soul_path, sizeof(soul_path), "%s/SKILL.md", soul_dir);
         snprintf(ethic_path, sizeof(ethic_path), "%s/SKILL.md", ethic_dir);
+        snprintf(structure_path, sizeof(structure_path), "%s/SKILL.md", structure_dir);
 
         FILE *f = fopen(soul_path, "w");
         AGENT_TEST_ASSERT(f != NULL);
@@ -8001,6 +8277,11 @@ static void test_agent_default_skills_nonzero_value_enables(void) {
         f = fopen(ethic_path, "w");
         AGENT_TEST_ASSERT(f != NULL);
         fprintf(f, "ethic\n");
+        fclose(f);
+
+        f = fopen(structure_path, "w");
+        AGENT_TEST_ASSERT(f != NULL);
+        fprintf(f, "structure\n");
         fclose(f);
 
         setenv("DS4_SKILLS_DIR", root, 1);
@@ -8016,6 +8297,7 @@ static void test_agent_default_skills_nonzero_value_enables(void) {
 
         free(w.soul_prompt);
         free(w.ethic_prompt);
+        free(w.structure_prompt);
         unsetenv("DS4_SKILLS_DIR");
         unsetenv("DS4_SKILL_AUTO");
         { char _cmd[PATH_MAX + 16]; snprintf(_cmd, sizeof(_cmd), "rm -rf %s", root); (void)system(_cmd); };
@@ -8075,6 +8357,7 @@ static void test_agent_system_text_has_one_delimited_policy_block(void) {
     w.metacognition_prompt = strdup("META CONTENT");
     w.soul_prompt = strdup("SOUL CONTENT");
     w.ethic_prompt = strdup("ETHIC CONTENT");
+    w.structure_prompt = strdup("STRUCTURE CONTENT");
 
     char *text = agent_worker_build_system_text(&w);
     AGENT_TEST_ASSERT(text != NULL);
@@ -8085,6 +8368,8 @@ static void test_agent_system_text_has_one_delimited_policy_block(void) {
     AGENT_TEST_ASSERT(test_count_substring(text, DS4_SOUL_END) == 1);
     AGENT_TEST_ASSERT(test_count_substring(text, DS4_ETHIC_BEGIN) == 1);
     AGENT_TEST_ASSERT(test_count_substring(text, DS4_ETHIC_END) == 1);
+    AGENT_TEST_ASSERT(test_count_substring(text, DS4_STRUCTURE_BEGIN) == 1);
+    AGENT_TEST_ASSERT(test_count_substring(text, DS4_STRUCTURE_END) == 1);
 
     const char *base = strstr(text, "BASE SYSTEM");
     const char *meta_begin = strstr(text, DS4_METACOGNITION_BEGIN);
@@ -8106,6 +8391,7 @@ static void test_agent_system_text_has_one_delimited_policy_block(void) {
     free(w.metacognition_prompt);
     free(w.soul_prompt);
     free(w.ethic_prompt);
+    free(w.structure_prompt);
 }
 
 static void test_agent_new_default_session_restores_default_skills(void) {
@@ -8113,15 +8399,18 @@ static void test_agent_new_default_session_restores_default_skills(void) {
     char *root = mkdtemp(template);
     AGENT_TEST_ASSERT(root != NULL);
 
-    char soul_dir[PATH_MAX], ethic_dir[PATH_MAX];
+    char soul_dir[PATH_MAX], ethic_dir[PATH_MAX], structure_dir[PATH_MAX];
     snprintf(soul_dir, sizeof(soul_dir), "%s/soul", root);
     snprintf(ethic_dir, sizeof(ethic_dir), "%s/ethic", root);
+    snprintf(structure_dir, sizeof(structure_dir), "%s/structure", root);
     mkdir(soul_dir, 0755);
     mkdir(ethic_dir, 0755);
+    mkdir(structure_dir, 0755);
 
-    char soul_path[PATH_MAX], ethic_path[PATH_MAX];
+    char soul_path[PATH_MAX], ethic_path[PATH_MAX], structure_path[PATH_MAX];
     snprintf(soul_path, sizeof(soul_path), "%s/SKILL.md", soul_dir);
     snprintf(ethic_path, sizeof(ethic_path), "%s/SKILL.md", ethic_dir);
+    snprintf(structure_path, sizeof(structure_path), "%s/SKILL.md", structure_dir);
 
     FILE *f = fopen(soul_path, "w");
     AGENT_TEST_ASSERT(f != NULL);
@@ -8131,6 +8420,11 @@ static void test_agent_new_default_session_restores_default_skills(void) {
     f = fopen(ethic_path, "w");
     AGENT_TEST_ASSERT(f != NULL);
     fprintf(f, "restored ethic\n");
+    fclose(f);
+
+    f = fopen(structure_path, "w");
+    AGENT_TEST_ASSERT(f != NULL);
+    fprintf(f, "restored structure\n");
     fclose(f);
 
     setenv("DS4_SKILLS_DIR", root, 1);
@@ -8154,6 +8448,7 @@ static void test_agent_new_default_session_restores_default_skills(void) {
 
     free(w.soul_prompt);
     free(w.ethic_prompt);
+    free(w.structure_prompt);
     unsetenv("DS4_SKILLS_DIR");
     { char _cmd[PATH_MAX + 16]; snprintf(_cmd, sizeof(_cmd), "rm -rf %s", root); (void)system(_cmd); };
 }
@@ -8163,15 +8458,18 @@ static void test_agent_default_skills_revision_changes_with_content(void) {
     char *root = mkdtemp(template);
     AGENT_TEST_ASSERT(root != NULL);
 
-    char soul_dir[PATH_MAX], ethic_dir[PATH_MAX];
+    char soul_dir[PATH_MAX], ethic_dir[PATH_MAX], structure_dir[PATH_MAX];
     snprintf(soul_dir, sizeof(soul_dir), "%s/soul", root);
     snprintf(ethic_dir, sizeof(ethic_dir), "%s/ethic", root);
+    snprintf(structure_dir, sizeof(structure_dir), "%s/structure", root);
     mkdir(soul_dir, 0755);
     mkdir(ethic_dir, 0755);
+    mkdir(structure_dir, 0755);
 
-    char soul_path[PATH_MAX], ethic_path[PATH_MAX];
+    char soul_path[PATH_MAX], ethic_path[PATH_MAX], structure_path[PATH_MAX];
     snprintf(soul_path, sizeof(soul_path), "%s/SKILL.md", soul_dir);
     snprintf(ethic_path, sizeof(ethic_path), "%s/SKILL.md", ethic_dir);
+    snprintf(structure_path, sizeof(structure_path), "%s/SKILL.md", structure_dir);
 
     FILE *f = fopen(soul_path, "w");
     AGENT_TEST_ASSERT(f != NULL);
@@ -8181,6 +8479,11 @@ static void test_agent_default_skills_revision_changes_with_content(void) {
     f = fopen(ethic_path, "w");
     AGENT_TEST_ASSERT(f != NULL);
     fprintf(f, "ethic v1\n");
+    fclose(f);
+
+    f = fopen(structure_path, "w");
+    AGENT_TEST_ASSERT(f != NULL);
+    fprintf(f, "structure v1\n");
     fclose(f);
 
     setenv("DS4_SKILLS_DIR", root, 1);
@@ -8407,6 +8710,13 @@ static void ds4_agent_unit_tests_run(void) {
     test_agent_parse_native_slash_commands();
     test_agent_rejects_invalid_native_slash_commands();
     test_agent_loop_guard_publishes_warning();
+    test_agent_loop_guard_distinguishes_read_ranges();
+    test_agent_loop_guard_blocks_exact_repeated_read_range();
+    test_agent_loop_guard_requires_immediate_consecutivity();
+    test_agent_loop_guard_canonicalizes_read_defaults();
+    test_agent_loop_guard_distinguishes_read_modes();
+    test_agent_loop_guard_whole_read_ignores_max_lines();
+    test_agent_loop_guard_ignores_stale_ring_on_new_turn();
     test_agent_read_soul_skill();
     test_agent_read_ethic_skill();
     test_agent_read_sage_skill();
@@ -11234,32 +11544,114 @@ static void agent_fingerprint_command(const char *cmd, char *out, size_t out_cap
     out[copy] = '\0';
 }
 
-/* Update the anti-loop guard ring buffer with a command fingerprint.
- * Returns true if the command is a repeat of a recent fingerprint. */
-static bool agent_loop_guard_record(agent_worker *w, const char *fingerprint) {
-    if (!fingerprint || !fingerprint[0]) return false;
-    int ring = AGENT_LOOP_GUARD_RING_SIZE;
-    int pos = w->loop_guard_ring_pos % ring;
-    /* Check if this fingerprint matches any of the last N entries */
-    for (int i = 0; i < ring; i++) {
-        int idx = (pos - i + ring) % ring;
-        if (w->loop_guard_ring[idx][0] &&
-            !strcmp(w->loop_guard_ring[idx], fingerprint))
-        {
-            w->loop_guard_consecutive_identical++;
-            /* Record the fingerprint at current position */
-            memcpy(w->loop_guard_ring[pos], fingerprint, sizeof(w->loop_guard_ring[pos]) - 1);
-            w->loop_guard_ring[pos][sizeof(w->loop_guard_ring[pos]) - 1] = '\0';
-            w->loop_guard_ring_pos++;
-            return true;
+/* Build the canonical fingerprint used by the native loop guard.
+ *
+ * For read, path alone is insufficient: start_line, max_lines, whole, and raw
+ * change the actual observation.  Hash the complete path so long paths cannot
+ * push the range fields beyond the fixed fingerprint buffer.
+ *
+ * For the other historically guarded tools, preserve the existing command
+ * normalization behavior.
+ */
+static bool agent_loop_guard_fingerprint_call(const agent_tool_call *call,
+                                               char *out,
+                                               size_t out_cap) {
+    if (!out || out_cap == 0) return false;
+    out[0] = '\0';
+
+    if (!call || !call->name || !call->name[0]) return false;
+
+    if (!strcmp(call->name, "read")) {
+        const char *path = agent_tool_arg_value(call, "path");
+        if (!path || !path[0]) return false;
+
+        const bool whole = agent_parse_bool_default(
+            agent_tool_arg_value(call, "whole"), false);
+        const bool raw = agent_parse_bool_default(
+            agent_tool_arg_value(call, "raw"), false);
+        const int start_line = agent_parse_int_default(
+            agent_tool_arg_value(call, "start_line"), 1, 1, INT_MAX);
+        const int parsed_max_lines = agent_parse_int_default(
+            agent_tool_arg_value(call, "max_lines"),
+            AGENT_READ_DEFAULT_LINES, 1, INT_MAX);
+
+        /* max_lines is ignored by agent_read_range when whole=true. */
+        const int effective_max_lines = whole ? 0 : parsed_max_lines;
+
+        char path_sha[41];
+        ds4_kvstore_sha1_bytes_hex(path, strlen(path), path_sha);
+
+        const int written = snprintf(
+            out,
+            out_cap,
+            "read|p=%s|s=%d|n=%d|w=%d|r=%d",
+            path_sha,
+            start_line,
+            effective_max_lines,
+            whole ? 1 : 0,
+            raw ? 1 : 0);
+
+        if (written < 0 || (size_t)written >= out_cap) {
+            out[0] = '\0';
+            return false;
         }
+        return true;
     }
-    /* New fingerprint — reset similar counter */
-    w->loop_guard_consecutive_identical = 0;
-    memcpy(w->loop_guard_ring[pos], fingerprint, sizeof(w->loop_guard_ring[pos]) - 1);
-    w->loop_guard_ring[pos][sizeof(w->loop_guard_ring[pos]) - 1] = '\0';
+
+    const char *command = NULL;
+    if (!strcmp(call->name, "bash")) {
+        command = agent_tool_arg_value(call, "command");
+    } else if (!strcmp(call->name, "search")) {
+        command = agent_tool_arg_value(call, "query");
+    } else if (!strcmp(call->name, "grep") ||
+               !strcmp(call->name, "find")) {
+        command = agent_tool_arg_value(call, "command");
+    }
+
+    if (!command || !command[0]) return false;
+
+    agent_fingerprint_command(command, out, out_cap);
+    return out[0] != '\0';
+}
+
+/* Record one canonical tool-call fingerprint.
+ *
+ * Returns true only when the current fingerprint is identical to the
+ * immediately previous fingerprint in the current turn.  The counter stores
+ * the current run length: first occurrence = 1.
+ */
+static bool agent_loop_guard_record(agent_worker *w,
+                                    const char *fingerprint) {
+    if (!w || !fingerprint || !fingerprint[0]) return false;
+
+    const int ring = AGENT_LOOP_GUARD_RING_SIZE;
+    const int pos = w->loop_guard_ring_pos % ring;
+    bool same_as_previous = false;
+
+    /* ring_pos == 0 means no fingerprint has been recorded in this turn.
+     * Do not inspect stale cells left from an earlier turn. */
+    if (w->loop_guard_ring_pos > 0) {
+        const int previous = (pos - 1 + ring) % ring;
+        same_as_previous =
+            w->loop_guard_ring[previous][0] != '\0' &&
+            strcmp(w->loop_guard_ring[previous], fingerprint) == 0;
+    }
+
+    if (same_as_previous) {
+        if (w->loop_guard_consecutive_identical < INT_MAX) {
+            w->loop_guard_consecutive_identical++;
+        }
+    } else {
+        w->loop_guard_consecutive_identical = 1;
+    }
+
+    snprintf(w->loop_guard_ring[pos],
+             sizeof(w->loop_guard_ring[pos]),
+             "%s",
+             fingerprint);
     w->loop_guard_ring_pos++;
-    return false;
+
+    return same_as_previous;
 }
 
 /* A structured progress-guidance result (the runtime asking the model to
@@ -11770,7 +12162,9 @@ static int worker_run_turn(agent_worker *w, const char *user_text) {
             malformed_tool = true;
             early_tool_error = false;
             snprintf(dsml.error, sizeof(dsml.error),
-                     "tool calling is not allowed inside <think></think>");
+                     "tool calling is not allowed inside <think></think>. "
+                     "You MUST explicitly write </think> BEFORE writing "
+                     "<｜DSML｜tool_calls>");
         } else if (!malformed_tool && dsml.state == AGENT_DSML_ERROR) {
             malformed_tool = true;
         } else if (!got_tool && !malformed_tool && !early_tool_error &&
@@ -12066,27 +12460,20 @@ fabrication_continue:
             return 0;
         }
 
-        /* Anti-loop guard: fingerprint the command and check for sterile loops.
-         * If the tool result is empty or very small, increment empty counter.
-         * If N consecutive commands are similar or empty, inject an error. */
+        /* Anti-loop guard: fingerprint the effective first tool call.
+         * Progressive read ranges are distinct observations.  Empty-result detection
+         * remains independent and is evaluated below. */
         if (dsml.calls.len > 0) {
-            char fingerprint[128];
-            /* Fingerprint the first tool call's command */
-            const char *cmd = NULL;
-            if (!strcmp(dsml.calls.v[0].name, "bash")) {
-                cmd = agent_tool_arg_value(&dsml.calls.v[0], "command");
-            } else if (!strcmp(dsml.calls.v[0].name, "read")) {
-                cmd = agent_tool_arg_value(&dsml.calls.v[0], "path");
-            } else if (!strcmp(dsml.calls.v[0].name, "search")) {
-                cmd = agent_tool_arg_value(&dsml.calls.v[0], "query");
-            } else if (!strcmp(dsml.calls.v[0].name, "grep") ||
-                       !strcmp(dsml.calls.v[0].name, "find")) {
-                cmd = agent_tool_arg_value(&dsml.calls.v[0], "command");
-            }
-            if (cmd && cmd[0]) {
-                agent_fingerprint_command(cmd, fingerprint, sizeof(fingerprint));
-                bool is_repeat = agent_loop_guard_record(w, fingerprint);
+            char fingerprint[AGENT_LOOP_GUARD_FINGERPRINT_SIZE];
+            const bool fingerprinted = agent_loop_guard_fingerprint_call(
+                &dsml.calls.v[0], fingerprint, sizeof(fingerprint));
+
+            if (fingerprinted) {
+                const bool is_repeat = agent_loop_guard_record(w, fingerprint);
                 (void)is_repeat;
+            } else {
+                /* An untracked or malformed tool call breaks an identical-call run. */
+                w->loop_guard_consecutive_identical = 0;
             }
 
             /* Check if tool result is empty or trivially small.  A structured
@@ -12105,8 +12492,8 @@ fabrication_continue:
             }
 
             /* Stop if N consecutive empty results or N consecutive identical commands */
-            if (w->loop_guard_consecutive_empty >= 10 ||
-                w->loop_guard_consecutive_identical >= 4)
+            if (w->loop_guard_consecutive_empty >= AGENT_LOOP_GUARD_EMPTY_LIMIT ||
+                w->loop_guard_consecutive_identical >= AGENT_LOOP_GUARD_IDENTICAL_LIMIT)
             {
                 /* Instead of immediately stopping, ask the user whether to
                  * continue waiting or interrupt.  This handles cases where
@@ -12116,7 +12503,7 @@ fabrication_continue:
                     /* Non-interactive mode: stop immediately */
                     agent_buf b = {0};
                     agent_buf_puts(&b, "Tool error: loop detected — ");
-                    if (w->loop_guard_consecutive_empty >= 10)
+                    if (w->loop_guard_consecutive_empty >= AGENT_LOOP_GUARD_EMPTY_LIMIT)
                         agent_buf_puts(&b, "tool results are empty. ");
                     else
                         agent_buf_puts(&b, "identical commands repeat without progress. ");
@@ -12130,7 +12517,7 @@ fabrication_continue:
                     /* Publish warning before stopping */
                     agent_publish(w, "\x1b[33m✦ \x1b[38;5;218m", 27);
                     agent_publish(w, "Loop guard: ", 12);
-                    if (w->loop_guard_consecutive_empty >= 10)
+                    if (w->loop_guard_consecutive_empty >= AGENT_LOOP_GUARD_EMPTY_LIMIT)
                         agent_publish(w, "tool results are empty", 22);
                     else
                         agent_publish(w, "identical commands repeat without progress", 42);
@@ -12160,7 +12547,7 @@ fabrication_continue:
                     /* User chose to stop, or was interrupted */
                     agent_buf b = {0};
                     agent_buf_puts(&b, "Tool error: loop detected — ");
-                    if (w->loop_guard_consecutive_empty >= 10)
+                    if (w->loop_guard_consecutive_empty >= AGENT_LOOP_GUARD_EMPTY_LIMIT)
                         agent_buf_puts(&b, "tool results are empty. ");
                     else
                         agent_buf_puts(&b, "identical commands repeat without progress. ");
@@ -13758,6 +14145,7 @@ static void agent_worker_free(agent_worker *w) {
     free(w->metacognition_prompt);
     free(w->soul_prompt);
     free(w->ethic_prompt);
+    free(w->structure_prompt);
     free(w->sage_prompt);
     free(w->sage_final_markdown);
     if (w->wake_fd[0] >= 0) close(w->wake_fd[0]);
@@ -14236,7 +14624,7 @@ static int run_agent(ds4_engine *engine, agent_config *cfg) {
             editor_stop(&editor);
             editor_restore_terminal_layout(&editor);
             printf("\n⚠️  Loop guard triggered: the model issued %d identical "
-                   "commands in a row.\n", AGENT_LOOP_GUARD_RING_SIZE);
+                   "commands in a row.\n", AGENT_LOOP_GUARD_IDENTICAL_LIMIT);
             printf("   This may indicate machine slowness rather than a real loop.\n");
             agent_yes_no_options loop_opts = {
                 .timeout_sec = 30,
@@ -14538,6 +14926,55 @@ static int run_agent(ds4_engine *engine, agent_config *cfg) {
                                worker.ethic_prompt ? "active" : "inactive");
                     } else {
                         printf("usage: /ethic start|stop|status\n");
+                    }
+                } else if (!strncmp(cmd, "/structure", 10) &&
+                           (cmd[10] == '\0' || cmd[10] == ' ' || cmd[10] == '\t')) {
+                    char *arg = cmd + 10;
+                    while (*arg == ' ' || *arg == '\t') arg++;
+                    if (!strncmp(arg, "start", 5) &&
+                        (arg[5] == '\0' || arg[5] == ' ' || arg[5] == '\t')) {
+                        char err[256] = {0};
+                        char *content = agent_read_structure_skill(err, sizeof(err));
+                        if (!content) {
+                            printf("structure: %s\n", err);
+                        } else {
+                            free(worker.structure_prompt);
+                            worker.structure_prompt = content;
+                            editor_restore_terminal_layout(&editor);
+                            if (agent_maybe_save_before_leaving_session(&worker)) {
+                                char rerr[160] = {0};
+                                if (!agent_worker_reset_to_sysprompt(&worker, rerr, sizeof(rerr))) {
+                                    printf("structure: session reset failed: %s\n", rerr);
+                                } else {
+                                    show_welcome_after_restart = true;
+                                    printf("Structure skill activated.\n");
+                                }
+                            }
+                        }
+                    } else if (!strncmp(arg, "stop", 4) &&
+                               (arg[4] == '\0' || arg[4] == ' ' || arg[4] == '\t')) {
+                        if (!worker.structure_prompt) {
+                            printf("Structure skill is not active.\n");
+                        } else {
+                            free(worker.structure_prompt);
+                            worker.structure_prompt = NULL;
+                            editor_restore_terminal_layout(&editor);
+                            if (agent_maybe_save_before_leaving_session(&worker)) {
+                                char rerr[160] = {0};
+                                if (!agent_worker_reset_to_sysprompt(&worker, rerr, sizeof(rerr))) {
+                                    printf("structure: session reset failed: %s\n", rerr);
+                                } else {
+                                    show_welcome_after_restart = true;
+                                    printf("Structure skill deactivated.\n");
+                                }
+                            }
+                        }
+                    } else if (!strncmp(arg, "status", 6) &&
+                               (arg[6] == '\0' || arg[6] == ' ' || arg[6] == '\t')) {
+                        printf("Structure skill is %s.\n",
+                               worker.structure_prompt ? "active" : "inactive");
+                    } else {
+                        printf("usage: /structure start|stop|status\n");
                     }
                 } else if (!strncmp(cmd, "/sage-pol", 9) &&
                            (cmd[9] == '\0' || cmd[9] == ' ' || cmd[9] == '\t')) {

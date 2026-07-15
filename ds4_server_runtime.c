@@ -153,8 +153,10 @@ void ds4_server_runtime_get_default_skills_status(
     out->enabled = s->default_skills_enabled;
     out->soul_loaded = s->soul_skill != NULL;
     out->ethic_loaded = s->ethic_skill != NULL;
+    out->structure_loaded = s->structure_skill != NULL;
     out->soul_bytes = s->soul_skill ? strlen(s->soul_skill) : 0;
     out->ethic_bytes = s->ethic_skill ? strlen(s->ethic_skill) : 0;
+    out->structure_bytes = s->structure_skill ? strlen(s->structure_skill) : 0;
     memcpy(out->revision, s->default_skills_revision,
            sizeof(out->revision));
 }
