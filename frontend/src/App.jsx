@@ -46,6 +46,11 @@ async function jsonFetch(url, options) {
 function RocmFooter({ rocm, stats }) {
   const gpus = rocm?.gpus || [];
   const source = rocm?.source === "amd-smi" ? "AMD SMI" : "ROCm SMI";
+  const genLabel = stats?.genSource === "agent"
+    ? "gen agent"
+    : stats?.genSource === "server"
+      ? "gen server"
+      : "gen";
   return (
     <footer className={`rocm-footer ${rocm?.ok === false ? "warn" : ""}`}>
       <strong>{source}</strong>
@@ -80,7 +85,9 @@ function RocmFooter({ rocm, stats }) {
           <b title="Prompt totale, inclusi i token recuperati dalla cache, diviso per il tempo al primo token">
             prefill con cache {stats.prefillWithCacheTps != null ? `${stats.prefillWithCacheTps.toFixed(2)} t/s` : "n/a"}
           </b>
-          <b>gen {stats.genTps != null ? `${stats.genTps.toFixed(2)} t/s` : "n/a"}</b>
+          <b title="Velocità di decode nativa misurata dal backend attivo">
+            {genLabel} {stats.genTps != null ? `${stats.genTps.toFixed(2)} t/s` : "n/a"}
+          </b>
           <b>in {stats.promptTokens ?? 0}</b>
           <b>out {stats.completionTokens ?? 0}</b>
         </span>
@@ -231,6 +238,7 @@ export default function App() {
   const [metricsError, setMetricsError] = useState("");
   const [commandDraft, setCommandDraft] = useState(null);
   const [agentMode, setAgentMode] = useState(false);
+  const [agentTransitionBusy, setAgentTransitionBusy] = useState(false);
   const [researchMode, setResearchMode] = useState(false);
   const [selectedResearchSessionId, setSelectedResearchSessionId] = useState(null);
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0);
@@ -505,7 +513,7 @@ export default function App() {
   }, [generationBusy, messages]);
 
   useEffect(() => {
-    if (generationBusy || !config?.history?.enabled || !messages.length) return;
+    if (generationBusy || agentTransitionBusy || !config?.history?.enabled || !messages.length) return;
     if (!historyHasPersistableAssistant(messages)) return;
 
     const metadata = { agentMode };
@@ -531,7 +539,7 @@ export default function App() {
         lastSavedHistorySignatureRef.current = "";
         setHistoryStatus(`History error: ${err.message}`);
       });
-  }, [generationBusy, messages, agentMode, config?.history?.enabled, config?.history?.dir, currentSessionFileName]);
+  }, [generationBusy, agentTransitionBusy, messages, agentMode, config?.history?.enabled, config?.history?.dir, currentSessionFileName]);
 
   useEffect(() => {
     const handleUnload = () => {
@@ -552,7 +560,9 @@ export default function App() {
   const effectiveCommand = commandDraft ?? commandText;
   const commandIsCustom = commandDraft !== null && commandDraft.trim() !== commandText.trim();
   const hasPendingStartup = Boolean(runningCommandText && effectiveCommand.trim() && effectiveCommand.trim() !== runningCommandText.trim());
-  const canSend = Boolean(status?.running && status?.healthy && !generationBusy);
+  const canSend = Boolean(
+    status?.running && status?.healthy && !generationBusy && !agentTransitionBusy
+  );
   const startupDetail = backendStartupDetail(status);
   const historyConfig = config?.history || { enabled: false, dir: "" };
   const historyMetadataAvailable = useMemo(
@@ -998,12 +1008,14 @@ export default function App() {
 
     const tRequestStart = performance.now();
     let tFirstToken = null;
-    let tLastToken = null;
     let streamUsage = null;
     let totalPromptTokens = 0;
     let totalCompletionTokens = 0;
     let totalCachedTokens = 0;
     let totalPrefillTokens = 0;
+    let totalPrefillSeconds = 0;
+    let totalGenerationSeconds = 0;
+    let totalGenerationTokens = 0;
     let hasPromptTokenDetails = false;
     let totalChunks = 0;
     let liveStats = createLiveStatsTracker({
@@ -1090,6 +1102,12 @@ export default function App() {
                 totalCachedTokens += details.cached_tokens || 0;
                 totalPrefillTokens += details.cache_write_tokens || 0;
               }
+              const timing = data.usage.timing;
+              if (Number(timing?.prefill_sec) > 0) totalPrefillSeconds += Number(timing.prefill_sec);
+              if (Number(timing?.decode_sec) > 0) totalGenerationSeconds += Number(timing.decode_sec);
+              totalGenerationTokens += Number(timing?.decode_tokens) > 0
+                ? Number(timing.decode_tokens)
+                : data.usage.completion_tokens || 0;
               liveStats = {
                 ...liveStats,
                 promptTokens: totalPromptTokens || liveStats.promptTokens,
@@ -1101,7 +1119,6 @@ export default function App() {
             const reasoning = data.reasoning || "";
             const tDelta = performance.now();
             if (tFirstToken === null) tFirstToken = tDelta;
-            tLastToken = tDelta;
             if (content || reasoning) {
               const live = updateLiveStats(liveStats, {
                 content,
@@ -1134,18 +1151,27 @@ export default function App() {
           totalCachedTokens += details.cached_tokens || 0;
           totalPrefillTokens += details.cache_write_tokens || 0;
         }
+        const timing = streamUsage.timing;
+        if (Number(timing?.prefill_sec) > 0) totalPrefillSeconds += Number(timing.prefill_sec);
+        if (Number(timing?.decode_sec) > 0) totalGenerationSeconds += Number(timing.decode_sec);
+        totalGenerationTokens += Number(timing?.decode_tokens) > 0
+          ? Number(timing.decode_tokens)
+          : streamUsage.completion_tokens || 0;
       }
       if (tFirstToken !== null) {
         setRuntimeStats(streamStatsFromTiming({
           requestStartMs: tRequestStart,
           firstTokenMs: tFirstToken,
-          lastTokenMs: tLastToken,
           promptTokens: totalPromptTokens,
           promptTokensDetails: hasPromptTokenDetails ? {
             cached_tokens: totalCachedTokens,
             cache_write_tokens: totalPrefillTokens
           } : undefined,
           completionTokens: totalCompletionTokens,
+          prefillSeconds: totalPrefillSeconds,
+          generationSeconds: totalGenerationSeconds,
+          generationTokens: totalGenerationTokens,
+          generationSource: "server",
           stream: true
         }));
       }
@@ -1172,6 +1198,21 @@ export default function App() {
     const hasReplayableHistory = start && messages.some(
       (msg) => msg && !msg.agentNotice && (msg.role === "user" || msg.role === "assistant")
     );
+    const transitionId = `agent-${start ? "start" : "stop"}-${Date.now()}`;
+    if (notice) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: start
+            ? "Agent Mode initialization in progress…"
+            : "Agent Mode shutdown in progress…",
+          agentNotice: true,
+          agentTransitionId: transitionId
+        }
+      ]);
+    }
+    setAgentTransitionBusy(true);
     try {
       const res = await fetch(start ? "/api/agent/start" : "/api/agent/stop", {
         method: "POST",
@@ -1191,20 +1232,30 @@ export default function App() {
       setHideSuggestions(false);
       setAgentStatus(data);
       if (notice) {
-        setMessages((prev) => [
-          ...prev,
-          {
-            role: "assistant",
-            content: `Agent mode ${data.active ? "started" : "stopped"}.`,
-            agentNotice: true
-          }
-        ]);
+        setMessages((prev) => prev.map((message) =>
+          message.agentTransitionId === transitionId
+            ? {
+                role: "assistant",
+                content: `Agent mode ${data.active ? "started" : "stopped"}.`,
+                agentNotice: true
+              }
+            : message
+        ));
       }
     } catch (err) {
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: `Failed to toggle agent: ${err.message}`, agentNotice: true }
-      ]);
+      if (notice) {
+        setMessages((prev) => prev.map((message) =>
+          message.agentTransitionId === transitionId
+            ? {
+                role: "assistant",
+                content: `Failed to toggle agent: ${err.message}`,
+                agentNotice: true
+              }
+            : message
+        ));
+      }
+    } finally {
+      setAgentTransitionBusy(false);
     }
   }
 
@@ -1754,6 +1805,9 @@ export default function App() {
     let totalCompletionTokens = 0;
     let totalCachedTokens = 0;
     let totalPrefillTokens = 0;
+    let totalNativePrefillSeconds = 0;
+    let totalNativeGenerationSeconds = 0;
+    let totalNativeGenerationTokens = 0;
     let hasPromptTokenDetails = false;
     let liveStats = createLiveStatsTracker({
       requestStartMs: tRequestStart,
@@ -1931,6 +1985,16 @@ export default function App() {
               totalCachedTokens += details.cached_tokens || 0;
               totalPrefillTokens += details.cache_write_tokens || 0;
             }
+            const timing = data.timing;
+            if (Number(timing?.prefill_sec) > 0) {
+              totalNativePrefillSeconds += Number(timing.prefill_sec);
+            }
+            if (Number(timing?.decode_sec) > 0) {
+              totalNativeGenerationSeconds += Number(timing.decode_sec);
+            }
+            totalNativeGenerationTokens += Number(timing?.decode_tokens) > 0
+              ? Number(timing.decode_tokens)
+              : data.completion_tokens || 0;
             streamUsage = {
               ...data,
               prompt_tokens: totalPromptTokens,
@@ -1938,7 +2002,13 @@ export default function App() {
               prompt_tokens_details: hasPromptTokenDetails ? {
                 cached_tokens: totalCachedTokens,
                 cache_write_tokens: totalPrefillTokens
-              } : undefined
+              } : undefined,
+              timing: {
+                source: "agent",
+                prefill_sec: totalNativePrefillSeconds,
+                decode_sec: totalNativeGenerationSeconds,
+                decode_tokens: totalNativeGenerationTokens
+              }
             };
             setRuntimeStats(finalizeLiveStats(liveStats, {
               promptTokens: streamUsage.prompt_tokens,
@@ -1946,6 +2016,8 @@ export default function App() {
               completionTokens: streamUsage.completion_tokens,
               prefillSeconds: streamUsage.timing?.prefill_sec,
               generationSeconds: streamUsage.timing?.decode_sec,
+              generationTokens: streamUsage.timing?.decode_tokens,
+              generationSource: "agent",
               stream: true
             }));
           } else if (event === "agent_error") {
@@ -1975,6 +2047,8 @@ export default function App() {
           completionTokens: streamUsage.completion_tokens,
           prefillSeconds: streamUsage.timing?.prefill_sec,
           generationSeconds: streamUsage.timing?.decode_sec,
+          generationTokens: streamUsage.timing?.decode_tokens,
+          generationSource: "agent",
           stream: true
         }));
       }
@@ -2123,7 +2197,6 @@ export default function App() {
 
       const tRequestStart = performance.now();
       let tFirstToken = null;
-      let tLastToken = null;
       let streamUsage = null;
       let liveStats = createLiveStatsTracker({
         requestStartMs: tRequestStart,
@@ -2150,15 +2223,17 @@ export default function App() {
           setMessages(replaceAssistantMessage(content, message.reasoning_content || message.reasoning || ""));
         }
         if (data.usage) {
-          const tEnd = performance.now();
-          const totalS = (tEnd - tRequestStart) / 1000;
-          setRuntimeStats({
+          setRuntimeStats(streamStatsFromTiming({
+            requestStartMs: tRequestStart,
             promptTokens: data.usage.prompt_tokens,
+            promptTokensDetails: data.usage.prompt_tokens_details,
             completionTokens: data.usage.completion_tokens,
-            prefillTps: null,
-            genTps: totalS > 0 ? data.usage.completion_tokens / totalS : null,
+            prefillSeconds: data.usage.timing?.prefill_sec,
+            generationSeconds: data.usage.timing?.decode_sec,
+            generationTokens: data.usage.timing?.decode_tokens,
+            generationSource: "server",
             stream: false
-          });
+          }));
         }
         return;
       }
@@ -2192,7 +2267,6 @@ export default function App() {
           if (content || reasoning) {
             const tDelta = performance.now();
             if (tFirstToken === null) tFirstToken = tDelta;
-            tLastToken = tDelta;
             const live = updateLiveStats(liveStats, { content, reasoning, nowMs: tDelta });
             liveStats = live.tracker;
             setRuntimeStats(live.stats);
@@ -2230,10 +2304,13 @@ export default function App() {
         setRuntimeStats(streamStatsFromTiming({
           requestStartMs: tRequestStart,
           firstTokenMs: tFirstToken,
-          lastTokenMs: tLastToken,
           promptTokens: streamUsage.prompt_tokens,
           promptTokensDetails: streamUsage.prompt_tokens_details,
           completionTokens: streamUsage.completion_tokens,
+          prefillSeconds: streamUsage.timing?.prefill_sec,
+          generationSeconds: streamUsage.timing?.decode_sec,
+          generationTokens: streamUsage.timing?.decode_tokens,
+          generationSource: "server",
           stream: true
         }));
       }

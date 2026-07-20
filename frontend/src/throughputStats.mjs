@@ -7,27 +7,28 @@ export function estimateTokenCount(text) {
 export function streamStatsFromTiming({
   requestStartMs,
   firstTokenMs,
-  lastTokenMs,
   promptTokens,
   promptTokensDetails,
   completionTokens,
   prefillSeconds,
   generationSeconds,
+  generationTokens,
+  generationSource,
   stream = true
 }) {
   const browserPrefillS = firstTokenMs != null ? (firstTokenMs - requestStartMs) / 1000 : 0;
-  const browserGenS = firstTokenMs != null && lastTokenMs != null && lastTokenMs > firstTokenMs
-    ? (lastTokenMs - firstTokenMs) / 1000
-    : 0;
   const reportedPrefillS = Number(prefillSeconds);
   const reportedGenS = Number(generationSeconds);
   const prefillS = Number.isFinite(reportedPrefillS) && reportedPrefillS > 0
     ? reportedPrefillS
     : browserPrefillS;
-  const genS = Number.isFinite(reportedGenS) && reportedGenS > 0
-    ? reportedGenS
-    : browserGenS;
+  const genS = Number.isFinite(reportedGenS) && reportedGenS > 0 ? reportedGenS : 0;
   const totalPromptTokens = Math.max(0, Number(promptTokens) || 0);
+  const totalCompletionTokens = Math.max(0, Number(completionTokens) || 0);
+  const reportedGenerationTokens = Number(generationTokens);
+  const nativeGenerationTokens = Number.isFinite(reportedGenerationTokens) && reportedGenerationTokens > 0
+    ? reportedGenerationTokens
+    : totalCompletionTokens;
   const hasPromptDetails = promptTokensDetails && typeof promptTokensDetails === "object";
   const cachedTokens = hasPromptDetails
     ? Math.min(totalPromptTokens, Math.max(0, Number(promptTokensDetails.cached_tokens) || 0))
@@ -41,10 +42,11 @@ export function streamStatsFromTiming({
     promptTokens: totalPromptTokens,
     cachedTokens,
     prefillTokens,
-    completionTokens,
+    completionTokens: totalCompletionTokens,
     prefillTps: prefillS > 0 && totalPromptTokens > 0 ? prefillTokens / prefillS : null,
     prefillWithCacheTps: prefillS > 0 && totalPromptTokens > 0 ? totalPromptTokens / prefillS : null,
-    genTps: genS > 0 && completionTokens > 0 ? completionTokens / genS : null,
+    genTps: genS > 0 && nativeGenerationTokens > 0 ? nativeGenerationTokens / genS : null,
+    genSource: typeof generationSource === "string" && generationSource ? generationSource : null,
     stream
   };
 }
@@ -57,7 +59,6 @@ export function createLiveStatsTracker({
   return {
     requestStartMs,
     firstTokenMs: null,
-    lastTokenMs: null,
     renderedChars: 0,
     promptTokens,
     completionTokensBase
@@ -71,7 +72,6 @@ export function updateLiveStats(tracker, { content = "", reasoning = "", nowMs, 
   const next = {
     ...tracker,
     firstTokenMs,
-    lastTokenMs: nowMs,
     renderedChars,
     promptTokens: promptTokens ?? tracker.promptTokens
   };
@@ -81,7 +81,6 @@ export function updateLiveStats(tracker, { content = "", reasoning = "", nowMs, 
     stats: streamStatsFromTiming({
       requestStartMs: next.requestStartMs,
       firstTokenMs: next.firstTokenMs,
-      lastTokenMs: next.lastTokenMs,
       promptTokens: next.promptTokens,
       completionTokens,
       stream: true
@@ -97,6 +96,8 @@ export function finalizeLiveStats(
     completionTokens,
     prefillSeconds,
     generationSeconds,
+    generationTokens,
+    generationSource,
     stream = true
   } = {}
 ) {
@@ -104,12 +105,13 @@ export function finalizeLiveStats(
   return streamStatsFromTiming({
     requestStartMs: tracker.requestStartMs,
     firstTokenMs: tracker.firstTokenMs,
-    lastTokenMs: tracker.lastTokenMs,
     promptTokens: promptTokens ?? tracker.promptTokens,
     promptTokensDetails,
     completionTokens: completionTokens ?? fallbackCompletionTokens,
     prefillSeconds,
     generationSeconds,
+    generationTokens,
+    generationSource,
     stream
   });
 }

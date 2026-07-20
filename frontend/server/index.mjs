@@ -105,6 +105,7 @@ import {
   canonicalLegacyCommand,
   isAgentSlashCommand,
   nativeCommandEvents,
+  prepareNativeAgentRuntime,
   proxyNativeAgentCommand
 } from "./nativeAgentCommands.mjs";
 import { ResearchRuntime } from "./research/researchRuntime.mjs";
@@ -1358,16 +1359,35 @@ function ponyCommandEvents(req, command) {
 
 app.post("/api/agent/start", asyncHandler(async (req, res) => {
   if (wrapperEnabled()) {
+    const switchTimeoutMs = config.wrapper?.modeSwitchTimeoutMs || 120000;
     const up = await fetch(`${backendBase()}/api/wrapper/switch-mode`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ mode: "agent" }),
-      signal: AbortSignal.timeout(config.wrapper?.modeSwitchTimeoutMs || 120000)
+      signal: AbortSignal.timeout(switchTimeoutMs)
     });
     const body = await up.json();
     if (!up.ok) return res.status(up.status).json(body);
+
+    // The native runtime used to initialize lazily on the first chat turn.
+    // At very large contexts that made the first prompt appear frozen for
+    // minutes.  Warm it here and expose Agent Mode only after it is ready.
+    const prepared = await prepareNativeAgentRuntime(
+      fetch,
+      backendBase(),
+      AbortSignal.timeout(Math.max(switchTimeoutMs, 300000))
+    );
+    if (!prepared.ok) {
+      return res.status(prepared.status || 500).json(prepared.payload);
+    }
+
     const status = agentSessions.start(agentSessionKey(req));
-    return res.json({ ...status, native: true, wrapper: body });
+    return res.json({
+      ...status,
+      native: true,
+      wrapper: body,
+      runtime: prepared.payload
+    });
   }
   const status = agentSessions.start(agentSessionKey(req));
   res.json({ ...status, native: false });
