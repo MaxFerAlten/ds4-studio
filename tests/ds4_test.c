@@ -2180,6 +2180,10 @@ static void test_server_unit_group(void) {
     ds4_server_unit_tests_run();
 }
 
+static void test_server_usage_timing_group(void) {
+    test_openai_usage_reports_native_timing();
+}
+
 typedef void (*test_fn)(void);
 
 typedef struct {
@@ -2203,6 +2207,7 @@ static const ds4_test_entry test_entries[] = {
     {"--streaming-decode-prefill-correctness", "streaming-decode-prefill-correctness", "streaming decode-style cold prefill drift and repeatability", test_streaming_decode_prefill_correctness},
     {"--mtp-verify-depth", "mtp-verify-depth", "MTP speculative verify commits autoregressive-identical tokens at draft depth > 2", test_mtp_verify_depth},
 #endif
+    {"--server-usage-timing", "server-usage-timing", "server native phase timing in OpenAI usage", test_server_usage_timing_group},
     {"--server", "server", "server parser/rendering/cache unit tests", test_server_unit_group},
 };
 

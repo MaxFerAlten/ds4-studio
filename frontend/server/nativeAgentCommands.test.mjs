@@ -4,6 +4,7 @@ import {
   canonicalLegacyCommand,
   isAgentSlashCommand,
   nativeCommandEvents,
+  prepareNativeAgentRuntime,
   proxyNativeAgentCommand
 } from "./nativeAgentCommands.mjs";
 
@@ -85,6 +86,44 @@ test("proxies a native command and preserves status and JSON", async () => {
   assert.equal(result.status, 200);
   assert.equal(result.ok, true);
   assert.equal(result.payload.active, false);
+});
+
+test("prepares the native agent runtime through the dedicated endpoint", async () => {
+  const calls = [];
+  const signal = AbortSignal.timeout(1000);
+  const result = await prepareNativeAgentRuntime(
+    async (url, options) => {
+      calls.push({ url, options });
+      return new Response(
+        JSON.stringify({ ok: true, ready: true }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    },
+    "http://127.0.0.1:8002",
+    signal
+  );
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "http://127.0.0.1:8002/api/native-agent/prepare");
+  assert.equal(calls[0].options.method, "POST");
+  assert.equal(calls[0].options.signal, signal);
+  assert.equal(result.status, 200);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.payload, { ok: true, ready: true });
+});
+
+test("native agent preparation preserves backend failures", async () => {
+  const result = await prepareNativeAgentRuntime(
+    async () => new Response(
+      JSON.stringify({ error: "agent initialization failed" }),
+      { status: 500, headers: { "content-type": "application/json" } }
+    ),
+    "http://127.0.0.1:8002"
+  );
+
+  assert.equal(result.status, 500);
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.payload, { error: "agent initialization failed" });
 });
 
 test("routes crawl commands directly to the crawl service", async () => {

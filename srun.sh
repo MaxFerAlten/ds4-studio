@@ -49,8 +49,10 @@ Environment:
                        Disable the preset and use explicit environment settings.
   DS4_SERVER_PERFLEVEL=high|auto
                        ROCm performance level; use off/skip/none to bypass.
-  DS4_SKILL_AUTO=0     Disable automatic loading of soul/ethic skills at startup.
-                       Default is 1 (enabled). Set via GUI or environment variable.
+  DS4_SKILL_AUTO=0     Disable all default skills at startup.
+  DS4_SAGE_SKILL_AUTO=0
+                       Disable only the Sage default skill at startup.
+                       Both default to 1 and can be set in the startup GUI.
   DS4_SKILLS_DIR=path  Absolute path to the skills directory.
                        Default: $ROOT_DIR/skills
 

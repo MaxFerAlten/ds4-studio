@@ -692,6 +692,25 @@ static void *client_thread_main(void *arg) {
             }
             ds4_wrapper_leave_request(w);
         }
+    } else if (!strcmp(hr.method, "POST") &&
+               !strcmp(hr.path, "/api/native-agent/prepare")) {
+        char err_buf[256] = {0};
+        int code = ds4_wrapper_enter_request(w, DS4_WRAP_MODE_AGENT,
+                                             err_buf, sizeof(err_buf));
+        if (code != 0) {
+            send_json_error(fd, true, code,
+                            code == 409 ? "conflict" : "error", err_buf);
+        } else {
+            int init_rc = ds4_wrapper_ensure_agent_rt(w, err_buf,
+                                                       sizeof(err_buf));
+            if (init_rc == 0) {
+                send_response(fd, true, 200, "application/json",
+                              "{\"ok\":true,\"ready\":true}\n");
+            } else {
+                send_json_error(fd, true, 500, "agent_init_error", err_buf);
+            }
+            ds4_wrapper_leave_request(w);
+        }
     } else if (!strcmp(hr.method, "POST") && !strcmp(hr.path, "/api/native-agent/chat")) {
         char err_buf[256] = {0};
         int code = ds4_wrapper_enter_request(w, DS4_WRAP_MODE_AGENT, err_buf, sizeof(err_buf));

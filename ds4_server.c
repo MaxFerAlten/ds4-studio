@@ -580,6 +580,9 @@ typedef struct {
     bool stream_include_usage;
     int cache_read_tokens;
     int cache_write_tokens;
+    int timing_decode_tokens;
+    double timing_prefill_sec;
+    double timing_decode_sec;
     ds4_think_mode think_mode;
     bool has_tools;
     bool prompt_preserves_reasoning;
@@ -4967,6 +4970,11 @@ static void append_openai_usage_json(buf *b, const request *r,
                                      int prompt_tokens, int completion_tokens) {
     int cached_tokens = r ? r->cache_read_tokens : 0;
     int cache_write_tokens = r ? r->cache_write_tokens : 0;
+    int decode_tokens = r && r->timing_decode_tokens > 0
+        ? r->timing_decode_tokens
+        : completion_tokens;
+    double prefill_sec = r && r->timing_prefill_sec > 0.0 ? r->timing_prefill_sec : 0.0;
+    double decode_sec = r && r->timing_decode_sec > 0.0 ? r->timing_decode_sec : 0.0;
     cached_tokens = clamp_usage_tokens(cached_tokens, prompt_tokens);
     cache_write_tokens = clamp_usage_tokens(cache_write_tokens, prompt_tokens - cached_tokens);
     /* OpenAI defines cached_tokens as prompt tokens retrieved from cache.
@@ -4975,9 +4983,12 @@ static void append_openai_usage_json(buf *b, const request *r,
      * cache hits. */
     buf_printf(b,
                "{\"prompt_tokens\":%d,\"completion_tokens\":%d,\"total_tokens\":%d,"
-               "\"prompt_tokens_details\":{\"cached_tokens\":%d,\"cache_write_tokens\":%d}}",
+               "\"prompt_tokens_details\":{\"cached_tokens\":%d,\"cache_write_tokens\":%d},"
+               "\"timing\":{\"source\":\"server\",\"prefill_sec\":%.6f,"
+               "\"decode_sec\":%.6f,\"decode_tokens\":%d}}",
                prompt_tokens, completion_tokens, prompt_tokens + completion_tokens,
-               cached_tokens, cache_write_tokens);
+               cached_tokens, cache_write_tokens,
+               prefill_sec, decode_sec, decode_tokens);
 }
 
 static bool sse_usage_chunk(int fd, const request *r, const char *id,
@@ -7760,7 +7771,11 @@ struct server {
     char default_skills_revision[41];
 };
 
-/* Prepend soul and ethic skill content as synthetic system messages in msgs.
+static bool server_skill_autoload_enabled(const char *value) {
+    return !value || strcmp(value, "0") != 0;
+}
+
+/* Prepend default skill content as synthetic system messages in msgs.
  * Skill strings come from the server struct (loaded at startup). */
 static void server_inject_skills(server *s, chat_msgs *msgs) {
     if (!s || (!s->soul_skill && !s->ethic_skill && !s->structure_skill && !s->sage_skill)) return;
@@ -7822,7 +7837,7 @@ static void server_inject_skills(server *s, chat_msgs *msgs) {
 static bool server_load_default_skills(server *s, char *err, size_t err_len) {
     (void)err; (void)err_len;
     const char *auto_env = getenv("DS4_SKILL_AUTO");
-    if (auto_env && !strcmp(auto_env, "0")) {
+    if (!server_skill_autoload_enabled(auto_env)) {
         free(s->soul_skill);      s->soul_skill = NULL;
         free(s->ethic_skill);     s->ethic_skill = NULL;
         free(s->structure_skill); s->structure_skill = NULL;
@@ -7836,7 +7851,9 @@ static bool server_load_default_skills(server *s, char *err, size_t err_len) {
     char *soul = server_read_file("skills/soul/SKILL.md", soul_err, sizeof(soul_err));
     char *ethic = server_read_file("skills/ethic/SKILL.md", ethic_err, sizeof(ethic_err));
     char *structure = server_read_file("skills/structure/SKILL.md", structure_err, sizeof(structure_err));
-    char *sage = server_read_file("skills/sage/SKILL.md", sage_err, sizeof(sage_err));
+    char *sage = NULL;
+    if (server_skill_autoload_enabled(getenv("DS4_SAGE_SKILL_AUTO")))
+        sage = server_read_file("skills/sage/SKILL.md", sage_err, sizeof(sage_err));
 
     /* Compute revision over concatenated skill content (same scheme as agent). */
     buf b = {0};
@@ -10405,13 +10422,15 @@ static void generate_job(server *s, job *j) {
     ds4_session_set_progress(s->session, NULL, NULL);
     ds4_session_set_display_progress(s->session, NULL, NULL);
     kv_cache_maybe_store_continued(s);
+    const double prefill_sec = now_sec() - t0;
+    j->req.timing_prefill_sec += prefill_sec;
     server_log(DS4_LOG_PREFILL,
                "ds4-server: %s ctx=%s%s%s prompt done %.3fs",
                j->req.kind == REQ_CHAT ? "chat" : "completion",
                ctx_span,
                req_flags[0] ? " " : "",
                req_flags,
-               now_sec() - t0);
+               prefill_sec);
     if (cold_store_len == prompt_for_sync->len) {
         if (kv_cache_store_live_prefix(s, prompt_for_sync, cold_store_len, "cold")) {
             kv_cache_note_store(&s->kv, cold_store_len);
@@ -10765,6 +10784,10 @@ decode_again:
         }
         if (stop_decode) break;
     }
+
+    const double decode_sec = now_sec() - decode_t0;
+    if (decode_sec > 0.0) j->req.timing_decode_sec += decode_sec;
+    if (completion > 0) j->req.timing_decode_tokens += completion;
 
     if (g_stop_requested && strcmp(finish, "error") != 0) {
         finish = "error";
@@ -11920,19 +11943,21 @@ int main(int argc, char **argv) {
     pthread_mutex_init(&s.tool_mu, NULL);
     pthread_mutex_init(&s.trace_mu, NULL);
 
-    /* Load soul and ethic SKILL.md content (auto unless DS4_SKILL_AUTO=0). */
+    /* Load default SKILL.md content (auto unless DS4_SKILL_AUTO=0). */
     {
         const char *auto_env = getenv("DS4_SKILL_AUTO");
-        if (!auto_env || strcmp(auto_env, "0")) {
+        if (server_skill_autoload_enabled(auto_env)) {
+            const bool sage_auto = server_skill_autoload_enabled(getenv("DS4_SAGE_SKILL_AUTO"));
             char soul_err[256] = {0}, ethic_err[256] = {0}, sage_err[256] = {0};
             s.soul_skill = server_read_file("skills/soul/SKILL.md", soul_err, sizeof(soul_err));
             s.ethic_skill = server_read_file("skills/ethic/SKILL.md", ethic_err, sizeof(ethic_err));
-            s.sage_skill = server_read_file("skills/sage/SKILL.md", sage_err, sizeof(sage_err));
+            if (sage_auto)
+                s.sage_skill = server_read_file("skills/sage/SKILL.md", sage_err, sizeof(sage_err));
             if (!s.soul_skill)
                 server_log(DS4_LOG_DEFAULT, "warning: %s", soul_err);
             if (!s.ethic_skill)
                 server_log(DS4_LOG_DEFAULT, "warning: %s", ethic_err);
-            if (!s.sage_skill)
+            if (sage_auto && !s.sage_skill)
                 server_log(DS4_LOG_DEFAULT, "warning: %s", sage_err);
             if (s.soul_skill) server_log(DS4_LOG_DEFAULT, "Soul skill loaded.");
             if (s.ethic_skill) server_log(DS4_LOG_DEFAULT, "Ethic skill loaded.");
@@ -12774,6 +12799,28 @@ static void test_openai_stream_usage_reports_cache_details(void) {
     request_free(&r);
     close(sv[0]);
     close(sv[1]);
+}
+
+static void test_openai_usage_reports_native_timing(void) {
+    request r;
+    request_init(&r, REQ_CHAT, 128);
+    r.cache_read_tokens = 7;
+    r.cache_write_tokens = 3;
+    r.timing_prefill_sec = 0.5;
+    r.timing_decode_sec = 0.25;
+    r.timing_decode_tokens = 5;
+
+    buf b = {0};
+    append_openai_usage_json(&b, &r, 10, 2);
+    TEST_ASSERT(strstr(b.ptr, "\"prompt_tokens\":10") != NULL);
+    TEST_ASSERT(strstr(b.ptr, "\"completion_tokens\":2") != NULL);
+    TEST_ASSERT(strstr(b.ptr, "\"timing\":{\"source\":\"server\"") != NULL);
+    TEST_ASSERT(strstr(b.ptr, "\"prefill_sec\":0.500000") != NULL);
+    TEST_ASSERT(strstr(b.ptr, "\"decode_sec\":0.250000") != NULL);
+    TEST_ASSERT(strstr(b.ptr, "\"decode_tokens\":5") != NULL);
+
+    buf_free(&b);
+    request_free(&r);
 }
 
 static void test_responses_usage_reports_cache_details(void) {
@@ -15912,6 +15959,14 @@ static void test_server_inject_skills_preserves_messages(void) {
     chat_msgs_free(&msgs);
 }
 
+static void test_server_skill_autoload_flag(void) {
+    TEST_ASSERT(server_skill_autoload_enabled(NULL));
+    TEST_ASSERT(server_skill_autoload_enabled(""));
+    TEST_ASSERT(server_skill_autoload_enabled("1"));
+    TEST_ASSERT(server_skill_autoload_enabled("true"));
+    TEST_ASSERT(!server_skill_autoload_enabled("0"));
+}
+
 static void ds4_server_unit_tests_run(void) {
     test_request_defaults_use_min_p_filtering();
     test_reasoning_effort_mapping();
@@ -15921,6 +15976,7 @@ static void ds4_server_unit_tests_run(void) {
     test_render_drops_old_reasoning_without_tools();
     test_render_preserves_reasoning_with_tools();
     test_render_chat_prompt_text_renders_tools_before_system();
+    test_server_skill_autoload_flag();
     test_server_inject_skills_preserves_messages();
     test_tool_schema_order_from_anthropic_schema();
     test_tool_schema_order_from_openai_tools();
@@ -15945,6 +16001,7 @@ static void ds4_server_unit_tests_run(void) {
     test_anthropic_tool_stream_sends_live_tool_use();
     test_openai_tool_stream_sends_incremental_text();
     test_openai_stream_usage_reports_cache_details();
+    test_openai_usage_reports_native_timing();
     test_responses_usage_reports_cache_details();
     test_openai_chat_stream_splits_reasoning_without_tools();
     test_openai_tool_stream_sends_partial_arguments();

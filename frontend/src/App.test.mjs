@@ -3,6 +3,7 @@
 // These must match the current App.jsx behavior exactly.
 
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 
 import {
@@ -37,6 +38,19 @@ import {
   clearStoredSession,
   requestFreshNativeAgentSession
 } from "./appLogic.mjs";
+
+test("agent mode transition is visible and blocks chat until initialization completes", async () => {
+  const source = await readFile(new URL("./App.jsx", import.meta.url), "utf8");
+  const start = source.indexOf("async function toggleAgentMode");
+  const end = source.indexOf("async function callNativeAgentCommand", start);
+  const block = source.slice(start, end);
+
+  assert.match(source, /const \[agentTransitionBusy, setAgentTransitionBusy\] = useState\(false\)/);
+  assert.match(source, /const canSend = Boolean\([\s\S]*?!agentTransitionBusy[\s\S]*?\)/);
+  assert.match(block, /Agent Mode initialization in progress/);
+  assert.match(block, /setAgentTransitionBusy\(true\)/);
+  assert.match(block, /finally\s*\{\s*setAgentTransitionBusy\(false\)/);
+});
 
 // ── Data constants ───────────────────────────────────────────────────────
 

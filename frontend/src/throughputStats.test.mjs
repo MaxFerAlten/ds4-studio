@@ -32,7 +32,7 @@ test("updates prefill and generation throughput while deltas stream", () => {
   assert.equal(second.stats.promptTokens, 80);
   assert.equal(second.tracker.renderedChars, "hello world, this is streaming".length);
   assert.ok(second.stats.completionTokens > first.stats.completionTokens);
-  assert.ok(second.stats.genTps > 0);
+  assert.equal(second.stats.genTps, null);
 });
 
 test("tracks streamed content by character count without retaining text", () => {
@@ -48,9 +48,10 @@ test("uses exact usage values for final stream stats", () => {
   const stats = streamStatsFromTiming({
     requestStartMs: 1000,
     firstTokenMs: 3000,
-    lastTokenMs: 7000,
     promptTokens: 120,
     completionTokens: 48,
+    generationSeconds: 4,
+    generationSource: "server",
     stream: true
   });
 
@@ -59,13 +60,14 @@ test("uses exact usage values for final stream stats", () => {
   assert.equal(stats.prefillTps, 60);
   assert.equal(stats.prefillWithCacheTps, 60);
   assert.equal(stats.genTps, 12);
+  assert.equal("effectiveGenTps" in stats, false);
+  assert.equal(stats.genSource, "server");
 });
 
 test("separates effective prefill throughput from throughput with cache", () => {
   const stats = streamStatsFromTiming({
     requestStartMs: 1000,
     firstTokenMs: 3000,
-    lastTokenMs: 7000,
     promptTokens: 120,
     promptTokensDetails: {
       cached_tokens: 100,
@@ -82,7 +84,7 @@ test("separates effective prefill throughput from throughput with cache", () => 
   assert.equal(stats.prefillWithCacheTps, 60);
 });
 
-test("finalizes live stream stats with exact usage without dropping throughput", () => {
+test("does not invent native throughput when backend timing is unavailable", () => {
   let tracker = createLiveStatsTracker({ requestStartMs: 1000, promptTokens: 80 });
   tracker = updateLiveStats(tracker, { content: "hello", nowMs: 3000 }).tracker;
   tracker = updateLiveStats(tracker, { content: " world", nowMs: 5000 }).tracker;
@@ -100,7 +102,7 @@ test("finalizes live stream stats with exact usage without dropping throughput",
   assert.equal(stats.completionTokens, 48);
   assert.equal(stats.prefillTps, 12);
   assert.equal(stats.prefillWithCacheTps, 60);
-  assert.equal(stats.genTps, 24);
+  assert.equal(stats.genTps, null);
 });
 
 test("uses backend phase timings for agent throughput", () => {
@@ -116,10 +118,26 @@ test("uses backend phase timings for agent throughput", () => {
     },
     completionTokens: 48,
     prefillSeconds: 0.5,
-    generationSeconds: 3
+    generationSeconds: 3,
+    generationSource: "agent"
   });
 
   assert.equal(stats.prefillTps, 40);
   assert.equal(stats.prefillWithCacheTps, 240);
   assert.equal(stats.genTps, 16);
+  assert.equal(stats.genSource, "agent");
+});
+
+test("uses backend decode tokens for native throughput", () => {
+  const stats = streamStatsFromTiming({
+    requestStartMs: 1000,
+    firstTokenMs: 1200,
+    promptTokens: 10,
+    completionTokens: 10,
+    generationTokens: 20,
+    generationSeconds: 1,
+    generationSource: "server"
+  });
+
+  assert.equal(stats.genTps, 20);
 });

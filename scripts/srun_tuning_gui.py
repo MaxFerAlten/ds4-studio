@@ -51,6 +51,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "maxQueuedJobs": 8,
         "env": {
             "DS4_SKILL_AUTO": "1",
+            "DS4_SAGE_SKILL_AUTO": "1",
             "DS4_METAL_PREFILL_CHUNK": "8192",
             "DS4_CUDA_Q8_F16_CACHE_MB": "11264",
             "DS4_CUDA_Q8_F16_CACHE_RESERVE_MB": "512",
@@ -177,7 +178,8 @@ FIELDS: list[Field] = [
 
 
 ENV_FIELDS: list[Field] = [
-    Field("server.env.DS4_SKILL_AUTO", "Auto-load soul/ethic skills at startup", "env_flag", "Wrapper"),
+    Field("server.env.DS4_SKILL_AUTO", "Auto-load default skills at startup", "env_toggle", "Wrapper"),
+    Field("server.env.DS4_SAGE_SKILL_AUTO", "Auto-load Sage skill at startup", "env_toggle", "Wrapper"),
     Field("server.env.DS4_METAL_PREFILL_CHUNK", "Prefill chunk tokens", "env_int", "CUDA/Prefill"),
     Field("server.env.DS4_CUDA_Q8_F16_CACHE_MB", "Q8/F16 cache MiB", "env_string", "CUDA/Prefill"),
     Field("server.env.DS4_CUDA_Q8_F16_CACHE_RESERVE_MB", "Q8/F16 reserve MiB", "env_string", "CUDA/Prefill"),
@@ -220,6 +222,7 @@ ALL_FIELDS = FIELDS + ENV_FIELDS
 FIELD_BY_PATH = {field.path: field for field in ALL_FIELDS}
 KNOWN_ENV_KEYS = {field.path.split(".")[-1] for field in ENV_FIELDS}
 PRESENCE_ENV_KEYS = {field.path.split(".")[-1] for field in ENV_FIELDS if field.kind == "env_flag"}
+TOGGLE_ENV_KEYS = {field.path.split(".")[-1] for field in ENV_FIELDS if field.kind == "env_toggle"}
 
 
 def deep_merge(base: Any, patch: Any) -> Any:
@@ -345,6 +348,10 @@ def validate_config(config: dict[str, Any]) -> list[str]:
             value = env.get(key, "")
             if value not in {"", "1"}:
                 errors.append(f"{key} must be empty or 1")
+        for key in TOGGLE_ENV_KEYS:
+            value = env.get(key, "")
+            if value not in {"0", "1"}:
+                errors.append(f"{key} must be 0 or 1")
     request_defaults = config.get("requestDefaults", {})
     if not isinstance(request_defaults, dict):
         errors.append("requestDefaults must be an object")
@@ -431,7 +438,9 @@ class TuningDialog:
         row = len(parent.grid_slaves()) // 2
         ttk.Label(parent, text=field.label).grid(row=row, column=0, sticky="w", padx=8, pady=5)
         value = get_path(self.config, field.path)
-        if field.kind == "bool":
+        if field.kind in {"bool", "env_toggle"}:
+            if field.kind == "env_toggle":
+                value = parse_bool(str(value))
             var = tk.BooleanVar(value=bool(value))
             widget = ttk.Checkbutton(parent, variable=var)
         elif field.kind == "backend":
@@ -464,6 +473,8 @@ class TuningDialog:
             value = raw
             if kind == "bool":
                 value = bool(var.get())
+            elif kind == "env_toggle":
+                value = "1" if bool(var.get()) else "0"
             elif kind == "auto_or_positive_int":
                 value = parse_value(path, raw)
             elif kind in {"positive_int", "nonnegative_int", "port"}:

@@ -97,6 +97,20 @@ test("wrapper path defaults request to empty object when absent", () => {
   assert.deepEqual(body.request, {});
 });
 
+test("wrapper agent start prepares the native runtime before activating the session", async () => {
+  const source = await readFile(new URL("./index.mjs", import.meta.url), "utf8");
+  const start = source.indexOf('app.post("/api/agent/start"');
+  const end = source.indexOf('app.post("/api/agent/stop"', start);
+  const block = source.slice(start, end);
+
+  assert.ok(start >= 0 && end > start, "agent start route must exist");
+  assert.match(block, /await prepareNativeAgentRuntime\(/);
+  assert.ok(
+    block.indexOf("await prepareNativeAgentRuntime(") < block.indexOf("agentSessions.start("),
+    "native runtime must be ready before the frontend session becomes active"
+  );
+});
+
 test("timeout guard stops streaming after deadline", async () => {
   // Simulate a slow stream where each chunk takes 100ms
   // Timeout is 50ms — only the error chunk should be emitted

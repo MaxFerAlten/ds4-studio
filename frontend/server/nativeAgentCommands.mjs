@@ -42,6 +42,35 @@ export function nativeCommandEvents(payload = {}, ok = payload.ok !== false) {
   ];
 }
 
+export async function prepareNativeAgentRuntime(fetchImpl, baseUrl, signal) {
+  const response = await fetchImpl(`${baseUrl}/api/native-agent/prepare`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    signal
+  });
+  const text = await response.text();
+  let payload;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    payload = {
+      ok: false,
+      error: text || `Wrapper HTTP ${response.status}`
+    };
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    payload = {
+      ok: false,
+      error: `Wrapper HTTP ${response.status}`
+    };
+  }
+  return {
+    status: response.status,
+    ok: response.ok && payload.ok !== false,
+    payload
+  };
+}
+
 function crawlFailure(status, message) {
   return {
     status,
