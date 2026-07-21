@@ -18,8 +18,9 @@ import { scanEvolutionProvenance } from "./evolutionProvenance.mjs";
 const execFileAsync = promisify(execFile);
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_REPOSITORY_ROOT = path.resolve(MODULE_DIR, "../../..");
-const UNIT_COMMAND = "node --test frontend/server/evolution/*.test.mjs benchmarks/agentic/evolution/*.test.mjs";
-const SECURITY_COMMAND = "node --test frontend/server/evolution/security/*.test.mjs";
+const TAP_REPORTER_FLAGS = ["--test-reporter=tap", "--test-reporter-destination=stdout"];
+const UNIT_COMMAND = "node --test --test-reporter=tap frontend/server/evolution/*.test.mjs benchmarks/agentic/evolution/*.test.mjs";
+const SECURITY_COMMAND = "node --test --test-reporter=tap frontend/server/evolution/security/*.test.mjs";
 const PROVENANCE_COMMAND = "node benchmarks/agentic/evolution/run.mjs --selftest --gate";
 
 function ids(prefix, first, last = first) {
@@ -110,14 +111,67 @@ function boundedOutput(value) {
   return redacted.length <= 8_000 ? redacted : `[truncated ${redacted.length - 8_000} chars]\n${redacted.slice(-8_000)}`;
 }
 
+const TAP_RESULT_LINE = /^(ok|not ok) \d+ - (.+?)\s*$/gm;
+const REQUIREMENT_ID_PATTERN = /([A-Z]+(?:-[A-Z]+)*)-(\d{3})/g;
+const REQUIREMENT_ID_COMBO = /^((?:[./]{1,2}\d{3})+)/;
+
+/** Parses `--test-reporter=tap` output into top-level {title, ok} subtest records. */
+function parseTapSubtests(tapOutput) {
+  const subtests = [];
+  for (const match of tapOutput.matchAll(TAP_RESULT_LINE)) {
+    const [, verdict, rawTitle] = match;
+    subtests.push({ title: rawTitle.replace(/\s*#\s*(SKIP|TODO).*$/i, "").trim(), ok: verdict === "ok" });
+  }
+  return subtests;
+}
+
+/**
+ * Extracts fully-qualified requirement IDs from a subtest title, expanding the
+ * `PREFIX-NNN/MMM` and `PREFIX-NNN..MMM` combo notations used by this suite's test
+ * titles. A bare prefix with no attached number (e.g. a title mentioning "SEC-FOO"
+ * without a number) is deliberately NOT credited to any numbered requirement ID -
+ * only an explicit number is real evidence.
+ */
+function extractRequirementIds(title) {
+  const found = new Set();
+  REQUIREMENT_ID_PATTERN.lastIndex = 0;
+  let match;
+  while ((match = REQUIREMENT_ID_PATTERN.exec(title))) {
+    const [, prefix, firstNum] = match;
+    found.add(`${prefix}-${firstNum}`);
+    const comboMatch = REQUIREMENT_ID_COMBO.exec(title.slice(REQUIREMENT_ID_PATTERN.lastIndex));
+    if (!comboMatch) continue;
+    const nums = comboMatch[1].match(/\d{3}/g) ?? [];
+    if (comboMatch[1].includes("..")) {
+      for (let n = Number(firstNum) + 1; n <= Number(nums[nums.length - 1]); n++) found.add(`${prefix}-${String(n).padStart(3, "0")}`);
+    } else {
+      for (const num of nums) found.add(`${prefix}-${num}`);
+    }
+    REQUIREMENT_ID_PATTERN.lastIndex += comboMatch[1].length;
+  }
+  return found;
+}
+
+/** Maps each requirement ID to whether every subtest that names it passed, and whether any subtest named it at all. */
+function requirementEvidence(subtests) {
+  const evidence = new Map();
+  for (const subtest of subtests) {
+    for (const testId of extractRequirementIds(subtest.title)) {
+      const current = evidence.get(testId) ?? { ok: true, found: false };
+      evidence.set(testId, { ok: current.ok && subtest.ok, found: true });
+    }
+  }
+  return evidence;
+}
+
 export async function runCertificationSuite({ name, files, repositoryRoot }) {
-  if (!files.length) return Object.freeze({ name, passed: false, exitCode: null, durationMs: 0, outputHash: null, outputPreview: "NO_TEST_FILES" });
+  if (!files.length) return Object.freeze({ name, passed: false, exitCode: null, durationMs: 0, outputHash: null, outputPreview: "NO_TEST_FILES", subtests: Object.freeze([]) });
   const started = Date.now();
   let stdout = "";
   let stderr = "";
   let exitCode = 0;
   try {
-    const result = await execFileAsync(process.execPath, ["--test", ...files], {
+    const result = await execFileAsync(process.execPath, ["--test", ...TAP_REPORTER_FLAGS, ...files], {
       cwd: repositoryRoot,
       encoding: "utf8",
       timeout: 180_000,
@@ -143,7 +197,8 @@ export async function runCertificationSuite({ name, files, repositoryRoot }) {
     exitCode,
     durationMs: Date.now() - started,
     outputHash: sha256(combined),
-    outputPreview: boundedOutput(combined)
+    outputPreview: boundedOutput(combined),
+    subtests: Object.freeze(parseTapSubtests(stdout))
   });
 }
 
@@ -229,9 +284,13 @@ export async function createCertificationBundle(options = {}) {
     options.sourceRevision ? Promise.resolve(options.sourceRevision) : sourceRevisionEvidence(repositoryRoot)
   ]);
   const provenanceStatuses = new Map((provenanceReport.checks ?? []).map((entry) => [entry.testId, entry.status]));
+  const unitEvidence = requirementEvidence(unit.subtests ?? []);
+  const securityEvidence = requirementEvidence(security.subtests ?? []);
   const records = LEVEL_B_TEST_CATALOG.map((entry) => {
-    if (entry.suite === "unit") return mappedResult(entry, unit.passed === true ? "PASS" : "FAIL");
-    if (entry.suite === "security") return mappedResult(entry, security.passed === true ? "PASS" : "FAIL");
+    if (entry.suite === "unit" || entry.suite === "security") {
+      const evidence = (entry.suite === "unit" ? unitEvidence : securityEvidence).get(entry.testId);
+      return mappedResult(entry, evidence?.found && evidence.ok ? "PASS" : "FAIL");
+    }
     return mappedResult(entry, provenanceStatuses.get(entry.testId) === "PASS" ? "PASS" : "FAIL");
   });
   const passed = records.filter((entry) => entry.status === "PASS").length;

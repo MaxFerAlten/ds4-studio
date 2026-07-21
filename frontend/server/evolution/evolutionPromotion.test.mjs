@@ -201,7 +201,7 @@ test("SEC-TOCTOU-001 post-apply tree hash mismatch automatically reverts", async
   }
 });
 
-test("SEC-APPROVAL-001/002 approval binds hashes and is single-use", async () => {
+test("SEC-APPROVAL-001/002/SEC-ISOLATION-003 approval binds hashes, is single-use, and is invalid across runs", async () => {
   const f = await setup();
   try {
     const approval = await f.service.issueApproval({
