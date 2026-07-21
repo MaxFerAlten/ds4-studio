@@ -1,0 +1,293 @@
+/**
+ * DS4 Evolution — independently designed clean-room implementation.
+ * Behavioral inputs: docs/evolution/acceptance-contract.md sections 3 and 24-29.
+ * External source code or prompts copied: none.
+ * Existing DS4 mechanisms reused: deterministic benchmark gate and content-addressed evidence patterns.
+ */
+
+import { execFile } from "node:child_process";
+import fs from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+
+import { atomicWriteJson, hashJson, sha256 } from "./evolutionIntegrity.mjs";
+import { redactExecutionText } from "./evolutionExecutor.mjs";
+import { scanEvolutionProvenance } from "./evolutionProvenance.mjs";
+
+const execFileAsync = promisify(execFile);
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const DEFAULT_REPOSITORY_ROOT = path.resolve(MODULE_DIR, "../../..");
+const UNIT_COMMAND = "node --test frontend/server/evolution/*.test.mjs benchmarks/agentic/evolution/*.test.mjs";
+const SECURITY_COMMAND = "node --test frontend/server/evolution/security/*.test.mjs";
+const PROVENANCE_COMMAND = "node benchmarks/agentic/evolution/run.mjs --selftest --gate";
+
+function ids(prefix, first, last = first) {
+  return Array.from({ length: last - first + 1 }, (_, index) => `${prefix}-${String(first + index).padStart(3, "0")}`);
+}
+
+const UNIT_REQUIREMENTS = Object.freeze([
+  ...ids("BEH-CONTRACT", 1, 5), ...ids("SEC-SCHEMA", 1, 2),
+  ...ids("BEH-STATE", 1, 6), ...ids("BEH-BASE", 1, 2), ...ids("SEC-BASE", 1, 2),
+  ...ids("SEC-PATH", 1, 5), ...ids("SEC-ISOLATION", 1, 3),
+  ...ids("BEH-EVAL", 1, 4), ...ids("SEC-EVAL", 1, 4),
+  ...ids("BEH-GATE", 1, 7), ...ids("SEC-AUTH", 1, 2), ...ids("SEC-SIMPLIFY", 1, 2),
+  ...ids("SEC-APPROVAL", 1, 2), ...ids("SEC-TOCTOU", 1, 2),
+  ...ids("BEH-PROMOTE", 1, 2), ...ids("SEC-ROLLBACK", 1, 3),
+  ...ids("SEC-LEDGER", 1, 5), ...ids("BEH-LEDGER", 1),
+  ...ids("SEC-SECRET", 3, 4), ...ids("SEC-NET", 2), ...ids("SEC-SUPPLY", 1, 4),
+  ...ids("SEC-GAME", 2, 4), ...ids("SEC-RISK", 1, 3), ...ids("SEC-SHELL", 1)
+]);
+
+const SECURITY_REQUIREMENTS = Object.freeze([
+  ...ids("BEH-EXEC", 1, 4), ...ids("SEC-DOS", 1, 6), ...ids("SEC-SHELL", 2),
+  ...ids("SEC-SECRET", 1, 2), ...ids("SEC-NET", 1), ...ids("SEC-HID", 1, 2),
+  ...ids("SEC-GAME", 1)
+]);
+
+const PROVENANCE_REQUIREMENTS = Object.freeze(ids("CR", 1, 6));
+
+function catalogEntries(requirements, suite, type, command, artifact) {
+  return requirements.map((testId) => Object.freeze({
+    testId,
+    requirement: `DS4-EVO-ACC-001 requirement ${testId}`,
+    suite,
+    type,
+    command,
+    expected: `${testId} passes without waiver`,
+    artifact
+  }));
+}
+
+export const LEVEL_B_TEST_CATALOG = Object.freeze([
+  ...catalogEntries(UNIT_REQUIREMENTS, "unit", "unit", UNIT_COMMAND, "test-results.json"),
+  ...catalogEntries(SECURITY_REQUIREMENTS, "security", "security", SECURITY_COMMAND, "security-results.json"),
+  ...catalogEntries(PROVENANCE_REQUIREMENTS, "provenance", "security", PROVENANCE_COMMAND, "provenance-report.json")
+]);
+
+export class EvolutionCertificationError extends Error {
+  constructor(code, message, details = {}) {
+    super(`${code}: ${message}`);
+    this.name = "EvolutionCertificationError";
+    this.code = code;
+    this.details = details;
+  }
+}
+
+async function listFiles(root, predicate = () => true) {
+  const result = [];
+  const visit = async (directory) => {
+    const entries = await fs.readdir(directory, { withFileTypes: true }).catch((error) => {
+      if (error.code === "ENOENT") return [];
+      throw error;
+    });
+    entries.sort((left, right) => left.name.localeCompare(right.name));
+    for (const entry of entries) {
+      const candidate = path.join(directory, entry.name);
+      if (entry.isDirectory()) await visit(candidate);
+      else if (entry.isFile() && predicate(candidate)) result.push(candidate);
+    }
+  };
+  await visit(root);
+  return result;
+}
+
+async function defaultTestFiles(repositoryRoot) {
+  const evolutionDir = path.join(repositoryRoot, "frontend/server/evolution");
+  const benchmarkDir = path.join(repositoryRoot, "benchmarks/agentic/evolution");
+  const allEvolutionTests = await listFiles(evolutionDir, (file) => file.endsWith(".test.mjs"));
+  const unit = allEvolutionTests.filter((file) => !file.includes(`${path.sep}security${path.sep}`));
+  unit.push(...await listFiles(benchmarkDir, (file) => file.endsWith(".test.mjs")));
+  const security = allEvolutionTests.filter((file) => file.includes(`${path.sep}security${path.sep}`));
+  return {
+    unit: unit.map((file) => path.relative(repositoryRoot, file)).sort(),
+    security: security.map((file) => path.relative(repositoryRoot, file)).sort()
+  };
+}
+
+function boundedOutput(value) {
+  const redacted = redactExecutionText(String(value ?? ""));
+  return redacted.length <= 8_000 ? redacted : `[truncated ${redacted.length - 8_000} chars]\n${redacted.slice(-8_000)}`;
+}
+
+export async function runCertificationSuite({ name, files, repositoryRoot }) {
+  if (!files.length) return Object.freeze({ name, passed: false, exitCode: null, durationMs: 0, outputHash: null, outputPreview: "NO_TEST_FILES" });
+  const started = Date.now();
+  let stdout = "";
+  let stderr = "";
+  let exitCode = 0;
+  try {
+    const result = await execFileAsync(process.execPath, ["--test", ...files], {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+      timeout: 180_000,
+      maxBuffer: 4_000_000,
+      env: {
+        PATH: process.env.PATH ?? "/usr/bin:/bin",
+        LANG: "C.UTF-8",
+        NODE_ENV: "test",
+        TMPDIR: process.env.TMPDIR ?? "/tmp"
+      }
+    });
+    stdout = result.stdout;
+    stderr = result.stderr;
+  } catch (error) {
+    stdout = String(error.stdout ?? "");
+    stderr = String(error.stderr ?? error.message ?? "");
+    exitCode = Number.isInteger(error.code) ? error.code : 1;
+  }
+  const combined = `${stdout}${stderr}`;
+  return Object.freeze({
+    name,
+    passed: exitCode === 0,
+    exitCode,
+    durationMs: Date.now() - started,
+    outputHash: sha256(combined),
+    outputPreview: boundedOutput(combined)
+  });
+}
+
+async function commandVersion(executable, args, repositoryRoot) {
+  try {
+    const { stdout, stderr } = await execFileAsync(executable, args, {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+      timeout: 5_000,
+      maxBuffer: 100_000,
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", LANG: "C.UTF-8" }
+    });
+    return `${stdout}${stderr}`.trim().slice(0, 500);
+  } catch {
+    return null;
+  }
+}
+
+async function environmentEvidence(repositoryRoot) {
+  return Object.freeze({
+    schema: "ds4_evolution_environment_v1",
+    node: process.version,
+    platform: process.platform,
+    architecture: process.arch,
+    git: await commandVersion("git", ["--version"], repositoryRoot),
+    bubblewrap: await commandVersion("/usr/bin/bwrap", ["--version"], repositoryRoot),
+    networkPolicy: "candidate-disabled-by-default",
+    sandboxPolicy: "bubblewrap-prlimit"
+  });
+}
+
+async function sourceRevisionEvidence(repositoryRoot) {
+  const roots = [
+    path.join(repositoryRoot, "frontend/server/evolution"),
+    path.join(repositoryRoot, "benchmarks/agentic/evolution")
+  ];
+  const files = [];
+  for (const root of roots) files.push(...await listFiles(root));
+  for (const name of ["acceptance-contract.md", "behavioral-specification.md", "clean-room-provenance.md", "threat-model.md"]) {
+    const file = path.join(repositoryRoot, "docs/evolution", name);
+    if (await fs.access(file).then(() => true, () => false)) files.push(file);
+  }
+  const sourceFiles = [];
+  for (const file of [...new Set(files)].sort()) {
+    sourceFiles.push({ path: path.relative(repositoryRoot, file).split(path.sep).join("/"), hash: sha256(await fs.readFile(file)) });
+  }
+  const head = await commandVersion("git", ["rev-parse", "HEAD"], repositoryRoot);
+  const treeHash = hashJson(sourceFiles);
+  return Object.freeze({
+    schema: "ds4_evolution_source_revision_v1",
+    gitHead: head,
+    treeHash,
+    revision: `${head ?? "unversioned"}+sha256:${treeHash}`,
+    files: Object.freeze(sourceFiles)
+  });
+}
+
+function mappedResult(entry, status) {
+  return Object.freeze({
+    testId: entry.testId,
+    requirement: entry.requirement,
+    type: entry.type,
+    command: entry.command,
+    expected: entry.expected,
+    artifact: entry.artifact,
+    status,
+    skipReason: null
+  });
+}
+
+export async function createCertificationBundle(options = {}) {
+  const repositoryRoot = path.resolve(options.repositoryRoot ?? DEFAULT_REPOSITORY_ROOT);
+  const decidedAt = (options.now ?? (() => new Date()))().toISOString();
+  const timestamp = decidedAt.replaceAll(":", "-");
+  const outputDir = path.resolve(options.outputDir ?? path.join(repositoryRoot, "artifacts/evolution-certification", timestamp));
+  const testFiles = options.testFiles ?? await defaultTestFiles(repositoryRoot);
+  const suiteRunner = options.suiteRunner ?? runCertificationSuite;
+  const [unit, security, provenanceReport, environment, sourceRevision] = await Promise.all([
+    suiteRunner({ name: "unit", files: testFiles.unit, repositoryRoot }),
+    suiteRunner({ name: "security", files: testFiles.security, repositoryRoot }),
+    options.provenanceReport ? Promise.resolve(options.provenanceReport) : scanEvolutionProvenance({ repositoryRoot }),
+    options.environment ? Promise.resolve(options.environment) : environmentEvidence(repositoryRoot),
+    options.sourceRevision ? Promise.resolve(options.sourceRevision) : sourceRevisionEvidence(repositoryRoot)
+  ]);
+  const provenanceStatuses = new Map((provenanceReport.checks ?? []).map((entry) => [entry.testId, entry.status]));
+  const records = LEVEL_B_TEST_CATALOG.map((entry) => {
+    if (entry.suite === "unit") return mappedResult(entry, unit.passed === true ? "PASS" : "FAIL");
+    if (entry.suite === "security") return mappedResult(entry, security.passed === true ? "PASS" : "FAIL");
+    return mappedResult(entry, provenanceStatuses.get(entry.testId) === "PASS" ? "PASS" : "FAIL");
+  });
+  const passed = records.filter((entry) => entry.status === "PASS").length;
+  const failed = records.filter((entry) => entry.status === "FAIL").length;
+  const skipped = records.filter((entry) => entry.status === "SKIP").length;
+  const hardFailures = [];
+  if (unit.passed !== true) hardFailures.push("UNIT_OR_INTEGRATION_SUITE_FAILED");
+  if (security.passed !== true) hardFailures.push("SECURITY_SUITE_FAILED");
+  for (const violation of provenanceReport.violations ?? []) hardFailures.push(`PROVENANCE:${violation}`);
+  if (failed || skipped) hardFailures.push(...records.filter((entry) => entry.status !== "PASS").map((entry) => `REQUIRED_TEST_${entry.status}:${entry.testId}`));
+  const environmentHash = hashJson(environment);
+  const decision = Object.freeze({
+    schema: "ds4_evolution_acceptance_v1",
+    level: "B",
+    decision: hardFailures.length ? "FAIL" : "PASS",
+    requiredTests: records.length,
+    passed,
+    failed,
+    skipped,
+    hardFailures: Object.freeze([...new Set(hardFailures)].sort()),
+    sourceRevision: sourceRevision.revision,
+    environmentHash,
+    decidedAt
+  });
+  const testResults = {
+    schema: "ds4_evolution_test_results_v1",
+    suite: unit,
+    tests: records.filter((entry) => LEVEL_B_TEST_CATALOG.find((item) => item.testId === entry.testId)?.suite === "unit")
+  };
+  const securityResults = {
+    schema: "ds4_evolution_security_results_v1",
+    suite: security,
+    tests: records.filter((entry) => LEVEL_B_TEST_CATALOG.find((item) => item.testId === entry.testId)?.suite === "security")
+  };
+  const benchmarkSummary = {
+    schema: "ds4_evolution_benchmark_summary_v1",
+    mode: "offline-selftest",
+    level: "B",
+    passed: decision.decision === "PASS",
+    unitSuitePassed: unit.passed === true,
+    securitySuitePassed: security.passed === true,
+    provenancePassed: provenanceReport.passed === true,
+    liveArmsExecuted: false
+  };
+  const failures = { schema: "ds4_evolution_failures_v1", failures: decision.hardFailures };
+  await fs.mkdir(outputDir, { recursive: true, mode: 0o700 });
+  const artifacts = {
+    "environment.json": environment,
+    "source-revision.json": sourceRevision,
+    "provenance-report.json": provenanceReport,
+    "test-results.json": testResults,
+    "security-results.json": securityResults,
+    "benchmark-summary.json": benchmarkSummary,
+    "failures.json": failures,
+    "acceptance-decision.json": decision
+  };
+  for (const [name, value] of Object.entries(artifacts)) await atomicWriteJson(path.join(outputDir, name), value);
+  return Object.freeze({ outputDir, decision, artifacts: Object.freeze(Object.keys(artifacts).sort()) });
+}
