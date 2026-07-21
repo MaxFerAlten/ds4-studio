@@ -59,15 +59,23 @@ test("BEH-GATE-002 correctness regression is rejected", () => {
   assert.ok(result.hardFailures.includes("METRIC_REGRESSION:score"));
 });
 
-test("BEH-GATE-003/SEC-SIMPLIFY security failure cannot be traded for improvement", () => {
+test("BEH-GATE-003/SEC-SIMPLIFY-001/SEC-SIMPLIFY-002/SEC-GAME-002 security failure blocks any improving metric, including complexity reduction, from being traded for promotion", () => {
   const input = gateInput({ securityPolicy: { passed: false, violations: ["PATH_VALIDATION_REMOVED"] } });
   input.candidateEvaluation.aggregateMetrics.score = 1000;
   const result = decidePromotion(input);
   assert.equal(result.decision, "REJECT");
   assert.ok(result.hardFailures.includes("SECURITY_POLICY_FAILED"));
+
+  const complexityInput = gateInput({ securityPolicy: { passed: false, violations: ["SAFETY_CHECK_REMOVED"] } });
+  complexityInput.taskContract.metrics = [{ name: "complexity", direction: "minimize", required: true, baselineTolerance: 0, target: null, weight: 1 }];
+  complexityInput.baselineEvaluation.aggregateMetrics = { complexity: 100 };
+  complexityInput.candidateEvaluation.aggregateMetrics = { complexity: 10 };
+  const complexityResult = decidePromotion(complexityInput);
+  assert.equal(complexityResult.decision, "REJECT");
+  assert.ok(complexityResult.hardFailures.includes("SECURITY_POLICY_FAILED"));
 });
 
-test("BEH-GATE-004/005 budget and rollback failures reject", () => {
+test("BEH-GATE-004/005/SEC-GAME-003 budget and rollback failures reject", () => {
   assert.equal(decidePromotion(gateInput({ budgetState: { exceeded: true } })).decision, "REJECT");
   assert.equal(decidePromotion(gateInput({ rollbackArtifact: null })).decision, "REJECT");
 });
@@ -135,7 +143,7 @@ test("SEC-RISK-001..003 native, build, and security paths cannot auto-promote", 
   assert.equal(result.riskLevel, "HIGH");
 });
 
-test("metric directions maximize, minimize, exact, and boolean are enforced", () => {
+test("BEH-EVAL-002 metric directions maximize, minimize, exact, and boolean are enforced", () => {
   for (const [direction, baseline, candidate, target] of [
     ["maximize", 10, 9, null],
     ["minimize", 10, 11, null],

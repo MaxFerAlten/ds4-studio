@@ -114,6 +114,22 @@ test("Level B deterministic flow captures baseline, evaluates, gates, promotes, 
   }
 });
 
+test("BEH-BASE-002 a failed required baseline evaluator blocks BASELINE_READY", async () => {
+  const f = await setup();
+  try {
+    f.orchestrator.evaluatorRegistry.evaluateAll = async ({ revision }) => ({
+      evaluationVersion: "ds4_evolution_evaluation_v1", revision, status: "failed",
+      evaluators: [{ id: "correctness", required: true, status: "failed", metrics: {}, violations: ["FIXTURE_FAILURE"], reproducibility: { commandHash: "a".repeat(64), environmentHash: "b".repeat(64) } }],
+      aggregateMetrics: {},
+      hardFailures: ["REQUIRED_EVALUATOR_FAILED:correctness"]
+    });
+    const result = await f.orchestrator.prepareBaseline(f.runId);
+    assert.equal(result.state, "FAILED");
+  } finally {
+    await fs.rm(f.directory, { recursive: true, force: true });
+  }
+});
+
 test("security evaluator failure deterministically rejects an improving candidate", async () => {
   const f = await setup({ candidateScore: 100, securityPassed: true });
   try {

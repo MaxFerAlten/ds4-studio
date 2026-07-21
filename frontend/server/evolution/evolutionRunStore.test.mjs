@@ -179,7 +179,7 @@ test("SEC-BASE-002 a self-consistent baseline rewrite is rejected by the ledger 
   }
 });
 
-test("BEH-LEDGER-001 externalizes large output and enforces run ownership", async () => {
+test("BEH-LEDGER-001/SEC-ISOLATION-002 externalizes large output and blocks cross-run evidence access", async () => {
   const f = await fixture();
   try {
     const reference = await f.store.putBlob(f.runId, "large-output".repeat(10_000));

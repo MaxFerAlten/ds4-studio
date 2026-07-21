@@ -53,7 +53,7 @@ test("BEH-EXEC-001/002 captures successful and failed processes", async () => {
   }
 });
 
-test("BEH-EXEC-003 wall timeout terminates the process group", async () => {
+test("BEH-EXEC-003/SEC-DOS-001 wall timeout terminates the process group", async () => {
   const root = await workspace();
   try {
     const result = await execute(root, ["-e", "setInterval(() => {}, 1000)"], { limits: { timeoutMs: 100 } });
@@ -196,6 +196,45 @@ test("SEC-SHELL-002 metacharacters cannot create a second command", async () => 
     await assert.rejects(() => fs.access(path.join(root, "src", "owned")));
   } finally {
     await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("SEC-DOS-003 process-count limit enforced", async () => {
+  const root = await workspace();
+  try {
+    const result = await execute(root, ["-e", "process.stdout.write('ok')"], { limits: { maxProcesses: 2 } });
+    assert.notEqual(result.status, "success");
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("SEC-DOS-004 memory limit enforced where supported", async () => {
+  const root = await workspace();
+  const script = "try{const chunks=[];for(let i=0;i<300;i++){chunks.push(Buffer.alloc(10*1024*1024))};process.stdout.write('allocated')}catch{process.exit(9)}";
+  try {
+    const result = await execute(root, ["-e", script], { limits: { maxMemoryBytes: 805_306_368 } });
+    assert.notEqual(result.status, "success");
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("SEC-SECRET-002 a .env file outside the workspace is inaccessible", async () => {
+  const root = await workspace();
+  const secretRoot = await fs.mkdtemp(path.join(os.tmpdir(), "ds4-evo-secret-"));
+  const marker = "DS4_DOTENV_SECRET_MARKER_c41a";
+  const envFile = path.join(secretRoot, ".env");
+  await fs.writeFile(envFile, `API_KEY=${marker}\n`, "utf8");
+  const script = "const fs=require('node:fs');let value='blocked';try{value=fs.readFileSync(process.argv[1],'utf8')}catch{};process.stdout.write(value)";
+  try {
+    const result = await execute(root, ["-e", script, envFile]);
+    assert.equal(result.status, "success");
+    assert.equal(result.stdoutPreview, "blocked");
+    assert.equal(result.stdoutPreview.includes(marker), false);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(secretRoot, { recursive: true, force: true });
   }
 });
 
