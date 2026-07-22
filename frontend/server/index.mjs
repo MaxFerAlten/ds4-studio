@@ -118,6 +118,7 @@ import { EvolutionCandidateBuilder } from "./evolution/evolutionCandidateBuilder
 import { EvolutionCritic } from "./evolution/evolutionCritic.mjs";
 import { EvolutionEvaluatorRegistry } from "./evolution/evolutionEvaluator.mjs";
 import { EvolutionExecutor } from "./evolution/evolutionExecutor.mjs";
+import { EvolutionFeedbackContextBuilder } from "./evolution/evolutionFeedbackContext.mjs";
 import { EvolutionLoopController } from "./evolution/evolutionLoopController.mjs";
 import { EvolutionModelClient } from "./evolution/evolutionModelClient.mjs";
 import { EvolutionOrchestrator } from "./evolution/evolutionOrchestrator.mjs";
@@ -3123,9 +3124,17 @@ const evolutionOrchestrator = new EvolutionOrchestrator({
     return validation.ok ? evolutionPostApplySmoke() : { passed: false, reasonCode: "CONFIG_INVALID" };
   }
 });
+const evolutionFeedbackContext = new EvolutionFeedbackContextBuilder({
+  runStore: evolutionRunStore,
+  maxBytes: config.evolution.maxFeedbackContextBytes
+});
 const evolutionRuntime = new EvolutionRuntime({
   orchestrator: evolutionOrchestrator,
-  loopController: new EvolutionLoopController({ orchestrator: evolutionOrchestrator, proposer: evolutionProposer })
+  loopController: new EvolutionLoopController({
+    orchestrator: evolutionOrchestrator,
+    proposer: evolutionProposer,
+    feedbackContextBuilder: evolutionFeedbackContext
+  })
 });
 app.use("/api/evolution", createEvolutionRouter({
   runtime: evolutionRuntime,

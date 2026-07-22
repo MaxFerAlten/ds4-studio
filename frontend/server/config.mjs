@@ -213,6 +213,10 @@ function validateEvolutionConfig(evolution = {}) {
   for (const key of ["maxPacketBytes", "maxArtifactReadBytes"]) {
     if (!Number.isSafeInteger(evolution[key]) || evolution[key] < 1024 || evolution[key] > 10_000_000) errors[key] = "must be between 1024 and 10000000";
   }
+  if (!Number.isSafeInteger(evolution.maxFeedbackContextBytes) ||
+      evolution.maxFeedbackContextBytes < 8192 || evolution.maxFeedbackContextBytes > 1_000_000) {
+    errors.maxFeedbackContextBytes = "must be between 8192 and 1000000";
+  }
   if (typeof evolution.writeTokenEnv !== "string" || !/^[A-Z_][A-Z0-9_]{1,127}$/.test(evolution.writeTokenEnv)) {
     errors.writeTokenEnv = "must be an environment variable name";
   }

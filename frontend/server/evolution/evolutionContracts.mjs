@@ -342,7 +342,7 @@ export function validateProposal(input, taskContract, options = {}) {
   const issues = [];
   knownKeys(input, new Set([
     "proposalVersion", "revision", "summary", "hypothesis", "targetFiles", "targetSymbols",
-    "plannedChanges", "testsToRun", "knownRisks", "stopInstead", "impactAnalysis"
+    "plannedChanges", "testsToRun", "knownRisks", "stopInstead", "impactAnalysis", "feedbackContextHash"
   ]), "", issues);
   if (input?.proposalVersion !== EVOLUTION_PROPOSAL_VERSION) {
     issue(issues, "UNSUPPORTED_PROPOSAL_VERSION", "proposalVersion", "unsupported proposalVersion");
@@ -374,6 +374,13 @@ export function validateProposal(input, taskContract, options = {}) {
   if (targetSymbols.length && !plainObject(input?.impactAnalysis)) {
     issue(issues, "MISSING_IMPACT_ANALYSIS", "impactAnalysis", "targeted symbols require GitNexus impact evidence");
   }
+  const feedbackContextHash = requireString(input?.feedbackContextHash, "feedbackContextHash", issues, { max: 64 });
+  if (!/^[a-f0-9]{64}$/.test(feedbackContextHash)) {
+    issue(issues, "INVALID_HASH", "feedbackContextHash", "must be sha256 hex");
+  }
+  if (options.feedbackContextHash !== undefined && feedbackContextHash !== options.feedbackContextHash) {
+    issue(issues, "FEEDBACK_CONTEXT_HASH_MISMATCH", "feedbackContextHash", "proposal is not bound to the supplied feedback context");
+  }
   throwIssues(issues);
   return Object.freeze({
     ...input,
@@ -381,7 +388,8 @@ export function validateProposal(input, taskContract, options = {}) {
     hypothesis,
     targetFiles: Object.freeze([...new Set(targetFiles)].sort()),
     targetSymbols: Object.freeze(targetSymbols),
-    testsToRun: Object.freeze(testsToRun)
+    testsToRun: Object.freeze(testsToRun),
+    feedbackContextHash
   });
 }
 
