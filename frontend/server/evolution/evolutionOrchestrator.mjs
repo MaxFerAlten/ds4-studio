@@ -8,10 +8,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
-import { captureBaselineSnapshot } from "./evolutionRunStore.mjs";
+import { captureBaselineSnapshot, EvolutionRunStoreError } from "./evolutionRunStore.mjs";
 import { decidePromotion } from "./evolutionPromotionGate.mjs";
 import { hashJson, sha256, timingSafeHexEqual } from "./evolutionIntegrity.mjs";
 import { buildEvidencePacket } from "./evolutionEvidencePacket.mjs";
+import { isEvolutionEnabled } from "./evolutionRollout.mjs";
 
 export class EvolutionOrchestratorError extends Error {
   constructor(code, message, details = {}) {
@@ -201,6 +202,9 @@ export class EvolutionOrchestrator {
   }
 
   async createRun(taskInput, options = {}) {
+    const repositoryRoot = this.workspaceManager.repositoryRoot;
+    const { enabled, reason } = await isEvolutionEnabled(repositoryRoot);
+    if (!enabled) throw new EvolutionRunStoreError(reason, "EVOLUTION_KILL_SWITCH_ACTIVE");
     return this.runStore.createRun(taskInput, options);
   }
 
@@ -650,6 +654,8 @@ export class EvolutionOrchestrator {
   }
 
   async runManualCandidate(runId, input) {
+    const { enabled } = await isEvolutionEnabled(this.workspaceManager.repositoryRoot);
+    if (!enabled) throw new EvolutionRunStoreError("Evolution disabled by kill switch", "EVOLUTION_KILL_SWITCH_ACTIVE");
     const built = await this.buildRevision(runId, input);
     if (built.state === "STOPPED") return built;
     const evaluated = await this.executeAndEvaluate(runId, built.revision, built.workspace.root);

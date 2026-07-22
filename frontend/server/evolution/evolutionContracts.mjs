@@ -305,6 +305,37 @@ export function validateEvolutionTask(input, options = {}) {
   if (isV2 && approvalPolicy.mode !== "manual") {
     issue(issues, "INVALID_APPROVAL_POLICY", "approvalPolicy.mode", "Level C/D promotion must remain manual");
   }
+
+  const hasSecurityEvaluator = evaluators.some((e) =>
+    e.id === "security-policy" || e.configuration?.type === "security-policy"
+  );
+  if (!hasSecurityEvaluator) {
+    issue(issues, "MISSING_SECURITY_EVALUATOR", "evaluators",
+      "task must include a security evaluator (id: security-policy or configuration.type: security-policy)");
+  }
+
+  const hasSecurityPassedMetric = metrics.some((m) =>
+    m.name === "security_passed" && m.direction === "boolean" && m.required && m.target === true
+  );
+  if (!hasSecurityPassedMetric) {
+    issue(issues, "MISSING_SECURITY_PASSED_METRIC", "metrics",
+      "task must include a required boolean metric 'security_passed' with target true");
+  }
+
+  const SECURITY_IMMUTABLE_PATTERNS = [
+    /(^|\/)evolutionEvaluator(\/|\.|$)/i,
+    /(^|\/)evolutionPromotionGate(\/|\.|$)/i,
+    /(^|\/)evolutionPromotion(\/|\.|$)/i,
+    /(^|\/)hidden-fixtures?(\/|\.|$)/i
+  ];
+  for (const pattern of SECURITY_IMMUTABLE_PATTERNS) {
+    const matchesMutable = mutablePaths.some((p) => pattern.test(p));
+    if (matchesMutable) {
+      issue(issues, "MUTABLE_SECURITY_PATH", "mutablePaths",
+        `${pattern} matches a path that must be immutable for security contract enforcement`);
+    }
+  }
+
   throwIssues(issues);
   const contract = {
     contractVersion: version,

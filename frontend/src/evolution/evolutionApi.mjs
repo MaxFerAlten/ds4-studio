@@ -51,6 +51,10 @@ export function rollbackEvolutionRevision(runId, revision, reviewer, token, { fe
   return requestJson(`/api/evolution/runs/${encodeURIComponent(runId)}/revisions/${revision}/rollback`, { method: "POST", body: { reviewer }, token, fetchImpl });
 }
 
+export function submitEvolutionCandidate(runId, candidate, token, { fetchImpl = fetch } = {}) {
+  return requestJson(`/api/evolution/runs/${encodeURIComponent(runId)}/candidates`, { method: "POST", body: candidate, token, fetchImpl });
+}
+
 export function openEvolutionStream(runId, afterSequence, onEvent, { EventSourceImpl = EventSource } = {}) {
   const stream = new EventSourceImpl(`/api/evolution/runs/${encodeURIComponent(runId)}/stream?afterSequence=${afterSequence || 0}`);
   stream.addEventListener("message", (message) => {

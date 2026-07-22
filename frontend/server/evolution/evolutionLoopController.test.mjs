@@ -258,13 +258,16 @@ async function setupIntegration({ maxNoImprovementRevisions = 5 } = {}) {
     objective: "Reach score two",
     workspaceRoot: repository,
     mutablePaths: ["src"],
-    immutablePaths: ["checks"],
+    immutablePaths: ["checks", "evolutionPromotionGate.mjs", "evolutionPromotion.mjs", "hidden-fixtures"],
     baselineRef: "snapshot",
     evaluators: [
       { id: "correctness", required: true, configuration: {} },
       { id: "security-policy", required: true, configuration: {} }
     ],
-    metrics: [{ name: "score", direction: "maximize", required: true, baselineTolerance: 0, target: 3, weight: 1 }],
+    metrics: [
+      { name: "score", direction: "maximize", required: true, baselineTolerance: 0, target: 3, weight: 1 },
+      { name: "security_passed", direction: "boolean", required: true, baselineTolerance: 0, target: true, weight: 1 }
+    ],
     budgets: {
       maxRevisions: 3, maxFilesChanged: 2, maxAddedLines: 10, maxDeletedLines: 10,
       maxWallTimeMsPerRevision: 5_000, maxPromptTokensPerRevision: 1_000, maxCompletionTokensPerRevision: 1_000,

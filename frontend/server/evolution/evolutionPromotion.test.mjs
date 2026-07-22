@@ -27,10 +27,16 @@ function task(repository) {
     objective: "Promote and restore a bounded patch",
     workspaceRoot: repository,
     mutablePaths: ["src/value.txt"],
-    immutablePaths: ["checks/oracle.txt"],
+    immutablePaths: ["checks/oracle.txt", "evolutionPromotionGate.mjs", "evolutionPromotion.mjs", "hidden-fixtures"],
     baselineRef: "snapshot",
-    evaluators: [{ id: "fixture", required: true, configuration: {} }],
-    metrics: [{ name: "correct", direction: "boolean", required: true, baselineTolerance: 0, target: true, weight: 1 }],
+    evaluators: [
+      { id: "fixture", required: true, configuration: {} },
+      { id: "security-policy", required: true, configuration: {} }
+    ],
+    metrics: [
+      { name: "correct", direction: "boolean", required: true, baselineTolerance: 0, target: true, weight: 1 },
+      { name: "security_passed", direction: "boolean", required: true, baselineTolerance: 0, target: true, weight: 1 }
+    ],
     budgets: {
       maxRevisions: 2, maxFilesChanged: 2, maxAddedLines: 10, maxDeletedLines: 10,
       maxWallTimeMsPerRevision: 5_000, maxPromptTokensPerRevision: 1_000, maxCompletionTokensPerRevision: 1_000

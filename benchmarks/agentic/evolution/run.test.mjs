@@ -11,7 +11,12 @@ test("offline certification CLI parses the stable selftest gate command", () => 
     gate: true,
     live: false,
     level: "B",
-    outputDir: "/tmp/evidence"
+    outputDir: "/tmp/evidence",
+    runs: null,
+    tasks: null,
+    model: null,
+    modelBaseUrl: null,
+    token: null
   });
 });
 
@@ -23,4 +28,8 @@ test("offline certification CLI accepts explicit Level C and D catalogs", () => 
 
 test("unknown arguments fail closed", () => {
   assert.throws(() => parseArguments(["--enable-unsafe"]), /UNKNOWN_ARGUMENT/);
+});
+
+test("--selftest and --live are mutually exclusive", () => {
+  assert.throws(() => parseArguments(["--selftest", "--live"]), /MUTUALLY_EXCLUSIVE/);
 });

@@ -1,7 +1,8 @@
-/** Test origin: DS4 acceptance requirements BEH-API-001, SEC-API-001, and SEC-UI-002. */
+/** Test origin: DS4 acceptance requirements BEH-API-001, SEC-API-001, SEC-UI-002, BEH-API-004/005, SEC-API-003/004/005. */
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import express from "express";
 
 import { assertConfiguredLevel, assertReviewBinding, createEvolutionRouter } from "./evolutionApi.mjs";
 import { EvolutionAuth } from "./evolutionAuth.mjs";
@@ -53,4 +54,117 @@ test("SEC-API-001 configured maxLevel fails closed before a higher-level run is 
     () => assertConfiguredLevel({ contractVersion: "ds4_evolution_task_v2", automation: { level: "D" } }, "C"),
     (error) => error.code === "EVOLUTION_LEVEL_DISABLED" && error.status === 403
   );
+});
+
+test("BEH-API-004 SEC-API-003 manual candidate route invokes runManualCandidate exactly once and rejects automated runs", async () => {
+  const token = "t".repeat(32);
+  const auth = new EvolutionAuth({ tokenEnv: "TOKEN", env: { TOKEN: token } });
+  let manualCalls = 0;
+  let lastInput = null;
+  const fakeRun = {
+    manifest: { taskContract: { contractVersion: "ds4_evolution_task_v1" } },
+    state: "BASELINE_READY"
+  };
+  const router = createEvolutionRouter({
+    runtime: {
+      orchestrator: {
+        async runManualCandidate(runId, input) {
+          manualCalls++;
+          lastInput = input;
+          return { state: "MANUAL_REVIEW", gateDecision: { decision: "MANUAL_REVIEW" } };
+        }
+      },
+      subscribe() { return () => {}; }
+    },
+    runStore: { async loadRun() { return fakeRun; } },
+    auth,
+    views: { run(r) { return r; } }
+  });
+
+  const app = express();
+  app.use(express.json());
+  app.use("/api/evolution", router);
+
+  const server = app.listen(0);
+  const { port } = server.address();
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/evolution/runs/run-1/candidates`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ proposal: { revision: 1 }, patchText: "diff --git a/x b/x" })
+    });
+    assert.equal(res.status, 202);
+    const data = await res.json();
+    assert.equal(data.result.state, "MANUAL_REVIEW");
+    assert.equal(manualCalls, 1);
+    assert.deepEqual(lastInput, { proposal: { revision: 1 }, patchText: "diff --git a/x b/x" });
+  } finally {
+    server.close();
+  }
+});
+
+test("SEC-API-004 missing token rejects manual candidate mutation", async () => {
+  const auth = new EvolutionAuth({ tokenEnv: "TOKEN", env: { TOKEN: "t".repeat(32) } });
+  const router = createEvolutionRouter({
+    runtime: { orchestrator: {}, subscribe() { return () => {}; } },
+    runStore: {},
+    auth,
+    views: {}
+  });
+  const app = express();
+  app.use(express.json());
+  app.use("/api/evolution", router);
+  const server = app.listen(0);
+  const { port } = server.address();
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/evolution/runs/run-1/candidates`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ proposal: {}, patchText: "diff" })
+    });
+    assert.ok(res.status >= 400);
+  } finally {
+    server.close();
+  }
+});
+
+test("SEC-API-005 body cannot inject repositoryRoot or workspaceRoot into manual candidate", async () => {
+  const token = "t".repeat(32);
+  const auth = new EvolutionAuth({ tokenEnv: "TOKEN", env: { TOKEN: token } });
+  let lastInput = null;
+  const fakeRun = {
+    manifest: { taskContract: { contractVersion: "ds4_evolution_task_v1" } },
+    state: "BASELINE_READY"
+  };
+  const router = createEvolutionRouter({
+    runtime: {
+      orchestrator: {
+        async runManualCandidate(_runId, input) {
+          lastInput = input;
+          return { state: "MANUAL_REVIEW" };
+        }
+      },
+      subscribe() { return () => {}; }
+    },
+    runStore: { async loadRun() { return fakeRun; } },
+    auth,
+    views: { run(r) { return r; } }
+  });
+  const app = express();
+  app.use(express.json());
+  app.use("/api/evolution", router);
+  const server = app.listen(0);
+  const { port } = server.address();
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/evolution/runs/run-1/candidates`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ proposal: { revision: 1 }, patchText: "diff", repositoryRoot: "/etc", workspaceRoot: "/tmp" })
+    });
+    assert.equal(res.status, 202);
+    assert.equal(lastInput.repositoryRoot, undefined);
+    assert.equal(lastInput.workspaceRoot, undefined);
+  } finally {
+    server.close();
+  }
 });

@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { createCertificationBundle, LEVEL_B_TEST_CATALOG, runCertificationSuite } from "./evolutionCertification.mjs";
+import { createCertificationBundle, LEVEL_B_TEST_CATALOG, LEVEL_C_TEST_CATALOG, runCertificationSuite } from "./evolutionCertification.mjs";
 
 const provenanceReport = {
   schema: "ds4_evolution_provenance_report_v1",
@@ -139,6 +139,203 @@ test("a subtest whose title lacks a requirement ID gives no credit, and a passin
     });
     assert.equal(result.decision.decision, "FAIL");
     assert.ok(result.decision.hardFailures.includes(`REQUIRED_TEST_FAIL:${unitSubtests[0].title}`));
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+function liveEvidenceFixture(overrides = {}) {
+  return {
+    schema: "ds4_evolution_live_evidence_v1",
+    executed: true,
+    runsRequested: 3,
+    runsCompleted: 3,
+    runsPassed: 3,
+    model: "gpt-4o",
+    modelEndpointHash: "a".repeat(64),
+    taskFixtureHash: "b".repeat(64),
+    runArtifacts: [
+      { runId: "run-001", artifactHash: "c".repeat(64), passed: true },
+      { runId: "run-002", artifactHash: "d".repeat(64), passed: true },
+      { runId: "run-003", artifactHash: "e".repeat(64), passed: true }
+    ],
+    rollbackDrillPassed: true,
+    sourceRevision: "fixture+sha256:test",
+    decidedAt: "2026-07-22T12:00:00.000Z",
+    ...overrides
+  };
+}
+
+test("BEH-CERT-001 Level B can pass offline with mode offline-selftest", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ds4-evo-cert-offline-"));
+  try {
+    const result = await createCertificationBundle({
+      repositoryRoot: root,
+      outputDir: path.join(root, "bundle"),
+      now: () => new Date("2026-01-01T00:00:00.000Z"),
+      testFiles: { unit: ["unit.test.mjs"], security: ["security.test.mjs"] },
+      suiteRunner: async ({ name }) => ({ name, passed: true, exitCode: 0, durationMs: 1, outputHash: "a".repeat(64), outputPreview: "ok", subtests: subtestsFor(name) }),
+      provenanceReport,
+      environment,
+      sourceRevision
+    });
+    assert.equal(result.decision.decision, "PASS");
+    assert.equal(result.decision.mode, "offline-selftest");
+    assert.equal(result.decision.liveEvidence, null);
+    const summary = JSON.parse(await fs.readFile(path.join(result.outputDir, "benchmark-summary.json"), "utf8"));
+    assert.equal(summary.mode, "offline-selftest");
+    assert.equal(summary.liveArmsExecuted, false);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("BEH-CERT-002 Level C fails without live evidence", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ds4-evo-cert-c-no-live-"));
+  try {
+    const levelCSubtests = LEVEL_C_TEST_CATALOG.filter((e) => e.suite === "unit").map((e) => ({ title: e.testId, ok: true }));
+    const result = await createCertificationBundle({
+      level: "C",
+      live: true,
+      repositoryRoot: root,
+      outputDir: path.join(root, "bundle"),
+      now: () => new Date("2026-01-01T00:00:00.000Z"),
+      testFiles: { unit: ["unit.test.mjs"], security: ["security.test.mjs"] },
+      suiteRunner: async ({ name }) => ({ name, passed: true, exitCode: 0, durationMs: 1, outputHash: "a".repeat(64), outputPreview: "ok", subtests: name === "unit" ? levelCSubtests : subtestsFor(name) }),
+      provenanceReport,
+      environment,
+      sourceRevision
+    });
+    assert.equal(result.decision.decision, "FAIL");
+    assert.ok(result.decision.hardFailures.includes("LIVE_EVIDENCE_MISSING"));
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("BEH-CERT-003 Level C passes with valid critic live evidence", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ds4-evo-cert-c-live-"));
+  try {
+    const levelCSubtests = LEVEL_C_TEST_CATALOG.filter((e) => e.suite === "unit").map((e) => ({ title: e.testId, ok: true }));
+    const result = await createCertificationBundle({
+      level: "C",
+      live: true,
+      liveEvidence: liveEvidenceFixture(),
+      repositoryRoot: root,
+      outputDir: path.join(root, "bundle"),
+      now: () => new Date("2026-01-01T00:00:00.000Z"),
+      testFiles: { unit: ["unit.test.mjs"], security: ["security.test.mjs"] },
+      suiteRunner: async ({ name }) => ({ name, passed: true, exitCode: 0, durationMs: 1, outputHash: "a".repeat(64), outputPreview: "ok", subtests: name === "unit" ? levelCSubtests : subtestsFor(name) }),
+      provenanceReport,
+      environment,
+      sourceRevision
+    });
+    assert.equal(result.decision.decision, "PASS");
+    assert.equal(result.decision.mode, "live");
+    assert.ok(result.decision.liveEvidence !== null);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("BEH-CERT-004 Level D fails with only mock evidence", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ds4-evo-cert-d-mock-"));
+  try {
+    const result = await createCertificationBundle({
+      level: "D",
+      live: true,
+      liveEvidence: null,
+      repositoryRoot: root,
+      outputDir: path.join(root, "bundle"),
+      now: () => new Date("2026-01-01T00:00:00.000Z"),
+      testFiles: { unit: ["unit.test.mjs"], security: ["security.test.mjs"] },
+      suiteRunner: async ({ name }) => ({ name, passed: true, exitCode: 0, durationMs: 1, outputHash: "a".repeat(64), outputPreview: "ok", subtests: subtestsFor(name) }),
+      provenanceReport,
+      environment,
+      sourceRevision
+    });
+    assert.equal(result.decision.decision, "FAIL");
+    assert.ok(result.decision.hardFailures.includes("LIVE_EVIDENCE_MISSING"));
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("BEH-CERT-005 Level D validates success threshold and rollback", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ds4-evo-cert-d-threshold-"));
+  try {
+    const tooFewPassed = liveEvidenceFixture({ runsRequested: 3, runsCompleted: 3, runsPassed: 1, rollbackDrillPassed: false });
+    const result = await createCertificationBundle({
+      level: "D",
+      live: true,
+      liveEvidence: tooFewPassed,
+      repositoryRoot: root,
+      outputDir: path.join(root, "bundle"),
+      now: () => new Date("2026-01-01T00:00:00.000Z"),
+      testFiles: { unit: ["unit.test.mjs"], security: ["security.test.mjs"] },
+      suiteRunner: async ({ name }) => ({ name, passed: true, exitCode: 0, durationMs: 1, outputHash: "a".repeat(64), outputPreview: "ok", subtests: subtestsFor(name) }),
+      provenanceReport,
+      environment,
+      sourceRevision
+    });
+    assert.equal(result.decision.decision, "FAIL");
+    assert.ok(result.decision.hardFailures.includes("LIVE_SUCCESS_RATE_BELOW_THRESHOLD"));
+    assert.ok(result.decision.hardFailures.includes("LIVE_ROLLBACK_DRILL_FAILED"));
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("SEC-CERT-001 live artifact hashes are verified", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ds4-evo-cert-sec-hash-"));
+  const artifactsDir = await fs.mkdtemp(path.join(os.tmpdir(), "ds4-evo-cert-sec-hash-art-"));
+  try {
+    const levelCSubtests = LEVEL_C_TEST_CATALOG.filter((e) => e.suite === "unit").map((e) => ({ title: e.testId, ok: true }));
+    const evidence = liveEvidenceFixture({
+      runArtifacts: [{ runId: "run-001", artifactHash: "wrong".padEnd(64, "0"), passed: true }]
+    });
+    const result = await createCertificationBundle({
+      level: "C",
+      live: true,
+      liveEvidence: evidence,
+      liveArtifactsDir: artifactsDir,
+      repositoryRoot: root,
+      outputDir: path.join(root, "bundle"),
+      now: () => new Date("2026-01-01T00:00:00.000Z"),
+      testFiles: { unit: ["unit.test.mjs"], security: ["security.test.mjs"] },
+      suiteRunner: async ({ name }) => ({ name, passed: true, exitCode: 0, durationMs: 1, outputHash: "a".repeat(64), outputPreview: "ok", subtests: name === "unit" ? levelCSubtests : subtestsFor(name) }),
+      provenanceReport,
+      environment,
+      sourceRevision
+    });
+    assert.ok(result.decision.hardFailures.includes("LIVE_EVIDENCE_INVALID:ARTIFACT_HASH_MISMATCH"),
+      `expected ARTIFACT_HASH_MISMATCH failure, got: ${JSON.stringify(result.decision.hardFailures)}`);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+    await fs.rm(artifactsDir, { recursive: true, force: true });
+  }
+});
+
+test("SEC-CERT-002 evidence from another source revision rejected", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "ds4-evo-cert-sec-rev-"));
+  try {
+    const levelCSubtests = LEVEL_C_TEST_CATALOG.filter((e) => e.suite === "unit").map((e) => ({ title: e.testId, ok: true }));
+    const evidence = liveEvidenceFixture({ sourceRevision: "different-revision+sha256:abc" });
+    const result = await createCertificationBundle({
+      level: "C",
+      live: true,
+      liveEvidence: evidence,
+      repositoryRoot: root,
+      outputDir: path.join(root, "bundle"),
+      now: () => new Date("2026-01-01T00:00:00.000Z"),
+      testFiles: { unit: ["unit.test.mjs"], security: ["security.test.mjs"] },
+      suiteRunner: async ({ name }) => ({ name, passed: true, exitCode: 0, durationMs: 1, outputHash: "a".repeat(64), outputPreview: "ok", subtests: name === "unit" ? levelCSubtests : subtestsFor(name) }),
+      provenanceReport,
+      environment,
+      sourceRevision
+    });
+    assert.equal(result.decision.decision, "FAIL");
+    assert.ok(result.decision.hardFailures.includes("LIVE_CANONICAL_REPOSITORY_MUTATED"));
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }

@@ -26,11 +26,26 @@ function validTask(overrides = {}) {
     objective: "Exercise deterministic validation",
     workspaceRoot: ".",
     mutablePaths: ["frontend/server/example.mjs"],
-    immutablePaths: ["frontend/server/evaluator"],
+    immutablePaths: [
+      "frontend/server/evaluator",
+      "frontend/server/evolution/evolutionPromotionGate.mjs",
+      "frontend/server/evolution/evolutionPromotion.mjs",
+      "frontend/server/evolution/hidden-fixtures"
+    ],
     baselineRef: "HEAD",
-    evaluators: [{ id: "unit-tests", required: true, configuration: {} }],
+    evaluators: [
+      { id: "unit-tests", required: true, configuration: {} },
+      { id: "security-policy", required: true, configuration: { type: "security-policy" } }
+    ],
     metrics: [{
       name: "correct",
+      direction: "boolean",
+      required: true,
+      baselineTolerance: 0,
+      target: true,
+      weight: 1
+    }, {
+      name: "security_passed",
       direction: "boolean",
       required: true,
       baselineTolerance: 0,
@@ -280,4 +295,49 @@ test("CR-004 provenance records require complete clean-room attestations", () =>
   };
   assert.equal(validateProvenanceRecord(record).change_id, "CR-0001");
   assert.throws(() => validateProvenanceRecord({ ...record, external_code_copied: true }), /must be false/);
+});
+
+test("SEC-CONTRACT-003 missing security evaluator rejected at creation", () => {
+  const task = validTask();
+  task.evaluators = [{ id: "unit-tests", required: true, configuration: {} }];
+  assert.throws(
+    () => validateEvolutionTask(task),
+    (error) => error.issues.some((entry) => entry.code === "MISSING_SECURITY_EVALUATOR")
+  );
+});
+
+test("SEC-CONTRACT-004 missing security_passed metric rejected", () => {
+  const task = validTask();
+  task.metrics = [{ name: "correct", direction: "boolean", required: true, baselineTolerance: 0, target: true, weight: 1 }];
+  assert.throws(
+    () => validateEvolutionTask(task),
+    (error) => error.issues.some((entry) => entry.code === "MISSING_SECURITY_PASSED_METRIC")
+  );
+});
+
+test("SEC-CONTRACT-005 mutable evaluator path rejected", () => {
+  const task = validTask();
+  task.mutablePaths.push("frontend/server/evolution/evolutionEvaluator.mjs");
+  assert.throws(
+    () => validateEvolutionTask(task),
+    (error) => error.issues.some((entry) => entry.code === "MUTABLE_SECURITY_PATH")
+  );
+});
+
+test("SEC-CONTRACT-006 mutable promotion gate rejected", () => {
+  const task = validTask();
+  task.mutablePaths.push("frontend/server/evolution/evolutionPromotionGate.mjs");
+  assert.throws(
+    () => validateEvolutionTask(task),
+    (error) => error.issues.some((entry) => entry.code === "MUTABLE_SECURITY_PATH")
+  );
+});
+
+test("SEC-CONTRACT-007 unknown approval mode rejected", () => {
+  const task = validTask();
+  task.approvalPolicy = { mode: "invalid_mode", allowedRiskLevels: ["LOW"] };
+  assert.throws(
+    () => validateEvolutionTask(task),
+    (error) => error.issues.some((entry) => entry.code === "INVALID_APPROVAL_POLICY")
+  );
 });
