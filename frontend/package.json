@@ -6,11 +6,13 @@
     "dev": "node server/index.mjs",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "test": "NODE_ENV=test node --test server/*.test.mjs server/research/*.test.mjs server/research/providers/*.test.mjs",
-    "test:frontend": "node --test src/*.test.mjs src/research/*.test.mjs",
-    "test:evolution": "NODE_ENV=test node --test server/evolution/*.test.mjs",
-    "test:evolution:security": "NODE_ENV=test node --test server/evolution/security/*.test.mjs",
+    "test": "NODE_ENV=test node --test --test-concurrency=1 server/*.test.mjs server/research/*.test.mjs server/research/providers/*.test.mjs",
+    "test:frontend": "node --test src/*.test.mjs src/research/*.test.mjs src/evolution/*.test.mjs",
+    "test:evolution": "NODE_ENV=test node --test --test-concurrency=1 server/structuredModelClient.test.mjs server/evolution/*.test.mjs",
+    "test:evolution:security": "NODE_ENV=test node --test --test-concurrency=1 server/evolution/security/*.test.mjs",
     "certify:evolution": "NODE_ENV=test node ../benchmarks/agentic/evolution/run.mjs --selftest --gate",
+    "certify:evolution:c": "NODE_ENV=test node ../benchmarks/agentic/evolution/run.mjs --selftest --gate --level C",
+    "certify:evolution:d": "NODE_ENV=test node ../benchmarks/agentic/evolution/run.mjs --selftest --gate --level D",
     "pageagent-mcp": "node server/pageagentMcp.mjs"
   },
   "engines": {

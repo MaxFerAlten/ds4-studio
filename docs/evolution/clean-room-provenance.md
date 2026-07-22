@@ -297,6 +297,18 @@ A prompt review MUST record:
 - copied-text attestation;
 - security review outcome.
 
+### 10.1 Implemented DS4 prompt register
+
+The Level C/D implementation uses three DS4-authored role prompts. They were written from this specification, the acceptance contract, and the threat model; no SIA prompt text was available to or copied by the implementation role.
+
+| Role | DS4 path | SHA-256 | Purpose | Source requirements | Review status |
+|---|---|---|---|---|---|
+| Critic | `frontend/server/evolution/prompts/critic.md` | `254a6a6b8bacc51e7f3ef6c440d9a45da2c0ea1d032c11ad84481fe360231fc8` | evidence-linked consultive diagnosis | `BEH-CRITIC-*`, `SEC-CRITIC-*` | automated schema/security tests PASS; human provenance/security review PENDING |
+| Proposer | `frontend/server/evolution/prompts/proposer.md` | `7b75cc7b2d7f59e6fd98b1b5bb8af37a1535a51134c31886a1818fdebe78067a` | bounded revision proposal | `BEH-PROPOSER-001/002`, `SEC-PROPOSER-001/003` | automated schema/security tests PASS; human provenance/security review PENDING |
+| Patcher | `frontend/server/evolution/prompts/patcher.md` | `ca532003b6d65dc4fc06df94bd6e902d661bd1a5d2b65b0614435ab3dc62f5fe` | proposal-hash-bound patch generation | `BEH-PROPOSER-003`, `SEC-PROPOSER-002` | automated schema/security tests PASS; human provenance/security review PENDING |
+
+Prompt author identity for the implementation record is `DS4 implementation agent`; this is not a substitute for any of the four human release sign-offs. Prompt hashes are included in model evidence at runtime, while this table binds the reviewed source files. Any prompt edit changes the source-revision tree hash and requires a new certification bundle and renewed human review.
+
 ---
 
 ## 11. Test independence

@@ -7,6 +7,7 @@
 
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -18,9 +19,8 @@ import { scanEvolutionProvenance } from "./evolutionProvenance.mjs";
 const execFileAsync = promisify(execFile);
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_REPOSITORY_ROOT = path.resolve(MODULE_DIR, "../../..");
-const TAP_REPORTER_FLAGS = ["--test-reporter=tap", "--test-reporter-destination=stdout"];
-const UNIT_COMMAND = "node --test --test-reporter=tap frontend/server/evolution/*.test.mjs benchmarks/agentic/evolution/*.test.mjs";
-const SECURITY_COMMAND = "node --test --test-reporter=tap frontend/server/evolution/security/*.test.mjs";
+const UNIT_COMMAND = "node <each unit test file sequentially>";
+const SECURITY_COMMAND = "node <each security test file sequentially>";
 const PROVENANCE_COMMAND = "node benchmarks/agentic/evolution/run.mjs --selftest --gate";
 
 function ids(prefix, first, last = first) {
@@ -66,6 +66,34 @@ export const LEVEL_B_TEST_CATALOG = Object.freeze([
   ...catalogEntries(PROVENANCE_REQUIREMENTS, "provenance", "security", PROVENANCE_COMMAND, "provenance-report.json")
 ]);
 
+const LEVEL_C_REQUIREMENTS = Object.freeze([
+  ...ids("BEH-CRITIC", 1, 3), ...ids("SEC-CRITIC", 1, 3),
+  ...ids("BEH-MODEL", 1, 3), ...ids("SEC-MODEL", 1, 4),
+  ...ids("BEH-API", 1, 3), ...ids("SEC-API", 1, 2), ...ids("SEC-UI", 1, 2)
+]);
+
+const LEVEL_D_REQUIREMENTS = Object.freeze([
+  ...ids("BEH-PROPOSER", 1, 3), ...ids("SEC-PROPOSER", 1, 3),
+  ...ids("BEH-LOOP", 1, 3), ...ids("SEC-LOOP", 1, 3)
+]);
+
+export const LEVEL_C_TEST_CATALOG = Object.freeze([
+  ...LEVEL_B_TEST_CATALOG,
+  ...catalogEntries(LEVEL_C_REQUIREMENTS, "unit", "integration", UNIT_COMMAND, "test-results.json")
+]);
+
+export const LEVEL_D_TEST_CATALOG = Object.freeze([
+  ...LEVEL_C_TEST_CATALOG,
+  ...catalogEntries(LEVEL_D_REQUIREMENTS, "unit", "integration", UNIT_COMMAND, "test-results.json")
+]);
+
+export function certificationCatalog(level = "B") {
+  if (level === "B") return LEVEL_B_TEST_CATALOG;
+  if (level === "C") return LEVEL_C_TEST_CATALOG;
+  if (level === "D") return LEVEL_D_TEST_CATALOG;
+  throw new EvolutionCertificationError("UNSUPPORTED_CERTIFICATION_LEVEL", String(level));
+}
+
 export class EvolutionCertificationError extends Error {
   constructor(code, message, details = {}) {
     super(`${code}: ${message}`);
@@ -99,6 +127,9 @@ async function defaultTestFiles(repositoryRoot) {
   const allEvolutionTests = await listFiles(evolutionDir, (file) => file.endsWith(".test.mjs"));
   const unit = allEvolutionTests.filter((file) => !file.includes(`${path.sep}security${path.sep}`));
   unit.push(...await listFiles(benchmarkDir, (file) => file.endsWith(".test.mjs")));
+  const structuredClientTest = path.join(repositoryRoot, "frontend/server/structuredModelClient.test.mjs");
+  if (await fs.access(structuredClientTest).then(() => true, () => false)) unit.push(structuredClientTest);
+  unit.push(...await listFiles(path.join(repositoryRoot, "frontend/src/evolution"), (file) => file.endsWith(".test.mjs")));
   const security = allEvolutionTests.filter((file) => file.includes(`${path.sep}security${path.sep}`));
   return {
     unit: unit.map((file) => path.relative(repositoryRoot, file)).sort(),
@@ -111,7 +142,7 @@ function boundedOutput(value) {
   return redacted.length <= 8_000 ? redacted : `[truncated ${redacted.length - 8_000} chars]\n${redacted.slice(-8_000)}`;
 }
 
-const TAP_RESULT_LINE = /^(ok|not ok) \d+ - (.+?)\s*$/gm;
+const TAP_RESULT_LINE = /^\s*(ok|not ok) \d+ - (.+?)\s*$/gm;
 const REQUIREMENT_ID_PATTERN = /([A-Z]+(?:-[A-Z]+)*)-(\d{3})/g;
 const REQUIREMENT_ID_COMBO = /^((?:[./]{1,2}\d{3})+)/;
 
@@ -170,25 +201,48 @@ export async function runCertificationSuite({ name, files, repositoryRoot }) {
   let stdout = "";
   let stderr = "";
   let exitCode = 0;
+  const deadline = started + 180_000;
+  const environment = {
+    PATH: process.env.PATH ?? "/usr/bin:/bin",
+    LANG: "C.UTF-8",
+    NODE_ENV: "test",
+    TMPDIR: process.env.TMPDIR ?? "/tmp"
+  };
+  const reportDir = await fs.mkdtemp(path.join(os.tmpdir(), "ds4-evolution-tap-"));
   try {
-    const result = await execFileAsync(process.execPath, ["--test", ...TAP_REPORTER_FLAGS, ...files], {
-      cwd: repositoryRoot,
-      encoding: "utf8",
-      timeout: 180_000,
-      maxBuffer: 4_000_000,
-      env: {
-        PATH: process.env.PATH ?? "/usr/bin:/bin",
-        LANG: "C.UTF-8",
-        NODE_ENV: "test",
-        TMPDIR: process.env.TMPDIR ?? "/tmp"
+    for (const [index, file] of files.entries()) {
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
+        exitCode = 1;
+        stderr += `\n${file}: certification suite timeout`;
+        break;
       }
-    });
-    stdout = result.stdout;
-    stderr = result.stderr;
-  } catch (error) {
-    stdout = String(error.stdout ?? "");
-    stderr = String(error.stderr ?? error.message ?? "");
-    exitCode = Number.isInteger(error.code) ? error.code : 1;
+      const reportFile = path.join(reportDir, `${String(index).padStart(4, "0")}.tap`);
+      try {
+        const result = await execFileAsync(process.execPath, [
+          "--test-reporter=tap",
+          `--test-reporter-destination=${reportFile}`,
+          file
+        ], {
+          cwd: repositoryRoot,
+          encoding: "utf8",
+          timeout: remainingMs,
+          maxBuffer: 4_000_000,
+          env: environment
+        });
+        const report = await fs.readFile(reportFile, "utf8").catch(() => result.stdout);
+        stdout += `\n# file ${file}\n${report}`;
+        stderr += result.stderr;
+      } catch (error) {
+        const report = await fs.readFile(reportFile, "utf8").catch(() => String(error.stdout ?? ""));
+        stdout += `\n# file ${file}\n${report}`;
+        stderr += `\n${file}\n${String(error.stderr ?? error.message ?? "")}`;
+        exitCode = Number.isInteger(error.code) ? error.code : 1;
+        if (error.killed || error.code === "ETIMEDOUT") break;
+      }
+    }
+  } finally {
+    await fs.rm(reportDir, { recursive: true, force: true });
   }
   const combined = `${stdout}${stderr}`;
   return Object.freeze({
@@ -233,12 +287,21 @@ async function environmentEvidence(repositoryRoot) {
 async function sourceRevisionEvidence(repositoryRoot) {
   const roots = [
     path.join(repositoryRoot, "frontend/server/evolution"),
-    path.join(repositoryRoot, "benchmarks/agentic/evolution")
+    path.join(repositoryRoot, "benchmarks/agentic/evolution"),
+    path.join(repositoryRoot, "frontend/src/evolution")
   ];
   const files = [];
   for (const root of roots) files.push(...await listFiles(root));
   for (const name of ["acceptance-contract.md", "behavioral-specification.md", "clean-room-provenance.md", "threat-model.md"]) {
     const file = path.join(repositoryRoot, "docs/evolution", name);
+    if (await fs.access(file).then(() => true, () => false)) files.push(file);
+  }
+  for (const name of [
+    "frontend/package.json", "frontend/server/config.mjs", "frontend/server/defaultConfig.mjs",
+    "frontend/server/index.mjs", "frontend/server/structuredModelClient.mjs",
+    "frontend/src/App.jsx", "frontend/src/chat/ChatPanel.jsx", "frontend/src/styles.css"
+  ]) {
+    const file = path.join(repositoryRoot, name);
     if (await fs.access(file).then(() => true, () => false)) files.push(file);
   }
   const sourceFiles = [];
@@ -270,6 +333,8 @@ function mappedResult(entry, status) {
 }
 
 export async function createCertificationBundle(options = {}) {
+  const level = options.level ?? "B";
+  const catalog = certificationCatalog(level);
   const repositoryRoot = path.resolve(options.repositoryRoot ?? DEFAULT_REPOSITORY_ROOT);
   const decidedAt = (options.now ?? (() => new Date()))().toISOString();
   const timestamp = decidedAt.replaceAll(":", "-");
@@ -286,7 +351,7 @@ export async function createCertificationBundle(options = {}) {
   const provenanceStatuses = new Map((provenanceReport.checks ?? []).map((entry) => [entry.testId, entry.status]));
   const unitEvidence = requirementEvidence(unit.subtests ?? []);
   const securityEvidence = requirementEvidence(security.subtests ?? []);
-  const records = LEVEL_B_TEST_CATALOG.map((entry) => {
+  const records = catalog.map((entry) => {
     if (entry.suite === "unit" || entry.suite === "security") {
       const evidence = (entry.suite === "unit" ? unitEvidence : securityEvidence).get(entry.testId);
       return mappedResult(entry, evidence?.found && evidence.ok ? "PASS" : "FAIL");
@@ -304,7 +369,7 @@ export async function createCertificationBundle(options = {}) {
   const environmentHash = hashJson(environment);
   const decision = Object.freeze({
     schema: "ds4_evolution_acceptance_v1",
-    level: "B",
+    level,
     decision: hardFailures.length ? "FAIL" : "PASS",
     requiredTests: records.length,
     passed,
@@ -318,17 +383,17 @@ export async function createCertificationBundle(options = {}) {
   const testResults = {
     schema: "ds4_evolution_test_results_v1",
     suite: unit,
-    tests: records.filter((entry) => LEVEL_B_TEST_CATALOG.find((item) => item.testId === entry.testId)?.suite === "unit")
+    tests: records.filter((entry) => catalog.find((item) => item.testId === entry.testId)?.suite === "unit")
   };
   const securityResults = {
     schema: "ds4_evolution_security_results_v1",
     suite: security,
-    tests: records.filter((entry) => LEVEL_B_TEST_CATALOG.find((item) => item.testId === entry.testId)?.suite === "security")
+    tests: records.filter((entry) => catalog.find((item) => item.testId === entry.testId)?.suite === "security")
   };
   const benchmarkSummary = {
     schema: "ds4_evolution_benchmark_summary_v1",
     mode: "offline-selftest",
-    level: "B",
+    level,
     passed: decision.decision === "PASS",
     unitSuitePassed: unit.passed === true,
     securitySuitePassed: security.passed === true,

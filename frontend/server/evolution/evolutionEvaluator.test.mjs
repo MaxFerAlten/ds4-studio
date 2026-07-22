@@ -1,9 +1,12 @@
 /** Test origin: DS4 acceptance requirements BEH-EVAL-001..004 and SEC-EVAL-003..004. */
 
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
-import { createCommandEvaluator, EvolutionEvaluatorRegistry } from "./evolutionEvaluator.mjs";
+import { createCommandEvaluator, EvolutionEvaluatorRegistry, securityPolicyEvaluator } from "./evolutionEvaluator.mjs";
 
 function context(overrides = {}) {
   return {
@@ -110,4 +113,81 @@ test("command evaluator cannot override the task timeout budget", async () => {
   });
   assert.equal(received.limits.timeoutMs, 1_000);
   assert.equal(received.limits.maxOutputBytes, 32);
+});
+
+test("security policy scans configured candidate files instead of trusting candidate metadata", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "ds4-evo-security-policy-"));
+  try {
+    const file = path.join(directory, "frontend", "server");
+    await fs.mkdir(file, { recursive: true });
+    await fs.writeFile(path.join(file, "example.mjs"), "import express from 'express';\napp.listen(3000);\n", "utf8");
+    const result = await securityPolicyEvaluator({
+      candidateWorkspace: directory,
+      candidate: { securityViolations: [] },
+      descriptor: {
+        id: "security-policy",
+        configuration: {
+          type: "security-policy",
+          files: ["frontend/server/example.mjs"],
+          forbiddenPatterns: [
+            { code: "APP_LISTEN_FORBIDDEN", pattern: "\\bapp\\.listen\\s*\\(" },
+            { code: "EXPRESS_IMPORT_FORBIDDEN", pattern: "\\bfrom\\s+[\\\"']express[\\\"']" }
+          ]
+        }
+      }
+    });
+    assert.equal(result.status, "failed");
+    assert.equal(result.metrics.security_passed, false);
+    assert.deepEqual(result.violations, [
+      "APP_LISTEN_FORBIDDEN:frontend/server/example.mjs",
+      "EXPRESS_IMPORT_FORBIDDEN:frontend/server/example.mjs"
+    ]);
+    assert.ok(result.reproducibility.environmentHash);
+    assert.equal(result.reproducibility.environmentHash, result.reproducibility.commandHash);
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("security policy passes a side-effect-free fixture", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "ds4-evo-security-policy-"));
+  try {
+    await fs.mkdir(path.join(directory, "frontend", "server"), { recursive: true });
+    await fs.writeFile(path.join(directory, "frontend", "server", "example.mjs"), "export const ok = true;\n", "utf8");
+    const result = await securityPolicyEvaluator({
+      candidateWorkspace: directory,
+      descriptor: {
+        id: "security-policy",
+        configuration: {
+          type: "security-policy",
+          files: ["frontend/server/example.mjs"],
+          forbiddenPatterns: [{ code: "APP_LISTEN_FORBIDDEN", pattern: "\\bapp\\.listen\\s*\\(" }]
+        }
+      }
+    });
+    assert.equal(result.status, "passed");
+    assert.equal(result.metrics.security_passed, true);
+    assert.deepEqual(result.violations, []);
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("security policy protects legacy contracts with no explicit pattern configuration", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "ds4-evo-security-policy-"));
+  try {
+    await fs.mkdir(path.join(directory, "frontend", "server"), { recursive: true });
+    await fs.writeFile(path.join(directory, "frontend", "server", "example.mjs"), "app.listen(3000);\n", "utf8");
+    const result = await securityPolicyEvaluator({
+      candidateWorkspace: directory,
+      candidate: {
+        audit: { changes: [{ path: "frontend/server/example.mjs" }] }
+      },
+      descriptor: { id: "security-policy", configuration: { type: "security-policy" } }
+    });
+    assert.equal(result.status, "failed");
+    assert.deepEqual(result.violations, ["APP_LISTEN_FORBIDDEN:frontend/server/example.mjs"]);
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
 });

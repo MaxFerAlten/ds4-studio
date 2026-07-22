@@ -127,6 +127,12 @@ export function mergeConfig(input = {}) {
       ...(isPlainObject(input.requestDefaults) ? input.requestDefaults : {})
     },
     research: mergeResearchConfig(input.research),
+    evolution: {
+      ...DEFAULT_CONFIG.evolution,
+      ...(input.evolution && typeof input.evolution === "object" && !Array.isArray(input.evolution)
+        ? input.evolution
+        : {})
+    },
     callDebug: {
       ...DEFAULT_CONFIG.callDebug,
       ...(input.callDebug && typeof input.callDebug === "object" && !Array.isArray(input.callDebug)
@@ -186,6 +192,30 @@ function validateCallDebug(callDebug = {}) {
 function validateToolBlobs(toolBlobs = {}) {
   const errors = {};
   if (typeof toolBlobs.dir !== "string" || !toolBlobs.dir.trim()) errors.dir = "is required";
+  return errors;
+}
+
+function validateEvolutionConfig(evolution = {}) {
+  const errors = {};
+  if (typeof evolution.enabled !== "boolean") errors.enabled = "must be boolean";
+  if (!new Set(["B", "C", "D", "E"]).has(evolution.maxLevel)) errors.maxLevel = "must be one of B, C, D, E";
+  if (evolution.maxLevel === "E" && process.env.DS4_EVOLUTION_LEVEL_E !== "1") {
+    errors.maxLevel = "Level E requires DS4_EVOLUTION_LEVEL_E=1";
+  }
+  for (const key of ["stateDir", "workDir"]) {
+    if (typeof evolution[key] !== "string" || !evolution[key].trim() || evolution[key].includes("\0")) errors[key] = "must be a non-empty path without NUL";
+  }
+  if (typeof evolution.model !== "string" || !evolution.model.trim()) errors.model = "is required";
+  if (typeof evolution.modelBaseUrl !== "string" || !/^https?:\/\//.test(evolution.modelBaseUrl)) errors.modelBaseUrl = "must be an HTTP(S) URL";
+  if (!Number.isSafeInteger(evolution.modelTimeoutMs) || evolution.modelTimeoutMs < 1000 || evolution.modelTimeoutMs > 600000) {
+    errors.modelTimeoutMs = "must be between 1000 and 600000";
+  }
+  for (const key of ["maxPacketBytes", "maxArtifactReadBytes"]) {
+    if (!Number.isSafeInteger(evolution[key]) || evolution[key] < 1024 || evolution[key] > 10_000_000) errors[key] = "must be between 1024 and 10000000";
+  }
+  if (typeof evolution.writeTokenEnv !== "string" || !/^[A-Z_][A-Z0-9_]{1,127}$/.test(evolution.writeTokenEnv)) {
+    errors.writeTokenEnv = "must be an environment variable name";
+  }
   return errors;
 }
 
@@ -263,7 +293,7 @@ function validateOptionalEnvTokens(env, key, label, min, max) {
 }
 
 export function validateConfig(config) {
-  const errors = { control: {}, history: {}, server: {}, wrapper: {}, requestDefaults: {}, research: {}, callDebug: {}, pageAgent: {} };
+  const errors = { control: {}, history: {}, server: {}, wrapper: {}, requestDefaults: {}, research: {}, evolution: {}, callDebug: {}, pageAgent: {} };
   if (!validatePort(config.control.port)) errors.control.port = "must be between 1 and 65535";
   if (!validatePort(config.server.port)) errors.server.port = "must be between 1 and 65535";
   if (!config.control.host) errors.control.host = "is required";
@@ -360,6 +390,7 @@ export function validateConfig(config) {
     errors.requestDefaults.context_margin = "must be a non-negative integer";
   }
   errors.research = validateResearchConfig(config.research || {});
+  errors.evolution = validateEvolutionConfig(config.evolution || {});
   errors.callDebug = validateCallDebug(config.callDebug || {});
   errors.toolBlobs = validateToolBlobs(config.toolBlobs || {});
   // PageAgent validation
@@ -386,6 +417,7 @@ export function validateConfig(config) {
     Object.keys(errors.wrapper).length === 0 &&
     Object.keys(errors.requestDefaults).length === 0 &&
     Object.keys(errors.research).length === 0 &&
+    Object.keys(errors.evolution).length === 0 &&
     Object.keys(errors.callDebug).length === 0 &&
     Object.keys(errors.toolBlobs).length === 0 &&
     Object.keys(errors.pageAgent).length === 0;

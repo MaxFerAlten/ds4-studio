@@ -239,7 +239,7 @@ export default function App() {
   const [commandDraft, setCommandDraft] = useState(null);
   const [agentMode, setAgentMode] = useState(false);
   const [agentTransitionBusy, setAgentTransitionBusy] = useState(false);
-  const [researchMode, setResearchMode] = useState(false);
+  const [workspaceMode, setWorkspaceMode] = useState("chat");
   const [selectedResearchSessionId, setSelectedResearchSessionId] = useState(null);
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0);
   const [hideSuggestions, setHideSuggestions] = useState(false);
@@ -653,7 +653,7 @@ export default function App() {
 
   function loadResearchSession(sessionId) {
     setSelectedResearchSessionId(sessionId);
-    setResearchMode(true);
+    setWorkspaceMode("research");
   }
 
   async function deleteHistorySession(fileName) {
@@ -2372,8 +2372,8 @@ export default function App() {
           exportNotice={exportNotice}
           setExportNotice={setExportNotice}
           config={config}
-          researchMode={researchMode}
-          setResearchMode={setResearchMode}
+          workspaceMode={workspaceMode}
+          onWorkspaceMode={setWorkspaceMode}
           selectedResearchSessionId={selectedResearchSessionId}
           setSelectedResearchSessionId={setSelectedResearchSessionId}
           sageActivities={sageActivities}

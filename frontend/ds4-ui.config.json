@@ -264,6 +264,18 @@
       "max_tokens": 8192
     }
   },
+  "evolution": {
+    "enabled": true,
+    "maxLevel": "D",
+    "stateDir": "/mnt/crucial_ai/COPARATOR/ds4-studio-evolution-state",
+    "workDir": "/mnt/crucial_ai/COPARATOR/ds4-studio-evolution-workspaces",
+    "model": "deepseek-v4-flash",
+    "modelBaseUrl": "http://127.0.0.1:8002",
+    "modelTimeoutMs": 120000,
+    "maxPacketBytes": 128000,
+    "maxArtifactReadBytes": 200000,
+    "writeTokenEnv": "DS4_EVOLUTION_WRITE_TOKEN"
+  },
   "callDebug": {
     "enabled": true,
     "dir": "data/call-debug",

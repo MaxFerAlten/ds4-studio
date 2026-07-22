@@ -1,6 +1,6 @@
 # Piano finale DS4 Evolution — Level B
 
-**Stato del piano:** automazione Level B completata; sign-off umani pendenti
+**Stato del piano:** automazione `Level B — Deterministic kernel` completata; `technical Level B PASS / release sign-off pending`
 **Target:** rilascio tecnico `Level B — Deterministic kernel`
 **Autorità normativa:** `clean-room-provenance.md`, `behavioral-specification.md`, `threat-model.md`, `acceptance-contract.md`
 **Confine clean-room:** il checkout e il sorgente SIA non sono input di implementazione
@@ -87,7 +87,7 @@ La chiusura automatizzata richiede congiuntamente:
 
 L'agente implementatore non può sostituirsi a questi revisori né cambiare
 `review_status` in approvato. Fino alle firme, l'esito corretto è
-**technical Level B PASS / release sign-off pending**.
+`technical Level B PASS / release sign-off pending`.
 
 ## 7. Criterio di uscita
 

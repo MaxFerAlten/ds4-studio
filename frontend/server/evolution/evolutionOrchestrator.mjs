@@ -11,6 +11,7 @@ import path from "node:path";
 import { captureBaselineSnapshot } from "./evolutionRunStore.mjs";
 import { decidePromotion } from "./evolutionPromotionGate.mjs";
 import { hashJson, sha256, timingSafeHexEqual } from "./evolutionIntegrity.mjs";
+import { buildEvidencePacket } from "./evolutionEvidencePacket.mjs";
 
 export class EvolutionOrchestratorError extends Error {
   constructor(code, message, details = {}) {
@@ -175,6 +176,8 @@ export class EvolutionOrchestrator {
     promotionService,
     smokeEvaluator,
     promotionGate = decidePromotion,
+    critic = null,
+    evidencePacketBuilder = buildEvidencePacket,
     now = () => new Date()
   } = {}) {
     for (const [name, dependency] of Object.entries({
@@ -192,6 +195,8 @@ export class EvolutionOrchestrator {
     this.promotionService = promotionService;
     this.smokeEvaluator = smokeEvaluator;
     this.promotionGate = promotionGate;
+    this.critic = critic;
+    this.evidencePacketBuilder = evidencePacketBuilder;
     this.now = now;
   }
 
@@ -245,16 +250,21 @@ export class EvolutionOrchestrator {
     if (!["BASELINE_READY", "PROMOTED", "REJECTED"].includes(run.state)) {
       throw new EvolutionOrchestratorError("INVALID_RUN_STATE", run.state);
     }
-    const revision = run.revision + 1;
+    const parentRevision = run.events.reduce((highest, event) =>
+      event.type === "STATE_TRANSITION" ? Math.max(highest, event.revision) : highest, 0);
+    const revision = parentRevision + 1;
+    if (proposal?.revision !== revision) {
+      throw new EvolutionOrchestratorError("INVALID_REVISION", `proposal ${proposal?.revision} does not match candidate ${revision}`);
+    }
     if (revision > run.manifest.taskContract.budgets.maxRevisions) {
-      await this.runStore.transitionRun(runId, "STOPPED", { kind: "stop", revision: run.revision, reasonCode: "REVISION_BUDGET_EXHAUSTED" });
+      await this.runStore.transitionRun(runId, "STOPPED", { kind: "stop", revision: parentRevision, reasonCode: "REVISION_BUDGET_EXHAUSTED" });
       throw new EvolutionOrchestratorError("REVISION_BUDGET_EXHAUSTED", String(revision));
     }
-    const expectedParent = await expectedCanonicalSnapshot(this.runStore, runId, run.revision);
+    const expectedParent = await expectedCanonicalSnapshot(this.runStore, runId, parentRevision);
     const canonicalParent = await captureComparableSnapshot(this.workspaceManager.repositoryRoot, expectedParent);
     if (!timingSafeHexEqual(expectedParent.contentHash, canonicalParent.contentHash)) {
       await this.runStore.transitionRun(runId, "FAILED", {
-        kind: "hard_failure", revision: run.revision, reasonCode: "BASELINE_MUTATED"
+        kind: "hard_failure", revision: parentRevision, reasonCode: "BASELINE_MUTATED"
       });
       throw new EvolutionOrchestratorError("BASELINE_MUTATED", "canonical parent differs from the last accepted snapshot");
     }
@@ -303,7 +313,7 @@ export class EvolutionOrchestrator {
     await this.runStore.writeRevisionArtifact(runId, revision, "parent-snapshot.json", canonicalParent);
     await this.runStore.writeRevisionArtifact(runId, revision, "candidate-snapshot.json", candidateSnapshot);
     await this.runStore.writeRevisionArtifact(runId, revision, "proposal.json", candidate.proposal);
-    await this.runStore.writeRevisionArtifact(runId, revision, "candidate.patch", patchText);
+    await this.runStore.writeRevisionArtifact(runId, revision, "candidate.patch", candidate.patchText ?? patchText);
     await this.runStore.writeRevisionArtifact(runId, revision, "candidate.json", publicCandidate(candidate));
     await this.runStore.transitionRun(runId, "CANDIDATE_READY", { revision });
     return Object.freeze({ revision, workspace, candidate: publicCandidate(candidate) });
@@ -356,14 +366,81 @@ export class EvolutionOrchestrator {
     });
     await this.runStore.writeRevisionArtifact(runId, revision, "evaluation.json", evaluation);
     await this.runStore.transitionRun(runId, "DIAGNOSING", { revision });
-    await this.runStore.writeRevisionArtifact(runId, revision, "diagnosis.json", {
-      diagnosisVersion: "ds4_evolution_diagnosis_v1",
-      revision,
-      status: "skipped",
-      reasonCode: "LEVEL_B_DETERMINISTIC_KERNEL"
-    });
+    await this.diagnoseRevision(runId, revision, evaluation, candidate);
     await this.runStore.transitionRun(runId, "GATING", { revision });
     return { execution, evaluation, candidate, state: "GATING" };
+  }
+
+  async diagnoseRevision(runId, revision, evaluation, candidate) {
+    const run = await this.runStore.loadRun(runId);
+    const taskContract = run.manifest.taskContract;
+    if (!taskContract.automation?.criticEnabled || !this.critic) {
+      const diagnosis = {
+        diagnosisVersion: "ds4_evolution_diagnosis_v1",
+        revision,
+        status: "skipped",
+        reasonCode: "LEVEL_B_DETERMINISTIC_KERNEL"
+      };
+      await this.runStore.writeRevisionArtifact(runId, revision, "diagnosis.json", diagnosis);
+      return diagnosis;
+    }
+    const baselineEvaluation = JSON.parse(await fs.readFile(this.runStore.baselinePath(runId, "evaluation.json"), "utf8"));
+    const evidence = [
+      { runId, revision, artifactId: `sha256:${hashJson(evaluation)}`, path: "evaluation.json", summary: "candidate evaluator results" },
+      { runId, revision, artifactId: `sha256:${candidate.candidateHash}`, path: "candidate.json", summary: "candidate metadata and bounded diff summary" }
+    ];
+    const packet = this.evidencePacketBuilder({
+      runId,
+      revision,
+      objective: taskContract.objective,
+      baselineMetrics: baselineEvaluation.aggregateMetrics,
+      candidateMetrics: evaluation.aggregateMetrics,
+      violations: evaluation.evaluators.flatMap((entry) => entry.violations ?? []),
+      diffSummary: candidate.patchMetadata,
+      evidence,
+      rejectedStrategies: [],
+      budget: {}
+    });
+    await this.runStore.writeRevisionArtifact(runId, revision, "evidence-packet.json", packet);
+    try {
+      const diagnosed = await this.critic.diagnose(packet, { maxRepairs: taskContract.budgets.maxCriticRepairs ?? 1 });
+      await this.runStore.writeRevisionArtifact(runId, revision, "diagnosis.json", diagnosed.value);
+      await this.runStore.writeRevisionArtifact(runId, revision, "critic-model-evidence.json", diagnosed.evidence);
+      await this.runStore.appendEvent(runId, {
+        revision,
+        type: "MODEL_CALL_COMPLETED",
+        payload: {
+          role: "critic",
+          usage: diagnosed.evidence.usage,
+          calls: diagnosed.evidence.calls,
+          repairs: diagnosed.evidence.repairs,
+          promptHash: diagnosed.evidence.promptHash,
+          responseHash: diagnosed.evidence.responseHash
+        }
+      });
+      return diagnosed.value;
+    } catch (error) {
+      const diagnosis = {
+        diagnosisVersion: "ds4_evolution_diagnosis_v1",
+        revision,
+        status: "completed",
+        summary: "The consultive critic did not return a schema-valid diagnosis; deterministic evaluation and promotion remain authoritative.",
+        rootCauses: [{
+          code: error.code ?? "CRITIC_FAILED",
+          description: "The critic response could not be validated against the diagnosis contract.",
+          evidenceRefs: evidence
+        }],
+        recommendations: ["Use the deterministic evaluator and promotion gate as the authoritative result.", "Inspect the critic model response before relying on consultive explanations."],
+        confidence: 0
+      };
+      await this.runStore.writeRevisionArtifact(runId, revision, "diagnosis.json", diagnosis);
+      await this.runStore.appendEvent(runId, {
+        revision,
+        type: "CRITIC_FAILED",
+        payload: { reasonCode: error.code ?? "CRITIC_FAILED" }
+      });
+      return diagnosis;
+    }
   }
 
   async gateRevision(runId, revision, evaluation, candidate) {
@@ -554,6 +631,22 @@ export class EvolutionOrchestrator {
     }
     await this.runStore.transitionRun(runId, "REJECTED", { revision, reasonCode });
     return this.runStore.loadRun(runId);
+  }
+
+  async rollbackRevision(runId, revision, reviewer = null) {
+    const run = await this.runStore.loadRun(runId);
+    if (run.revision < revision) throw new EvolutionOrchestratorError("INVALID_REVISION", String(revision));
+    const rollbackArtifact = await loadRollbackArtifact(this.runStore, runId, revision);
+    const applied = run.events.find((event) => event.type === "CANDIDATE_APPLIED" && event.revision === revision);
+    if (!applied) throw new EvolutionOrchestratorError("ROLLBACK_NOT_AVAILABLE", String(revision));
+    return this.promotionService.rollback({
+      runId,
+      revision,
+      rollbackArtifact,
+      expectedCurrentHash: applied.payload.promotedHash,
+      smokeEvaluator: this.smokeEvaluator,
+      reviewer
+    });
   }
 
   async runManualCandidate(runId, input) {

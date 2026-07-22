@@ -247,6 +247,34 @@ All other transitions SHALL be rejected.
 }
 ```
 
+Level C/D automation SHALL use `ds4_evolution_task_v2`. It adds:
+
+```json
+{
+  "automation": {
+    "level": "C|D",
+    "criticEnabled": true,
+    "proposerEnabled": false,
+    "autoContinue": false,
+    "modelProfile": "default"
+  },
+  "budgets": {
+    "maxTotalWallTimeMs": 600000,
+    "maxTotalPromptTokens": 24000,
+    "maxTotalCompletionTokens": 24000,
+    "maxModelCallsPerRevision": 4,
+    "maxInfrastructureRetries": 1,
+    "maxEvaluatorRetries": 1,
+    "maxCriticRepairs": 1,
+    "maxProposerRepairs": 1,
+    "maxRepeatedFailureSignatures": 2,
+    "maxNoImprovementRevisions": 2
+  }
+}
+```
+
+Level C requires Critic enabled and Proposer disabled. Level D requires both enabled. Both require manual promotion. `maxCriticRepairs` and `maxProposerRepairs` SHALL equal one. Level E is rejected unless the independent server feature gate is enabled.
+
 ### 5.2 Contract validation
 
 A task contract SHALL be rejected when:
@@ -733,10 +761,12 @@ Version 1 SHOULD expose:
 
 ```text
 POST   /api/evolution/runs
+GET    /api/evolution/runs
 GET    /api/evolution/runs/:runId
 POST   /api/evolution/runs/:runId/start
 POST   /api/evolution/runs/:runId/cancel
 GET    /api/evolution/runs/:runId/events
+GET    /api/evolution/runs/:runId/stream
 GET    /api/evolution/runs/:runId/revisions/:revision
 POST   /api/evolution/runs/:runId/revisions/:revision/approve
 POST   /api/evolution/runs/:runId/revisions/:revision/reject
@@ -744,6 +774,8 @@ POST   /api/evolution/runs/:runId/revisions/:revision/rollback
 ```
 
 Write endpoints SHALL require explicit authorization.
+
+The server SHALL reject task levels above `evolution.maxLevel` before creating a run. SSE subscription SHALL be installed before replay, buffer concurrent durable events, deliver monotonic sequence IDs, cap replay, and isolate subscriber failures. API DTOs SHALL bound artifacts and omit workspace paths, secrets, model reasoning, and unbounded prompts.
 
 ---
 
@@ -817,6 +849,51 @@ hidden fixtures
 ```
 
 Changing these areas SHALL require manual review and dedicated hardware/backend certification.
+
+### 23.1 Shared structured-model boundary
+
+Critic, Proposer, and Patcher SHALL use the DS4 shared structured transport. The boundary SHALL:
+
+- run at deterministic temperature;
+- disable model tools and private reasoning persistence;
+- validate JSON and role schema before canonical use;
+- allow at most one syntax repair and one bounded semantic repair;
+- count every underlying transport attempt;
+- aggregate prompt, completion, and total-token usage across attempts;
+- persist only role/model identifiers, prompt and response hashes, usage, call count, and repair count.
+
+Missing complete usage or invalid output after the repair budget SHALL fail closed.
+
+### 23.2 Critic Level C behavior
+
+After deterministic evaluation, the orchestrator SHALL build a bounded evidence packet owned by the current run and revision. The packet may contain compact proposal, candidate, execution, evaluation, gate, and prior-rejection evidence. Cross-run references are invalid.
+
+The Critic diagnosis is consultive. It SHALL be persisted with explicit evidence references, but changing or removing diagnosis prose MUST NOT change the deterministic gate decision. Critic failure is recorded and does not turn a deterministic failure into a pass.
+
+### 23.3 Proposer/Patcher Level D behavior
+
+The Proposer SHALL emit a structured plan only. Model-provided impact claims SHALL be removed and replaced with trusted GitNexus evidence or a conservative file-risk fallback. The Patcher is a separate call that sees only approved, regular, in-scope source files and emits a schema-bound unified patch tied to the proposal hash.
+
+Neither role receives promotion, approval, shell, filesystem-write, or arbitrary tool authority. Candidate writes occur only through the existing isolated Candidate Builder.
+
+### 23.4 Automatic controller and exact recovery
+
+The controller SHALL execute this order:
+
+```text
+ledger budget check -> proposer -> persist generated proposal/evidence/event
+-> budget check -> patcher -> persist generated patch/evidence/event
+-> candidate build -> isolated evaluation -> critic -> deterministic gate
+-> manual review, rejection/next revision, completion, or structured stop
+```
+
+Generated proposal and patch artifacts are immutable and revision-owned. If the process stops after a model response is durably stored but before candidate construction, restart SHALL validate and reuse that output instead of repeating the role call. Budget state is derived only from the ledger, including actual transport retry counts.
+
+Only one runtime job may be active for a run. Cancellation is idempotent. Durable ledger append precedes live notification; observer failure cannot affect the run.
+
+### 23.5 Post-apply and rollback smoke
+
+Promotion and rollback SHALL run a fail-closed post-apply smoke consisting of server syntax validation and the production frontend build. A smoke failure reverts or rejects the operation. Human-triggered rollback records the validated reviewer and restored content hash in the durable ledger.
 
 ---
 

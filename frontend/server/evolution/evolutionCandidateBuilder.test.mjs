@@ -7,7 +7,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { EVOLUTION_PROPOSAL_VERSION, EVOLUTION_TASK_VERSION, validateEvolutionTask } from "./evolutionContracts.mjs";
-import { EvolutionCandidateBuilder, inspectUnifiedPatch } from "./evolutionCandidateBuilder.mjs";
+import { EvolutionCandidateBuilder, inspectUnifiedPatch, normalizeUnifiedPatchText } from "./evolutionCandidateBuilder.mjs";
 import { EvolutionWorkspaceManager } from "./evolutionWorkspace.mjs";
 
 async function setup(overrides = {}) {
@@ -95,6 +95,106 @@ test("candidate builder applies a minimal patch only in the isolated workspace",
 test("SEC-PATH-001 patch parser rejects traversal before git apply", () => {
   const malicious = VALID_PATCH.replaceAll("src/value.txt", "../outside.txt");
   assert.throws(() => inspectUnifiedPatch(malicious), (error) => error.code === "UNSAFE_PATCH_PATH");
+});
+
+test("SEC-PATH-002 patch parser rejects duplicated diff sections for the same file", () => {
+  const duplicated = `${VALID_PATCH}${VALID_PATCH}`;
+  assert.throws(() => inspectUnifiedPatch(duplicated), (error) => error.code === "DUPLICATE_PATCH_SECTION");
+});
+
+test("builder normalizes duplicated identical diff sections before apply", async () => {
+  const f = await setup();
+  try {
+    const duplicated = `${VALID_PATCH}${VALID_PATCH}`;
+    const result = await new EvolutionCandidateBuilder().build({
+      taskContract: f.taskContract,
+      proposal: proposal(),
+      patchText: duplicated,
+      sourceRoot: f.repository,
+      workspaceRoot: f.workspace.root
+    });
+    assert.equal(result.patchText, VALID_PATCH);
+    assert.equal(result.audit.filesChanged, 1);
+    assert.equal(await fs.readFile(path.join(f.workspace.root, "src", "value.txt"), "utf8"), "one\ntwo\n");
+  } finally {
+    await fs.rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("builder repairs model-generated unified diff hunk counts before apply", async () => {
+  const f = await setup();
+  try {
+    const malformedCounts = VALID_PATCH.replace("@@ -1 +1,2 @@", "@@ -1,2 +1,3 @@");
+    assert.equal(normalizeUnifiedPatchText(malformedCounts), VALID_PATCH);
+    const result = await new EvolutionCandidateBuilder().build({
+      taskContract: f.taskContract,
+      proposal: proposal(),
+      patchText: malformedCounts,
+      sourceRoot: f.repository,
+      workspaceRoot: f.workspace.root
+    });
+    assert.equal(result.patchText, VALID_PATCH);
+    assert.equal(await fs.readFile(path.join(f.workspace.root, "src", "value.txt"), "utf8"), "one\ntwo\n");
+  } finally {
+    await fs.rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("builder repairs omitted leading spaces on empty hunk context lines", async () => {
+  const f = await setup();
+  try {
+    await fs.writeFile(path.join(f.repository, "src", "value.txt"), "one\n\n", "utf8");
+    await fs.writeFile(path.join(f.workspace.root, "src", "value.txt"), "one\n\n", "utf8");
+    const malformedBlankContext = `diff --git a/src/value.txt b/src/value.txt
+--- a/src/value.txt
++++ b/src/value.txt
+@@ -1,2 +1,3 @@
+ one
+
++two
+`;
+    const normalized = normalizeUnifiedPatchText(malformedBlankContext);
+    assert.match(normalized, / one\n \n\+two/);
+    const result = await new EvolutionCandidateBuilder().build({
+      taskContract: f.taskContract,
+      proposal: proposal(),
+      patchText: malformedBlankContext,
+      sourceRoot: f.repository,
+      workspaceRoot: f.workspace.root
+    });
+    assert.equal(result.audit.filesChanged, 1);
+    assert.equal(await fs.readFile(path.join(f.workspace.root, "src", "value.txt"), "utf8"), "one\n\ntwo\n");
+  } finally {
+    await fs.rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("builder tolerates bounded stale context when the changed lines still match", async () => {
+  const f = await setup();
+  try {
+    await fs.writeFile(path.join(f.workspace.root, "src", "value.txt"), "prefix\none\nsuffix\n", "utf8");
+    await fs.writeFile(path.join(f.repository, "src", "value.txt"), "prefix\none\nsuffix\n", "utf8");
+    const staleContext = `diff --git a/src/value.txt b/src/value.txt
+--- a/src/value.txt
++++ b/src/value.txt
+@@ -1,3 +1,3 @@
+ wrong-prefix
+ one
+-suffix
++two
+`;
+    const result = await new EvolutionCandidateBuilder().build({
+      taskContract: f.taskContract,
+      proposal: proposal(),
+      patchText: staleContext,
+      sourceRoot: f.repository,
+      workspaceRoot: f.workspace.root
+    });
+    assert.equal(result.audit.filesChanged, 1);
+    assert.equal(await fs.readFile(path.join(f.workspace.root, "src", "value.txt"), "utf8"), "prefix\none\ntwo\n");
+  } finally {
+    await fs.rm(f.directory, { recursive: true, force: true });
+  }
 });
 
 test("SEC-PATH-004 builder rejects immutable patch targets", async () => {

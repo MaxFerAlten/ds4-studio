@@ -21,7 +21,7 @@ Da questo punto l'implementazione usa esclusivamente:
 
 ## 2. Perimetro dell'incremento
 
-Questo incremento implementa il **Level B — deterministic kernel**:
+Questo incremento implementa il **Level B — Deterministic kernel**:
 
 - contratto task rigorosamente validato;
 - macchina a stati esplicita;

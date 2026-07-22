@@ -5,9 +5,16 @@
  * Existing DS4 mechanisms reused: EvolutionExecutor and content-addressed execution artifacts.
  */
 
+import fs from "node:fs/promises";
+import path from "node:path";
+
 import { hashJson } from "./evolutionIntegrity.mjs";
 
 const RESULT_STATUSES = new Set(["passed", "failed", "error", "partial"]);
+const DEFAULT_FORBIDDEN_PATTERNS = Object.freeze([
+  Object.freeze({ code: "APP_LISTEN_FORBIDDEN", pattern: "\\bapp\\.listen\\s*\\(" }),
+  Object.freeze({ code: "CREATE_SERVER_FORBIDDEN", pattern: "\\bcreateServer\\s*\\(" })
+]);
 
 export class EvolutionEvaluatorError extends Error {
   constructor(code, message, details = {}) {
@@ -137,8 +144,55 @@ export async function diffComplexityEvaluator(context) {
   };
 }
 
+function policyPatterns(configuration) {
+  const entries = configuration.forbiddenPatterns?.length ? configuration.forbiddenPatterns : DEFAULT_FORBIDDEN_PATTERNS;
+  return entries.map((entry, index) => {
+    const pattern = typeof entry === "string" ? entry : entry?.pattern;
+    const code = typeof entry === "string" ? `SECURITY_POLICY_PATTERN_${index + 1}` : entry?.code;
+    const flags = typeof entry === "string" ? "m" : (entry?.flags ?? "m");
+    if (typeof pattern !== "string" || !pattern || typeof code !== "string" || !code) {
+      throw new EvolutionEvaluatorError("INVALID_SECURITY_POLICY", `forbiddenPatterns[${index}]`);
+    }
+    try {
+      return Object.freeze({ code, regex: new RegExp(pattern, flags) });
+    } catch (error) {
+      throw new EvolutionEvaluatorError("INVALID_SECURITY_POLICY", `${code}: ${error.message}`);
+    }
+  });
+}
+
+async function readPolicyFiles(context, configuration) {
+  const changedFiles = context.candidate?.audit?.changes?.map((entry) => entry.path) ?? [];
+  const files = [...new Set((configuration.files?.length ? configuration.files : changedFiles).map(String))].sort();
+  const root = path.resolve(context.candidateWorkspace);
+  const contents = [];
+  for (const relative of files) {
+    const absolute = path.resolve(root, relative);
+    const fromRoot = path.relative(root, absolute);
+    if (fromRoot === ".." || fromRoot.startsWith(`..${path.sep}`) || path.isAbsolute(fromRoot)) {
+      throw new EvolutionEvaluatorError("INVALID_SECURITY_POLICY", `file escapes workspace: ${relative}`);
+    }
+    try {
+      contents.push({ relative, text: await fs.readFile(absolute, "utf8") });
+    } catch (error) {
+      if (error.code === "ENOENT") throw new EvolutionEvaluatorError("SECURITY_POLICY_FILE_MISSING", relative);
+      throw error;
+    }
+  }
+  return contents;
+}
+
 export async function securityPolicyEvaluator(context) {
-  const violations = [...new Set((context.candidate?.securityViolations ?? []).map(String))];
+  const configuration = context.descriptor?.configuration ?? {};
+  const patterns = policyPatterns(configuration);
+  const files = await readPolicyFiles(context, configuration);
+  const violations = [];
+  for (const { relative, text } of files) {
+    for (const { code, regex } of patterns) {
+      regex.lastIndex = 0;
+      if (regex.test(text)) violations.push(`${code}:${relative}`);
+    }
+  }
   const passed = violations.length === 0;
   return {
     status: passed ? "passed" : "failed",
@@ -146,8 +200,8 @@ export async function securityPolicyEvaluator(context) {
     violations,
     artifacts: [],
     reproducibility: {
-      commandHash: hashJson({ evaluator: "security-policy", version: 1 }),
-      environmentHash: hashJson({}),
+      commandHash: hashJson({ evaluator: "security-policy", version: 2, configuration }),
+      environmentHash: hashJson({ evaluator: "security-policy", version: 2, configuration }),
       seed: null
     }
   };

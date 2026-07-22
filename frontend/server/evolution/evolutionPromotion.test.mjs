@@ -249,10 +249,13 @@ test("SEC-ROLLBACK-002/003 restores parent hashes and runs smoke gate", async ()
       revision: 1,
       rollbackArtifact: f.rollbackArtifact,
       expectedCurrentHash: promoted.promotedHash,
-      smokeEvaluator: async () => ({ passed: true })
+      smokeEvaluator: async () => ({ passed: true }),
+      reviewer: "security-reviewer"
     });
     assert.equal(rollback.restoredHash, f.rollbackArtifact.parentHash);
     assert.equal(await fs.readFile(path.join(f.repository, "src", "value.txt"), "utf8"), "one\n");
+    const events = await f.store.readEvents(f.runId);
+    assert.equal(events.at(-1).payload.reviewer, "security-reviewer");
   } finally {
     await fs.rm(f.directory, { recursive: true, force: true });
   }
