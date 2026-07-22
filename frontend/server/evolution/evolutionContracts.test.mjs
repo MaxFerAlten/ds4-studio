@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  EVOLUTION_PROPOSAL_VERSION,
   EVOLUTION_TASK_VERSION,
   EVOLUTION_TASK_VERSION_V2,
   EVOLUTION_DIAGNOSIS_VERSION,
@@ -13,6 +14,7 @@ import {
   validateDiagnosis,
   validateEvolutionTask,
   validateGeneratedPatch,
+  validateProposal,
   validateProvenanceRecord
 } from "./evolutionContracts.mjs";
 
@@ -74,6 +76,45 @@ function validTaskV2(overrides = {}) {
   });
   return { ...task, ...overrides };
 }
+
+function validProposal(taskContract, overrides = {}) {
+  return {
+    proposalVersion: EVOLUTION_PROPOSAL_VERSION,
+    revision: 1,
+    summary: "Change one file",
+    hypothesis: "The change satisfies the fixture",
+    targetFiles: [taskContract.mutablePaths[0]],
+    targetSymbols: [],
+    plannedChanges: [{ file: taskContract.mutablePaths[0], symbol: null, change: "edit", reason: "fixture", expectedMetricEffect: { metric: "correct", direction: "increase" } }],
+    testsToRun: [taskContract.evaluators[0].id],
+    knownRisks: [],
+    stopInstead: false,
+    impactAnalysis: null,
+    feedbackContextHash: "a".repeat(64),
+    ...overrides
+  };
+}
+
+test("SEC-SCHEMA-003 rejects a proposal missing feedbackContextHash", () => {
+  const taskContract = validateEvolutionTask(validTask(), { repositoryRoot: process.cwd() });
+  const proposal = validProposal(taskContract);
+  delete proposal.feedbackContextHash;
+  assert.throws(
+    () => validateProposal(proposal, taskContract),
+    (error) => error instanceof EvolutionContractError && error.issues.some((issue) => issue.path === "feedbackContextHash")
+  );
+});
+
+test("SEC-SCHEMA-004 rejects a proposal bound to a feedbackContextHash different from the one supplied", () => {
+  const taskContract = validateEvolutionTask(validTask(), { repositoryRoot: process.cwd() });
+  const expected = "b".repeat(64);
+  assert.throws(
+    () => validateProposal(validProposal(taskContract, { feedbackContextHash: "c".repeat(64) }), taskContract, { feedbackContextHash: expected }),
+    (error) => error.code === "FEEDBACK_CONTEXT_HASH_MISMATCH"
+  );
+  const bound = validateProposal(validProposal(taskContract, { feedbackContextHash: expected }), taskContract, { feedbackContextHash: expected });
+  assert.equal(bound.feedbackContextHash, expected);
+});
 
 test("BEH-CONTRACT-001 accepts and normalizes a valid task", () => {
   const value = validateEvolutionTask(validTask(), { repositoryRoot: process.cwd() });

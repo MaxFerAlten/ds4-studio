@@ -95,6 +95,7 @@ export const DEFAULT_CONFIG = Object.freeze({
     modelTimeoutMs: 120000,
     maxPacketBytes: 128000,
     maxArtifactReadBytes: 200000,
+    maxFeedbackContextBytes: 64000,
     writeTokenEnv: "DS4_EVOLUTION_WRITE_TOKEN"
   }),
   toolBlobs: Object.freeze({

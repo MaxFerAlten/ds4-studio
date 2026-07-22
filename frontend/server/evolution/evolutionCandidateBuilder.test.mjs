@@ -61,6 +61,7 @@ function proposal(overrides = {}) {
     knownRisks: [],
     stopInstead: false,
     impactAnalysis: null,
+    feedbackContextHash: "a".repeat(64),
     ...overrides
   };
 }

@@ -44,12 +44,24 @@ async function readGeneratedArtifact(store, runId, revision, name) {
   }
 }
 
-function validateStoredProposal(stored, revision) {
+function validateStoredProposal(stored, revision, feedbackContextHash) {
   if (stored?.schema !== "ds4_evolution_generated_proposal_v1" || stored.revision !== revision ||
-      !stored.proposal || !stored.modelEvidence || !timingSafeHexEqual(stored.proposalHash, hashJson(stored.proposal))) {
+      !stored.proposal || !stored.modelEvidence || !timingSafeHexEqual(stored.proposalHash, hashJson(stored.proposal)) ||
+      !timingSafeHexEqual(stored.proposal.feedbackContextHash, feedbackContextHash)) {
     throw new EvolutionLoopError("GENERATED_ARTIFACT_INVALID", "generated-proposal.json");
   }
   return Object.freeze({ proposal: stored.proposal, proposalHash: stored.proposalHash, modelEvidence: stored.modelEvidence });
+}
+
+function validateStoredFeedbackContext(stored, revision) {
+  if (!stored || stored.schema !== "ds4_evolution_feedback_context_v1" || stored.nextRevision !== revision) {
+    throw new EvolutionLoopError("GENERATED_ARTIFACT_INVALID", "feedback-context.json");
+  }
+  const { contextHash, ...rest } = stored;
+  if (!timingSafeHexEqual(contextHash, hashJson(rest))) {
+    throw new EvolutionLoopError("GENERATED_ARTIFACT_INVALID", "feedback-context.json");
+  }
+  return stored;
 }
 
 function validateStoredPatch(stored, proposalHash) {
@@ -80,10 +92,17 @@ async function ensureModelEvidence(store, runId, revision, role, evidence) {
 }
 
 export class EvolutionLoopController {
-  constructor({ orchestrator, proposer, budgetPolicy = { deriveBudgetState, decideLoopContinuation }, logger = console } = {}) {
+  constructor({
+    orchestrator,
+    proposer,
+    feedbackContextBuilder,
+    budgetPolicy = { deriveBudgetState, decideLoopContinuation },
+    logger = console
+  } = {}) {
     if (!orchestrator) throw new TypeError("orchestrator is required");
     this.orchestrator = orchestrator;
     this.proposer = proposer;
+    this.feedbackContextBuilder = feedbackContextBuilder;
     this.budgetPolicy = budgetPolicy;
     this.logger = logger;
   }
@@ -104,16 +123,35 @@ export class EvolutionLoopController {
     }
     if (run.manifest.taskContract.automation?.proposerEnabled !== true) return run;
     if (!this.proposer) throw new EvolutionLoopError("PROPOSER_UNAVAILABLE", "Level D requires a Proposer");
+    if (!this.feedbackContextBuilder) {
+      throw new EvolutionLoopError("FEEDBACK_CONTEXT_BUILDER_UNAVAILABLE", "Level D requires a feedback context builder");
+    }
     const revision = run.revision + 1;
     assertNotAborted(signal);
+    const storedFeedbackContext = await readGeneratedArtifact(this.orchestrator.runStore, runId, revision, "feedback-context.json");
+    const feedbackContext = storedFeedbackContext
+      ? validateStoredFeedbackContext(storedFeedbackContext, revision)
+      : await this.feedbackContextBuilder.build({ runId, nextRevision: revision, taskContract: run.manifest.taskContract, events, budget });
+    if (!storedFeedbackContext) {
+      await this.orchestrator.runStore.writeRevisionArtifact(runId, revision, "feedback-context.json", feedbackContext);
+    }
     const storedProposal = await readGeneratedArtifact(this.orchestrator.runStore, runId, revision, "generated-proposal.json");
-    const proposed = storedProposal ? validateStoredProposal(storedProposal, revision) : await this.proposer.propose({
+    const proposed = storedProposal ? validateStoredProposal(storedProposal, revision, feedbackContext.contextHash) : await this.proposer.propose({
       taskContract: run.manifest.taskContract,
       revision,
-      history: events.slice(-32).map((event) => ({ revision: event.revision, type: event.type, reasonCode: event.payload?.reasonCode ?? null })),
+      history: feedbackContext.history,
+      diagnosis: feedbackContext.previousDiagnosis,
+      metricTrend: feedbackContext.metricTrend,
+      rejectedStrategies: feedbackContext.rejectedStrategies,
+      promotedStrategies: feedbackContext.promotedStrategies,
+      noImprovementStreak: feedbackContext.noImprovementStreak,
+      feedbackContextHash: feedbackContext.contextHash,
       budget,
       signal
     });
+    if (!storedProposal && !timingSafeHexEqual(proposed.proposal.feedbackContextHash, feedbackContext.contextHash)) {
+      throw new EvolutionLoopError("FEEDBACK_CONTEXT_HASH_MISMATCH", "proposal is not bound to the supplied feedback context");
+    }
     if (!storedProposal) {
       await this.orchestrator.runStore.writeRevisionArtifact(runId, revision, "generated-proposal.json", {
         schema: "ds4_evolution_generated_proposal_v1",

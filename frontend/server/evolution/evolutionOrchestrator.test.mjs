@@ -99,7 +99,8 @@ async function setup({ candidateScore = 2, securityPassed = true, approvalMode =
     testsToRun: ["correctness", "security-policy"],
     knownRisks: [],
     stopInstead: false,
-    impactAnalysis: null
+    impactAnalysis: null,
+    feedbackContextHash: "a".repeat(64)
   };
   await orchestrator.createRun(task, { repositoryRoot: directory });
   return { directory, repository, runId, runStore, orchestrator, proposal };

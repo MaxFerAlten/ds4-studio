@@ -22,7 +22,19 @@ export class EvolutionProposer {
     this.impactProvider = impactProvider;
   }
 
-  async propose({ taskContract, revision, history = [], diagnosis = null, budget = {}, signal }) {
+  async propose({
+    taskContract,
+    revision,
+    history = [],
+    diagnosis = null,
+    metricTrend = [],
+    rejectedStrategies = [],
+    promotedStrategies = [],
+    noImprovementStreak = 0,
+    feedbackContextHash,
+    budget = {},
+    signal
+  }) {
     const result = await this.modelClient.completeStructured({
       role: "proposer",
       userInput: {
@@ -30,8 +42,13 @@ export class EvolutionProposer {
         revision,
         mutablePaths: taskContract.mutablePaths,
         evaluatorIds: taskContract.evaluators.map((entry) => entry.id),
-        history: history.slice(-8),
+        history,
         diagnosis,
+        metricTrend,
+        rejectedStrategies,
+        promotedStrategies,
+        noImprovementStreak,
+        feedbackContextHash,
         budget
       },
       signal,
@@ -45,7 +62,7 @@ export class EvolutionProposer {
             : fallbackRisk(untrusted.targetFiles ?? []);
           untrusted.impactAnalysis = { ...impact, trusted: impact?.source === "gitnexus" && impact?.trusted === true };
         }
-        return validateProposal(untrusted, taskContract);
+        return validateProposal(untrusted, taskContract, { feedbackContextHash });
       }
     });
     const proposalHash = hashJson(result.value);

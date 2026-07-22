@@ -27,7 +27,7 @@ export const REVISION_ARTIFACT_ALLOWLIST = Object.freeze(new Set([
   "diagnosis.json", "promotion.json", "rollback.json", "parent-snapshot.json",
   "candidate-snapshot.json", "promoted-snapshot.json", "evidence-packet.json",
   "critic-model-evidence.json", "proposer-model-evidence.json", "patcher-model-evidence.json",
-  "generated-proposal.json", "generated-patch.json"
+  "generated-proposal.json", "generated-patch.json", "feedback-context.json"
 ]));
 
 const RUN_ID_PATTERN = /^evo_[a-f0-9]{20}$/;
