@@ -48,5 +48,7 @@ sage_*/
 docs/
 ds4studio.1.md
 /.antigravitycli/
-
+temp/
+node_modules/
+artifacts/
 .tokensave

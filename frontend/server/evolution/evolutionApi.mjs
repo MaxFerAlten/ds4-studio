@@ -122,6 +122,25 @@ export function createEvolutionRouter({ runtime, runStore, auth, views, reposito
     req.on("close", () => { closed = true; clearInterval(heartbeat); unsubscribe(); });
   }));
 
+  router.post("/runs/:runId/candidates", write, asyncRoute(async (req, res) => {
+    const run = await runStore.loadRun(req.params.runId);
+    assertConfiguredLevel(run.manifest.taskContract, maxLevel);
+    if (run.manifest.taskContract.automation?.proposerEnabled === true) {
+      const error = new Error("Cannot submit manual candidate to an automated run");
+      error.code = "MANUAL_CANDIDATE_FOR_AUTOMATED_RUN";
+      error.status = 409;
+      throw error;
+    }
+    const result = await runtime.orchestrator.runManualCandidate(req.params.runId, {
+      proposal: req.body?.proposal,
+      patchText: req.body?.patchText
+    });
+    res.status(202).json({
+      run: views.run(await runStore.loadRun(req.params.runId)),
+      result: { state: result.state, gateDecision: result.gateDecision ?? null }
+    });
+  }));
+
   router.get("/runs/:runId/revisions/:revision", asyncRoute(async (req, res) => {
     const revision = integer(req.params.revision, null);
     if (!revision || revision <= 0) return res.status(400).json({ error: "INVALID_REVISION" });

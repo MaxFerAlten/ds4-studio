@@ -16,10 +16,16 @@ const TASK = Object.freeze({
   objective: "Reach score five",
   workspaceRoot: null,
   mutablePaths: ["src"],
-  immutablePaths: ["checks"],
+  immutablePaths: ["checks", "evolutionPromotionGate.mjs", "evolutionPromotion.mjs", "hidden-fixtures"],
   baselineRef: "snapshot",
-  evaluators: [{ id: "correctness", required: true, configuration: {} }],
-  metrics: [{ name: "score", direction: "maximize", required: true, baselineTolerance: 0, target: 5, weight: 1 }],
+  evaluators: [
+    { id: "correctness", required: true, configuration: {} },
+    { id: "security-policy", required: true, configuration: {} }
+  ],
+  metrics: [
+    { name: "score", direction: "maximize", required: true, baselineTolerance: 0, target: 5, weight: 1 },
+    { name: "security_passed", direction: "boolean", required: true, baselineTolerance: 0, target: true, weight: 1 }
+  ],
   budgets: {
     maxRevisions: 8, maxFilesChanged: 2, maxAddedLines: 10, maxDeletedLines: 10,
     maxWallTimeMsPerRevision: 5_000, maxPromptTokensPerRevision: 1_000, maxCompletionTokensPerRevision: 1_000
@@ -43,8 +49,11 @@ async function setup() {
     evaluationVersion: "ds4_evolution_evaluation_v1",
     revision: 0,
     status: "passed",
-    evaluators: [{ id: "correctness", required: true, status: "passed", metrics: { score: 1 }, violations: [], artifacts: [], reproducibility: {} }],
-    aggregateMetrics: { score: 1 },
+    evaluators: [
+      { id: "correctness", required: true, status: "passed", metrics: { score: 1 }, violations: [], artifacts: [], reproducibility: {} },
+      { id: "security-policy", required: true, status: "passed", metrics: { security_passed: true }, violations: [], artifacts: [], reproducibility: {} }
+    ],
+    aggregateMetrics: { score: 1, security_passed: true },
     hardFailures: []
   };
   await runStore.saveBaseline(runId, snapshot, baselineEvaluation);

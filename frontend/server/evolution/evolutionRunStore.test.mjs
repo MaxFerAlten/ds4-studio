@@ -22,10 +22,16 @@ function task(workspaceRoot) {
     objective: "Verify durable deterministic state",
     workspaceRoot,
     mutablePaths: ["src/value.txt"],
-    immutablePaths: ["checks/evaluator.mjs"],
+    immutablePaths: ["checks/evaluator.mjs", "evolutionPromotionGate.mjs", "evolutionPromotion.mjs", "hidden-fixtures"],
     baselineRef: "snapshot",
-    evaluators: [{ id: "fixture", required: true, configuration: {} }],
-    metrics: [{ name: "correct", direction: "boolean", required: true, baselineTolerance: 0, target: true, weight: 1 }],
+    evaluators: [
+      { id: "fixture", required: true, configuration: {} },
+      { id: "security-policy", required: true, configuration: {} }
+    ],
+    metrics: [
+      { name: "correct", direction: "boolean", required: true, baselineTolerance: 0, target: true, weight: 1 },
+      { name: "security_passed", direction: "boolean", required: true, baselineTolerance: 0, target: true, weight: 1 }
+    ],
     budgets: {
       maxRevisions: 2,
       maxFilesChanged: 2,

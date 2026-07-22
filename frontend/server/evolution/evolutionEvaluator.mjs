@@ -9,6 +9,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import { hashJson } from "./evolutionIntegrity.mjs";
+import { readEvaluatorOutput, EvolutionEvaluatorOutputError } from "./evolutionEvaluatorOutput.mjs";
 
 const RESULT_STATUSES = new Set(["passed", "failed", "error", "partial"]);
 const DEFAULT_FORBIDDEN_PATTERNS = Object.freeze([
@@ -60,39 +61,35 @@ function normalizeEvaluatorResult(raw, descriptor) {
   });
 }
 
-function parseCommandOutput(execution) {
+async function parseCommandOutput(execution, runStore, runId) {
   if (execution.status !== "success") {
     return {
       status: execution.status === "infrastructure_error" ? "error" : "failed",
       metrics: {},
-      violations: execution.violations?.length ? execution.violations : ["EVALUATOR_COMMAND_FAILED"],
+      violations: execution.violations?.length ? [...execution.violations] : ["EVALUATOR_COMMAND_FAILED"],
       artifacts: [execution.stdoutArtifact, execution.stderrArtifact].filter(Boolean),
       reproducibility: execution.reproducibility
     };
   }
-  let value;
   try {
-    value = JSON.parse(execution.stdoutPreview);
-  } catch {
-    return {
-      status: "error",
-      metrics: {},
-      violations: ["EVALUATOR_OUTPUT_INVALID_JSON"],
-      artifacts: [execution.stdoutArtifact, execution.stderrArtifact].filter(Boolean),
-      reproducibility: execution.reproducibility
-    };
+    return await readEvaluatorOutput({ runStore, runId, execution });
+  } catch (error) {
+    if (error instanceof EvolutionEvaluatorOutputError) {
+      return {
+        status: "error",
+        metrics: {},
+        violations: [error.code],
+        artifacts: [execution.stdoutArtifact, execution.stderrArtifact].filter(Boolean),
+        reproducibility: execution.reproducibility
+      };
+    }
+    throw error;
   }
-  return {
-    status: value.status,
-    metrics: value.metrics ?? {},
-    violations: value.violations ?? [],
-    artifacts: [execution.stdoutArtifact, execution.stderrArtifact, ...(value.artifacts ?? [])].filter(Boolean),
-    reproducibility: { ...execution.reproducibility, seed: value.seed ?? null }
-  };
 }
 
 export function createCommandEvaluator(executor) {
   if (!executor || typeof executor.execute !== "function") throw new TypeError("executor is required");
+  const runStore = executor.runStore ?? null;
   return async function commandEvaluator(context) {
     const configuration = context.descriptor.configuration ?? {};
     if (typeof configuration.executable !== "string" || !Array.isArray(configuration.args)) {
@@ -117,7 +114,7 @@ export function createCommandEvaluator(executor) {
       signal: context.signal,
       secretValues: context.secretValues ?? []
     });
-    return parseCommandOutput(execution);
+    return parseCommandOutput(execution, runStore, context.runId);
   };
 }
 

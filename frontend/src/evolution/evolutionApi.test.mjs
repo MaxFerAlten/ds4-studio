@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { approveEvolutionRevision, listEvolutionRuns, startEvolutionRun } from "./evolutionApi.mjs";
+import { approveEvolutionRevision, listEvolutionRuns, startEvolutionRun, submitEvolutionCandidate } from "./evolutionApi.mjs";
 
 function response(body, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -25,4 +25,22 @@ test("Evolution reads do not attach authorization and server errors remain failu
     () => listEvolutionRuns({ fetchImpl: async () => response({ error: "EVOLUTION_DISABLED" }, 404) }),
     (error) => error.code === "EVOLUTION_DISABLED" && error.status === 404
   );
+});
+
+test("submitEvolutionCandidate posts candidate to the manual candidate endpoint with token", async () => {
+  let capturedUrl;
+  let capturedBody;
+  let capturedHeaders;
+  const fetchImpl = async (url, options) => {
+    capturedUrl = url;
+    capturedBody = JSON.parse(options.body);
+    capturedHeaders = options.headers;
+    return response({ run: {}, result: { state: "MANUAL_REVIEW" } });
+  };
+  const candidate = { proposal: { revision: 1, summary: "fix" }, patchText: "diff --git a/x b/x" };
+  const result = await submitEvolutionCandidate("run-abc", candidate, "tok123", { fetchImpl });
+  assert.ok(capturedUrl.includes("/runs/run-abc/candidates"));
+  assert.deepEqual(capturedBody, candidate);
+  assert.equal(capturedHeaders.Authorization, "Bearer tok123");
+  assert.equal(result.result.state, "MANUAL_REVIEW");
 });

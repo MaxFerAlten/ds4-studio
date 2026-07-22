@@ -26,10 +26,16 @@ async function setup(overrides = {}) {
     objective: "Apply a bounded manual patch",
     workspaceRoot: repository,
     mutablePaths: ["src"],
-    immutablePaths: ["checks"],
+    immutablePaths: ["checks", "evolutionPromotionGate.mjs", "evolutionPromotion.mjs", "hidden-fixtures"],
     baselineRef: "snapshot",
-    evaluators: [{ id: "fixture", required: true, configuration: {} }],
-    metrics: [{ name: "correct", direction: "boolean", required: true, baselineTolerance: 0, target: true, weight: 1 }],
+    evaluators: [
+      { id: "fixture", required: true, configuration: {} },
+      { id: "security-policy", required: true, configuration: {} }
+    ],
+    metrics: [
+      { name: "correct", direction: "boolean", required: true, baselineTolerance: 0, target: true, weight: 1 },
+      { name: "security_passed", direction: "boolean", required: true, baselineTolerance: 0, target: true, weight: 1 }
+    ],
     budgets: {
       maxRevisions: 3,
       maxFilesChanged: 2,

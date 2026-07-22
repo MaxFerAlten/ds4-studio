@@ -14,6 +14,7 @@ import { promisify } from "node:util";
 
 import { atomicWriteJson, hashJson, sha256 } from "./evolutionIntegrity.mjs";
 import { redactExecutionText } from "./evolutionExecutor.mjs";
+import { validateLiveEvidence, verifyLiveEvidenceHashes } from "./evolutionLiveEvidence.mjs";
 import { scanEvolutionProvenance } from "./evolutionProvenance.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -334,6 +335,7 @@ function mappedResult(entry, status) {
 
 export async function createCertificationBundle(options = {}) {
   const level = options.level ?? "B";
+  const mode = options.live ? "live" : "offline-selftest";
   const catalog = certificationCatalog(level);
   const repositoryRoot = path.resolve(options.repositoryRoot ?? DEFAULT_REPOSITORY_ROOT);
   const decidedAt = (options.now ?? (() => new Date()))().toISOString();
@@ -348,6 +350,8 @@ export async function createCertificationBundle(options = {}) {
     options.environment ? Promise.resolve(options.environment) : environmentEvidence(repositoryRoot),
     options.sourceRevision ? Promise.resolve(options.sourceRevision) : sourceRevisionEvidence(repositoryRoot)
   ]);
+  const liveEvidence = options.liveEvidence ?? null;
+  const liveArmsExecuted = liveEvidence !== null && liveEvidence.executed === true;
   const provenanceStatuses = new Map((provenanceReport.checks ?? []).map((entry) => [entry.testId, entry.status]));
   const unitEvidence = requirementEvidence(unit.subtests ?? []);
   const securityEvidence = requirementEvidence(security.subtests ?? []);
@@ -366,10 +370,65 @@ export async function createCertificationBundle(options = {}) {
   if (security.passed !== true) hardFailures.push("SECURITY_SUITE_FAILED");
   for (const violation of provenanceReport.violations ?? []) hardFailures.push(`PROVENANCE:${violation}`);
   if (failed || skipped) hardFailures.push(...records.filter((entry) => entry.status !== "PASS").map((entry) => `REQUIRED_TEST_${entry.status}:${entry.testId}`));
+  if (mode === "live") {
+    if (!liveEvidence) {
+      hardFailures.push("LIVE_EVIDENCE_MISSING");
+    } else {
+      try {
+        validateLiveEvidence(liveEvidence);
+      } catch (error) {
+        hardFailures.push(`LIVE_EVIDENCE_INVALID:${error.code}`);
+      }
+      if (options.liveArtifactsDir) {
+        try {
+          await verifyLiveEvidenceHashes(liveEvidence, options.liveArtifactsDir);
+        } catch (error) {
+          hardFailures.push(`LIVE_EVIDENCE_INVALID:${error.code}`);
+        }
+      }
+      if (!liveEvidence.model) hardFailures.push("LIVE_MODEL_CALL_MISSING");
+      if (!liveEvidence.sourceRevision) hardFailures.push("LIVE_FEEDBACK_BINDING_MISSING");
+      if (liveEvidence.runsRequested > 0 && liveEvidence.runsCompleted < liveEvidence.runsRequested) {
+        hardFailures.push("LIVE_RUN_TIMEOUT");
+      }
+      if (liveEvidence.sourceRevision && liveEvidence.sourceRevision !== sourceRevision.revision) {
+        hardFailures.push("LIVE_CANONICAL_REPOSITORY_MUTATED");
+      }
+      if (!liveEvidence.rollbackDrillPassed) hardFailures.push("LIVE_ROLLBACK_DRILL_FAILED");
+      if (liveEvidence.runsRequested > 0 && liveEvidence.runsPassed < liveEvidence.runsRequested) {
+        hardFailures.push("LIVE_SUCCESS_RATE_BELOW_THRESHOLD");
+      }
+    }
+    if (level === "C") {
+      if (!liveEvidence || liveEvidence.runsPassed < 1) {
+        if (!hardFailures.includes("LIVE_EVIDENCE_MISSING")) {
+          hardFailures.push("LIVE_EVIDENCE_MISSING");
+        }
+      }
+    }
+    if (level === "D") {
+      if (!liveEvidence || liveEvidence.runsRequested < 2) {
+        if (!hardFailures.includes("LIVE_EVIDENCE_MISSING")) {
+          hardFailures.push("LIVE_EVIDENCE_MISSING");
+        }
+      } else {
+        const threshold = Math.ceil(liveEvidence.runsRequested * 2 / 3);
+        if (liveEvidence.runsPassed < threshold) {
+          hardFailures.push("LIVE_SUCCESS_RATE_BELOW_THRESHOLD");
+        }
+        if (!liveEvidence.rollbackDrillPassed) {
+          if (!hardFailures.includes("LIVE_ROLLBACK_DRILL_FAILED")) {
+            hardFailures.push("LIVE_ROLLBACK_DRILL_FAILED");
+          }
+        }
+      }
+    }
+  }
   const environmentHash = hashJson(environment);
   const decision = Object.freeze({
-    schema: "ds4_evolution_acceptance_v1",
+    schema: "ds4_evolution_acceptance_v2",
     level,
+    mode,
     decision: hardFailures.length ? "FAIL" : "PASS",
     requiredTests: records.length,
     passed,
@@ -378,6 +437,7 @@ export async function createCertificationBundle(options = {}) {
     hardFailures: Object.freeze([...new Set(hardFailures)].sort()),
     sourceRevision: sourceRevision.revision,
     environmentHash,
+    liveEvidence: liveEvidence ? Object.freeze({ ...liveEvidence }) : null,
     decidedAt
   });
   const testResults = {
@@ -392,13 +452,13 @@ export async function createCertificationBundle(options = {}) {
   };
   const benchmarkSummary = {
     schema: "ds4_evolution_benchmark_summary_v1",
-    mode: "offline-selftest",
+    mode,
     level,
     passed: decision.decision === "PASS",
     unitSuitePassed: unit.passed === true,
     securitySuitePassed: security.passed === true,
     provenancePassed: provenanceReport.passed === true,
-    liveArmsExecuted: false
+    liveArmsExecuted
   };
   const failures = { schema: "ds4_evolution_failures_v1", failures: decision.hardFailures };
   await fs.mkdir(outputDir, { recursive: true, mode: 0o700 });

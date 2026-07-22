@@ -14,7 +14,7 @@ import { createCertificationBundle } from "../../../frontend/server/evolution/ev
 const REPOSITORY_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 
 export function parseArguments(argv) {
-  const result = { selftest: false, gate: false, live: false, level: "B", outputDir: null };
+  const result = { selftest: false, gate: false, live: false, level: "B", outputDir: null, runs: null, tasks: null, model: null, modelBaseUrl: null, token: null };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === "--selftest") result.selftest = true;
@@ -29,18 +29,33 @@ export function parseArguments(argv) {
     else if (argument === "--artifacts-dir") {
       result.outputDir = argv[index + 1] ?? null;
       index += 1;
-    } else if (["--arms", "--runs", "--tasks"].includes(argument)) {
+    } else if (argument === "--runs") {
+      result.runs = Number(argv[index + 1]);
+      if (!Number.isInteger(result.runs) || result.runs < 1) throw new Error(`INVALID_RUNS:${argv[index + 1]}`);
       index += 1;
-    } else if (argument === "--help") result.help = true;
+    } else if (argument === "--tasks") {
+      result.tasks = argv[index + 1] ?? null;
+      index += 1;
+    } else if (argument === "--model") {
+      result.model = argv[index + 1] ?? null;
+      index += 1;
+    } else if (argument === "--model-base-url") {
+      result.modelBaseUrl = argv[index + 1] ?? null;
+      index += 1;
+    } else if (argument === "--token") {
+      result.token = argv[index + 1] ?? null;
+      index += 1;
+    }     else if (argument === "--help") result.help = true;
     else throw new Error(`UNKNOWN_ARGUMENT:${argument}`);
   }
+  if (result.selftest && result.live) throw new Error("MUTUALLY_EXCLUSIVE: --selftest and --live cannot be used together.");
   return Object.freeze(result);
 }
 
 export async function main(argv = process.argv.slice(2)) {
   const options = parseArguments(argv);
   if (options.help) {
-    process.stdout.write("Usage: node benchmarks/agentic/evolution/run.mjs --selftest [--gate] [--level B|C|D] [--artifacts-dir DIR]\n");
+    process.stdout.write("Usage: node benchmarks/agentic/evolution/run.mjs [--selftest | --live] [--gate] [--level B|C|D] [--artifacts-dir DIR] [--runs N] [--tasks FILE] [--model NAME] [--model-base-url URL] [--token TOKEN]\n");
     return 0;
   }
   if (options.live) {
@@ -52,7 +67,12 @@ export async function main(argv = process.argv.slice(2)) {
     return 2;
   }
   const outputDir = options.outputDir ? path.resolve(REPOSITORY_ROOT, options.outputDir) : undefined;
-  const result = await createCertificationBundle({ repositoryRoot: REPOSITORY_ROOT, outputDir, level: options.level });
+  const bundleOptions = { repositoryRoot: REPOSITORY_ROOT, outputDir, level: options.level };
+  if (options.live) {
+    bundleOptions.live = true;
+    bundleOptions.liveEvidence = null;
+  }
+  const result = await createCertificationBundle(bundleOptions);
   process.stdout.write(`${JSON.stringify({ outputDir: result.outputDir, ...result.decision })}\n`);
   return options.gate && result.decision.decision !== "PASS" ? 1 : 0;
 }
