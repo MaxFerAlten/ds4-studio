@@ -163,6 +163,8 @@ Controls:
 - tool outputs treated as evidence, never authority;
 - synthesis layer strips imperative status;
 - prompt explicitly states repository content is untrusted;
+- Proposer and Patcher receive bounded source/context objects rather than repository instructions as authority;
+- model-supplied impact claims are stripped and replaced with trusted GitNexus evidence or conservative file risk;
 - immutable paths enforced programmatically;
 - evaluator and gate ignore model instructions;
 - large raw content stored as blob and selectively retrieved.
@@ -592,6 +594,98 @@ Controls:
 
 ---
 
+## T-025 — Patch smuggling or proposal substitution
+
+**Scenario:** A model returns a patch for files or a revision different from the validated proposal, embeds a second patch in prose, or substitutes a new proposal after impact review.
+
+**Impact:** immutable-path write, unreviewed change, or approval bypass.
+
+**Controls:**
+
+- separate structured Proposer and Patcher calls;
+- exact proposal hash embedded in the generated-patch contract;
+- target-file, revision, mutable-scope, and diff validation outside the model;
+- only the validated patch field reaches Candidate Builder;
+- immutable generated outputs reused on restart rather than regenerated silently.
+
+**Acceptance evidence:** `SEC-PROPOSER-001` through `SEC-PROPOSER-003`, `BEH-LOOP-002`.
+
+---
+
+## T-026 — Model retry and token-budget exhaustion
+
+**Scenario:** Invalid structured replies trigger hidden transport retries or repeated semantic repair, so actual calls/tokens exceed ledger budgets.
+
+**Impact:** denial of service, unexpected cost, or unbounded automatic loop.
+
+**Controls:**
+
+- exactly one schema repair configured and enforced independently of caller input;
+- every underlying transport attempt counted;
+- token usage aggregated across syntax and semantic repairs;
+- complete usage required before canonical output;
+- ledger-derived budget check before the next role call;
+- stable `BUDGET_EXHAUSTED` stop reason.
+
+**Acceptance evidence:** `BEH-MODEL-002`, `SEC-MODEL-002`, `SEC-MODEL-003`, `SEC-LOOP-002`, `SEC-LOOP-003`.
+
+---
+
+## T-027 — Write-token bypass or level escalation
+
+**Scenario:** An unauthenticated browser invokes mutation routes, a disabled token is treated as permissive, or a caller requests Level D/E above server policy.
+
+**Impact:** unauthorized model use, candidate execution, promotion, or rollback.
+
+**Controls:**
+
+- write token is read only from a named server environment variable;
+- absent token disables all mutations;
+- timing-safe Bearer comparison and bounded reviewer identity;
+- `maxLevel` checked before run creation;
+- Level E also requires the independent environment feature gate;
+- browser retains the write token in memory only.
+
+**Acceptance evidence:** `SEC-API-001`, `SEC-AUTH-001`, `SEC-AUTH-002`.
+
+---
+
+## T-028 — SSE replay gap, duplication, or observer backpressure
+
+**Scenario:** An event is appended between replay and subscription, reconnection duplicates events, or a broken client blocks/fails the controller.
+
+**Impact:** deceptive dashboard state or runtime availability loss.
+
+**Controls:**
+
+- subscription installed before replay with concurrent-event buffering;
+- monotonic sequence IDs and client gap detection;
+- bounded replay and artifact retrieval;
+- notification occurs only after durable append;
+- subscriber exceptions and backpressure close only that stream.
+
+**Acceptance evidence:** `BEH-API-003`, `SEC-API-002`.
+
+---
+
+## T-029 — Stored XSS or deceptive evidence rendering
+
+**Scenario:** Model, patch, evaluator, or repository text contains HTML/script intended to execute in the Evolution dashboard or conceal the reviewed diff.
+
+**Impact:** token theft, forged approval, or operator deception.
+
+**Controls:**
+
+- evidence, diagnosis, candidate, and diff rendered as React text/`pre`, never injected HTML;
+- no `dangerouslySetInnerHTML` in Evolution views;
+- exact candidate, parent, gate, and review hashes bound server-side;
+- stale review submissions rejected;
+- artifact sizes bounded before rendering.
+
+**Acceptance evidence:** `SEC-UI-001`, `SEC-UI-002`.
+
+---
+
 ## 6. Risk matrix
 
 | Threat | Likelihood | Impact | Initial risk | Required residual risk |
@@ -608,6 +702,11 @@ Controls:
 | Context poisoning | High | Medium | High | Medium |
 | Rollback failure | Low | Critical | High | Low |
 | Cross-run contamination | Medium | High | High | Low |
+| Patch smuggling | Medium | Critical | Critical | Low |
+| Model budget exhaustion | High | Medium | High | Low |
+| Write-token/level bypass | Medium | Critical | Critical | Low |
+| SSE replay/backpressure | Medium | Medium | Medium | Low |
+| Stored XSS/UI deception | Medium | High | High | Low |
 
 Automatic promotion SHALL remain disabled if any critical threat lacks an implemented mitigation and passing acceptance test.
 

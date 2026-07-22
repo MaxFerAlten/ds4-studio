@@ -58,6 +58,7 @@ Requirements:
 - structured diagnosis validated;
 - Critic cannot affect promotion;
 - preview-only UI or API.
+- catalogo cumulativo obbligatorio: 116 requisiti, nessun `SKIP`.
 
 ### Level D — Proposer preview
 
@@ -66,6 +67,7 @@ Requirements:
 - Proposer creates candidate only in isolated workspace;
 - promotion remains manual;
 - all Level B and C gates pass.
+- catalogo cumulativo obbligatorio: 128 requisiti, nessun `SKIP`.
 
 ### Level E — Low-risk automatic promotion
 
@@ -375,6 +377,94 @@ Critic input SHALL remain within configured token/character budget.
 
 The Critic SHALL receive compact summaries sufficient to avoid immediate repetition.
 
+### `BEH-CRITIC-003` — Diagnosis bound to evidence ownership
+
+The validated diagnosis SHALL be bound to the current `runId` and `revision`; cross-run or stale evidence references MUST fail closed.
+
+---
+
+## 12A. Model boundary tests
+
+### `BEH-MODEL-001` — Deterministic role invocation
+
+Critic, Proposer, and Patcher SHALL use versioned DS4 prompts with deterministic sampling and no model tool access.
+
+### `BEH-MODEL-002` — One semantic repair maximum
+
+At most one schema-repair call is permitted. A larger caller-provided repair budget MUST be clamped or rejected.
+
+### `BEH-MODEL-003` — Complete model evidence
+
+Persisted evidence SHALL include role, model, prompt hash, response hash, actual transport-call count, repair count, and aggregate token usage.
+
+### `SEC-MODEL-001` — Reasoning is non-canonical
+
+Private reasoning or chain-of-thought MUST NOT be persisted in the ledger, artifacts, API DTOs, or certification output.
+
+### `SEC-MODEL-002` — Retry budget cannot be widened
+
+Task contracts and runtime code SHALL permit exactly one schema repair per role.
+
+### `SEC-MODEL-003` — Missing usage fails closed
+
+Any model response lacking complete prompt, completion, and total-token usage SHALL fail before its output becomes canonical.
+
+### `SEC-MODEL-004` — Model output has no promotion authority
+
+Model output may create a proposal, patch, or diagnosis but MUST NOT create a gate result, approval, promotion, or rollback authorization.
+
+---
+
+## 12B. Proposer and automatic-loop tests
+
+### `BEH-PROPOSER-001` — Bounded proposal input
+
+The Proposer SHALL receive only the task objective, bounded history, current budget, evaluator IDs, and approved source context.
+
+### `BEH-PROPOSER-002` — Validated proposal output
+
+The proposal SHALL be schema-valid, revision-bound, scoped to mutable paths, and tied to configured evaluators.
+
+### `BEH-PROPOSER-003` — Patch generated separately
+
+The Patcher SHALL run as a separate structured call and bind its patch to the exact proposal hash.
+
+### `SEC-PROPOSER-001` — Source reads are allowlisted
+
+Source context SHALL reject hidden paths, symlinks, scope escapes, non-regular files, and files over the configured byte limit.
+
+### `SEC-PROPOSER-002` — Patch binding enforced
+
+A patch with a different proposal hash, revision, or target-file set MUST be rejected.
+
+### `SEC-PROPOSER-003` — Model-supplied impact authority stripped
+
+Impact claims produced by the model MUST be discarded. Only trusted GitNexus evidence may be authoritative; fallback file risk forces manual review.
+
+### `BEH-LOOP-001` — Versioned automatic policy
+
+Task v2 SHALL configure Level C/D actors, auto-continuation, total budgets, retry limits, and stop rules without changing task v1 behavior.
+
+### `BEH-LOOP-002` — Ledger-derived recovery
+
+Budget state and restart position SHALL be reconstructed from durable events and immutable generated-output artifacts; restart MUST NOT duplicate completed model calls.
+
+### `BEH-LOOP-003` — Ordered revision execution
+
+Each automatic revision SHALL execute Proposer, Patcher, candidate build, evaluation, Critic, deterministic gate, and pause/promotion handling in that order.
+
+### `SEC-LOOP-001` — Level E and automatic promotion disabled
+
+Level C/D task contracts require manual promotion. Level E requires a separate server feature gate and is outside this acceptance level.
+
+### `SEC-LOOP-002` — Stable stop decisions
+
+Budget exhaustion, repeated failure signatures, no-improvement windows, cancellation, and terminal states SHALL produce deterministic reason codes.
+
+### `SEC-LOOP-003` — Budget checked before new model work
+
+The controller SHALL stop before starting another role call when ledger-derived limits are exhausted, counting underlying transport retries rather than only high-level invocations.
+
 ---
 
 ## 13. Promotion gate tests
@@ -573,13 +663,27 @@ Metrics marked stochastic SHALL require the configured number of runs/seeds.
 
 ### `BEH-API-001` — Unauthorized write rejected
 
+The API SHALL expose bounded run, revision, event, review, and rollback routes. Every mutation requires the configured Bearer credential and MUST honor the server `maxLevel`.
+
 ### `BEH-API-002` — Read-only status safe
 
 Status endpoint MUST not expose raw secrets, hidden fixture content, or full unbounded prompts.
 
+Concurrent resume calls SHALL share one active job per run, and rollback completion SHALL be represented in the run DTO.
+
 ### `BEH-API-003` — Cancel idempotent
 
 Repeated cancellation SHALL not corrupt state.
+
+Durably appended events SHALL be observable live, in monotonic sequence, with bounded replay.
+
+### `SEC-API-001` — Write authentication and level gate fail closed
+
+Missing, malformed, or disabled credentials and requests above configured `maxLevel` MUST be rejected before mutation.
+
+### `SEC-API-002` — Observer failures are isolated
+
+A broken or slow SSE subscriber MUST NOT fail the run, the durable append, or another subscriber.
 
 ---
 
@@ -617,13 +721,17 @@ The final implementation SHALL provide stable commands equivalent to:
 
 ```bash
 # Unit and integration suite
-node --test frontend/server/evolution/*.test.mjs
+npm --prefix frontend run test:evolution
 
 # Security suite
-node --test frontend/server/evolution/security/*.test.mjs
+npm --prefix frontend run test:evolution:security
 
 # Offline deterministic acceptance gate
 node benchmarks/agentic/evolution/run.mjs --selftest --gate
+
+# Level C and D cumulative gates
+npm --prefix frontend run certify:evolution:c
+npm --prefix frontend run certify:evolution:d
 
 # Live preview A/B
 node benchmarks/agentic/evolution/run.mjs \

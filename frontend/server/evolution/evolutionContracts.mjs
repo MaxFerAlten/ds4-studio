@@ -8,7 +8,10 @@
 import path from "node:path";
 
 export const EVOLUTION_TASK_VERSION = "ds4_evolution_task_v1";
+export const EVOLUTION_TASK_VERSION_V2 = "ds4_evolution_task_v2";
 export const EVOLUTION_PROPOSAL_VERSION = "ds4_evolution_proposal_v1";
+export const EVOLUTION_DIAGNOSIS_VERSION = "ds4_evolution_diagnosis_v1";
+export const EVOLUTION_GENERATED_PATCH_VERSION = "ds4_evolution_generated_patch_v1";
 export const EVOLUTION_PROVENANCE_VERSION = "ds4_clean_room_provenance_v1";
 export const DEFAULT_MAX_CONTRACT_BYTES = 256_000;
 export const DEFAULT_MAX_PROPOSAL_BYTES = 128_000;
@@ -17,14 +20,23 @@ const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const METRIC_DIRECTIONS = new Set(["maximize", "minimize", "exact", "boolean"]);
 const APPROVAL_MODES = new Set(["manual", "auto_for_low_risk", "always_auto"]);
 const RISK_LEVELS = new Set(["LOW", "MEDIUM", "HIGH", "CRITICAL"]);
-const TASK_KEYS = new Set([
+const TASK_KEYS_V1 = new Set([
   "contractVersion", "taskId", "title", "objective", "workspaceRoot", "mutablePaths",
   "immutablePaths", "baselineRef", "evaluators", "metrics", "budgets", "approvalPolicy"
 ]);
-const BUDGET_KEYS = [
+const TASK_KEYS_V2 = new Set([...TASK_KEYS_V1, "automation"]);
+const BUDGET_KEYS_V1 = [
   "maxRevisions", "maxFilesChanged", "maxAddedLines", "maxDeletedLines",
   "maxWallTimeMsPerRevision", "maxPromptTokensPerRevision", "maxCompletionTokensPerRevision"
 ];
+const BUDGET_KEYS_V2 = [
+  ...BUDGET_KEYS_V1,
+  "maxTotalWallTimeMs", "maxTotalPromptTokens", "maxTotalCompletionTokens",
+  "maxModelCallsPerRevision", "maxInfrastructureRetries", "maxEvaluatorRetries",
+  "maxCriticRepairs", "maxProposerRepairs", "maxRepeatedFailureSignatures",
+  "maxNoImprovementRevisions"
+];
+const AUTOMATION_LEVELS = new Set(["C", "D", "E"]);
 
 export class EvolutionContractError extends Error {
   constructor(code, message, issues = []) {
@@ -174,16 +186,48 @@ function normalizeMetrics(value, issues) {
   return metrics;
 }
 
-function normalizeBudgets(value, issues) {
-  if (!knownKeys(value, new Set(BUDGET_KEYS), "budgets", issues)) return {};
+function normalizeBudgets(value, issues, keys = BUDGET_KEYS_V1) {
+  if (!knownKeys(value, new Set(keys), "budgets", issues)) return {};
   const result = {};
-  for (const key of BUDGET_KEYS) {
+  for (const key of keys) {
     if (!Number.isSafeInteger(value[key]) || value[key] <= 0) {
       issue(issues, "INVALID_BUDGET", `budgets.${key}`, "budget must be a positive safe integer");
+    }
+    if ((key === "maxCriticRepairs" || key === "maxProposerRepairs") && value[key] !== 1) {
+      issue(issues, "INVALID_REPAIR_BUDGET", `budgets.${key}`, "exactly one schema repair is permitted");
     }
     result[key] = value[key];
   }
   return result;
+}
+
+function normalizeAutomation(value, issues, options = {}) {
+  const fallback = { level: "C", criticEnabled: true, proposerEnabled: false, autoContinue: false, modelProfile: "default" };
+  if (!knownKeys(value, new Set(["level", "criticEnabled", "proposerEnabled", "autoContinue", "modelProfile"]), "automation", issues)) {
+    return fallback;
+  }
+  const level = value.level;
+  if (!AUTOMATION_LEVELS.has(level)) issue(issues, "INVALID_AUTOMATION_LEVEL", "automation.level", "must be C, D, or E");
+  for (const key of ["criticEnabled", "proposerEnabled", "autoContinue"]) {
+    if (typeof value[key] !== "boolean") issue(issues, "INVALID_TYPE", `automation.${key}`, "must be boolean");
+  }
+  const modelProfile = requireString(value.modelProfile, "automation.modelProfile", issues, { max: 128 });
+  if (level === "C" && (value.criticEnabled !== true || value.proposerEnabled !== false)) {
+    issue(issues, "INVALID_AUTOMATION_POLICY", "automation", "Level C requires Critic and forbids Proposer");
+  }
+  if (level === "D" && (value.criticEnabled !== true || value.proposerEnabled !== true)) {
+    issue(issues, "INVALID_AUTOMATION_POLICY", "automation", "Level D requires Critic and Proposer");
+  }
+  if (level === "E" && options.allowLevelE !== true) {
+    issue(issues, "LEVEL_E_DISABLED", "automation.level", "Level E requires a separate feature gate");
+  }
+  return {
+    level,
+    criticEnabled: value.criticEnabled === true,
+    proposerEnabled: value.proposerEnabled === true,
+    autoContinue: value.autoContinue === true,
+    modelProfile
+  };
 }
 
 function normalizeApprovalPolicy(value, issues) {
@@ -206,8 +250,10 @@ function throwIssues(issues) {
 export function validateEvolutionTask(input, options = {}) {
   serializedBytes(input, options.maxBytes ?? DEFAULT_MAX_CONTRACT_BYTES, "task contract");
   const issues = [];
-  knownKeys(input, TASK_KEYS, "", issues);
-  if (input?.contractVersion !== EVOLUTION_TASK_VERSION) {
+  const version = input?.contractVersion;
+  const isV2 = version === EVOLUTION_TASK_VERSION_V2;
+  knownKeys(input, isV2 ? TASK_KEYS_V2 : TASK_KEYS_V1, "", issues);
+  if (version !== EVOLUTION_TASK_VERSION && !isV2) {
     issue(issues, "UNSUPPORTED_CONTRACT_VERSION", "contractVersion", "unsupported contractVersion");
   }
   const taskId = requireString(input?.taskId, "taskId", issues, { max: 128 });
@@ -253,11 +299,15 @@ export function validateEvolutionTask(input, options = {}) {
     }
   }
   const metrics = normalizeMetrics(input?.metrics, issues);
-  const budgets = normalizeBudgets(input?.budgets, issues);
+  const budgets = normalizeBudgets(input?.budgets, issues, isV2 ? BUDGET_KEYS_V2 : BUDGET_KEYS_V1);
   const approvalPolicy = normalizeApprovalPolicy(input?.approvalPolicy, issues);
+  const automation = isV2 ? normalizeAutomation(input?.automation, issues, options) : null;
+  if (isV2 && approvalPolicy.mode !== "manual") {
+    issue(issues, "INVALID_APPROVAL_POLICY", "approvalPolicy.mode", "Level C/D promotion must remain manual");
+  }
   throwIssues(issues);
-  return Object.freeze({
-    contractVersion: EVOLUTION_TASK_VERSION,
+  const contract = {
+    contractVersion: version,
     taskId,
     title,
     objective,
@@ -269,7 +319,9 @@ export function validateEvolutionTask(input, options = {}) {
     metrics: Object.freeze(metrics.map(Object.freeze)),
     budgets: Object.freeze({ ...budgets }),
     approvalPolicy: Object.freeze(approvalPolicy)
-  });
+  };
+  if (isV2) contract.automation = Object.freeze(automation);
+  return Object.freeze(contract);
 }
 
 export function checkEvolutionTask(input, options = {}) {
@@ -330,6 +382,98 @@ export function validateProposal(input, taskContract, options = {}) {
     targetFiles: Object.freeze([...new Set(targetFiles)].sort()),
     targetSymbols: Object.freeze(targetSymbols),
     testsToRun: Object.freeze(testsToRun)
+  });
+}
+
+function normalizeEvidenceRef(value, field, ownership, issues) {
+  knownKeys(value, new Set(["runId", "revision", "artifactId", "path", "summary"]), field, issues);
+  const runId = requireString(value?.runId, `${field}.runId`, issues, { max: 128 });
+  const revision = value?.revision;
+  if (!Number.isSafeInteger(revision) || revision <= 0) issue(issues, "INVALID_REVISION", `${field}.revision`, "must be positive integer");
+  if (runId !== ownership.runId || revision !== ownership.revision) {
+    issue(issues, "CROSS_RUN_ACCESS_ATTEMPT", field, "evidence reference does not belong to this revision");
+  }
+  const artifactId = requireString(value?.artifactId, `${field}.artifactId`, issues, { max: 256 });
+  const refPath = requireString(value?.path, `${field}.path`, issues, { max: 512 });
+  const summary = requireString(value?.summary, `${field}.summary`, issues, { max: 2_000 });
+  return { runId, revision, artifactId, path: refPath, summary };
+}
+
+export function validateDiagnosis(input, ownership, options = {}) {
+  serializedBytes(input, options.maxBytes ?? 128_000, "diagnosis");
+  const issues = [];
+  knownKeys(input, new Set(["diagnosisVersion", "revision", "status", "summary", "rootCauses", "recommendations", "confidence"]), "", issues);
+  if (input?.diagnosisVersion !== EVOLUTION_DIAGNOSIS_VERSION) {
+    issue(issues, "UNSUPPORTED_DIAGNOSIS_VERSION", "diagnosisVersion", "unsupported diagnosisVersion");
+  }
+  if (input?.revision !== ownership?.revision) issue(issues, "INVALID_REVISION", "revision", "diagnosis revision mismatch");
+  if (input?.status !== "completed") issue(issues, "INVALID_DIAGNOSIS_STATUS", "status", "model diagnosis must be completed");
+  const summary = requireString(input?.summary, "summary", issues, { max: 10_000 });
+  const confidence = input?.confidence;
+  if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
+    issue(issues, "INVALID_CONFIDENCE", "confidence", "must be between 0 and 1");
+  }
+  const rootCauses = Array.isArray(input?.rootCauses) ? input.rootCauses.slice(0, 32).map((cause, index) => {
+    const field = `rootCauses[${index}]`;
+    knownKeys(cause, new Set(["code", "description", "evidenceRefs"]), field, issues);
+    const refs = Array.isArray(cause?.evidenceRefs)
+      ? cause.evidenceRefs.slice(0, 32).map((ref, refIndex) => normalizeEvidenceRef(ref, `${field}.evidenceRefs[${refIndex}]`, ownership, issues))
+      : (issue(issues, "MISSING_EVIDENCE", `${field}.evidenceRefs`, "root cause requires evidence"), []);
+    if (!refs.length) issue(issues, "MISSING_EVIDENCE", `${field}.evidenceRefs`, "root cause requires evidence");
+    return {
+      code: requireString(cause?.code, `${field}.code`, issues, { max: 128 }),
+      description: requireString(cause?.description, `${field}.description`, issues, { max: 5_000 }),
+      evidenceRefs: refs
+    };
+  }) : (issue(issues, "INVALID_TYPE", "rootCauses", "must be an array"), []);
+  const recommendations = Array.isArray(input?.recommendations)
+    ? input.recommendations.slice(0, 32).map((entry, index) => requireString(entry, `recommendations[${index}]`, issues, { max: 5_000 }))
+    : (issue(issues, "INVALID_TYPE", "recommendations", "must be an array"), []);
+  throwIssues(issues);
+  return Object.freeze({
+    diagnosisVersion: EVOLUTION_DIAGNOSIS_VERSION,
+    revision: ownership.revision,
+    status: "completed",
+    summary,
+    rootCauses: Object.freeze(rootCauses.map((cause) => Object.freeze({ ...cause, evidenceRefs: Object.freeze(cause.evidenceRefs.map(Object.freeze)) }))),
+    recommendations: Object.freeze(recommendations),
+    confidence
+  });
+}
+
+export function validateGeneratedPatch(input, proposal, options = {}) {
+  serializedBytes(input, options.maxBytes ?? 2_000_000, "generated patch");
+  const issues = [];
+  knownKeys(input, new Set(["patchVersion", "revision", "patchText", "targetFiles", "proposalHash"]), "", issues);
+  if (input?.patchVersion !== EVOLUTION_GENERATED_PATCH_VERSION) {
+    issue(issues, "UNSUPPORTED_PATCH_VERSION", "patchVersion", "unsupported patchVersion");
+  }
+  if (input?.revision !== proposal?.revision) issue(issues, "INVALID_REVISION", "revision", "patch revision mismatch");
+  const rawPatchText = input?.patchText;
+  const patchText = typeof rawPatchText === "string" ? rawPatchText : "";
+  if (typeof rawPatchText !== "string" || !rawPatchText.trim() ||
+      rawPatchText.length > (options.maxPatchChars ?? 2_000_000)) {
+    issue(issues, "INVALID_STRING", "patchText", `must be a non-empty string no longer than ${options.maxPatchChars ?? 2_000_000}`);
+  }
+  if (!/^diff --git /m.test(patchText) || !/^@@/m.test(patchText)) {
+    issue(issues, "INVALID_PATCH", "patchText", "must be a unified diff");
+  }
+  const targetFiles = Array.isArray(input?.targetFiles)
+    ? input.targetFiles.map((value, index) => normalizeScopePath(value, `targetFiles[${index}]`, issues)).filter(Boolean).sort()
+    : (issue(issues, "INVALID_TYPE", "targetFiles", "must be an array"), []);
+  const expectedFiles = [...(proposal?.targetFiles ?? [])].sort();
+  if (targetFiles.join("\n") !== expectedFiles.join("\n")) {
+    issue(issues, "PROPOSAL_PATCH_MISMATCH", "targetFiles", "target files do not match proposal");
+  }
+  const proposalHash = requireString(input?.proposalHash, "proposalHash", issues, { max: 64 });
+  if (!/^[a-f0-9]{64}$/.test(proposalHash)) issue(issues, "INVALID_HASH", "proposalHash", "must be sha256 hex");
+  throwIssues(issues);
+  return Object.freeze({
+    patchVersion: EVOLUTION_GENERATED_PATCH_VERSION,
+    revision: proposal.revision,
+    patchText,
+    targetFiles: Object.freeze(targetFiles),
+    proposalHash
   });
 }
 

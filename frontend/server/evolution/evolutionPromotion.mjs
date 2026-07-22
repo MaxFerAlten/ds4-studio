@@ -299,7 +299,7 @@ export class EvolutionPromotionService {
     });
   }
 
-  async rollback({ runId, revision, rollbackArtifact, expectedCurrentHash, smokeEvaluator }) {
+  async rollback({ runId, revision, rollbackArtifact, expectedCurrentHash, smokeEvaluator, reviewer = null }) {
     return this.serialize(async () => {
       const record = validateRollbackArtifact(rollbackArtifact);
       const current = await captureBaselineSnapshot({
@@ -322,7 +322,7 @@ export class EvolutionPromotionService {
       await this.runStore.appendEvent(runId, {
         revision,
         type: "ROLLBACK_COMPLETED",
-        payload: { candidateHash: record.candidateHash, restoredHash: restored.contentHash }
+        payload: { candidateHash: record.candidateHash, restoredHash: restored.contentHash, reviewer }
       });
       return Object.freeze({ rolledBack: true, restoredHash: restored.contentHash });
     });

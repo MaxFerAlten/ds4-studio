@@ -7,7 +7,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { EvolutionCandidateBuilder } from "./evolutionCandidateBuilder.mjs";
-import { EVOLUTION_PROPOSAL_VERSION, EVOLUTION_TASK_VERSION } from "./evolutionContracts.mjs";
+import { EVOLUTION_PROPOSAL_VERSION, EVOLUTION_TASK_VERSION, EVOLUTION_TASK_VERSION_V2 } from "./evolutionContracts.mjs";
 import { hashJson } from "./evolutionIntegrity.mjs";
 import { EvolutionOrchestrator } from "./evolutionOrchestrator.mjs";
 import { EvolutionPromotionService } from "./evolutionPromotion.mjs";
@@ -22,7 +22,7 @@ const PATCH = `diff --git a/src/value.txt b/src/value.txt
 +two
 `;
 
-async function setup({ candidateScore = 2, securityPassed = true, approvalMode = "auto_for_low_risk", targetScore = 2, hiddenPaths = [] } = {}) {
+async function setup({ candidateScore = 2, securityPassed = true, approvalMode = "auto_for_low_risk", targetScore = 2, hiddenPaths = [], taskVersion = EVOLUTION_TASK_VERSION, automation = null } = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "ds4-evo-orchestrator-"));
   const repository = path.join(directory, "repository");
   await fs.mkdir(path.join(repository, "src"), { recursive: true });
@@ -63,7 +63,7 @@ async function setup({ candidateScore = 2, securityPassed = true, approvalMode =
     now: () => new Date("2026-01-01T00:00:00.000Z")
   });
   const task = {
-    contractVersion: EVOLUTION_TASK_VERSION,
+    contractVersion: taskVersion,
     taskId: "orchestrator-fixture",
     title: "Orchestrator fixture",
     objective: "Reach score two",
@@ -78,9 +78,15 @@ async function setup({ candidateScore = 2, securityPassed = true, approvalMode =
     metrics: [{ name: "score", direction: "maximize", required: true, baselineTolerance: 0, target: targetScore, weight: 1 }],
     budgets: {
       maxRevisions: 2, maxFilesChanged: 2, maxAddedLines: 10, maxDeletedLines: 10,
-      maxWallTimeMsPerRevision: 5_000, maxPromptTokensPerRevision: 1_000, maxCompletionTokensPerRevision: 1_000
+      maxWallTimeMsPerRevision: 5_000, maxPromptTokensPerRevision: 1_000, maxCompletionTokensPerRevision: 1_000,
+      ...(taskVersion === EVOLUTION_TASK_VERSION_V2 ? {
+        maxTotalWallTimeMs: 10_000, maxTotalPromptTokens: 2_000, maxTotalCompletionTokens: 2_000,
+        maxModelCallsPerRevision: 2, maxInfrastructureRetries: 1, maxEvaluatorRetries: 1,
+        maxCriticRepairs: 1, maxProposerRepairs: 1, maxRepeatedFailureSignatures: 2, maxNoImprovementRevisions: 2
+      } : {})
     },
-    approvalPolicy: { mode: approvalMode, allowedRiskLevels: ["LOW"] }
+    approvalPolicy: { mode: approvalMode, allowedRiskLevels: ["LOW"] },
+    ...(automation ? { automation } : {})
   };
   const proposal = {
     proposalVersion: EVOLUTION_PROPOSAL_VERSION,
@@ -109,6 +115,22 @@ test("Level B deterministic flow captures baseline, evaluates, gates, promotes, 
     assert.equal(await fs.readFile(path.join(f.repository, "src", "value.txt"), "utf8"), "one\ntwo\n");
     const restarted = new EvolutionRunStore({ rootDir: path.join(f.directory, "runs") });
     assert.equal((await restarted.loadRun(f.runId)).state, "COMPLETED");
+  } finally {
+    await fs.rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("Level D model evidence for the prospective revision does not skip a candidate revision", async () => {
+  const f = await setup();
+  try {
+    await f.orchestrator.prepareBaseline(f.runId);
+    await f.runStore.appendEvent(f.runId, {
+      revision: 1,
+      type: "MODEL_CALL_COMPLETED",
+      payload: { role: "proposer", usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } }
+    });
+    const built = await f.orchestrator.buildRevision(f.runId, { proposal: f.proposal, patchText: PATCH });
+    assert.equal(built.revision, 1);
   } finally {
     await fs.rm(f.directory, { recursive: true, force: true });
   }
@@ -147,6 +169,33 @@ test("security evaluator failure deterministically rejects an improving candidat
     assert.equal(result.state, "REJECTED");
     assert.equal(result.gateDecision.decision, "REJECT");
     assert.equal(await fs.readFile(path.join(f.repository, "src", "value.txt"), "utf8"), "one\n");
+  } finally {
+    await fs.rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("critic schema failure yields a valid consultive fallback without changing the gate", async () => {
+  const f = await setup({
+    approvalMode: "manual",
+    taskVersion: EVOLUTION_TASK_VERSION_V2,
+    automation: { level: "C", criticEnabled: true, proposerEnabled: false, autoContinue: false, modelProfile: "default" }
+  });
+  try {
+    await f.orchestrator.prepareBaseline(f.runId);
+    f.orchestrator.critic = {
+      diagnose: async () => {
+        const error = new Error("invalid critic output");
+        error.code = "MODEL_SCHEMA_INVALID";
+        throw error;
+      }
+    };
+    const result = await f.orchestrator.runManualCandidate(f.runId, { proposal: f.proposal, patchText: PATCH });
+    const diagnosis = JSON.parse(await fs.readFile(path.join(f.runStore.revisionDir(f.runId, 1), "diagnosis.json"), "utf8"));
+    assert.equal(result.state, "MANUAL_REVIEW");
+    assert.equal(diagnosis.status, "completed");
+    assert.equal(diagnosis.confidence, 0);
+    assert.equal(diagnosis.rootCauses[0].code, "MODEL_SCHEMA_INVALID");
+    assert.equal(diagnosis.rootCauses[0].evidenceRefs[0].revision, 1);
   } finally {
     await fs.rm(f.directory, { recursive: true, force: true });
   }

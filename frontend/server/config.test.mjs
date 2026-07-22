@@ -563,3 +563,23 @@ test("validateConfig rejects invalid pageAgent allowedOrigins", () => {
   assert.equal(result.ok, false);
   assert.match(result.errors.pageAgent.allowedOrigins, /array of strings/);
 });
+
+test("Evolution is disabled by default and config merges bounded overrides", () => {
+  const config = mergeConfig({ evolution: { enabled: true, maxLevel: "D" } });
+  const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+  const relativeWorkDir = path.relative(projectRoot, path.resolve(projectRoot, config.evolution.workDir));
+  assert.equal(config.evolution.enabled, true);
+  assert.equal(config.evolution.maxLevel, "D");
+  assert.equal(config.evolution.writeTokenEnv, "DS4_EVOLUTION_WRITE_TOKEN");
+  assert.equal(relativeWorkDir === ".." || relativeWorkDir.startsWith(`..${path.sep}`), true);
+  assert.equal(validateConfig(config).ok, true);
+});
+
+test("Evolution config rejects Level E without its feature gate and literal token values", () => {
+  const levelE = validateConfig(mergeConfig({ evolution: { maxLevel: "E" } }));
+  assert.equal(levelE.ok, false);
+  assert.match(levelE.errors.evolution.maxLevel, /requires/);
+  const token = validateConfig(mergeConfig({ evolution: { writeTokenEnv: "secret literal with spaces" } }));
+  assert.equal(token.ok, false);
+  assert.match(token.errors.evolution.writeTokenEnv, /environment variable/);
+});

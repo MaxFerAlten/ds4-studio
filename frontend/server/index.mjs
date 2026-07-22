@@ -111,6 +111,24 @@ import {
 import { ResearchRuntime } from "./research/researchRuntime.mjs";
 import { ResearchStateStore } from "./research/researchStateStore.mjs";
 import { ResearchModelClient } from "./research/researchModelClient.mjs";
+import { StructuredModelClient } from "./structuredModelClient.mjs";
+import { EvolutionAuth } from "./evolution/evolutionAuth.mjs";
+import { createEvolutionRouter } from "./evolution/evolutionApi.mjs";
+import { EvolutionCandidateBuilder } from "./evolution/evolutionCandidateBuilder.mjs";
+import { EvolutionCritic } from "./evolution/evolutionCritic.mjs";
+import { EvolutionEvaluatorRegistry } from "./evolution/evolutionEvaluator.mjs";
+import { EvolutionExecutor } from "./evolution/evolutionExecutor.mjs";
+import { EvolutionLoopController } from "./evolution/evolutionLoopController.mjs";
+import { EvolutionModelClient } from "./evolution/evolutionModelClient.mjs";
+import { EvolutionOrchestrator } from "./evolution/evolutionOrchestrator.mjs";
+import { EvolutionPromotionService } from "./evolution/evolutionPromotion.mjs";
+import { EvolutionProposer } from "./evolution/evolutionProposer.mjs";
+import { EvolutionRunStore } from "./evolution/evolutionRunStore.mjs";
+import { EvolutionRuntime } from "./evolution/evolutionRuntime.mjs";
+import { createEvolutionSmokeEvaluator } from "./evolution/evolutionSmoke.mjs";
+import { EvolutionSourceContext } from "./evolution/evolutionSourceContext.mjs";
+import { EvolutionViews } from "./evolution/evolutionViews.mjs";
+import { EvolutionWorkspaceManager } from "./evolution/evolutionWorkspace.mjs";
 import { exportSession } from "./research/researchExport.mjs";
 import { CallDebugRecorder } from "./callDebug.mjs";
 import {
@@ -3063,6 +3081,60 @@ app.all("/api/native-agent/:cmd", asyncHandler(async (req, res) => {
     return res.status(result.status).json({ ok: true, ...(result.payload.data || {}) });
   }
   res.status(result.status).json({ ok: true });
+}));
+
+// ---------------------------------------------------------------------------
+// DS4 Evolution Endpoints
+// ---------------------------------------------------------------------------
+
+const evolutionStateDir = path.isAbsolute(config.evolution.stateDir)
+  ? config.evolution.stateDir
+  : path.join(PROJECT_ROOT, config.evolution.stateDir);
+const evolutionWorkDir = path.isAbsolute(config.evolution.workDir)
+  ? config.evolution.workDir
+  : path.join(PROJECT_ROOT, config.evolution.workDir);
+const evolutionRunStore = new EvolutionRunStore({ rootDir: evolutionStateDir });
+const evolutionWorkspace = new EvolutionWorkspaceManager({ repositoryRoot: PROJECT_ROOT, workRoot: evolutionWorkDir });
+const evolutionExecutor = new EvolutionExecutor({ runStore: evolutionRunStore });
+const evolutionEvaluators = new EvolutionEvaluatorRegistry({ executor: evolutionExecutor });
+const evolutionPromotion = new EvolutionPromotionService({ repositoryRoot: PROJECT_ROOT, runStore: evolutionRunStore });
+const evolutionStructuredClient = new StructuredModelClient({
+  baseUrl: config.evolution.modelBaseUrl,
+  model: config.evolution.model,
+  timeoutMs: config.evolution.modelTimeoutMs,
+  errorPrefix: "evolution model"
+});
+const evolutionModelClient = new EvolutionModelClient({ client: evolutionStructuredClient });
+const evolutionPostApplySmoke = createEvolutionSmokeEvaluator({ repositoryRoot: PROJECT_ROOT });
+const evolutionProposer = new EvolutionProposer({
+  modelClient: evolutionModelClient,
+  sourceContext: new EvolutionSourceContext({ repositoryRoot: PROJECT_ROOT })
+});
+const evolutionOrchestrator = new EvolutionOrchestrator({
+  runStore: evolutionRunStore,
+  workspaceManager: evolutionWorkspace,
+  candidateBuilder: new EvolutionCandidateBuilder(),
+  executor: evolutionExecutor,
+  evaluatorRegistry: evolutionEvaluators,
+  promotionService: evolutionPromotion,
+  critic: new EvolutionCritic({ modelClient: evolutionModelClient }),
+  smokeEvaluator: async () => {
+    const validation = validateConfig(config);
+    return validation.ok ? evolutionPostApplySmoke() : { passed: false, reasonCode: "CONFIG_INVALID" };
+  }
+});
+const evolutionRuntime = new EvolutionRuntime({
+  orchestrator: evolutionOrchestrator,
+  loopController: new EvolutionLoopController({ orchestrator: evolutionOrchestrator, proposer: evolutionProposer })
+});
+app.use("/api/evolution", createEvolutionRouter({
+  runtime: evolutionRuntime,
+  runStore: evolutionRunStore,
+  auth: new EvolutionAuth({ tokenEnv: config.evolution.writeTokenEnv }),
+  views: new EvolutionViews({ runStore: evolutionRunStore, maxArtifactBytes: config.evolution.maxArtifactReadBytes }),
+  repositoryRoot: PROJECT_ROOT,
+  enabled: config.evolution.enabled,
+  maxLevel: config.evolution.maxLevel
 }));
 
 // ---------------------------------------------------------------------------

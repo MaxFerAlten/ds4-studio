@@ -13,7 +13,7 @@ import { promisify } from "node:util";
 
 import { ToolBlobStore } from "../toolBlobStore.mjs";
 import { validateEvolutionTask } from "./evolutionContracts.mjs";
-import { atomicWriteJson, canonicalJson, hashJson, sha256, timingSafeHexEqual } from "./evolutionIntegrity.mjs";
+import { atomicWriteJson, canonicalJson, hashFile, hashJson, sha256, timingSafeHexEqual } from "./evolutionIntegrity.mjs";
 import { assertTransition } from "./evolutionStateMachine.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -22,6 +22,13 @@ export const EVOLUTION_RUN_VERSION = "ds4_evolution_run_v1";
 export const EVOLUTION_EVENT_VERSION = "ds4_evolution_event_v1";
 export const EVOLUTION_BASELINE_VERSION = "ds4_evolution_baseline_v1";
 export const MAX_EVENT_BYTES = 64_000;
+export const REVISION_ARTIFACT_ALLOWLIST = Object.freeze(new Set([
+  "proposal.json", "candidate.patch", "candidate.json", "execution.json", "evaluation.json",
+  "diagnosis.json", "promotion.json", "rollback.json", "parent-snapshot.json",
+  "candidate-snapshot.json", "promoted-snapshot.json", "evidence-packet.json",
+  "critic-model-evidence.json", "proposer-model-evidence.json", "patcher-model-evidence.json",
+  "generated-proposal.json", "generated-patch.json"
+]));
 
 const RUN_ID_PATTERN = /^evo_[a-f0-9]{20}$/;
 const EVENT_TYPE_PATTERN = /^[A-Z][A-Z0-9_]{2,127}$/;
@@ -242,6 +249,25 @@ export class EvolutionRunStore {
     this.runIdFactory = runIdFactory;
     this.eventIdFactory = eventIdFactory;
     this.queues = new Map();
+    this.listeners = new Map();
+  }
+
+  subscribe(runId, listener) {
+    assertRunId(runId);
+    if (typeof listener !== "function") throw new TypeError("listener must be a function");
+    const listeners = this.listeners.get(runId) ?? new Set();
+    listeners.add(listener);
+    this.listeners.set(runId, listeners);
+    return () => {
+      listeners.delete(listener);
+      if (!listeners.size) this.listeners.delete(runId);
+    };
+  }
+
+  _notify(runId, event) {
+    for (const listener of [...(this.listeners.get(runId) ?? [])]) {
+      try { listener(event); } catch { /* subscriber failures cannot affect the durable ledger */ }
+    }
   }
 
   runDir(runId) {
@@ -397,7 +423,9 @@ export class EvolutionRunStore {
     };
     event.eventHash = hashJson(eventCore(event));
     await appendDurably(this.eventsPath(runId), `${canonicalJson(event)}\n`);
-    return Object.freeze(event);
+    const durableEvent = Object.freeze(event);
+    this._notify(runId, durableEvent);
+    return durableEvent;
   }
 
   async appendEvent(runId, input) {
@@ -437,6 +465,59 @@ export class EvolutionRunStore {
       throw new EvolutionRunStoreError("LEDGER_INTEGRITY_FAILURE", "run creation event does not match manifest");
     }
     return Object.freeze({ runId, manifest, ...reconstructed });
+  }
+
+  async listRuns({ cursor = null, limit = 50 } = {}) {
+    const boundedLimit = Math.min(100, Math.max(1, Number.isSafeInteger(limit) ? limit : 50));
+    const entries = await fs.readdir(this.rootDir, { withFileTypes: true }).catch((error) => {
+      if (error.code === "ENOENT") return [];
+      throw error;
+    });
+    const manifests = [];
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !RUN_ID_PATTERN.test(entry.name)) continue;
+      const run = await this.loadRun(entry.name).catch(() => null);
+      if (run) manifests.push(run);
+    }
+    manifests.sort((left, right) => right.manifest.createdAt.localeCompare(left.manifest.createdAt) || left.runId.localeCompare(right.runId));
+    const start = cursor ? Math.max(0, manifests.findIndex((run) => run.runId === cursor) + 1) : 0;
+    const items = manifests.slice(start, start + boundedLimit);
+    return Object.freeze({
+      items: Object.freeze(items),
+      nextCursor: start + boundedLimit < manifests.length ? items.at(-1)?.runId ?? null : null
+    });
+  }
+
+  async listRevisions(runId) {
+    const run = await this.loadRun(runId);
+    const revisions = new Map();
+    for (const event of run.events) {
+      if (event.revision <= 0) continue;
+      const value = revisions.get(event.revision) ?? { revision: event.revision, state: null, events: 0 };
+      value.events += 1;
+      if (event.type === "STATE_TRANSITION") value.state = event.payload.to;
+      revisions.set(event.revision, value);
+    }
+    return Object.freeze([...revisions.values()].sort((left, right) => left.revision - right.revision).map(Object.freeze));
+  }
+
+  async readRevisionArtifact(runId, revision, name, { maxBytes = 200_000 } = {}) {
+    assertRunId(runId);
+    assertRevision(revision);
+    if (!REVISION_ARTIFACT_ALLOWLIST.has(name)) {
+      throw new EvolutionRunStoreError("ARTIFACT_NOT_ALLOWED", String(name));
+    }
+    const file = path.join(this.revisionDir(runId, revision), name);
+    const stat = await fs.stat(file).catch((error) => {
+      if (error.code === "ENOENT") throw new EvolutionRunStoreError("ARTIFACT_NOT_FOUND", name);
+      throw error;
+    });
+    if (!stat.isFile()) throw new EvolutionRunStoreError("ARTIFACT_NOT_ALLOWED", name);
+    if (stat.size > maxBytes) {
+      return Object.freeze({ runId, revision, name, bytes: stat.size, truncated: true, artifactId: `sha256:${await hashFile(file)}` });
+    }
+    const content = await fs.readFile(file, "utf8");
+    return Object.freeze({ runId, revision, name, bytes: stat.size, truncated: false, artifactId: `sha256:${sha256(content)}`, content });
   }
 
   async transitionRun(runId, to, options = {}) {

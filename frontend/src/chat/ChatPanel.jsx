@@ -2,6 +2,7 @@ import { memo } from "react";
 import { Download, Plus, Square, Send } from "lucide-react";
 import { MessageContent } from "../MessageContent.mjs";
 import { ResearchPanel } from "../research/ResearchPanel.jsx";
+import { EvolutionPanel } from "../evolution/EvolutionPanel.jsx";
 import { SageActivityCard } from "../sage/SageActivityCard.jsx";
 
 /* Memoized: typing in the composer re-renders ChatPanel on every keystroke,
@@ -72,7 +73,7 @@ export function ChatPanel({
   messagesRef,
   exportNotice, setExportNotice,
   config,
-  researchMode, setResearchMode,
+  workspaceMode, onWorkspaceMode,
   selectedResearchSessionId, setSelectedResearchSessionId,
   sageActivities,
   canSend,
@@ -90,7 +91,7 @@ export function ChatPanel({
   handleResearchHistoryChange
 }) {
   return (
-    <section className={`chat-panel panel${researchMode ? " research-active" : ""}`} data-agent-id="chat-panel">
+    <section className={`chat-panel panel workspace-${workspaceMode}`} data-agent-id="chat-panel">
       <div className="chat-header">
         <button
           type="button"
@@ -106,13 +107,25 @@ export function ChatPanel({
         {config?.research?.enabled ? (
           <button
             type="button"
-            className={`research-toggle ${researchMode ? "active" : ""}`}
-            onClick={() => setResearchMode((v) => !v)}
+            className={`research-toggle ${workspaceMode === "research" ? "active" : ""}`}
+            onClick={() => onWorkspaceMode(workspaceMode === "research" ? "chat" : "research")}
             disabled={agentMode}
             title="Toggle Deep Research mode"
             data-agent-id="chat-research-toggle"
           >
             Deep Research
+          </button>
+        ) : null}
+        {config?.evolution?.enabled ? (
+          <button
+            type="button"
+            className={`research-toggle evolution-toggle ${workspaceMode === "evolution" ? "active" : ""}`}
+            onClick={() => onWorkspaceMode(workspaceMode === "evolution" ? "chat" : "evolution")}
+            disabled={agentMode || generationBusy}
+            title="Toggle DS4 Evolution workspace"
+            data-agent-id="chat-evolution-toggle"
+          >
+            Evolution
           </button>
         ) : null}
         {agentMode && (
@@ -131,13 +144,15 @@ export function ChatPanel({
           </div>
         )}
       </div>
-      {researchMode ? (
+      {workspaceMode === "research" ? (
         <ResearchPanel
           sessionId={selectedResearchSessionId}
           onSessionChange={setSelectedResearchSessionId}
           onHistoryChange={handleResearchHistoryChange}
         />
       ) : null}
+      {workspaceMode === "evolution" ? <EvolutionPanel /> : null}
+      <div className="chat-workspace" hidden={workspaceMode !== "chat"}>
       <MessagesList messages={messages} messagesRef={messagesRef} sageActivities={sageActivities} />
       <div className="export-row">
         <button
@@ -289,6 +304,7 @@ export function ChatPanel({
             Send
           </button>
         )}
+      </div>
       </div>
     </section>
   );

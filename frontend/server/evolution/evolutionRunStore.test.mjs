@@ -86,6 +86,22 @@ test("SEC-LEDGER-001/002 sequences are monotonic and duplicates are rejected", a
   }
 });
 
+test("BEH-API-003 publishes only durably appended events and isolates broken subscribers", async () => {
+  const f = await fixture();
+  try {
+    const published = [];
+    const unsubscribeBroken = f.store.subscribe(f.runId, () => { throw new Error("broken subscriber"); });
+    const unsubscribe = f.store.subscribe(f.runId, (event) => published.push(event));
+    const appended = await f.store.appendEvent(f.runId, { revision: 0, type: "FIXTURE_EVENT", payload: { live: true } });
+    assert.deepEqual(published.map((event) => event.sequence), [appended.sequence]);
+    assert.equal((await f.store.readEvents(f.runId)).at(-1).eventHash, published[0].eventHash);
+    unsubscribe();
+    unsubscribeBroken();
+  } finally {
+    await fs.rm(f.directory, { recursive: true, force: true });
+  }
+});
+
 test("SEC-LEDGER-003 recovers a truncated final line without losing valid events", async () => {
   const f = await fixture();
   try {
@@ -121,6 +137,23 @@ test("SEC-LEDGER-005 restart reconstructs the exact state", async () => {
     const run = await restarted.loadRun(f.runId);
     assert.equal(run.state, "BASELINE_CAPTURING");
     assert.equal(run.sequence, 2);
+  } finally {
+    await fs.rm(f.directory, { recursive: true, force: true });
+  }
+});
+
+test("BEH-API-001 lists runs, revisions and bounded allowlisted artifacts", async () => {
+  const f = await fixture();
+  try {
+    await f.store.appendEvent(f.runId, { revision: 1, type: "FIXTURE_EVENT", payload: {} });
+    await f.store.writeRevisionArtifact(f.runId, 1, "diagnosis.json", { status: "skipped" });
+    const listed = await f.store.listRuns({ limit: 1 });
+    assert.equal(listed.items[0].runId, f.runId);
+    assert.deepEqual(await f.store.listRevisions(f.runId), [{ revision: 1, state: null, events: 1 }]);
+    const artifact = await f.store.readRevisionArtifact(f.runId, 1, "diagnosis.json", { maxBytes: 1000 });
+    assert.equal(artifact.truncated, false);
+    assert.match(artifact.content, /skipped/);
+    await assert.rejects(() => f.store.readRevisionArtifact(f.runId, 1, "../../manifest.json"), (error) => error.code === "ARTIFACT_NOT_ALLOWED");
   } finally {
     await fs.rm(f.directory, { recursive: true, force: true });
   }

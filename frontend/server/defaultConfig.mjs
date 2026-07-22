@@ -85,6 +85,18 @@ export const DEFAULT_CONFIG = Object.freeze({
     modeSwitchTimeoutMs: 120000
   }),
   research: RESEARCH_DEFAULTS,
+  evolution: Object.freeze({
+    enabled: false,
+    maxLevel: "B",
+    stateDir: "data/evolution-runs",
+    workDir: "../ds4-studio-evolution-workspaces",
+    model: "deepseek-v4-flash",
+    modelBaseUrl: "http://127.0.0.1:8080",
+    modelTimeoutMs: 120000,
+    maxPacketBytes: 128000,
+    maxArtifactReadBytes: 200000,
+    writeTokenEnv: "DS4_EVOLUTION_WRITE_TOKEN"
+  }),
   toolBlobs: Object.freeze({
     dir: "data/tool-blobs",
     compressEnabled: false
