@@ -5,8 +5,12 @@
  * Existing DS4 mechanisms reused: EvolutionOrchestrator and ledger state.
  */
 
-import { decideLoopContinuation, deriveBudgetState } from "./evolutionBudget.mjs";
+import fs from "node:fs/promises";
+
+import { decideLoopContinuation, deriveBudgetState, deriveImprovementState } from "./evolutionBudget.mjs";
 import { hashJson, timingSafeHexEqual } from "./evolutionIntegrity.mjs";
+
+const CONCLUDED_STATES = new Set(["REJECTED", "PROMOTED", "COMPLETED"]);
 
 export class EvolutionLoopError extends Error {
   constructor(code, message) {
@@ -78,6 +82,35 @@ function validateStoredPatch(stored, proposalHash) {
   });
 }
 
+function lastTransitionByRevision(events) {
+  const map = new Map();
+  for (const event of [...events].sort((left, right) => left.sequence - right.sequence)) {
+    if (event.type === "STATE_TRANSITION" && event.revision > 0) map.set(event.revision, event);
+  }
+  return map;
+}
+
+async function loadImprovementEvidence(store, runId, events, nextRevision) {
+  const transitions = lastTransitionByRevision(events);
+  const concluded = [...transitions.keys()]
+    .filter((revision) => revision < nextRevision && CONCLUDED_STATES.has(transitions.get(revision).payload?.to))
+    .sort((left, right) => left - right);
+  if (concluded.length === 0) return { baselineEvaluation: null, revisionEvaluations: [] };
+
+  const revisionEvaluations = [];
+  for (const revision of concluded) {
+    const evaluation = await readGeneratedArtifact(store, runId, revision, "evaluation.json");
+    revisionEvaluations.push({ revision, outcome: transitions.get(revision).payload.to, evaluation });
+  }
+  let baselineEvaluation = null;
+  try {
+    baselineEvaluation = JSON.parse(await fs.readFile(store.baselinePath(runId, "evaluation.json"), "utf8"));
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  return { baselineEvaluation, revisionEvaluations };
+}
+
 async function ensureModelEvidence(store, runId, revision, role, evidence) {
   const artifactName = `${role}-model-evidence.json`;
   const existingArtifact = await readGeneratedArtifact(store, runId, revision, artifactName);
@@ -96,7 +129,7 @@ export class EvolutionLoopController {
     orchestrator,
     proposer,
     feedbackContextBuilder,
-    budgetPolicy = { deriveBudgetState, decideLoopContinuation },
+    budgetPolicy = { deriveBudgetState, decideLoopContinuation, deriveImprovementState },
     logger = console
   } = {}) {
     if (!orchestrator) throw new TypeError("orchestrator is required");
@@ -126,6 +159,13 @@ export class EvolutionLoopController {
     if (!this.feedbackContextBuilder) {
       throw new EvolutionLoopError("FEEDBACK_CONTEXT_BUILDER_UNAVAILABLE", "Level D requires a feedback context builder");
     }
+    const improvementEvidence = await loadImprovementEvidence(this.orchestrator.runStore, runId, events, run.revision + 1);
+    const improvementState = this.budgetPolicy.deriveImprovementState({
+      taskContract: run.manifest.taskContract,
+      baselineEvaluation: improvementEvidence.baselineEvaluation,
+      revisionEvaluations: improvementEvidence.revisionEvaluations
+    });
+    if (improvementState.exhausted) return this.orchestrator.stop(runId, "NO_IMPROVEMENT_LIMIT_REACHED");
     const revision = run.revision + 1;
     assertNotAborted(signal);
     const storedFeedbackContext = await readGeneratedArtifact(this.orchestrator.runStore, runId, revision, "feedback-context.json");

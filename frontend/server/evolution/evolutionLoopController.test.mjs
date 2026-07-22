@@ -182,7 +182,7 @@ const CANDIDATE_PATCH = `diff --git a/src/value.txt b/src/value.txt
 +two
 `;
 
-async function setupIntegration() {
+async function setupIntegration({ maxNoImprovementRevisions = 5 } = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "ds4-evo-loop-integration-"));
   const repository = path.join(directory, "repository");
   await fs.mkdir(path.join(repository, "src"), { recursive: true });
@@ -270,7 +270,7 @@ async function setupIntegration() {
       maxWallTimeMsPerRevision: 5_000, maxPromptTokensPerRevision: 1_000, maxCompletionTokensPerRevision: 1_000,
       maxTotalWallTimeMs: 60_000, maxTotalPromptTokens: 20_000, maxTotalCompletionTokens: 20_000,
       maxModelCallsPerRevision: 4, maxInfrastructureRetries: 1, maxEvaluatorRetries: 1,
-      maxCriticRepairs: 1, maxProposerRepairs: 1, maxRepeatedFailureSignatures: 5, maxNoImprovementRevisions: 5
+      maxCriticRepairs: 1, maxProposerRepairs: 1, maxRepeatedFailureSignatures: 5, maxNoImprovementRevisions
     },
     approvalPolicy: { mode: "manual", allowedRiskLevels: ["LOW"] },
     automation: { level: "D", criticEnabled: true, proposerEnabled: true, autoContinue: false, modelProfile: "default" }
@@ -359,4 +359,58 @@ test("BEH-LOOP-004/005 SEC-LOOP-005 revision N+1 receives the diagnosis, metric 
   assert.equal(scoreTrend.baseline, 1);
   assert.equal(scoreTrend.previous, 2);
   assert.ok(!JSON.stringify(secondCall).includes(SECRET_SENTINEL));
+});
+
+test("SEC-LOOP-006 no model call occurs after the no-improvement limit is reached", async () => {
+  const f = await setupIntegration({ maxNoImprovementRevisions: 2 });
+  const feedbackContextBuilder = new EvolutionFeedbackContextBuilder({ runStore: f.runStore });
+  const calls = [];
+  const proposer = {
+    async propose(args) {
+      calls.push(args);
+      const proposal = {
+        proposalVersion: "ds4_evolution_proposal_v1",
+        revision: args.revision,
+        summary: "Append a second line",
+        hypothesis: "Appending a line increases the score metric",
+        targetFiles: ["src/value.txt"],
+        targetSymbols: [],
+        plannedChanges: [{ file: "src/value.txt", symbol: null, change: "append", reason: "score", expectedMetricEffect: { metric: "score", direction: "increase" } }],
+        testsToRun: ["correctness", "security-policy"],
+        knownRisks: [],
+        stopInstead: false,
+        impactAnalysis: null,
+        feedbackContextHash: args.feedbackContextHash
+      };
+      return {
+        proposal,
+        proposalHash: hashJson(proposal),
+        modelEvidence: {
+          role: "proposer", usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          calls: 1, repairs: 0, promptHash: "0".repeat(64), responseHash: "1".repeat(64)
+        }
+      };
+    },
+    async producePatch({ proposalHash }) {
+      return {
+        patchText: CANDIDATE_PATCH,
+        generatedPatch: { patchVersion: "ds4_evolution_generated_patch_v1", revision: 1, patchText: CANDIDATE_PATCH, targetFiles: ["src/value.txt"], proposalHash },
+        modelEvidence: {
+          role: "patcher", usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          calls: 1, repairs: 0, promptHash: "0".repeat(64), responseHash: "3".repeat(64)
+        }
+      };
+    }
+  };
+  const controller = new EvolutionLoopController({ orchestrator: f.orchestrator, proposer, feedbackContextBuilder });
+
+  let run;
+  for (let iteration = 0; iteration < 10; iteration += 1) {
+    run = await controller.runOneRevision(f.runId);
+    if (run.state === "STOPPED") break;
+  }
+  assert.equal(run.state, "STOPPED");
+  assert.equal(calls.length, 2);
+  const stopTransition = run.events.filter((event) => event.type === "STATE_TRANSITION" && event.payload?.to === "STOPPED").at(-1);
+  assert.equal(stopTransition.payload.reasonCode, "NO_IMPROVEMENT_LIMIT_REACHED");
 });
