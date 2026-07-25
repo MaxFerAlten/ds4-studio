@@ -19,6 +19,7 @@ import { RequestPanel, ProfilePanel, StartupPanel, StrategyPanel, LogsPanel, Met
 import { LeftRail } from "./panels/LeftRail.jsx";
 import { HistoryPanel } from "./panels/HistoryPanel.jsx";
 import { listResearchSessions } from "./research/researchApi.mjs";
+import { workspaceFromPath, pathForWorkspace } from "./workspaceRouting.mjs";
 import {
   AGENT_HEADERS, AGENT_COMMANDS, ENV_FIELDS,
   appendAssistantDelta, replaceAssistantMessage,
@@ -221,6 +222,7 @@ export default function App() {
   const [input, setInput] = useState("");
   const [tab, setTab] = useState("request");
   const [historyTab, setHistoryTab] = useState("chat");
+  const [agnoOpenRunId, setAgnoOpenRunId] = useState(null);
   const [serverBusy, setServerBusy] = useState(false);
   const [callDebugEntries, setCallDebugEntries] = useState([]);
   const [callDebugEnabled, setCallDebugEnabled] = useState(true);
@@ -239,7 +241,7 @@ export default function App() {
   const [commandDraft, setCommandDraft] = useState(null);
   const [agentMode, setAgentMode] = useState(false);
   const [agentTransitionBusy, setAgentTransitionBusy] = useState(false);
-  const [workspaceMode, setWorkspaceMode] = useState("chat");
+  const [workspaceMode, setWorkspaceMode] = useState(() => workspaceFromPath(window.location.pathname));
   const [selectedResearchSessionId, setSelectedResearchSessionId] = useState(null);
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0);
   const [hideSuggestions, setHideSuggestions] = useState(false);
@@ -308,6 +310,22 @@ export default function App() {
       setHistoryStatus(`Research history error: ${err.message}`);
     });
   }, [refreshResearchSessions]);
+
+  const selectWorkspaceMode = useCallback((mode) => {
+    setWorkspaceMode(mode);
+    const path = pathForWorkspace(mode);
+    if (window.location.pathname !== path) {
+      window.history.pushState({ workspaceMode: mode }, "", path);
+    }
+  }, []);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      setWorkspaceMode(workspaceFromPath(window.location.pathname));
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
 
   async function refreshStatus({ syncConfig = false } = {}) {
     const data = await jsonFetch("/api/server/status");
@@ -653,7 +671,12 @@ export default function App() {
 
   function loadResearchSession(sessionId) {
     setSelectedResearchSessionId(sessionId);
-    setWorkspaceMode("research");
+    selectWorkspaceMode("research");
+  }
+
+  function openAgnoRun(runId) {
+    setAgnoOpenRunId(runId);
+    selectWorkspaceMode("agno");
   }
 
   async function deleteHistorySession(fileName) {
@@ -2373,9 +2396,11 @@ export default function App() {
           setExportNotice={setExportNotice}
           config={config}
           workspaceMode={workspaceMode}
-          onWorkspaceMode={setWorkspaceMode}
+          onWorkspaceMode={selectWorkspaceMode}
           selectedResearchSessionId={selectedResearchSessionId}
           setSelectedResearchSessionId={setSelectedResearchSessionId}
+          agnoOpenRunId={agnoOpenRunId}
+          onAgnoRunOpened={() => setAgnoOpenRunId(null)}
           sageActivities={sageActivities}
           canSend={canSend}
           filteredSuggestions={filteredSuggestions}
@@ -2472,7 +2497,8 @@ export default function App() {
             lastSavedHistorySignatureRef={lastSavedHistorySignatureRef}
             clearStoredSession={clearStoredSession}
             sessionStorage={sessionStorage}
-            setError={setError} />
+            setError={setError}
+            onOpenAgnoRun={openAgnoRun} />
         ) : null}
         {tab === "export" ? (
           <ExportSettingsPanel

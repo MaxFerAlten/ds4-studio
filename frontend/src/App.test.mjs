@@ -39,16 +39,27 @@ import {
   requestFreshNativeAgentSession
 } from "./appLogic.mjs";
 
-test("workspace contract exposes mutually exclusive chat, research and Evolution modes", async () => {
+test("workspace contract exposes mutually exclusive chat, research, Evolution and Agno modes", async () => {
   const [appSource, chatSource] = await Promise.all([
     readFile(new URL("./App.jsx", import.meta.url), "utf8"),
     readFile(new URL("./chat/ChatPanel.jsx", import.meta.url), "utf8")
   ]);
-  assert.match(appSource, /useState\("chat"\)/);
+  assert.match(appSource, /workspaceFromPath\(/);
   assert.match(chatSource, /workspaceMode === "research"/);
   assert.match(chatSource, /workspaceMode === "evolution"/);
+  assert.match(chatSource, /workspaceMode === "agno"/);
   assert.match(chatSource, /<EvolutionPanel/);
+  assert.match(chatSource, /<AgnoPanel/);
   assert.doesNotMatch(appSource, /researchMode/);
+});
+
+test("App.jsx wires /agno routing via history pushState and popstate", async () => {
+  const source = await readFile(new URL("./App.jsx", import.meta.url), "utf8");
+  assert.match(source, /workspaceFromPath\(window\.location\.pathname\)/);
+  assert.match(source, /const selectWorkspaceMode = useCallback\(/);
+  assert.match(source, /window\.history\.pushState\(/);
+  assert.match(source, /addEventListener\("popstate"/);
+  assert.match(source, /onWorkspaceMode=\{selectWorkspaceMode\}/);
 });
 
 test("agent mode transition is visible and blocks chat until initialization completes", async () => {

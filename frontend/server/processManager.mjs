@@ -57,7 +57,10 @@ export class Ds4ProcessManager extends EventEmitter {
   }
 
   async start() {
-    if (this.child) return this.status();
+    if (this.child) {
+      await this.refreshHealth();
+      return this.status();
+    }
     const { command, args = [] } = this.resolveCommand();
     this.currentCommand = [command, ...args];
     this.lastExit = null;
@@ -92,8 +95,14 @@ export class Ds4ProcessManager extends EventEmitter {
       this.child = null;
       this.emit("exit", this.lastExit);
     });
-    await new Promise((resolve) => setTimeout(resolve, 150));
-    await this.refreshHealth();
+    for (let i = 0; i < 20; i++) {
+      await new Promise((r) => setTimeout(r, 500));
+      if (!this.child || this.child !== child) return this.status();
+      if (await this.healthCheck()) {
+        if (this.child === child) this.healthy = true;
+        return this.status();
+      }
+    }
     return this.status();
   }
 

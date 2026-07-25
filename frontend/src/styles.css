@@ -2251,3 +2251,116 @@ pre {
   .evolution-revision-grid { grid-template-columns: 1fr; }
   .evolution-diff { grid-column: auto; }
 }
+
+.agno-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid #2c3745;
+  border-radius: 8px;
+  padding: 12px;
+  background: #10151c;
+}
+
+.agno-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.agno-header h2 {
+  margin: 0;
+  flex: 1;
+}
+
+.agno-status-pill {
+  padding: 2px 7px;
+  border: 1px solid #3d5369;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  color: #b9d6ef;
+}
+
+.agno-status-pill.ok {
+  border-color: #3d6952;
+  color: #9fe3b8;
+}
+
+.agno-status-pill.warn {
+  border-color: #9b7d4d;
+  color: #ffd9a0;
+}
+
+.agno-service-down {
+  border: 1px solid #2d3947;
+  border-radius: 6px;
+  padding: 10px;
+  background: #111820;
+  color: #aebbc9;
+  font-size: 0.85rem;
+}
+
+.agno-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.agno-composer textarea {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #334052;
+  border-radius: 5px;
+  background: #0d1218;
+  color: #e7edf5;
+  resize: vertical;
+}
+
+.agno-notice {
+  padding: 8px;
+  border: 1px solid #9b4d4d;
+  color: #ffb5b5;
+  border-radius: 5px;
+}
+
+.agno-native-conflict {
+  border-color: #9b7d4d;
+  color: #ffd9a0;
+}
+
+.agno-run {
+  border: 1px solid #2d3947;
+  border-radius: 6px;
+  padding: 10px;
+  background: #111820;
+}
+
+.agno-run-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.agno-run-header code {
+  font-size: 0.7rem;
+  overflow-wrap: anywhere;
+}
+
+.agno-run-content {
+  margin-top: 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.agno-run-reasoning pre,
+.agno-run-tools pre {
+  max-height: 280px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 0.72rem;
+}

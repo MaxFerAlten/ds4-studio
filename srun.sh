@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export DS4_SKILLS_DIR="${DS4_SKILLS_DIR:-$ROOT_DIR/skills}"
 source "$ROOT_DIR/scripts/rocm_settings.sh"
+source "$ROOT_DIR/scripts/agno_bootstrap.sh"
 
 FRONTEND_DIR="$ROOT_DIR/frontend"
 HOST="127.0.0.1"
@@ -214,12 +215,31 @@ config_backend_port() {
   ' "$config_path" 2>/dev/null || true
 }
 
+config_agno_port() {
+  local config_path="$1"
+  [[ -f "$config_path" ]] || { echo "7777"; return 0; }
+  node -e '
+    const fs = require("fs");
+    const file = process.argv[1];
+    try {
+      const cfg = JSON.parse(fs.readFileSync(file, "utf8"));
+      const port = cfg && cfg.agno && cfg.agno.port;
+      console.log(port !== undefined && port !== null && String(port).trim() ? String(port) : "7777");
+    } catch { console.log("7777"); }
+  ' "$config_path" 2>/dev/null || echo "7777"
+}
+
 stop_launch_ports() {
   stop_port "frontend" "$PORT"
   local backend_port
   backend_port="$(config_backend_port "$CONFIG_PATH" | head -n 1 || true)"
   if [[ -n "$backend_port" && "$backend_port" != "$PORT" ]]; then
     stop_port "backend" "$backend_port"
+  fi
+  if [[ "$(ds4_agno_config_enabled "$CONFIG_PATH")" == "1" ]]; then
+    local agno_port
+    agno_port="$(config_agno_port "$CONFIG_PATH" | head -n 1 || true)"
+    [[ -n "$agno_port" ]] && stop_port "agno" "$agno_port"
   fi
 }
 
@@ -420,6 +440,7 @@ fi
 
 ensure_model
 ensure_backend
+ensure_agno_service "$ROOT_DIR" "$CONFIG_PATH"
 
 if [[ ! -d "$FRONTEND_DIR/node_modules" ]]; then
   echo "srun.sh: installing frontend dependencies"
