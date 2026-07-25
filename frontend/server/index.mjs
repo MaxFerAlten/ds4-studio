@@ -144,6 +144,12 @@ import {
   syncSageStateFromNativeCommand
 } from "./sageState.mjs";
 import { abortOnClientDisconnect } from "./clientDisconnect.mjs";
+import { ensureAgnoTokens } from "./agno/agnoToken.mjs";
+import { AgnoModelGate } from "./agno/agnoModelGate.mjs";
+import { createAgnoModelGateway } from "./agno/agnoModelGateway.mjs";
+import { createAgnoRouter } from "./agno/agnoRoutes.mjs";
+import { createAgnoProcessManager, createDisabledAgnoProcessManager } from "./agno/agnoProcessManager.mjs";
+import { AgnoClient } from "./agno/agnoClient.mjs";
 
 const HTTP_DRAIN_GRACE_MS = 2000;
 const SHUTDOWN_TIMEOUT_MS = 10000;
@@ -151,6 +157,7 @@ const UPLOAD_LIMIT_BYTES = 50 * 1024 * 1024;
 const FRONTEND_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PROJECT_ROOT = path.resolve(FRONTEND_ROOT, "..");
 const CRAWL_OWNER_ID = `ds4-ui:${process.pid}`;
+const AGNO_OWNER_ID = CRAWL_OWNER_ID;
 
 // Load optional frontend/.env before any env reads so research provider API keys
 // (TAVILY_API_KEY, SERPAPI_KEY, …) can live in a file instead of the shell.
@@ -310,7 +317,7 @@ function publicConfig() {
 
 function asyncHandler(handler) {
   return (req, res, next) => {
-    Promise.resolve(handler(req, res, next)).catch(next);
+    return Promise.resolve(handler(req, res, next)).catch(next);
   };
 }
 
@@ -404,6 +411,63 @@ const manager = new Ds4ProcessManager({
   cwd: PROJECT_ROOT
 });
 
+const agnoTokens = await ensureAgnoTokens({ homeDir: os.homedir() });
+const agnoModelGate = new AgnoModelGate({
+  maxInflight: config.agno.maxInflightModelCalls,
+  maxQueued: config.agno.maxQueuedModelCalls,
+  waitTimeoutMs: config.agno.modelQueueWaitTimeoutMs
+});
+const resolvedAgnoServiceDir = path.resolve(PROJECT_ROOT, config.agno.serviceDir || "agno_service");
+const resolvedAgnoDbFile = path.resolve(PROJECT_ROOT, config.agno.dbFile || "data/agno/agno.db");
+const resolvedAgnoModel = config.agno.model || config.server.model;
+const agnoProcessManager = config.agno.enabled
+  ? createAgnoProcessManager({
+      projectRoot: PROJECT_ROOT,
+      config,
+      tokens: agnoTokens,
+      resolvedModel: resolvedAgnoModel,
+      resolvedServiceDir: resolvedAgnoServiceDir,
+      resolvedDbFile: resolvedAgnoDbFile,
+      ownerId: AGNO_OWNER_ID
+    })
+  : createDisabledAgnoProcessManager();
+const agnoClient = new AgnoClient({
+  baseUrl: `http://${config.agno.host}:${config.agno.port}`,
+  serviceToken: agnoTokens.serviceToken,
+  ownerId: AGNO_OWNER_ID
+});
+
+async function ensureServerModeForAgno() {
+  if (!wrapperEnabled()) return true;
+  try {
+    const up = await fetch(`${backendBase()}/api/wrapper/switch-mode`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: "server" }),
+      signal: AbortSignal.timeout(config.wrapper?.modeSwitchTimeoutMs || 120000)
+    });
+    return up.ok;
+  } catch {
+    return false;
+  }
+}
+
+const agnoModelGatewayRouter = createAgnoModelGateway({
+  config,
+  backendBase: backendBase(),
+  modelGate: agnoModelGate,
+  modelGatewayToken: agnoTokens.modelGatewayToken
+});
+const agnoRouter = createAgnoRouter({
+  config,
+  processManager: agnoProcessManager,
+  modelGate: agnoModelGate,
+  modelGatewayToken: agnoTokens.modelGatewayToken,
+  agnoClient,
+  ensureServerMode: ensureServerModeForAgno,
+  asyncHandler
+});
+
 const app = express();
 const fileWorkspace = await ensureWorkspace();
 const upload = multer({
@@ -445,6 +509,14 @@ app.use("/v1", async (req, res) => {
   } finally {
     cleanup();
   }
+});
+
+app.use("/api/agno-model", (req, res) => agnoModelGatewayRouter.handle(req, res));
+app.use((req, res, next) => {
+  if (req.path.startsWith("/api/agno") && !req.path.startsWith("/api/agno-model")) {
+    return agnoRouter.handle(req, res);
+  }
+  next();
 });
 
 app.use(express.json({ limit: "32mb" }));
@@ -3384,6 +3456,9 @@ const server = app.listen(config.control.port, config.control.host, async () => 
     console.error("ds4-ui: failed to start ds4 server:", err);
   }
   startCrawlService().catch((err) => console.warn("ds4-ui: crawl service start failed:", err.message));
+  if (config.agno.enabled && config.agno.autoStart) {
+    agnoProcessManager.start().catch((err) => console.warn("ds4-ui: agno service start failed:", err.message));
+  }
   console.log(`ds4-ui: http://${config.control.host}:${config.control.port}`);
 });
 
@@ -3402,6 +3477,7 @@ async function shutdown() {
   let forceCloseHttp;
   try {
     await stopCrawlService();
+    await agnoProcessManager.stop();
     await manager.stop();
     await vite.close();
     forceCloseHttp = setTimeout(() => {

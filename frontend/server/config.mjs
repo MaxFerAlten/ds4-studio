@@ -162,6 +162,12 @@ export function mergeConfig(input = {}) {
       ...(input.contextWiki && typeof input.contextWiki === "object" && !Array.isArray(input.contextWiki)
         ? input.contextWiki
         : {})
+    },
+    agno: {
+      ...DEFAULT_CONFIG.agno,
+      ...(input.agno && typeof input.agno === "object" && !Array.isArray(input.agno)
+        ? input.agno
+        : {})
     }
   };
 }
@@ -297,7 +303,7 @@ function validateOptionalEnvTokens(env, key, label, min, max) {
 }
 
 export function validateConfig(config) {
-  const errors = { control: {}, history: {}, server: {}, wrapper: {}, requestDefaults: {}, research: {}, evolution: {}, callDebug: {}, pageAgent: {} };
+  const errors = { control: {}, history: {}, server: {}, wrapper: {}, requestDefaults: {}, research: {}, evolution: {}, callDebug: {}, pageAgent: {}, agno: {} };
   if (!validatePort(config.control.port)) errors.control.port = "must be between 1 and 65535";
   if (!validatePort(config.server.port)) errors.server.port = "must be between 1 and 65535";
   if (!config.control.host) errors.control.host = "is required";
@@ -397,6 +403,26 @@ export function validateConfig(config) {
   errors.evolution = validateEvolutionConfig(config.evolution || {});
   errors.callDebug = validateCallDebug(config.callDebug || {});
   errors.toolBlobs = validateToolBlobs(config.toolBlobs || {});
+  // Agno validation
+  const ag = config.agno || {};
+  if (typeof ag.enabled !== "boolean") errors.agno.enabled = "must be boolean";
+  if (typeof ag.autoStart !== "boolean") errors.agno.autoStart = "must be boolean";
+  if (!LOOPBACK_CONTROL_HOSTS.has(ag.host)) errors.agno.host = "must be loopback-only";
+  if (!validatePort(ag.port)) errors.agno.port = "must be between 1 and 65535";
+  if (ag.port === config.control.port) errors.agno.port = "must differ from control.port";
+  if (ag.port === config.server.port) errors.agno.port = "must differ from server.port";
+  if (ag.port === config.crawl.port) errors.agno.port = "must differ from crawl.port";
+  if (!Number.isInteger(ag.maxInflightModelCalls) || ag.maxInflightModelCalls !== 1) errors.agno.maxInflightModelCalls = "must be exactly 1";
+  if (!Number.isInteger(ag.maxQueuedModelCalls) || ag.maxQueuedModelCalls < 1 || ag.maxQueuedModelCalls > 64) errors.agno.maxQueuedModelCalls = "must be an integer between 1 and 64";
+  if (!Number.isInteger(ag.startupTimeoutMs) || ag.startupTimeoutMs < 1000 || ag.startupTimeoutMs > 120000) errors.agno.startupTimeoutMs = "must be between 1000 and 120000";
+  if (!Number.isInteger(ag.shutdownTimeoutMs) || ag.shutdownTimeoutMs < 500 || ag.shutdownTimeoutMs > 30000) errors.agno.shutdownTimeoutMs = "must be between 500 and 30000";
+  if (!Number.isInteger(ag.serviceRequestTimeoutMs) || ag.serviceRequestTimeoutMs < 1000 || ag.serviceRequestTimeoutMs > 7200000) errors.agno.serviceRequestTimeoutMs = "must be between 1000 and 7200000";
+  if (!Number.isInteger(ag.modelQueueWaitTimeoutMs) || ag.modelQueueWaitTimeoutMs < 1000 || ag.modelQueueWaitTimeoutMs > 7200000) errors.agno.modelQueueWaitTimeoutMs = "must be between 1000 and 7200000";
+  if (ag.telemetry !== false) errors.agno.telemetry = "must be false";
+  if (ag.tracing !== false) errors.agno.tracing = "must be false";
+  if (ag.scheduler !== false) errors.agno.scheduler = "must be false";
+  if (ag.mcpEnabled !== false) errors.agno.mcpEnabled = "must be false";
+  if (typeof ag.uiEnabled !== "boolean") errors.agno.uiEnabled = "must be boolean";
   // PageAgent validation
   const pa = config.pageAgent || {};
   if (typeof pa.enabled !== "boolean") errors.pageAgent.enabled = "must be boolean";
@@ -424,7 +450,8 @@ export function validateConfig(config) {
     Object.keys(errors.evolution).length === 0 &&
     Object.keys(errors.callDebug).length === 0 &&
     Object.keys(errors.toolBlobs).length === 0 &&
-    Object.keys(errors.pageAgent).length === 0;
+    Object.keys(errors.pageAgent).length === 0 &&
+    Object.keys(errors.agno).length === 0;
   return { ok, errors };
 }
 

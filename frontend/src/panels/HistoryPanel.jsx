@@ -1,4 +1,5 @@
 import { historyHasPersistableAssistant, sessionHasAgentMetadata, sessionsExposeMetadata } from "../utils.mjs";
+import { AgnoHistoryPanel } from "../agno/AgnoHistoryPanel.jsx";
 
 export function HistoryPanel({
   historyTab, setHistoryTab,
@@ -11,7 +12,7 @@ export function HistoryPanel({
   activeConversationHistoryLabel, deleteHistorySession, loadHistorySession, currentSessionFileName,
   setMessages, setCurrentSessionFileName, historyAutoLoaded, setHistoryAutoLoaded,
   lastSavedHistorySignatureRef, clearStoredSession,
-  sessionStorage, setError
+  sessionStorage, setError, onOpenAgnoRun
 }) {
   return (
         <div className="history-panel" data-agent-id="history-panel">
@@ -43,6 +44,16 @@ export function HistoryPanel({
                 <span className="history-mode-label">agent</span>
                 <span className="history-mode-count">{agentHistorySessions.length}</span>
               </button>
+              {config?.agno?.uiEnabled ? (
+                <button
+                  type="button"
+                  className={historyTab === "agno" ? "active" : ""}
+                  onClick={() => setHistoryTab("agno")}
+                  aria-selected={historyTab === "agno"}
+                >
+                  <span className="history-mode-label">agno</span>
+                </button>
+              ) : null}
             </div>
             {historyTab === "deepresearch" && config?.research?.enabled ? (
               <section className="research-history-section">
@@ -90,7 +101,8 @@ export function HistoryPanel({
             {historyTab === "deepresearch" && !config?.research?.enabled ? (
               <div className="status-pill warn">Deep Research history is disabled</div>
             ) : null}
-            {historyTab !== "deepresearch" ? (
+            {historyTab === "agno" ? <AgnoHistoryPanel onOpenRun={onOpenAgnoRun} /> : null}
+            {historyTab === "chat" || historyTab === "agent" ? (
               <>
                 <div className="history-section-header">
                   <strong>{activeConversationHistoryLabel}</strong>

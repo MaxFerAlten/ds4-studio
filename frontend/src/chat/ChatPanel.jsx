@@ -3,6 +3,7 @@ import { Download, Plus, Square, Send } from "lucide-react";
 import { MessageContent } from "../MessageContent.mjs";
 import { ResearchPanel } from "../research/ResearchPanel.jsx";
 import { EvolutionPanel } from "../evolution/EvolutionPanel.jsx";
+import { AgnoPanel } from "../agno/AgnoPanel.jsx";
 import { SageActivityCard } from "../sage/SageActivityCard.jsx";
 
 /* Memoized: typing in the composer re-renders ChatPanel on every keystroke,
@@ -76,6 +77,7 @@ export function ChatPanel({
   workspaceMode, onWorkspaceMode,
   selectedResearchSessionId, setSelectedResearchSessionId,
   sageActivities,
+  agnoOpenRunId, onAgnoRunOpened,
   canSend,
   filteredSuggestions,
   setActiveSuggestionIndex,
@@ -128,6 +130,18 @@ export function ChatPanel({
             Evolution
           </button>
         ) : null}
+        {config?.agno?.uiEnabled ? (
+          <button
+            type="button"
+            className={`research-toggle agno-toggle ${workspaceMode === "agno" ? "active" : ""}`}
+            onClick={() => onWorkspaceMode(workspaceMode === "agno" ? "chat" : "agno")}
+            disabled={agentMode || generationBusy}
+            title="Toggle Agno workspace"
+            data-agent-id="chat-agno-toggle"
+          >
+            Agno
+          </button>
+        ) : null}
         {agentMode && (
           <div className="agent-badge" data-agent-id="chat-agent-badge" title={`Agent Mode Active - Iteration ${agentStatus?.iteration || 0} · Pony ${agentStatus?.ponyMode || "off"} · Headroom ${headroomEnabled ? "on" : "off"} · GitNexus ${agentStatus?.gitnexusEnabled ? "on" : "off"}`}>
             <div className="agent-indicator"></div>
@@ -152,6 +166,7 @@ export function ChatPanel({
         />
       ) : null}
       {workspaceMode === "evolution" ? <EvolutionPanel /> : null}
+      {workspaceMode === "agno" ? <AgnoPanel openRunId={agnoOpenRunId} onRunOpened={onAgnoRunOpened} /> : null}
       <div className="chat-workspace" hidden={workspaceMode !== "chat"}>
       <MessagesList messages={messages} messagesRef={messagesRef} sageActivities={sageActivities} />
       <div className="export-row">

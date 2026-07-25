@@ -5,7 +5,7 @@ Prima di modificare `Makefile`, `srun.sh` o qualsiasi file di build, **leggi** `
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **ds4-studio** (15493 symbols, 26861 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **ds4-studio** (16633 symbols, 28782 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
 

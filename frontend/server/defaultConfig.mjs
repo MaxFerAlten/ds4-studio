@@ -139,6 +139,27 @@ export const DEFAULT_CONFIG = Object.freeze({
   contextWiki: Object.freeze({
     enabled: false,
     previewOnly: true
+  }),
+  agno: Object.freeze({
+    enabled: false,
+    autoStart: true,
+    host: "127.0.0.1",
+    port: 7777,
+    serviceDir: "agno_service",
+    python: "",
+    model: "",
+    dbFile: "data/agno/agno.db",
+    startupTimeoutMs: 30_000,
+    shutdownTimeoutMs: 5_000,
+    serviceRequestTimeoutMs: 3_600_000,
+    modelQueueWaitTimeoutMs: 3_600_000,
+    maxInflightModelCalls: 1,
+    maxQueuedModelCalls: 8,
+    telemetry: false,
+    tracing: false,
+    scheduler: false,
+    mcpEnabled: false,
+    uiEnabled: true
   })
 });
 
