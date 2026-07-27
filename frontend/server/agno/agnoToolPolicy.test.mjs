@@ -7,7 +7,7 @@ import {
   AgnoToolPolicy,
   AgnoToolPolicyError
 } from "./agnoToolPolicy.mjs";
-import { AGENT_TOOL_NAMES } from "./agentToolCatalog.mjs";
+import { AGENT_TOOL_NAMES } from "../agentToolCatalog.mjs";
 
 // --- AgnoToolPolicy.assertAllowed() ---
 
