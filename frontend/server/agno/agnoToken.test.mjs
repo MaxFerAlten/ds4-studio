@@ -100,4 +100,95 @@ describe("ensureAgnoTokens", () => {
     // base64url: 32 bytes → 43 chars
     assert(result.serviceToken.length === 43);
   });
+
+  it("creates third token (tool-bridge.token)", async () => {
+    const fs = new FakeFs();
+    const result = await ensureAgnoTokens({
+      homeDir: "/tmp/test-home5",
+      fsImpl: fs,
+    });
+    assert(result.toolBridgeToken !== undefined);
+    assert(result.toolBridgeToken.length >= 32);
+    assert(result.toolBridgeTokenPath.includes("tool-bridge.token"));
+  });
+
+  it("all three tokens are distinct", async () => {
+    const fs = new FakeFs();
+    const result = await ensureAgnoTokens({
+      homeDir: "/tmp/test-home6",
+      fsImpl: fs,
+    });
+    const tokens = new Set([
+      result.serviceToken,
+      result.modelGatewayToken,
+      result.toolBridgeToken
+    ]);
+    assert.equal(tokens.size, 3,
+      "all three tokens must be distinct");
+  });
+
+  it("preserves third token on subsequent calls", async () => {
+    const fs = new FakeFs();
+    const first = await ensureAgnoTokens({
+      homeDir: "/tmp/test-home7",
+      fsImpl: fs
+    });
+    const second = await ensureAgnoTokens({
+      homeDir: "/tmp/test-home7",
+      fsImpl: fs
+    });
+    assert.equal(first.toolBridgeToken, second.toolBridgeToken,
+      "tool-bridge token should be preserved");
+  });
+
+  it("regenerates short tool-bridge token", async () => {
+    const fs = new FakeFs();
+    const homeDir = "/tmp/test-home8";
+    const agnoDir = homeDir + "/.config/ds4-studio/agno";
+    const toolBridgeFile = agnoDir + "/tool-bridge.token";
+
+    // First call to create the directory and set up
+    await ensureAgnoTokens({ homeDir, fsImpl: fs });
+
+    // Write a short token (less than 32 chars)
+    fs._files[toolBridgeFile].content = "short";
+
+    // Second call should regenerate it
+    const result = await ensureAgnoTokens({ homeDir, fsImpl: fs });
+    assert(result.toolBridgeToken.length >= 32,
+      "short token should be regenerated");
+  });
+
+  it("rejects symlink tool-bridge.token", async () => {
+    const fs = new FakeFs();
+    const homeDir = "/tmp/test-home9";
+    const agnoDir = homeDir + "/.config/ds4-studio/agno";
+    const toolBridgeFile = agnoDir + "/tool-bridge.token";
+    fs._symlinks[toolBridgeFile] = true;
+    await assert.rejects(
+      () => ensureAgnoTokens({ homeDir, fsImpl: fs }),
+      /symlink/,
+    );
+  });
+
+  it("restricts tool-bridge.token permissions to 0600", async () => {
+    const fs = new FakeFs();
+    const result = await ensureAgnoTokens({
+      homeDir: "/tmp/test-home10",
+      fsImpl: fs,
+    });
+    const agnoDir = "/tmp/test-home10/.config/ds4-studio/agno";
+    const toolBridgeFile = agnoDir + "/tool-bridge.token";
+    const stat = fs._files[toolBridgeFile];
+    assert.equal(stat.mode, 0o600,
+      "tool-bridge.token must have 0600 permissions");
+  });
+
+  it("returns correct tool-bridge.token path", async () => {
+    const fs = new FakeFs();
+    const homeDir = "/tmp/test-home11";
+    const result = await ensureAgnoTokens({ homeDir, fsImpl: fs });
+    const expectedPath = homeDir + "/.config/ds4-studio/agno/tool-bridge.token";
+    assert.equal(result.toolBridgeTokenPath, expectedPath);
+  });
 });

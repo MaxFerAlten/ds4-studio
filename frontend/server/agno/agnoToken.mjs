@@ -4,31 +4,54 @@ import os from "node:os";
 import path from "node:path";
 
 /**
- * Ensure Agno service and model gateway tokens exist.
+ * Ensure Agno service, model gateway, and tool-bridge tokens exist.
  *
  * Creates ~/.config/ds4-studio/agno/ with 0700 and token files with 0600.
  * Generates 32-byte base64url tokens if missing.
  * Rejects symlinks and world-readable files.
+ * Ensures all three tokens are distinct.
  *
  * @param {object} options
  * @param {string} options.homeDir - user's home directory (os.homedir())
  * @param {object} options.fsImpl - fs module (for testing)
- * @returns {Promise<{ serviceToken: string, modelGatewayToken: string }>}
+ * @returns {Promise<{ serviceToken: string, modelGatewayToken: string, toolBridgeToken: string, serviceTokenPath: string, modelGatewayTokenPath: string, toolBridgeTokenPath: string }>}
  */
 export async function ensureAgnoTokens({ homeDir, fsImpl = fs }) {
   const agnoDir = path.join(homeDir, ".config", "ds4-studio", "agno");
   const serviceFile = path.join(agnoDir, "service.token");
   const modelGatewayFile = path.join(agnoDir, "model-gateway.token");
+  const toolBridgeFile = path.join(agnoDir, "tool-bridge.token");
 
   // Ensure directory exists with 0700
   await fsImpl.mkdir(agnoDir, { recursive: true, mode: 0o700 });
   await setDirMode(agnoDir, fsImpl);
 
-  // Ensure service token
+  // Ensure tokens
   const serviceToken = await ensureTokenFile(serviceFile, fsImpl);
   const modelGatewayToken = await ensureTokenFile(modelGatewayFile, fsImpl);
+  const toolBridgeToken = await ensureTokenFile(toolBridgeFile, fsImpl);
 
-  return { serviceToken, modelGatewayToken, serviceTokenPath: serviceFile, modelGatewayTokenPath: modelGatewayFile };
+  // Verify all three tokens are distinct
+  if (
+    new Set([
+      serviceToken,
+      modelGatewayToken,
+      toolBridgeToken
+    ]).size !== 3
+  ) {
+    throw new Error(
+      "Agno internal tokens must be distinct"
+    );
+  }
+
+  return {
+    serviceToken,
+    modelGatewayToken,
+    toolBridgeToken,
+    serviceTokenPath: serviceFile,
+    modelGatewayTokenPath: modelGatewayFile,
+    toolBridgeTokenPath: toolBridgeFile
+  };
 }
 
 async function setDirMode(dir, fsImpl) {
