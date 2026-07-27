@@ -191,9 +191,12 @@ export function sanitizeOptionalExternalId(value, label = "userId") {
  * - Only known keys are ever copied to the output objects — this is the
  *   mechanism that drops arbitrary metadata: unknown input properties are
  *   simply never read.
- * - Entries whose `content` is not a string are discarded (this is the
- *   mechanism that drops raw media/base64/non-serializable content: a
- *   string-only content field is by construction not a buffer/blob/object).
+ * - Entries whose `content` is not a string are discarded (this drops raw
+ *   media/non-serializable content: a string-only content field is by
+ *   construction not a buffer/blob/object).
+ * - Entries whose `content` string itself *looks like* base64-encoded media
+ *   (a data: URI, or a long run of base64-alphabet-only characters) are
+ *   also discarded — see `looksLikeBase64Media()`.
  * - Entries whose `role` is not a non-empty string are discarded.
  * - Cap 1 (maxMessages) is applied first, keeping the most recent messages.
  * - Cap 2 (maxBytes) is applied second: the total
@@ -201,6 +204,19 @@ export function sanitizeOptionalExternalId(value, label = "userId") {
  *   array must not exceed the budget; oldest messages are dropped first,
  *   consistent with cap 1's "keep the most recent" direction.
  */
+const DATA_URI_BASE64_RE = /^data:[^,]+;base64,/i;
+const BASE64_BLOB_RE = /^[A-Za-z0-9+/]+={0,2}$/;
+const BASE64_BLOB_MIN_LENGTH = 200;
+
+// ponytail: heuristic, not a real base64 decoder — a data: URI prefix, or a
+// long (>200 char) whitespace-free run of base64-alphabet characters. False
+// negatives possible (short blobs, unusual encodings); upgrade to sniffing
+// actual bytes if that turns out to matter.
+function looksLikeBase64Media(content) {
+  if (DATA_URI_BASE64_RE.test(content)) return true;
+  return content.length > BASE64_BLOB_MIN_LENGTH && BASE64_BLOB_RE.test(content);
+}
+
 export function normalizeHistory(history, { maxMessages, maxBytes } = {}) {
   if (!Array.isArray(history)) return [];
 
@@ -216,6 +232,7 @@ export function normalizeHistory(history, { maxMessages, maxBytes } = {}) {
 
     if (typeof role !== "string" || !role) continue;
     if (typeof content !== "string") continue;
+    if (looksLikeBase64Media(content)) continue;
 
     const message = { role, content };
     if (role === "tool" && typeof entry.tool_call_id === "string") {

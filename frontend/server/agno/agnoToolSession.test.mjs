@@ -293,6 +293,29 @@ describe("normalizeHistory", () => {
       { role: "assistant", content: "world" }
     ]);
   });
+
+  it("discards entries whose string content looks like base64-encoded media", () => {
+    const dataUri = `data:image/png;base64,${"A".repeat(50)}`;
+    const longBase64Blob = "A".repeat(250);
+
+    const out = normalizeHistory(
+      [
+        { role: "user", content: "hello" },
+        { role: "user", content: dataUri },
+        { role: "user", content: longBase64Blob },
+        // short base64-alphabet strings are ordinary text, not discarded
+        { role: "user", content: "abc123" },
+        { role: "assistant", content: "world" }
+      ],
+      { maxMessages: 10, maxBytes: 10_000 }
+    );
+
+    assert.deepStrictEqual(out, [
+      { role: "user", content: "hello" },
+      { role: "user", content: "abc123" },
+      { role: "assistant", content: "world" }
+    ]);
+  });
 });
 
 describe("sessionError", () => {
