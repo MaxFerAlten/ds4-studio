@@ -583,3 +583,256 @@ test("Evolution config rejects Level E without its feature gate and literal toke
   assert.equal(token.ok, false);
   assert.match(token.errors.evolution.writeTokenEnv, /environment variable/);
 });
+
+test("merges nested agno.agentUi defaults", () => {
+  const config = mergeConfig({
+    agno: {
+      agentUi: {
+        port: 3001
+      }
+    }
+  });
+  assert.equal(config.agno.agentUi.port, 3001);
+  assert.equal(config.agno.agentUi.host, "127.0.0.1");
+  assert.equal(config.agno.agentUi.enabled, true);
+  assert.equal(config.agno.agentUi.autoStart, false);
+  assert.equal(config.agno.agentUi.telemetry, false);
+});
+
+test("accepts custom loopback Agent UI port", () => {
+  const v = validateConfig(mergeConfig({ agno: { agentUi: { port: 3001 } } }));
+  assert.equal(v.ok, true);
+});
+
+test("rejects Agent UI port equal to control port", () => {
+  const v = validateConfig(mergeConfig({ control: { port: 3000 }, agno: { agentUi: { port: 3000 } } }));
+  assert.equal(v.ok, false);
+  assert.match(v.errors.agno.agentUiPort, /control/);
+});
+
+test("rejects Agent UI port equal to AgentOS port", () => {
+  const v = validateConfig(mergeConfig({ agno: { port: 7777, agentUi: { port: 7777 } } }));
+  assert.equal(v.ok, false);
+  assert.match(v.errors.agno.agentUiPort, /agno/);
+});
+
+test("rejects Agent UI port equal to backend port", () => {
+  const v = validateConfig(mergeConfig({ server: { port: 3000 }, agno: { agentUi: { port: 3000 } } }));
+  assert.equal(v.ok, false);
+  assert.match(v.errors.agno.agentUiPort, /server/);
+});
+
+test("rejects Agent UI port equal to crawl port", () => {
+  const v = validateConfig(mergeConfig({ crawl: { port: 3000 }, agno: { agentUi: { port: 3000 } } }));
+  assert.equal(v.ok, false);
+  assert.match(v.errors.agno.agentUiPort, /crawl/);
+});
+
+test("rejects 0.0.0.0 for Agent UI host", () => {
+  const v = validateConfig(mergeConfig({ agno: { agentUi: { host: "0.0.0.0" } } }));
+  assert.equal(v.ok, false);
+  assert.match(v.errors.agno.agentUiHost, /loopback/);
+});
+
+test("rejects empty runtimeDir", () => {
+  const v = validateConfig(mergeConfig({ agno: { agentUi: { runtimeDir: "" } } }));
+  assert.equal(v.ok, false);
+  assert.match(v.errors.agno.agentUiRuntimeDir, /non-empty/);
+});
+
+test("rejects autoStart non boolean", () => {
+  const v = validateConfig(mergeConfig({ agno: { agentUi: { autoStart: "yes" } } }));
+  assert.equal(v.ok, false);
+  assert.match(v.errors.agno.agentUiAutoStart, /boolean/);
+});
+
+test("rejects telemetry true", () => {
+  const v = validateConfig(mergeConfig({ agno: { agentUi: { telemetry: true } } }));
+  assert.equal(v.ok, false);
+  assert.match(v.errors.agno.agentUiTelemetry, /false/);
+});
+
+test("rejects openMode different from new-tab", () => {
+  const v = validateConfig(mergeConfig({ agno: { agentUi: { openMode: "iframe" } } }));
+  assert.equal(v.ok, false);
+  assert.match(v.errors.agno.agentUiOpenMode, /new-tab/);
+});
+
+test("does not mutate DEFAULT_CONFIG", () => {
+  const before = JSON.stringify(DEFAULT_CONFIG.agno.agentUi);
+  mergeConfig({ agno: { agentUi: { port: 9999 } } });
+  assert.equal(JSON.stringify(DEFAULT_CONFIG.agno.agentUi), before);
+});
+
+test("merges default agno.tools when omitted", () => {
+  const config = mergeConfig({});
+  assert.deepEqual(config.agno.tools, DEFAULT_CONFIG.agno.tools);
+});
+
+test("partial agno.tools merge preserves untouched defaults", () => {
+  const config = mergeConfig({ agno: { tools: { enabled: true } } });
+  assert.equal(config.agno.tools.enabled, true);
+  assert.equal(config.agno.tools.profile, DEFAULT_CONFIG.agno.tools.profile);
+  assert.equal(config.agno.tools.maxQueued, DEFAULT_CONFIG.agno.tools.maxQueued);
+  assert.equal(config.agno.tools.auditDir, DEFAULT_CONFIG.agno.tools.auditDir);
+});
+
+test("mergeConfig does not mutate DEFAULT_CONFIG.agno.tools", () => {
+  const before = JSON.stringify(DEFAULT_CONFIG.agno.tools);
+  mergeConfig({ agno: { tools: { enabled: true, maxQueued: 2 } } });
+  assert.equal(JSON.stringify(DEFAULT_CONFIG.agno.tools), before);
+});
+
+test("accepts a fully specified valid agno.tools config", () => {
+  const v = validateConfig(mergeConfig({
+    agno: {
+      tools: {
+        enabled: true,
+        profile: "safe",
+        allowedTools: ["bash", "read"],
+        deniedTools: ["write"],
+        requestTimeoutMs: 60000,
+        maxInflight: 1,
+        maxQueued: 4,
+        maxHistoryMessages: 32,
+        maxHistoryBytes: 32768,
+        maxRequestBytes: 131072,
+        maxResponseBytes: 131072,
+        auditEnabled: true,
+        auditDir: "data/agno/tool-audit-test"
+      }
+    }
+  }));
+  assert.equal(v.ok, true);
+  assert.deepEqual(v.errors.agno, {});
+});
+
+test("rejects agno.tools.enabled non-boolean", () => {
+  const v = validateConfig(mergeConfig({ agno: { tools: { enabled: "yes" } } }));
+  assert.equal(v.ok, false);
+  assert.match(v.errors.agno.toolsEnabled, /boolean/);
+});
+
+test("rejects agno.tools.auditEnabled non-boolean", () => {
+  const v = validateConfig(mergeConfig({ agno: { tools: { auditEnabled: "yes" } } }));
+  assert.equal(v.ok, false);
+  assert.match(v.errors.agno.toolsAuditEnabled, /boolean/);
+});
+
+test("rejects an unknown agno.tools.profile", () => {
+  const v = validateConfig(mergeConfig({ agno: { tools: { profile: "yolo" } } }));
+  assert.equal(v.ok, false);
+  assert.match(v.errors.agno.toolsProfile, /safe or full/);
+});
+
+test("rejects a non-array allowedTools", () => {
+  const v = validateConfig(mergeConfig({ agno: { tools: { allowedTools: "bash" } } }));
+  assert.equal(v.ok, false);
+  assert.match(v.errors.agno.toolsAllowedTools, /array/);
+});
+
+test("rejects a non-array deniedTools", () => {
+  const v = validateConfig(mergeConfig({ agno: { tools: { deniedTools: "bash" } } }));
+  assert.equal(v.ok, false);
+  assert.match(v.errors.agno.toolsDeniedTools, /array/);
+});
+
+test("rejects an unknown tool name in allowedTools", () => {
+  const v = validateConfig(mergeConfig({ agno: { tools: { allowedTools: ["not_a_real_tool"] } } }));
+  assert.equal(v.ok, false);
+  assert.match(v.errors.agno.toolsAllowedTools, /unknown tools/);
+});
+
+test("rejects an unknown tool name in deniedTools", () => {
+  const v = validateConfig(mergeConfig({ agno: { tools: { deniedTools: ["not_a_real_tool"] } } }));
+  assert.equal(v.ok, false);
+  assert.match(v.errors.agno.toolsDeniedTools, /unknown tools/);
+});
+
+test("rejects allowedTools/deniedTools overlap", () => {
+  const v = validateConfig(mergeConfig({
+    agno: { tools: { allowedTools: ["bash"], deniedTools: ["bash"] } }
+  }));
+  assert.equal(v.ok, false);
+  assert.match(v.errors.agno.toolsOverlap, /overlap/);
+});
+
+test("accepts non-overlapping allowedTools/deniedTools with known names", () => {
+  const v = validateConfig(mergeConfig({
+    agno: { tools: { allowedTools: ["bash"], deniedTools: ["write"] } }
+  }));
+  assert.equal(v.errors.agno.toolsOverlap, undefined);
+  assert.equal(v.errors.agno.toolsAllowedTools, undefined);
+  assert.equal(v.errors.agno.toolsDeniedTools, undefined);
+});
+
+test("rejects requestTimeoutMs that is not a positive integer", () => {
+  const v = validateConfig(mergeConfig({ agno: { tools: { requestTimeoutMs: 0 } } }));
+  assert.equal(v.ok, false);
+  assert.match(v.errors.agno.toolsRequestTimeoutMs, /positive integer/);
+});
+
+test("rejects maxHistoryMessages that is not a positive integer", () => {
+  const v = validateConfig(mergeConfig({ agno: { tools: { maxHistoryMessages: -1 } } }));
+  assert.equal(v.ok, false);
+  assert.match(v.errors.agno.toolsMaxHistoryMessages, /positive integer/);
+});
+
+test("rejects maxHistoryBytes that is not a positive integer", () => {
+  const v = validateConfig(mergeConfig({ agno: { tools: { maxHistoryBytes: 0 } } }));
+  assert.equal(v.ok, false);
+  assert.match(v.errors.agno.toolsMaxHistoryBytes, /positive integer/);
+});
+
+test("rejects maxInflight of 0", () => {
+  const v = validateConfig(mergeConfig({ agno: { tools: { maxInflight: 0 } } }));
+  assert.equal(v.ok, false);
+  assert.match(v.errors.agno.toolsMaxInflight, /positive integer/);
+});
+
+test("rejects maxInflight greater than 1 in this release", () => {
+  const v = validateConfig(mergeConfig({ agno: { tools: { maxInflight: 2 } } }));
+  assert.equal(v.ok, false);
+  assert.match(v.errors.agno.toolsMaxInflight, /exactly 1/);
+});
+
+test("rejects maxQueued above 32", () => {
+  const v = validateConfig(mergeConfig({ agno: { tools: { maxQueued: 33 } } }));
+  assert.equal(v.ok, false);
+  assert.match(v.errors.agno.toolsMaxQueued, /<= 32/);
+});
+
+test("accepts maxQueued at the 32 boundary", () => {
+  const v = validateConfig(mergeConfig({ agno: { tools: { maxQueued: 32 } } }));
+  assert.equal(v.errors.agno.toolsMaxQueued, undefined);
+});
+
+test("rejects maxRequestBytes above 1 MiB", () => {
+  const v = validateConfig(mergeConfig({ agno: { tools: { maxRequestBytes: 1048577 } } }));
+  assert.equal(v.ok, false);
+  assert.match(v.errors.agno.toolsMaxRequestBytes, /1048576/);
+});
+
+test("rejects maxResponseBytes above 1 MiB", () => {
+  const v = validateConfig(mergeConfig({ agno: { tools: { maxResponseBytes: 1048577 } } }));
+  assert.equal(v.ok, false);
+  assert.match(v.errors.agno.toolsMaxResponseBytes, /1048576/);
+});
+
+test("rejects an empty auditDir", () => {
+  const v = validateConfig(mergeConfig({ agno: { tools: { auditDir: "" } } }));
+  assert.equal(v.ok, false);
+  assert.match(v.errors.agno.toolsAuditDir, /required/);
+});
+
+test("rejects an absolute audit path", () => {
+  const v = validateConfig(mergeConfig({ agno: { tools: { auditDir: "/etc/passwd" } } }));
+  assert.equal(v.ok, false);
+  assert.match(v.errors.agno.toolsAuditDir, /relative/);
+});
+
+test("rejects an audit path containing ..", () => {
+  const v = validateConfig(mergeConfig({ agno: { tools: { auditDir: "data/../../etc" } } }));
+  assert.equal(v.ok, false);
+  assert.match(v.errors.agno.toolsAuditDir, /\.\./);
+});

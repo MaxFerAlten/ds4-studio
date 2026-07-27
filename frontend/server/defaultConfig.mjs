@@ -142,7 +142,7 @@ export const DEFAULT_CONFIG = Object.freeze({
   }),
   agno: Object.freeze({
     enabled: false,
-    autoStart: true,
+    autoStart: false,
     host: "127.0.0.1",
     port: 7777,
     serviceDir: "agno_service",
@@ -159,7 +159,31 @@ export const DEFAULT_CONFIG = Object.freeze({
     tracing: false,
     scheduler: false,
     mcpEnabled: false,
-    uiEnabled: true
+    uiEnabled: true,
+    agentUi: Object.freeze({
+      enabled: true,
+      autoStart: false,
+      host: "127.0.0.1",
+      port: 3000,
+      runtimeDir: ".runtime/agno-agent-ui",
+      openMode: "new-tab",
+      telemetry: false
+    }),
+    tools: Object.freeze({
+      enabled: false,
+      profile: "safe",
+      allowedTools: Object.freeze([]),
+      deniedTools: Object.freeze([]),
+      requestTimeoutMs: 120_000,
+      maxInflight: 1,
+      maxQueued: 8,
+      maxHistoryMessages: 64,
+      maxHistoryBytes: 65_536,
+      maxRequestBytes: 262_144,
+      maxResponseBytes: 262_144,
+      auditEnabled: true,
+      auditDir: "data/agno/tool-audit"
+    })
   })
 });
 

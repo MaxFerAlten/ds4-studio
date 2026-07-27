@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_CONFIG, REQUEST_DEFAULTS } from "./defaultConfig.mjs";
 import { mergeResearchConfig, validateResearchConfig } from "./research/researchConfig.mjs";
+import { AGENT_TOOL_NAMES } from "./agentToolCatalog.mjs";
 
 export { buildDs4Args } from "./commandBuilder.mjs";
 
@@ -163,12 +164,36 @@ export function mergeConfig(input = {}) {
         ? input.contextWiki
         : {})
     },
-    agno: {
-      ...DEFAULT_CONFIG.agno,
-      ...(input.agno && typeof input.agno === "object" && !Array.isArray(input.agno)
-        ? input.agno
-        : {})
-    }
+    agno: (() => {
+      const inputAgno =
+        input.agno && typeof input.agno === "object" && !Array.isArray(input.agno)
+          ? input.agno
+          : {};
+      const inputAgentUi =
+        inputAgno.agentUi &&
+        typeof inputAgno.agentUi === "object" &&
+        !Array.isArray(inputAgno.agentUi)
+          ? inputAgno.agentUi
+          : {};
+      const inputAgnoTools =
+        inputAgno.tools &&
+        typeof inputAgno.tools === "object" &&
+        !Array.isArray(inputAgno.tools)
+          ? inputAgno.tools
+          : {};
+      return {
+        ...DEFAULT_CONFIG.agno,
+        ...inputAgno,
+        agentUi: {
+          ...DEFAULT_CONFIG.agno.agentUi,
+          ...inputAgentUi
+        },
+        tools: {
+          ...DEFAULT_CONFIG.agno.tools,
+          ...inputAgnoTools
+        }
+      };
+    })()
   };
 }
 
@@ -423,6 +448,88 @@ export function validateConfig(config) {
   if (ag.scheduler !== false) errors.agno.scheduler = "must be false";
   if (ag.mcpEnabled !== false) errors.agno.mcpEnabled = "must be false";
   if (typeof ag.uiEnabled !== "boolean") errors.agno.uiEnabled = "must be boolean";
+  // Agent UI validation
+  const agUi = ag.agentUi || {};
+  if (typeof agUi.enabled !== "boolean") errors.agno.agentUiEnabled = "agentUi.enabled must be boolean";
+  if (typeof agUi.autoStart !== "boolean") errors.agno.agentUiAutoStart = "agentUi.autoStart must be boolean";
+  if (!LOOPBACK_CONTROL_HOSTS.has(agUi.host)) errors.agno.agentUiHost = "agentUi.host must be loopback-only";
+  if (!validatePort(agUi.port)) errors.agno.agentUiPort = "agentUi.port must be between 1 and 65535";
+  const reservedPorts = new Map([
+    ["control.port", config.control.port],
+    ["server.port", config.server.port],
+    ["crawl.port", config.crawl.port],
+    ["agno.port", ag.port]
+  ]);
+  for (const [label, port] of reservedPorts) {
+    if (agUi.port === port) {
+      errors.agno.agentUiPort = `agentUi.port must differ from ${label}`;
+    }
+  }
+  if (typeof agUi.runtimeDir !== "string" || !agUi.runtimeDir.trim()) {
+    errors.agno.agentUiRuntimeDir = "agentUi.runtimeDir must be a non-empty string";
+  }
+  if (agUi.openMode !== "new-tab") {
+    errors.agno.agentUiOpenMode = 'agentUi.openMode must be exactly "new-tab"';
+  }
+  if (agUi.telemetry !== false) {
+    errors.agno.agentUiTelemetry = "agentUi.telemetry must be false";
+  }
+  // Agno tools validation
+  const agTools = ag.tools || {};
+  if (typeof agTools.enabled !== "boolean") errors.agno.toolsEnabled = "tools.enabled must be boolean";
+  if (!["safe", "full"].includes(agTools.profile)) errors.agno.toolsProfile = "tools.profile must be safe or full";
+  if (typeof agTools.auditEnabled !== "boolean") errors.agno.toolsAuditEnabled = "tools.auditEnabled must be boolean";
+  for (const [key, errKey] of [
+    ["allowedTools", "toolsAllowedTools"],
+    ["deniedTools", "toolsDeniedTools"]
+  ]) {
+    if (!Array.isArray(agTools[key])) {
+      errors.agno[errKey] = `tools.${key} must be an array`;
+      continue;
+    }
+    const unknown = agTools[key].filter((name) => !AGENT_TOOL_NAMES.includes(name));
+    if (unknown.length) errors.agno[errKey] = `unknown tools: ${unknown.join(", ")}`;
+  }
+  if (
+    Array.isArray(agTools.allowedTools) &&
+    Array.isArray(agTools.deniedTools) &&
+    agTools.allowedTools.some((name) => agTools.deniedTools.includes(name))
+  ) {
+    errors.agno.toolsOverlap = "allowedTools and deniedTools must not overlap";
+  }
+  for (const [key, errKey] of [
+    ["requestTimeoutMs", "toolsRequestTimeoutMs"],
+    ["maxInflight", "toolsMaxInflight"],
+    ["maxQueued", "toolsMaxQueued"],
+    ["maxHistoryMessages", "toolsMaxHistoryMessages"],
+    ["maxHistoryBytes", "toolsMaxHistoryBytes"],
+    ["maxRequestBytes", "toolsMaxRequestBytes"],
+    ["maxResponseBytes", "toolsMaxResponseBytes"]
+  ]) {
+    if (!isPositiveInt(agTools[key])) errors.agno[errKey] = `tools.${key} must be a positive integer`;
+  }
+  // Extra constraints on top of the positive-integer checks above (only applied
+  // once the base value is already a valid positive integer, so the message
+  // doesn't get overwritten for values that aren't even integers).
+  if (isPositiveInt(agTools.maxInflight) && parseDecimalInteger(agTools.maxInflight) !== 1) {
+    errors.agno.toolsMaxInflight = "tools.maxInflight must be exactly 1 in this release";
+  }
+  if (isPositiveInt(agTools.maxQueued) && parseDecimalInteger(agTools.maxQueued) > 32) {
+    errors.agno.toolsMaxQueued = "tools.maxQueued must be <= 32";
+  }
+  if (isPositiveInt(agTools.maxRequestBytes) && parseDecimalInteger(agTools.maxRequestBytes) > 1048576) {
+    errors.agno.toolsMaxRequestBytes = "tools.maxRequestBytes must be <= 1048576";
+  }
+  if (isPositiveInt(agTools.maxResponseBytes) && parseDecimalInteger(agTools.maxResponseBytes) > 1048576) {
+    errors.agno.toolsMaxResponseBytes = "tools.maxResponseBytes must be <= 1048576";
+  }
+  if (typeof agTools.auditDir !== "string" || !agTools.auditDir.trim()) {
+    errors.agno.toolsAuditDir = "tools.auditDir is required";
+  } else if (path.isAbsolute(agTools.auditDir)) {
+    errors.agno.toolsAuditDir = "tools.auditDir must be relative";
+  } else if (agTools.auditDir.split(/[\\/]+/).includes("..")) {
+    errors.agno.toolsAuditDir = "tools.auditDir must not contain ..";
+  }
   // PageAgent validation
   const pa = config.pageAgent || {};
   if (typeof pa.enabled !== "boolean") errors.pageAgent.enabled = "must be boolean";
