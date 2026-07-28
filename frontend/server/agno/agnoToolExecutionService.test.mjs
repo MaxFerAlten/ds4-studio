@@ -191,6 +191,40 @@ describe("AgnoToolExecutionService.execute — bash read-bypass guard", () => {
     assert.equal(executeCalls, 0);
   });
 
+  it("blocked call returns the full §15.6 envelope, not the bare guard shape", async () => {
+    const service = makeService();
+    const result = await service.execute(baseRequest({
+      toolName: "bash",
+      arguments: { command: "cat /etc/hosts" }
+    }));
+    assert.deepEqual(
+      Object.keys(result).sort(),
+      ["code", "compressed", "content", "durationMs", "guarded", "isError", "ok", "raw", "toolName"]
+    );
+    assert.equal(result.ok, false);
+    assert.equal(result.toolName, "bash");
+    assert.equal(result.compressed, false);
+    assert.equal(result.raw, null);
+    assert.equal(typeof result.durationMs, "number");
+  });
+
+  it("blocked call still writes an audit record ('tool_blocked')", async () => {
+    const audit = makeAudit();
+    const service = makeService({ audit });
+    await service.execute(baseRequest({
+      toolName: "bash",
+      arguments: { command: "cat /etc/hosts" }
+    }));
+    assert.equal(audit.records.length, 1);
+    const record = audit.records[0];
+    assert.equal(record.type, "tool_blocked");
+    assert.equal(record.toolName, "bash");
+    assert.equal(record.isError, true);
+    assert.equal(record.guarded, true);
+    assert.equal(record.code, "BASH_FILE_READ_BYPASS_BLOCKED");
+    assert.equal(typeof record.durationMs, "number");
+  });
+
   it("does not block a safe bash command", async () => {
     let executeCalls = 0;
     const service = makeService({
@@ -537,5 +571,14 @@ describe("AgnoToolExecutionService.execute — audit trail", () => {
     } finally {
       await fs.rm(tmp, { recursive: true, force: true });
     }
+  });
+
+  it("9c. an audit.write() throw does not affect a successful call's returned result", async () => {
+    const audit = { records: [], async write() { throw new Error("disk full"); } };
+    const service = makeService({ audit });
+    const result = await service.execute(baseRequest());
+    assert.equal(result.ok, true);
+    assert.equal(result.isError, false);
+    assert.equal(result.content, "ok");
   });
 });
