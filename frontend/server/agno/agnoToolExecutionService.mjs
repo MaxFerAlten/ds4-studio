@@ -220,7 +220,32 @@ export class AgnoToolExecutionService {
         args,
         session
       });
-      if (policyBlock) return policyBlock;
+      if (policyBlock) {
+        const blocked = {
+          ok: false,
+          toolName: request.toolName,
+          content: policyBlock.content,
+          isError: true,
+          guarded: true,
+          compressed: false,
+          code: policyBlock.code,
+          raw: null,
+          durationMs: performance.now() - startedAt
+        };
+        await this.safeAudit({
+          type: "tool_blocked",
+          toolName: request.toolName,
+          sessionId: session.sessionId,
+          runId: session.runId,
+          args,
+          isError: true,
+          guarded: true,
+          code: blocked.code,
+          content: blocked.content,
+          durationMs: blocked.durationMs
+        });
+        return blocked;
+      }
 
       const rawResult = await this.executeToolImpl(request.toolName, args, options);
 
@@ -233,7 +258,7 @@ export class AgnoToolExecutionService {
       const result = await this.normalizeResult(request.toolName, rawResult);
       result.durationMs = performance.now() - startedAt;
 
-      await this.audit.write({
+      await this.safeAudit({
         toolName: request.toolName,
         sessionId: session.sessionId,
         runId: session.runId,
@@ -248,6 +273,19 @@ export class AgnoToolExecutionService {
     } finally {
       lease?.release();
       session.activeToolCalls.delete(request.callId);
+    }
+  }
+
+  /**
+   * Audit writes must never change a tool call's outcome — a disk-full audit
+   * writer shouldn't turn an already-completed write/edit/bash side effect
+   * into a rejected execute() call. Log and swallow instead of propagating.
+   */
+  async safeAudit(record) {
+    try {
+      await this.audit.write(record);
+    } catch (err) {
+      console.error("agno-tool-execution: audit write failed", err);
     }
   }
 
