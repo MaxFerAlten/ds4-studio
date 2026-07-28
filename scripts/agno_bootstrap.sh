@@ -116,3 +116,35 @@ ensure_agno_service() {
   "$venv_python" -m pip freeze > "$service_dir/requirements.lock"
   [[ -n "$current_hash" ]] && echo "$current_hash" > "$hash_stamp"
 }
+
+# Echoes "1" if both agno.enabled and agno.agentUi.enabled are true, "0" otherwise.
+ds4_agno_agent_ui_config_enabled() {
+  local config_path="$1"
+  [[ -f "$config_path" ]] || { echo "0"; return 0; }
+  command -v node >/dev/null 2>&1 || { echo "0"; return 0; }
+  node -e '
+    const fs = require("fs");
+    try {
+      const cfg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+      console.log(
+        cfg && cfg.agno && cfg.agno.enabled &&
+        cfg.agno.agentUi && cfg.agno.agentUi.enabled !== false ? "1" : "0"
+      );
+    } catch { console.log("0"); }
+  ' "$config_path" 2>/dev/null || echo "0"
+}
+
+# Echoes the Agent UI port (default 3000).
+config_agno_agent_ui_port() {
+  local config_path="$1"
+  [[ -f "$config_path" ]] || { echo "3000"; return 0; }
+  node -e '
+    const fs = require("fs");
+    const file = process.argv[1];
+    try {
+      const cfg = JSON.parse(fs.readFileSync(file, "utf8"));
+      const port = cfg && cfg.agno && cfg.agno.agentUi && cfg.agno.agentUi.port;
+      console.log(port !== undefined && port !== null && String(port).trim() ? String(port) : "3000");
+    } catch { console.log("3000"); }
+  ' "$config_path" 2>/dev/null || echo "3000"
+}

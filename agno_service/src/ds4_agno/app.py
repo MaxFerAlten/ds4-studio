@@ -1,9 +1,11 @@
 """FastAPI application for Agno AgentOS sidecar with full DS4 integration."""
 
 import asyncio
+from contextlib import asynccontextmanager
 import json
 import os
-from typing import Optional
+from typing import Callable, Optional
+from uuid import uuid4
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -11,14 +13,32 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from ds4_agno.auth import ServiceAuthenticator
 from ds4_agno.settings import Settings
 from ds4_agno.db import create_db
-from ds4_agno.catalog import CatalogEntry, get_default_catalog
+from ds4_agno.catalog import get_default_catalog
 from ds4_agno.agents import build_default_agent, build_teams, build_workflows
 from ds4_agno.events import Ds4AgnoEvent
 from ds4_agno.run_registry import RunRegistry
 from ds4_agno.model import create_ds4_model
+from ds4_agno.tool_client import (
+    Ds4ToolBridgeClient,
+    ToolCatalog,
+    get_catalog_sync,
+)
+from ds4_agno.tool_errors import Ds4ToolBridgeError
+from ds4_agno.tool_factory import build_ds4_tools
+from ds4_agno.text_only import (
+    RejectAgentOsMediaMiddleware,
+    TextOnlyInputGuard,
+)
 
 
-def create_app(settings: Optional[Settings] = None) -> FastAPI:
+def create_app(
+    settings: Optional[Settings] = None,
+    *,
+    catalog_fetcher: Callable[..., ToolCatalog] = get_catalog_sync,
+    tool_client_factory: Callable[..., Ds4ToolBridgeClient] = (
+        Ds4ToolBridgeClient
+    ),
+) -> FastAPI:
     """Factory: create a FastAPI app with full AgentOS integration.
 
     If settings is None, loads from environment variables.
@@ -27,11 +47,55 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     auth = ServiceAuthenticator(expected_token=_settings.service_token)
     db = create_db(_settings)
     model = create_ds4_model(_settings)
-    agents_list = [build_default_agent(model=model, db=db)]
+    tool_catalog: ToolCatalog | None = None
+    tool_client: Ds4ToolBridgeClient | None = None
+    tools = []
+    if _settings.tools_enabled:
+        tool_catalog = catalog_fetcher(
+            base_url=_settings.tool_bridge_base_url,
+            token=_settings.tool_bridge_token,
+            timeout_seconds=min(
+                _settings.tool_request_timeout_seconds,
+                5.0,
+            ),
+        )
+        if tool_catalog.profile != _settings.tool_profile:
+            raise Ds4ToolBridgeError(
+                "INVALID_TOOL_CATALOG",
+                "tool catalog profile does not match configured profile",
+            )
+        if _settings.tool_profile == "full" and len(tool_catalog.tools) != 16:
+            raise Ds4ToolBridgeError(
+                "INVALID_TOOL_CATALOG",
+                "full tool catalog must contain exactly 16 tools",
+            )
+        tool_client = tool_client_factory(
+            base_url=_settings.tool_bridge_base_url,
+            token=_settings.tool_bridge_token,
+            timeout_seconds=_settings.tool_request_timeout_seconds,
+        )
+        tools = build_ds4_tools(
+            client=tool_client,
+            catalog=tool_catalog,
+            max_history_messages=_settings.tool_max_history_messages,
+            max_history_bytes=_settings.tool_max_history_bytes,
+        )
+    agents_list = [
+        build_default_agent(model=model, db=db, tools=tools)
+    ]
     teams_list = build_teams(model=model, db=db, agents=agents_list)
     workflows_list = build_workflows(model=model, db=db, agents=agents_list)
     registry = RunRegistry()
-    _register_agents(agents_list)
+    agent_registry = {agent.id: agent for agent in agents_list}
+
+    @asynccontextmanager
+    async def ds4_lifespan(_app: FastAPI):
+        try:
+            yield
+        finally:
+            await registry.shutdown()
+            if tool_client is not None:
+                await tool_client.aclose()
 
     from agno.os import AgentOS
 
@@ -47,11 +111,20 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         tracing=False,
         scheduler=False,
         mcp_server=False,
-        cors_allowed_origins=[],
+        cors_allowed_origins=_settings.cors_allowed_origins,
+        lifespan=ds4_lifespan,
         on_route_conflict="error",
     )
 
     app = agent_os.get_app()
+    app.add_middleware(RejectAgentOsMediaMiddleware)
+    app.state.ds4_settings = _settings
+    app.state.ds4_run_registry = registry
+    app.state.ds4_tool_client = tool_client
+    app.state.ds4_tool_catalog = tool_catalog
+    app.state.ds4_tools = tools
+    app.state.ds4_agents = agents_list
+    app.state.ds4_agent_registry = agent_registry
 
     # Mount DS4-specific routes on the same app
     @app.get("/ds4/health")
@@ -67,6 +140,15 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             "tracing": False,
             "scheduler": False,
             "mcp": False,
+            "capabilities": {
+                "tools": bool(tools),
+                "toolProfile": (
+                    tool_catalog.profile if tool_catalog is not None else None
+                ),
+                "toolCount": len(tools),
+                "media": False,
+                "ocr": False,
+            },
         }
 
     @app.get("/ds4/catalog")
@@ -77,16 +159,41 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             "agents": [c.model_dump() for c in catalog_items if c.kind == "agent"],
             "teams": [c.model_dump() for c in catalog_items if c.kind == "team"],
             "workflows": [c.model_dump() for c in catalog_items if c.kind == "workflow"],
+            "capabilities": {
+                "tools": bool(tools),
+                "toolProfile": (
+                    tool_catalog.profile if tool_catalog is not None else None
+                ),
+                "toolCount": len(tools),
+                "toolNames": [tool.name for tool in tools],
+                "catalogDigest": (
+                    tool_catalog.catalog_digest
+                    if tool_catalog is not None
+                    else None
+                ),
+                "media": False,
+                "ocr": False,
+            },
         }
 
     @app.post("/ds4/runs")
     async def create_run(request: Request):
         await auth.require(request.headers.get("authorization"))
-        body = await request.json()
+        try:
+            body = await request.json()
+            message = TextOnlyInputGuard.validate_ds4_payload(body)
+        except (ValueError, TypeError, json.JSONDecodeError) as exc:
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "error": TextOnlyInputGuard.ERROR_CODE,
+                    "message": str(exc),
+                },
+            )
         target_type = body.get("targetType", "agent")
         target_id = body.get("targetId", "ds4-assistant")
-        message = body.get("message", "")
         stream = body.get("stream", True)
+        session_id = body.get("sessionId") or f"session-{uuid4().hex}"
 
         # Validate target exists in catalog
         catalog_items = get_default_catalog()
@@ -98,13 +205,23 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             )
 
         run_id = await registry.create_run(target_type, target_id)
-        coro = _execute_run(registry, run_id, target_type, target_id, message, stream)
+        coro = _execute_run(
+            registry,
+            agent_registry,
+            run_id,
+            target_type,
+            target_id,
+            message,
+            stream,
+            session_id,
+        )
         await registry.start_task(run_id, coro)
 
         return JSONResponse(
             status_code=202,
             content={
                 "runId": run_id,
+                "sessionId": session_id,
                 "status": "queued",
                 "eventsUrl": f"/ds4/runs/{run_id}/events",
             },
@@ -189,20 +306,21 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
 
     return app
 
-
-_AGENT_REGISTRY: dict = {}
-
-
-def _register_agents(agents: list) -> None:
-    for agent in agents:
-        _AGENT_REGISTRY[agent.id] = agent
-
-
-async def _execute_run(registry, run_id, target_type, target_id, message, stream):
+async def _execute_run(
+    registry,
+    agent_registry,
+    run_id,
+    target_type,
+    target_id,
+    message,
+    stream,
+    session_id,
+):
     """Execute a run by calling the real Agno agent and publishing events."""
     import asyncio
 
     seq = 0
+    event_stream = None
 
     def _next_seq():
         nonlocal seq
@@ -219,7 +337,7 @@ async def _execute_run(registry, run_id, target_type, target_id, message, stream
             content={},
         ).model_dump())
 
-        agent = _AGENT_REGISTRY.get(target_id)
+        agent = agent_registry.get(target_id)
         if not agent:
             await registry.mark_terminal(run_id, "failed")
             await registry.publish(run_id, Ds4AgnoEvent(
@@ -250,11 +368,20 @@ async def _execute_run(registry, run_id, target_type, target_id, message, stream
             content={},
         ).model_dump())
 
-        async for event in agent.arun(
+        terminal_seen = False
+
+        # Drain agent.arun() to natural completion (StopAsyncIteration) rather than
+        # returning early: abandoning the generator mid-stream sends it a GeneratorExit,
+        # which Agno's own run loop treats as a client disconnect and persists as
+        # RunStatus.cancelled even though the run actually completed successfully.
+        event_stream = agent.arun(
             input=message,
             stream=True,
             stream_events=True,
-        ):
+            session_id=session_id,
+            run_id=run_id,
+        )
+        async for event in event_stream:
             cls_name = type(event).__name__
             content_text = getattr(event, "content", None) or ""
             reasoning_text = getattr(event, "reasoning_content", None) or ""
@@ -300,7 +427,46 @@ async def _execute_run(registry, run_id, target_type, target_id, message, stream
                     content={"totalTokens": tokens},
                 ).model_dump())
 
+            elif cls_name == "ToolCallStartedEvent":
+                tool = getattr(event, "tool", None)
+                await registry.publish(run_id, Ds4AgnoEvent(
+                    type="tool_call",
+                    run_id=run_id,
+                    target_type=target_type,
+                    target_id=target_id,
+                    seq=_next_seq(),
+                    content={
+                        "toolCallId": getattr(tool, "tool_call_id", None),
+                        "toolName": getattr(tool, "tool_name", None),
+                    },
+                ).model_dump())
+
+            elif cls_name in ("ToolCallCompletedEvent", "ToolCallErrorEvent"):
+                tool = getattr(event, "tool", None)
+                error = getattr(event, "error", None)
+                await registry.publish(run_id, Ds4AgnoEvent(
+                    type="tool_result",
+                    run_id=run_id,
+                    target_type=target_type,
+                    target_id=target_id,
+                    seq=_next_seq(),
+                    content={
+                        "toolCallId": getattr(tool, "tool_call_id", None),
+                        "toolName": getattr(tool, "tool_name", None),
+                        "isError": (
+                            cls_name == "ToolCallErrorEvent"
+                            or bool(getattr(tool, "tool_call_error", False))
+                        ),
+                        "result": (
+                            error
+                            if error is not None
+                            else getattr(tool, "result", None)
+                        ),
+                    },
+                ).model_dump())
+
             elif cls_name == "RunCompletedEvent":
+                terminal_seen = True
                 await registry.mark_terminal(run_id, "completed")
                 await registry.publish(run_id, Ds4AgnoEvent(
                     type="run_completed",
@@ -310,9 +476,9 @@ async def _execute_run(registry, run_id, target_type, target_id, message, stream
                     seq=_next_seq(),
                     content=content_text or "",
                 ).model_dump())
-                return
 
             elif cls_name == "RunErrorEvent":
+                terminal_seen = True
                 error_content = content_text or "unknown error"
                 await registry.mark_terminal(run_id, "failed")
                 await registry.publish(run_id, Ds4AgnoEvent(
@@ -323,19 +489,21 @@ async def _execute_run(registry, run_id, target_type, target_id, message, stream
                     seq=_next_seq(),
                     content=error_content,
                 ).model_dump())
-                return
 
-        await registry.mark_terminal(run_id, "completed")
-        await registry.publish(run_id, Ds4AgnoEvent(
-            type="run_completed",
-            run_id=run_id,
-            target_type=target_type,
-            target_id=target_id,
-            seq=_next_seq(),
-            content={},
-        ).model_dump())
+        if not terminal_seen:
+            await registry.mark_terminal(run_id, "completed")
+            await registry.publish(run_id, Ds4AgnoEvent(
+                type="run_completed",
+                run_id=run_id,
+                target_type=target_type,
+                target_id=target_id,
+                seq=_next_seq(),
+                content={},
+            ).model_dump())
 
     except asyncio.CancelledError:
+        if event_stream is not None:
+            await event_stream.aclose()
         await registry.mark_terminal(run_id, "cancelled")
         await registry.publish(run_id, Ds4AgnoEvent(
             type="run_cancelled",
@@ -345,6 +513,7 @@ async def _execute_run(registry, run_id, target_type, target_id, message, stream
             seq=_next_seq(),
             content={},
         ).model_dump())
+        raise
     except Exception as e:
         import traceback
         traceback.print_exc()

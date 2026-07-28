@@ -42,6 +42,8 @@ const DROP_KEY_NAMES = new Set(["env", "environment"]);
 const SANITIZE_MAX_DEPTH = 4;
 const SANITIZE_MAX_FANOUT = 50;
 const SANITIZE_MAX_STRING_LENGTH = 4000;
+const DEFAULT_MAX_RESPONSE_BYTES = 262_144;
+const TRUNCATION_MARKER = "\n...[truncated by DS4 Agno response limit]";
 
 export class AgnoToolExecutionError extends Error {
   constructor(code, status, message) {
@@ -146,6 +148,7 @@ export class AgnoToolExecutionService {
     crawlBaseUrl,
     crawlToken,
     audit,
+    maxResponseBytes = DEFAULT_MAX_RESPONSE_BYTES,
     executeToolImpl = executeTool,
     compressImpl = compressToolResultForModel
   }) {
@@ -160,6 +163,7 @@ export class AgnoToolExecutionService {
     this.crawlBaseUrl = crawlBaseUrl;
     this.crawlToken = crawlToken;
     this.audit = audit;
+    this.maxResponseBytes = maxResponseBytes;
     this.executeToolImpl = executeToolImpl;
     this.compressImpl = compressImpl;
   }
@@ -389,16 +393,51 @@ export class AgnoToolExecutionService {
       result = await this.compressImpl(toolName, rawResult, this.toolBlobStore);
     }
 
+    const bounded = boundUtf8(
+      String(result?.content || ""),
+      this.maxResponseBytes
+    );
+
     return {
       ok: !result?.isError,
       toolName,
-      content: String(result?.content || ""),
+      content: bounded.content,
       isError: Boolean(result?.isError),
       guarded: Boolean(result?.guarded),
       compressed: Boolean(result?.compressed),
       code: result?.code || null,
-      raw: sanitizeToolRaw(result?.raw),
+      raw: bounded.truncated ? null : (sanitizeToolRaw(result?.raw) ?? null),
       durationMs: null
     };
   }
+}
+
+export function boundUtf8(value, maxBytes) {
+  const content = String(value ?? "");
+  const limit = Number.isSafeInteger(maxBytes) && maxBytes > 0
+    ? maxBytes
+    : DEFAULT_MAX_RESPONSE_BYTES;
+  const encoded = Buffer.from(content, "utf8");
+
+  if (encoded.length <= limit) {
+    return { content, truncated: false };
+  }
+
+  const marker = Buffer.from(TRUNCATION_MARKER, "utf8");
+  if (marker.length >= limit) {
+    return {
+      content: marker.subarray(0, limit).toString("utf8").replace(/\uFFFD$/u, ""),
+      truncated: true
+    };
+  }
+
+  const prefix = encoded
+    .subarray(0, limit - marker.length)
+    .toString("utf8")
+    .replace(/\uFFFD$/u, "");
+
+  return {
+    content: `${prefix}${TRUNCATION_MARKER}`,
+    truncated: true
+  };
 }

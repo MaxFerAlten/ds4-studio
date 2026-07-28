@@ -19,7 +19,20 @@ const BASE = "/api/internal/agno-tools";
 // Tool-call arguments are small JSON payloads (paths, commands, short
 // snippets) — 2MB is generous headroom without inheriting proxy.mjs's 64MB
 // default, which is sized for arbitrary upstream proxying.
-const MAX_TOOL_REQUEST_BYTES = 2 * 1024 * 1024;
+const DEFAULT_MAX_TOOL_REQUEST_BYTES = 262_144;
+const DANGEROUS_KEYS = new Set(["__proto__", "prototype", "constructor"]);
+const EXECUTE_KEYS = new Set([
+  "protocolVersion",
+  "callId",
+  "toolName",
+  "arguments",
+  "context"
+]);
+const CANCEL_KEYS = new Set([
+  "protocolVersion",
+  "sessionId",
+  "runId"
+]);
 
 // §16.5 error->HTTP status table, keyed by error.code (not error.status —
 // sessionError()/AgnoToolGate's #error() never set .status, only .code).
@@ -76,10 +89,15 @@ function sendMappedError(res, error) {
  * malformed/non-JSON body (400) — both use the generic INVALID_TOOL_REQUEST
  * code since neither is one of the §16.5 table's deeper-layer failures.
  */
-async function readJsonBody(req) {
+async function readJsonBody(req, maxRequestBytes) {
+  // express.json() middleware (registered in index.mjs) already consumed the raw
+  // stream and parsed the body into req.body.  Use it directly when present.
+  if (req.body && typeof req.body === "object") {
+    return req.body;
+  }
   let raw;
   try {
-    raw = await readRequestBody(req, MAX_TOOL_REQUEST_BYTES);
+    raw = await readRequestBody(req, maxRequestBytes);
   } catch (err) {
     err.code = "INVALID_TOOL_REQUEST";
     throw err; // err.status is already 413, set by readRequestBody
@@ -94,8 +112,123 @@ async function readJsonBody(req) {
   }
 }
 
-function catalogDigest(tools) {
-  return `sha256:${crypto.createHash("sha256").update(JSON.stringify(tools)).digest("hex")}`;
+export function stableCatalogJson(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableCatalogJson(item)).join(",")}]`;
+  }
+  if (value !== null && typeof value === "object") {
+    const entries = Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableCatalogJson(value[key])}`);
+    return `{${entries.join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+export function catalogDigest(tools) {
+  return `sha256:${crypto
+    .createHash("sha256")
+    .update(stableCatalogJson(tools))
+    .digest("hex")}`;
+}
+
+function isPlainObject(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+export function assertNoDangerousKeys(value, path = "$") {
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index += 1) {
+      assertNoDangerousKeys(value[index], `${path}[${index}]`);
+    }
+    return;
+  }
+
+  if (value === null || typeof value !== "object") return;
+
+  for (const key of Object.keys(value)) {
+    if (DANGEROUS_KEYS.has(key)) {
+      const error = new Error(`dangerous key at ${path}.${key}`);
+      error.code = "INVALID_TOOL_REQUEST";
+      error.status = 400;
+      throw error;
+    }
+    assertNoDangerousKeys(value[key], `${path}.${key}`);
+  }
+}
+
+function invalidRequest(message) {
+  const error = new Error(message);
+  error.code = "INVALID_TOOL_REQUEST";
+  error.status = 400;
+  return error;
+}
+
+export function validateExecuteEnvelope(body) {
+  if (!isPlainObject(body)) {
+    throw invalidRequest("request body must be an object");
+  }
+
+  const unknown = Object.keys(body).filter((key) => !EXECUTE_KEYS.has(key));
+  if (unknown.length) {
+    throw invalidRequest(`unknown request fields: ${unknown.join(", ")}`);
+  }
+
+  if (body.protocolVersion !== 1) {
+    throw invalidRequest("protocolVersion must be 1");
+  }
+
+  for (const key of ["callId", "toolName"]) {
+    if (
+      typeof body[key] !== "string" ||
+      body[key].length < 1 ||
+      body[key].length > 128
+    ) {
+      throw invalidRequest(`${key} must be a string between 1 and 128 characters`);
+    }
+  }
+
+  if (!isPlainObject(body.arguments)) {
+    throw invalidRequest("arguments must be an object");
+  }
+  if (!isPlainObject(body.context)) {
+    throw invalidRequest("context must be an object");
+  }
+
+  assertNoDangerousKeys(body.arguments, "$.arguments");
+  assertNoDangerousKeys(body.context, "$.context");
+
+  return body;
+}
+
+export function validateCancelEnvelope(body) {
+  if (!isPlainObject(body)) {
+    throw invalidRequest("request body must be an object");
+  }
+  const unknown = Object.keys(body).filter((key) => !CANCEL_KEYS.has(key));
+  if (unknown.length) {
+    throw invalidRequest(`unknown request fields: ${unknown.join(", ")}`);
+  }
+  if (body.protocolVersion !== 1) {
+    throw invalidRequest("protocolVersion must be 1");
+  }
+  for (const field of ["sessionId", "runId"]) {
+    if (
+      typeof body[field] !== "string"
+      || body[field].length < 1
+      || body[field].length > 128
+    ) {
+      throw invalidRequest(
+        `${field} must be a string between 1 and 128 characters`
+      );
+    }
+  }
+  assertNoDangerousKeys(body);
+  return body;
 }
 
 /**
@@ -107,6 +240,7 @@ function catalogDigest(tools) {
  * @param {object} options.gate - AgnoToolGate instance
  * @param {object} options.sessionRegistry - AgnoToolSessionRegistry instance
  * @param {object} options.service - AgnoToolExecutionService instance
+ * @param {number} [options.maxRequestBytes] - maximum JSON request size
  * @param {function} options.asyncHandler - async error handler wrapper
  */
 export function createAgnoToolRoutes({
@@ -115,6 +249,7 @@ export function createAgnoToolRoutes({
   gate,
   sessionRegistry,
   service,
+  maxRequestBytes = DEFAULT_MAX_TOOL_REQUEST_BYTES,
   asyncHandler
 }) {
   const router = createRouter();
@@ -142,16 +277,18 @@ export function createAgnoToolRoutes({
 
     let body;
     try {
-      body = await readJsonBody(req);
+      body = await readJsonBody(req, maxRequestBytes);
     } catch (err) {
       res.status(err.status || 400).json({ error: err.code || "INVALID_TOOL_REQUEST", message: err.message });
       return;
     }
 
-    if (body.protocolVersion !== 1 || typeof body.callId !== "string" || !body.callId) {
-      res.status(400).json({
-        error: "INVALID_TOOL_REQUEST",
-        message: "protocolVersion must be 1 and callId is required"
+    try {
+      validateExecuteEnvelope(body);
+    } catch (err) {
+      res.status(err.status || 400).json({
+        error: err.code || "INVALID_TOOL_REQUEST",
+        message: err.message
       });
       return;
     }
@@ -178,19 +315,38 @@ export function createAgnoToolRoutes({
 
     let body;
     try {
-      body = await readJsonBody(req);
+      body = await readJsonBody(req, maxRequestBytes);
     } catch (err) {
       res.status(err.status || 400).json({ error: err.code || "INVALID_TOOL_REQUEST", message: err.message });
       return;
     }
 
-    if (body.protocolVersion !== 1) {
-      res.status(400).json({ error: "INVALID_TOOL_REQUEST", message: "protocolVersion must be 1" });
+    try {
+      validateCancelEnvelope(body);
+    } catch (err) {
+      res.status(err.status || 400).json({
+        error: err.code || "INVALID_TOOL_REQUEST",
+        message: err.message
+      });
       return;
     }
 
     try {
-      sessionRegistry.cancel({ sessionId: body.sessionId, runId: body.runId });
+      if (typeof sessionRegistry.cancelAndClose === "function") {
+        sessionRegistry.cancelAndClose({
+          sessionId: body.sessionId,
+          runId: body.runId
+        });
+      } else {
+        sessionRegistry.cancel({
+          sessionId: body.sessionId,
+          runId: body.runId
+        });
+        sessionRegistry.close?.({
+          sessionId: body.sessionId,
+          runId: body.runId
+        });
+      }
       res.status(200).json({ ok: true });
     } catch (err) {
       sendMappedError(res, err);

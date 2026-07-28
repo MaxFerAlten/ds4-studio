@@ -589,6 +589,34 @@ Chunked Metal prefill reuses the same range-capable layer-major graph for each
 chunk, preserving absolute compressor/indexer boundaries while avoiding the old
 per-layer chunk dispatch path.
 
+## Agno Agent UI
+
+DS4-Studio can supervise the official [Agno Agent UI](https://github.com/agno-agi/agent-ui)
+as a separate local Next.js process.
+
+Ports:
+
+- DS4-Studio: 127.0.0.1:5173
+- Agent UI: 127.0.0.1:3000
+- AgentOS: 127.0.0.1:7777
+
+Open DS4-Studio, select Agno, then click **Agno-UI** next to the AgentOS status pill.
+Agent UI does not load another model. AgentOS model requests pass through the
+DS4 Agno model gateway and its single-inflight gate.
+
+### Troubleshooting
+
+| Error | Meaning |
+|:---|---:|
+| `AGNO_UI_DISABLED` | Agent UI is disabled in ds4-ui.config.json |
+| `AGNO_UI_START_FAILED` | The Next.js process failed to start — check bootstrap |
+| `AGENTOS_NOT_READY` | AgentOS sidecar is not running |
+| `POPUP_BLOCKED` | Browser blocked the new tab — allow local popups |
+| `NATIVE_AGENT_ACTIVE` | Stop the native DS4 agent first |
+| `WRAPPER_STATUS_UNAVAILABLE` | Cannot read wrapper status |
+| `SERVER_MODE_SWITCH_FAILED` | Wrapper mode switch failed |
+| `AGNO_MODEL_QUEUE_FULL` | Model queue is full — wait and retry |
+
 ## Capability Evaluation
 
 `ds4-eval` is a small real-model integration benchmark. It is not a leaderboard

@@ -335,6 +335,11 @@
     "tracing": false,
     "scheduler": false,
     "mcpEnabled": false,
-    "uiEnabled": true
+    "uiEnabled": true,
+    "tools": {
+      "enabled": true,
+      "profile": "safe",
+      "auditEnabled": true
+    }
   }
 }

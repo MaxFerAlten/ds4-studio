@@ -1,6 +1,7 @@
 import { readRequestBody } from "../proxy.mjs";
 import { fetchWithBusyRetry } from "../backendRetry.mjs";
 import { abortOnClientDisconnect } from "../clientDisconnect.mjs";
+import { sendAgnoGuardError } from "./agnoExecutionGuard.mjs";
 
 const ALLOWLISTED_PATHS = new Set([
   "/v1/models",
@@ -8,6 +9,76 @@ const ALLOWLISTED_PATHS = new Set([
 ]);
 
 const MAX_BODY_BYTES = 32 * 1024 * 1024;
+const MEDIA_KEYS = new Set([
+  "audio",
+  "file",
+  "files",
+  "image",
+  "images",
+  "input_audio",
+  "input_image",
+  "video",
+  "videos",
+]);
+
+function textOnlyError(message) {
+  const error = new Error(message);
+  error.code = "AGNO_TEXT_ONLY";
+  error.status = 422;
+  return error;
+}
+
+export function assertTextOnlyChatRequest(body) {
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    throw textOnlyError("chat request must be a JSON object");
+  }
+  for (const key of MEDIA_KEYS) {
+    if (Object.hasOwn(body, key) && body[key] != null) {
+      throw textOnlyError(`top-level media field is not supported: ${key}`);
+    }
+  }
+  if (
+    Array.isArray(body.modalities)
+    && body.modalities.some((modality) => modality !== "text")
+  ) {
+    throw textOnlyError("non-text modalities are not supported");
+  }
+  if (!Array.isArray(body.messages)) {
+    throw textOnlyError("messages must be an array");
+  }
+
+  for (const message of body.messages) {
+    if (
+      message === null
+      || typeof message !== "object"
+      || Array.isArray(message)
+    ) {
+      throw textOnlyError("message must be an object");
+    }
+    for (const key of MEDIA_KEYS) {
+      if (Object.hasOwn(message, key) && message[key] != null) {
+        throw textOnlyError(`message media field is not supported: ${key}`);
+      }
+    }
+    const content = message.content;
+    if (content == null || typeof content === "string") continue;
+    if (!Array.isArray(content)) {
+      throw textOnlyError("message content must be text");
+    }
+    for (const part of content) {
+      if (
+        part === null
+        || typeof part !== "object"
+        || Array.isArray(part)
+        || part.type !== "text"
+        || typeof part.text !== "string"
+        || Object.keys(part).some((key) => !["type", "text"].includes(key))
+      ) {
+        throw textOnlyError("message content contains a non-text part");
+      }
+    }
+  }
+}
 
 /**
  * Create an Express router for the Agno model gateway.
@@ -24,6 +95,7 @@ const MAX_BODY_BYTES = 32 * 1024 * 1024;
  * @param {string} options.backendBase - base URL for ds4-server
  * @param {AgnoModelGate} options.modelGate - FIFO gate instance
  * @param {string} options.modelGatewayToken - expected bearer token
+ * @param {AgnoExecutionGuard} options.executionGuard - shared native-agent/server-mode guard
  * @param {function} options.fetchImpl - fetch function (for testing)
  * @returns {import('express').Router}
  */
@@ -32,6 +104,7 @@ export function createAgnoModelGateway({
   backendBase,
   modelGate,
   modelGatewayToken,
+  executionGuard,
   fetchImpl = fetch,
 }) {
   const router = createRouter();
@@ -93,7 +166,27 @@ export function createAgnoModelGateway({
       return;
     }
 
-    // 3. Acquire gate
+    // 3. Text-only contract, before execution guard, gate, or upstream.
+    try {
+      assertTextOnlyChatRequest(body);
+    } catch (error) {
+      res.status(error.status || 422).json({
+        error: error.code || "AGNO_TEXT_ONLY",
+        message: error.message,
+      });
+      return;
+    }
+
+    // 4. Execution guard — must run before FIFO acquisition so a call
+    // blocked by the native agent never occupies the queue.
+    try {
+      await executionGuard.ensureModelCallAllowed();
+    } catch (error) {
+      if (sendAgnoGuardError(res, error)) return;
+      throw error;
+    }
+
+    // 5. Acquire gate
     const { signal, cleanup } = abortOnClientDisconnect(req, res);
     let lease;
     try {
@@ -114,7 +207,7 @@ export function createAgnoModelGateway({
       return;
     }
 
-    // 4. Forward to ds4-server with busy retry
+    // 6. Forward to ds4-server with busy retry
     try {
       const upstream = await fetchWithBusyRetry(
         fetchImpl,

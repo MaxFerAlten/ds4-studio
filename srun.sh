@@ -240,6 +240,11 @@ stop_launch_ports() {
     local agno_port
     agno_port="$(config_agno_port "$CONFIG_PATH" | head -n 1 || true)"
     [[ -n "$agno_port" ]] && stop_port "agno" "$agno_port"
+    if [[ "$(ds4_agno_agent_ui_config_enabled "$CONFIG_PATH")" == "1" ]]; then
+      local agent_ui_port
+      agent_ui_port="$(config_agno_agent_ui_port "$CONFIG_PATH" | head -n 1 || true)"
+      [[ -n "$agent_ui_port" ]] && stop_port "agno-agent-ui" "$agent_ui_port"
+    fi
   fi
 }
 
@@ -250,6 +255,7 @@ stop_all_ds4() {
   stop_pattern "ds4-bench"   "(^|/)ds4-bench( |$)"
   stop_pattern "ds4-eval"    "(^|/)ds4-eval( |$)"
   stop_pattern "ds4-agent"   "(^|/)ds4-agent( |$)"
+  stop_pattern "agno-agent-ui" "next start .* -p [0-9]+"
   stop_pattern "ds4 cli"     "(^|/)ds4( |$)"
 }
 
@@ -441,6 +447,10 @@ fi
 ensure_model
 ensure_backend
 ensure_agno_service "$ROOT_DIR" "$CONFIG_PATH"
+
+if [[ "$(ds4_agno_agent_ui_config_enabled "$CONFIG_PATH")" == "1" ]]; then
+  ensure_agno_agent_ui "$ROOT_DIR" "$CONFIG_PATH"
+fi
 
 if [[ ! -d "$FRONTEND_DIR/node_modules" ]]; then
   echo "srun.sh: installing frontend dependencies"

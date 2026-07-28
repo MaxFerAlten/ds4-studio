@@ -6,6 +6,7 @@ import path from "node:path";
 import {
   AgnoToolExecutionService,
   AgnoToolExecutionError,
+  boundUtf8,
   combineSignals,
   sanitizeToolRaw
 } from "./agnoToolExecutionService.mjs";
@@ -93,6 +94,7 @@ function makeService(overrides = {}) {
     crawlBaseUrl: overrides.crawlBaseUrl ?? null,
     crawlToken: overrides.crawlToken ?? null,
     audit: overrides.audit || makeAudit(),
+    maxResponseBytes: overrides.maxResponseBytes,
     executeToolImpl: overrides.executeToolImpl || (async () => ({ content: "ok", isError: false })),
     compressImpl: overrides.compressImpl || (async (_name, result) => ({ ...result, compressed: false }))
   });
@@ -329,6 +331,37 @@ describe("AgnoToolExecutionService.normalizeResult — compression", () => {
     assert.equal(compressCalls, 0);
     assert.equal(result.isError, true);
     assert.equal(result.ok, false);
+  });
+
+  it("7d. bounds UTF-8 output and drops raw payload when truncation occurs", async () => {
+    const service = makeService({ maxResponseBytes: 80 });
+    const result = await service.normalizeResult("write", {
+      content: "🙂".repeat(100),
+      isError: false,
+      raw: { unbounded: "x".repeat(1_000) }
+    });
+
+    assert.ok(Buffer.byteLength(result.content, "utf8") <= 80);
+    assert.match(result.content, /truncated by DS4 Agno response limit/);
+    assert.equal(result.raw, null);
+  });
+});
+
+describe("boundUtf8", () => {
+  it("returns content below the byte limit unchanged", () => {
+    assert.deepStrictEqual(boundUtf8("hello", 32), {
+      content: "hello",
+      truncated: false
+    });
+  });
+
+  it("truncates on a valid UTF-8 boundary and stays within the byte limit", () => {
+    const result = boundUtf8("🙂".repeat(100), 96);
+
+    assert.equal(result.truncated, true);
+    assert.ok(Buffer.byteLength(result.content, "utf8") <= 96);
+    assert.match(result.content, /truncated by DS4 Agno response limit/);
+    assert.equal(result.content.includes("\uFFFD"), false);
   });
 });
 

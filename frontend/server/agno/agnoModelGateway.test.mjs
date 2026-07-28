@@ -1,7 +1,24 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
-import { createAgnoModelGateway } from "./agnoModelGateway.mjs";
+import {
+  assertTextOnlyChatRequest,
+  createAgnoModelGateway,
+} from "./agnoModelGateway.mjs";
 import { AgnoModelGate } from "./agnoModelGate.mjs";
+import { AgnoExecutionGuardError } from "./agnoExecutionGuard.mjs";
+
+/** Fake AgnoExecutionGuard: allows by default, or rejects with a given error. */
+function fakeGuard({ ensureError = null } = {}) {
+  let calls = 0;
+  return {
+    get calls() { return calls; },
+    ensureModelCallAllowed: async () => {
+      calls++;
+      if (ensureError) throw ensureError;
+      return { nativeAgentActive: false, mode: "server" };
+    },
+  };
+}
 
 /** Minimal mock HTTP server that simulates ds4-server endpoints. */
 class MockBackend {
@@ -83,7 +100,7 @@ function mockStreamingBackend(chunks, delayMs = 10) {
   };
 }
 
-function createTestGateway({ config = {}, modelGatewayToken = "test-token-abcdef123456", mockBackend, fetchImpl }) {
+function createTestGateway({ config = {}, modelGatewayToken = "test-token-abcdef123456", mockBackend, fetchImpl, executionGuard = fakeGuard() }) {
   const gate = new AgnoModelGate({ maxInflight: 1, maxQueued: 8 });
   const router = createAgnoModelGateway({
     config: {
@@ -93,6 +110,7 @@ function createTestGateway({ config = {}, modelGatewayToken = "test-token-abcdef
     backendBase: "http://mock-backend",
     modelGate: gate,
     modelGatewayToken,
+    executionGuard,
     fetchImpl,
   });
   return { router, gate };
@@ -388,5 +406,217 @@ describe("createAgnoModelGateway", () => {
     assert(r.statusCode === 200);
     assert(r._json.choices[0].message.content === "ok");
     assert(attempt === 3, "should retry twice then succeed");
+  });
+
+  describe("execution guard non-bypass", () => {
+    /** Spies on gate.acquire and fetch calls so a blocked request's side effects are verifiable. */
+    function instrumented({ executionGuard, mockBackend = new MockBackend() }) {
+      const gate = new AgnoModelGate({ maxInflight: 1, maxQueued: 8 });
+      let acquireCalls = 0;
+      const realAcquire = gate.acquire.bind(gate);
+      gate.acquire = (...args) => { acquireCalls++; return realAcquire(...args); };
+      let fetchBackendCalls = 0;
+      const baseFetch = mockFetch(mockBackend);
+      const countingFetch = async (...args) => { fetchBackendCalls++; return baseFetch(...args); };
+      const router = createAgnoModelGateway({
+        config: { agno: { enabled: true } },
+        backendBase: "http://mock-backend",
+        modelGate: gate,
+        modelGatewayToken: "test-token-abcdef123456",
+        executionGuard,
+        fetchImpl: countingFetch,
+      });
+      return { router, gate, getAcquireCalls: () => acquireCalls, getFetchBackendCalls: () => fetchBackendCalls };
+    }
+
+    it("rejects Agent UI model call when native agent is active", async () => {
+      const guard = fakeGuard({ ensureError: new AgnoExecutionGuardError("NATIVE_AGENT_ACTIVE", "The native DS4 agent is active", 409) });
+      const { router } = instrumented({ executionGuard: guard });
+      const r = res();
+      await router.handle(
+        req("POST", "http://internal/v1/chat/completions", {
+          authorization: "Bearer test-token-abcdef123456",
+          "content-type": "application/json",
+        }, { messages: [{ role: "user", content: "hi" }] }),
+        r
+      );
+      assert.equal(r.statusCode, 409);
+      assert.deepEqual(r._json, { error: "NATIVE_AGENT_ACTIVE", message: "The native DS4 agent is active" });
+    });
+
+    it("fails closed when wrapper status cannot be read", async () => {
+      const guard = fakeGuard({ ensureError: new AgnoExecutionGuardError("WRAPPER_STATUS_UNAVAILABLE", "Unable to read wrapper status: timeout", 503) });
+      const { router } = instrumented({ executionGuard: guard });
+      const r = res();
+      await router.handle(
+        req("POST", "http://internal/v1/chat/completions", {
+          authorization: "Bearer test-token-abcdef123456",
+          "content-type": "application/json",
+        }, { messages: [{ role: "user", content: "hi" }] }),
+        r
+      );
+      assert.equal(r.statusCode, 503);
+      assert.equal(r._json.error, "WRAPPER_STATUS_UNAVAILABLE");
+    });
+
+    it("does not acquire gate when execution guard rejects", async () => {
+      const guard = fakeGuard({ ensureError: new AgnoExecutionGuardError("NATIVE_AGENT_ACTIVE", "The native DS4 agent is active", 409) });
+      const { router, getAcquireCalls } = instrumented({ executionGuard: guard });
+      const r = res();
+      await router.handle(
+        req("POST", "http://internal/v1/chat/completions", {
+          authorization: "Bearer test-token-abcdef123456",
+          "content-type": "application/json",
+        }, { messages: [{ role: "user", content: "hi" }] }),
+        r
+      );
+      assert.equal(getAcquireCalls(), 0);
+    });
+
+    it("does not call backend when execution guard rejects", async () => {
+      const guard = fakeGuard({ ensureError: new AgnoExecutionGuardError("NATIVE_AGENT_ACTIVE", "The native DS4 agent is active", 409) });
+      const { router, getFetchBackendCalls } = instrumented({ executionGuard: guard });
+      const r = res();
+      await router.handle(
+        req("POST", "http://internal/v1/chat/completions", {
+          authorization: "Bearer test-token-abcdef123456",
+          "content-type": "application/json",
+        }, { messages: [{ role: "user", content: "hi" }] }),
+        r
+      );
+      assert.equal(getFetchBackendCalls(), 0);
+    });
+
+    it("switches wrapper to server mode before forwarding (guard invoked before backend fetch)", async () => {
+      const order = [];
+      const guard = {
+        ensureModelCallAllowed: async () => { order.push("guard"); return { nativeAgentActive: false, mode: "server" }; },
+      };
+      const mockBackend = new MockBackend();
+      mockBackend.setHandler("/v1/chat/completions", async () => {
+        order.push("backend");
+        return { status: 200, body: { id: "chat-1", choices: [{ message: { content: "hello" } }] } };
+      });
+      const { router } = instrumented({ executionGuard: guard, mockBackend });
+      const r = res();
+      await router.handle(
+        req("POST", "http://internal/v1/chat/completions", {
+          authorization: "Bearer test-token-abcdef123456",
+          "content-type": "application/json",
+        }, { messages: [{ role: "user", content: "hi" }] }),
+        r
+      );
+      assert.deepEqual(order, ["guard", "backend"]);
+    });
+
+    it("forwards normally only after server mode confirmation", async () => {
+      const guard = fakeGuard();
+      const mockBackend = new MockBackend();
+      mockBackend.setHandler("/v1/chat/completions", async () => ({
+        status: 200,
+        body: { id: "chat-1", choices: [{ message: { content: "hello" } }] },
+      }));
+      const { router, getAcquireCalls, getFetchBackendCalls } = instrumented({ executionGuard: guard, mockBackend });
+      const r = res();
+      await router.handle(
+        req("POST", "http://internal/v1/chat/completions", {
+          authorization: "Bearer test-token-abcdef123456",
+          "content-type": "application/json",
+        }, { messages: [{ role: "user", content: "hi" }] }),
+        r
+      );
+      assert.equal(guard.calls, 1);
+      assert.equal(getAcquireCalls(), 1);
+      assert.equal(getFetchBackendCalls(), 1);
+      assert.equal(r.statusCode, 200);
+      assert.equal(r._json.choices[0].message.content, "hello");
+    });
+  });
+});
+
+describe("assertTextOnlyChatRequest", () => {
+  it("accepts strings, text-only parts, and textual tool results", () => {
+    assert.doesNotThrow(() => assertTextOnlyChatRequest({
+      messages: [
+        { role: "user", content: "hello" },
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "working" }],
+        },
+        { role: "tool", tool_call_id: "call-1", content: "done" },
+      ],
+    }));
+  });
+
+  for (const content of [
+    [{ type: "image_url", image_url: { url: "data:image/png;base64,AA==" } }],
+    [{ type: "input_image", image_url: "https://example.invalid/image.png" }],
+    [{ type: "input_audio", input_audio: { data: "AA==" } }],
+    [{ type: "file", file: { file_id: "file-1" } }],
+    { type: "text", text: "object instead of parts array" },
+  ]) {
+    it(`rejects non-text content ${JSON.stringify(content)}`, () => {
+      assert.throws(
+        () => assertTextOnlyChatRequest({
+          messages: [{ role: "user", content }],
+        }),
+        (error) => error.code === "AGNO_TEXT_ONLY" && error.status === 422
+      );
+    });
+  }
+
+  it("rejects media before guard, model gate, and upstream fetch", async () => {
+    const guard = fakeGuard();
+    let acquireCalls = 0;
+    let fetchCalls = 0;
+    const modelGate = {
+      acquire: async () => {
+        acquireCalls++;
+        throw new Error("must not acquire");
+      },
+    };
+    const router = createAgnoModelGateway({
+      config: { agno: { enabled: true } },
+      backendBase: "http://mock-backend",
+      modelGate,
+      modelGatewayToken: "test-token-abcdef123456",
+      executionGuard: guard,
+      fetchImpl: async () => {
+        fetchCalls++;
+        throw new Error("must not fetch");
+      },
+    });
+    const response = res();
+
+    await router.handle(
+      req(
+        "POST",
+        "http://internal/v1/chat/completions",
+        {
+          authorization: "Bearer test-token-abcdef123456",
+          "content-type": "application/json",
+        },
+        {
+          messages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "image_url",
+                  image_url: { url: "data:image/png;base64,AA==" },
+                },
+              ],
+            },
+          ],
+        }
+      ),
+      response
+    );
+
+    assert.equal(response.statusCode, 422);
+    assert.equal(response._json.error, "AGNO_TEXT_ONLY");
+    assert.equal(guard.calls, 0);
+    assert.equal(acquireCalls, 0);
+    assert.equal(fetchCalls, 0);
   });
 });
