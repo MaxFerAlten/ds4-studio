@@ -109,8 +109,12 @@ class RunRegistry:
         record.terminal_emitted = True
 
     async def shutdown(self) -> None:
+        tasks: list[asyncio.Task] = []
         async with self._lock:
             for record in self._runs.values():
                 if record.task and not record.task.done():
                     record.task.cancel()
+                    tasks.append(record.task)
             self._runs.clear()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)

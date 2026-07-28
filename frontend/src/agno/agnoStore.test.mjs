@@ -47,11 +47,33 @@ test("applyAgnoEvent captures run_failed error content", () => {
   assert.equal(view.terminal, true);
 });
 
-test("applyAgnoEvent collects tool_call and tool_result entries", () => {
+test("applyAgnoEvent correlates tool_call and tool_result by toolCallId", () => {
   let view = initialAgnoRun();
-  view = applyAgnoEvent(view, { type: "tool_call", run_id: "r1", seq: 1, target_id: "t1", content: { name: "search" } });
-  view = applyAgnoEvent(view, { type: "tool_result", run_id: "r1", seq: 2, target_id: "t1", content: { ok: true } });
-  assert.equal(view.toolCalls.length, 2);
-  assert.equal(view.toolCalls[0].type, "tool_call");
-  assert.equal(view.toolCalls[1].type, "tool_result");
+  view = applyAgnoEvent(view, { type: "tool_call", run_id: "r1", seq: 1, content: { toolCallId: "tc-1", toolName: "search" } });
+  assert.equal(view.toolCalls.length, 1);
+  assert.equal(view.toolCalls[0].toolCallId, "tc-1");
+  assert.equal(view.toolCalls[0].toolName, "search");
+  assert.equal(view.toolCalls[0].status, "running");
+
+  view = applyAgnoEvent(view, { type: "tool_result", run_id: "r1", seq: 2, content: { toolCallId: "tc-1", toolName: "search", result: "ok", isError: false } });
+  assert.equal(view.toolCalls.length, 1);
+  assert.equal(view.toolCalls[0].status, "completed");
+  assert.equal(view.toolCalls[0].result, "ok");
+});
+
+test("applyAgnoEvent handles tool_call without toolCallId by appending", () => {
+  let view = initialAgnoRun();
+  view = applyAgnoEvent(view, { type: "tool_call", run_id: "r1", seq: 1, content: { toolName: "search" } });
+  assert.equal(view.toolCalls.length, 1);
+  assert.equal(view.toolCalls[0].status, "running");
+  assert.equal(view.toolCalls[0].toolCallId, undefined);
+});
+
+test("applyAgnoEvent marks tool_result with isError as error status", () => {
+  let view = initialAgnoRun();
+  view = applyAgnoEvent(view, { type: "tool_call", run_id: "r1", seq: 1, content: { toolCallId: "tc-2", toolName: "search" } });
+  view = applyAgnoEvent(view, { type: "tool_result", run_id: "r1", seq: 2, content: { toolCallId: "tc-2", toolName: "search", result: "fail", isError: true } });
+  assert.equal(view.toolCalls.length, 1);
+  assert.equal(view.toolCalls[0].status, "error");
+  assert.equal(view.toolCalls[0].isError, true);
 });

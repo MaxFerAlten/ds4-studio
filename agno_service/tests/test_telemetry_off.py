@@ -7,6 +7,7 @@ def test_telemetry_disabled():
         owner_id="test-owner-id",
         service_token="x" * 32,
         model_gateway_token="y" * 32,
+        tool_bridge_token="z" * 32,
         ds4_model="deepseek-v4-flash",
     )
     assert settings.telemetry is False
@@ -21,6 +22,7 @@ def test_telemetry_env_override():
         owner_id="test-owner-id",
         service_token="x" * 32,
         model_gateway_token="y" * 32,
+        tool_bridge_token="z" * 32,
         ds4_model="deepseek-v4-flash",
     )
     assert settings.telemetry is False

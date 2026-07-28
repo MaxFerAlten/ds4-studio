@@ -133,6 +133,23 @@ describe("AgnoToolSessionRegistry", () => {
     );
   });
 
+  it("cancelAndClose aborts and removes the session atomically", () => {
+    const registry = new AgnoToolSessionRegistry({});
+    const record = registry.getOrCreate(baseContext());
+
+    registry.cancelAndClose({ sessionId: "session-1", runId: "run-1" });
+
+    assert.strictEqual(record.controller.signal.aborted, true);
+    assert.strictEqual(registry.sessions.has("session-1:run-1"), false);
+  });
+
+  it("cancelAndClose su chiave sconosciuta: idempotent no-op", () => {
+    const registry = new AgnoToolSessionRegistry({});
+    assert.doesNotThrow(() =>
+      registry.cancelAndClose({ sessionId: "ghost", runId: "ghost" })
+    );
+  });
+
   it("close: aborts and deletes the record; a later getOrCreate creates a fresh one", () => {
     const registry = new AgnoToolSessionRegistry({});
     const record = registry.getOrCreate(baseContext());

@@ -30,6 +30,8 @@ docs/superpowers/specs/2026-06-14-call-debug-page-design.md
 data/
 /.claude/skills/gitnexus/
 /frontend/node_modules/
+/.runtime/agno-agent-ui/
+/.runtime/agno-agent-ui-*
 traces/
 ds4-studio.1.md
 /derivata_cos.png

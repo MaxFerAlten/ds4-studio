@@ -1,6 +1,13 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
-import { createAgnoToolRoutes } from "./agnoToolRoutes.mjs";
+import {
+  assertNoDangerousKeys,
+  catalogDigest,
+  createAgnoToolRoutes,
+  stableCatalogJson,
+  validateCancelEnvelope,
+  validateExecuteEnvelope
+} from "./agnoToolRoutes.mjs";
 
 function mockRes() {
   let _statusCode = 200, _headersSent = false, _jsonData = null;
@@ -94,6 +101,7 @@ function makeRouter(overrides = {}) {
     gate: overrides.gate ?? fakeGate(),
     sessionRegistry: overrides.sessionRegistry ?? fakeSessionRegistry(),
     service: overrides.service ?? fakeService(),
+    maxRequestBytes: overrides.maxRequestBytes,
     asyncHandler: (fn) => fn,
   });
 }
@@ -170,6 +178,14 @@ describe("createAgnoToolRoutes: AGNO_TOOLS_DISABLED gating", () => {
 });
 
 describe("createAgnoToolRoutes: catalog", () => {
+  it("uses a recursive key-sorted canonical JSON digest", () => {
+    const left = [{ z: 1, nested: { b: 2, a: 1 } }];
+    const right = [{ nested: { a: 1, b: 2 }, z: 1 }];
+
+    assert.strictEqual(stableCatalogJson(left), stableCatalogJson(right));
+    assert.strictEqual(catalogDigest(left), catalogDigest(right));
+  });
+
   it("returns the filtered tool list and a stable digest across two identical calls", async () => {
     const policy = fakePolicy({ allowed: ["read", "bash"] });
     const router = makeRouter({ policy });
@@ -231,12 +247,65 @@ describe("createAgnoToolRoutes: execute", () => {
   });
 
   it("rejects an oversized body with 413", async () => {
-    const router = makeRouter();
+    const router = makeRouter({ maxRequestBytes: 128 });
     const res = mockRes();
-    const oversized = JSON.stringify({ ...VALID_BODY, padding: "a".repeat(3 * 1024 * 1024) });
+    const oversized = JSON.stringify({ ...VALID_BODY, arguments: { path: "a".repeat(256) } });
     await router.handle(mockReq({ method: "POST", url: EXECUTE_URL, headers: VALID_AUTH, bodyText: oversized }), res);
     assert.strictEqual(res.statusCode, 413);
     assert.strictEqual(res._json.error, "INVALID_TOOL_REQUEST");
+  });
+
+  it("rejects unknown top-level fields before invoking the service", async () => {
+    const service = fakeService();
+    const router = makeRouter({ service });
+    const res = mockRes();
+    await router.handle(mockReq({
+      method: "POST",
+      url: EXECUTE_URL,
+      headers: VALID_AUTH,
+      bodyText: JSON.stringify({ ...VALID_BODY, unexpected: true })
+    }), res);
+
+    assert.strictEqual(res.statusCode, 400);
+    assert.strictEqual(res._json.error, "INVALID_TOOL_REQUEST");
+    assert.strictEqual(service.executeCalls.length, 0);
+  });
+
+  it("rejects array arguments and context objects", () => {
+    assert.throws(
+      () => validateExecuteEnvelope({ ...VALID_BODY, arguments: [] }),
+      (err) => err.code === "INVALID_TOOL_REQUEST"
+    );
+    assert.throws(
+      () => validateExecuteEnvelope({ ...VALID_BODY, context: [] }),
+      (err) => err.code === "INVALID_TOOL_REQUEST"
+    );
+  });
+
+  it("rejects identifiers longer than the bridge contract allows", () => {
+    assert.throws(
+      () => validateExecuteEnvelope({ ...VALID_BODY, callId: "a".repeat(129) }),
+      (err) => err.code === "INVALID_TOOL_REQUEST"
+    );
+    assert.throws(
+      () => validateExecuteEnvelope({ ...VALID_BODY, toolName: "a".repeat(129) }),
+      (err) => err.code === "INVALID_TOOL_REQUEST"
+    );
+  });
+
+  it("rejects prototype-pollution keys at any nesting depth", () => {
+    const dangerous = JSON.parse('{"safe":{"constructor":{"prototype":{"polluted":true}}}}');
+    assert.throws(
+      () => assertNoDangerousKeys(dangerous),
+      (err) => err.code === "INVALID_TOOL_REQUEST"
+    );
+    assert.throws(
+      () => validateExecuteEnvelope({
+        ...VALID_BODY,
+        arguments: JSON.parse('{"__proto__":{"polluted":true}}')
+      }),
+      (err) => err.code === "INVALID_TOOL_REQUEST"
+    );
   });
 
   const errorCases = [
@@ -272,6 +341,25 @@ describe("createAgnoToolRoutes: execute", () => {
 });
 
 describe("createAgnoToolRoutes: cancel", () => {
+  it("rejects malformed cancel envelopes before touching the registry", () => {
+    for (const body of [
+      { protocolVersion: 2, sessionId: "s1", runId: "r1" },
+      { protocolVersion: 1, sessionId: "", runId: "r1" },
+      { protocolVersion: 1, sessionId: "s1", runId: [] },
+      {
+        protocolVersion: 1,
+        sessionId: "s1",
+        runId: "r1",
+        unexpected: true,
+      },
+    ]) {
+      assert.throws(
+        () => validateCancelEnvelope(body),
+        (error) => error.code === "INVALID_TOOL_REQUEST"
+      );
+    }
+  });
+
   it("calls sessionRegistry.cancel with sessionId/runId from the body", async () => {
     const sessionRegistry = fakeSessionRegistry();
     const router = makeRouter({ sessionRegistry });

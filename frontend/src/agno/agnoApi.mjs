@@ -47,3 +47,11 @@ export function fetchAgnoRun(runId, { fetchImpl = fetch } = {}) {
 export function cancelAgnoRun(runId, { fetchImpl = fetch } = {}) {
   return requestJson(`/api/agno/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST", body: {}, fetchImpl });
 }
+
+export function ensureAgnoUi({ fetchImpl = fetch } = {}) {
+  return requestJson("/api/agno/agent-ui/ensure", { method: "POST", body: {}, fetchImpl });
+}
+
+export function stopAgnoUi({ fetchImpl = fetch } = {}) {
+  return requestJson("/api/agno/agent-ui/stop", { method: "POST", body: {}, fetchImpl });
+}

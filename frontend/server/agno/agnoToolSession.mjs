@@ -75,6 +75,14 @@ export class AgnoToolSessionRegistry {
     if (!record.controller.signal.aborted) record.controller.abort();
   }
 
+  cancelAndClose({ sessionId, runId }) {
+    const key = `${sessionId}:${runId}`;
+    const record = this.sessions.get(key);
+    if (!record) return;
+    if (!record.controller.signal.aborted) record.controller.abort();
+    this.sessions.delete(key);
+  }
+
   /**
    * Abort the record's controller and remove it from the registry.
    * No-op if the (sessionId, runId) pair is unknown.

@@ -2269,6 +2269,7 @@ pre {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .agno-header h2 {
@@ -2292,6 +2293,54 @@ pre {
 .agno-status-pill.warn {
   border-color: #9b7d4d;
   color: #ffd9a0;
+}
+
+.agno-capability-note {
+  padding: 8px 10px;
+  border: 1px solid #33485d;
+  border-radius: 6px;
+  background: #101a24;
+  color: #9fb8ce;
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.agno-native-ui-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 4px 9px;
+  border: 1px solid #4b6075;
+  border-radius: 6px;
+  background: #17212c;
+  color: #c8ddf0;
+  font-size: 0.74rem;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.agno-native-ui-button:hover:not(:disabled) {
+  border-color: #6f94b8;
+  background: #1d2a37;
+  color: #ffffff;
+}
+
+.agno-native-ui-button.ready {
+  border-color: #3d6952;
+  color: #9fe3b8;
+}
+
+.agno-native-ui-button:focus-visible {
+  outline: 2px solid #7db8ef;
+  outline-offset: 2px;
+}
+
+.agno-native-ui-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .agno-service-down {
@@ -2356,11 +2405,95 @@ pre {
   overflow-wrap: anywhere;
 }
 
-.agno-run-reasoning pre,
-.agno-run-tools pre {
+.agno-run-reasoning pre {
   max-height: 280px;
   overflow: auto;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   font-size: 0.72rem;
+}
+
+.agno-tool-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.agno-tool-entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid #2d3947;
+  border-radius: 6px;
+  background: #0f151c;
+  font-size: 0.78rem;
+}
+
+.agno-tool-entry-running {
+  border-color: #3d5369;
+  animation: agno-tool-pulse 1.5s infinite;
+}
+
+@keyframes agno-tool-pulse {
+  0%, 100% { border-color: #3d5369; }
+  50% { border-color: #5a7fa0; }
+}
+
+.agno-tool-entry-completed {
+  border-color: #2d4a39;
+}
+
+.agno-tool-entry-error {
+  border-color: #5a2d2d;
+}
+
+.agno-tool-indicator {
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.8rem;
+  flex-shrink: 0;
+}
+
+.agno-tool-entry-completed .agno-tool-indicator {
+  color: #6fcf97;
+}
+
+.agno-tool-entry-error .agno-tool-indicator {
+  color: #eb5757;
+}
+
+.agno-tool-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid #4b6075;
+  border-top-color: #7db8ef;
+  border-radius: 50%;
+  animation: agno-tool-spin 0.8s linear infinite;
+}
+
+@keyframes agno-tool-spin {
+  to { transform: rotate(360deg); }
+}
+
+.agno-tool-name {
+  font-weight: 600;
+  color: #c8ddf0;
+  font-family: monospace;
+}
+
+.agno-tool-error-badge {
+  margin-left: auto;
+  padding: 1px 6px;
+  border: 1px solid #5a2d2d;
+  border-radius: 4px;
+  background: #2a1010;
+  color: #ff8a8a;
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
 }

@@ -12,6 +12,19 @@ export function initialAgnoRun() {
   });
 }
 
+function correlateToolCall(toolCalls, entry) {
+  if (!entry.toolCallId) {
+    return [...toolCalls, { ...entry }];
+  }
+  const idx = toolCalls.findIndex((tc) => tc.toolCallId === entry.toolCallId);
+  if (idx === -1) {
+    return [...toolCalls, { ...entry }];
+  }
+  const next = [...toolCalls];
+  next[idx] = { ...next[idx], ...entry };
+  return next;
+}
+
 export function applyAgnoEvent(view, event) {
   if (view.terminal) return view;
   if (!Number.isSafeInteger(event?.seq) || event.seq <= view.lastSeq) return view;
@@ -37,8 +50,20 @@ export function applyAgnoEvent(view, event) {
       next.reasoning = view.reasoning + (event.content ?? "");
       break;
     case "tool_call":
+      next.toolCalls = correlateToolCall(view.toolCalls, {
+        toolCallId: event.content?.toolCallId,
+        toolName: event.content?.toolName,
+        status: "running",
+      });
+      break;
     case "tool_result":
-      next.toolCalls = [...view.toolCalls, { type: event.type, targetId: event.target_id, content: event.content }];
+      next.toolCalls = correlateToolCall(view.toolCalls, {
+        toolCallId: event.content?.toolCallId,
+        toolName: event.content?.toolName,
+        status: event.content?.isError ? "error" : "completed",
+        result: event.content?.result,
+        isError: !!event.content?.isError,
+      });
       break;
     case "diagnostic_event":
       next.diagnostics = [...view.diagnostics, event.content];

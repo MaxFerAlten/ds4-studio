@@ -5,6 +5,9 @@
 
 import { forwardEventStream } from "./agnoProxy.mjs";
 import { readRequestBody } from "../proxy.mjs";
+import { sendAgnoGuardError } from "./agnoExecutionGuard.mjs";
+import { AGENT_TOOL_NAMES } from "../agentToolCatalog.mjs";
+import { AGNO_TOOL_PROFILE } from "./agnoToolPolicy.mjs";
 
 /**
  * Create the Express router for Agno API endpoints.
@@ -14,7 +17,9 @@ import { readRequestBody } from "../proxy.mjs";
  * @param {object} options.processManager - AgnoProcessManager instance
  * @param {object} options.modelGate - AgnoModelGate instance
  * @param {string} options.modelGatewayToken - token for gateway auth
- * @param {function} options.ensureServerMode - function to switch to server mode
+ * @param {AgnoExecutionGuard} options.executionGuard - shared native-agent/server-mode guard
+ * @param {object} options.toolPolicy - AgnoToolPolicy instance (tool-bridge catalog/status parity)
+ * @param {object} options.toolGate - AgnoToolGate instance (tool-bridge status parity)
  * @param {function} options.asyncHandler - async error handler wrapper
  * @returns {import('express').Router}
  */
@@ -22,46 +27,41 @@ export function createAgnoRouter({
   config,
   processManager,
   modelGate,
+  agentUiProcessManager,
   modelGatewayToken,
   agnoClient,
-  ensureServerMode,
+  executionGuard,
+  toolPolicy,
+  toolGate,
   asyncHandler,
-  fetchImpl = fetch,
 }) {
   const BASE = "/api/agno";
   const router = createRouter();
-
-  // Check native agent status via the wrapper status endpoint. Returns
-  // false (fail-open on the *check*, fail-closed on the caller side isn't
-  // possible here) if the check itself cannot be completed.
-  async function checkNativeAgentActive() {
-    try {
-      const wrapperStatus = await fetchImpl(`http://${config.control.host}:${config.control.port}/api/wrapper/status`, {
-        signal: AbortSignal.timeout(1000),
-      });
-      if (!wrapperStatus.ok) return false;
-      const wrapperData = await wrapperStatus.json();
-      return wrapperData.state === "agent" || wrapperData.mode === "agent";
-    } catch {
-      return false;
-    }
-  }
 
   // Health check / status
   router.get(BASE + "/status", asyncHandler(async (req, res) => {
     const pmStatus = processManager.status();
     let agentOsHealth = null;
+    let agentOsDetails = null;
     const queueStatus = modelGate.status();
 
     if (pmStatus.running && pmStatus.healthy) {
       try {
         agentOsHealth = await processManager.healthCheck();
+        if (agentOsHealth && typeof agnoClient.health === "function") {
+          agentOsDetails = await agnoClient.health();
+        }
       } catch {
         agentOsHealth = false;
       }
     }
 
-    const nativeAgentActive = await checkNativeAgentActive();
+    let nativeAgentActive = false;
+    try {
+      nativeAgentActive = (await executionGuard.readWrapperStatus()).nativeAgentActive;
+    } catch {
+      nativeAgentActive = false;
+    }
 
     res.json({
       enabled: config.agno.enabled,
@@ -78,6 +78,7 @@ export function createAgnoRouter({
         serviceVersion: "0.1.0",
         host: config.agno.host,
         port: config.agno.port,
+        capabilities: agentOsDetails?.capabilities || null,
       } : null,
       model: {
         id: config.agno.model || config.server.model,
@@ -85,6 +86,49 @@ export function createAgnoRouter({
         nativeAgentActive,
       },
       queue: queueStatus,
+      agentUi: (() => {
+        const uiStatus = agentUiProcessManager.status();
+        return {
+          enabled: Boolean(config.agno.agentUi.enabled),
+          running: uiStatus.running,
+          healthy: uiStatus.healthy,
+          pid: uiStatus.pid,
+          host: uiStatus.host,
+          port: uiStatus.port,
+          url: uiStatus.url,
+          upstreamCommit: uiStatus.upstreamCommit,
+          lastExit: uiStatus.lastExit,
+        };
+      })(),
+      tools: (() => {
+        const catalogCount = toolPolicy.allowedToolNames().length;
+        const expectedFullCount = AGENT_TOOL_NAMES.length;
+        const expectedProfileCount =
+          AGNO_TOOL_PROFILE[config.agno.tools.profile]?.length || 0;
+        const registeredCount =
+          agentOsDetails?.capabilities?.toolCount ?? null;
+        const registeredProfile =
+          agentOsDetails?.capabilities?.toolProfile ?? null;
+        const parity = registeredCount === null
+          ? catalogCount === expectedProfileCount
+          : (
+            registeredCount === catalogCount
+            && registeredProfile === config.agno.tools.profile
+          );
+        return {
+          enabled: config.agno.tools.enabled,
+          profile: config.agno.tools.profile,
+          catalogCount,
+          expectedFullCount,
+          expectedProfileCount,
+          registeredCount,
+          registeredProfile,
+          parity,
+          textOnly: true,
+          ocr: false,
+          gate: toolGate.status(),
+        };
+      })(),
     });
   }));
 
@@ -118,18 +162,58 @@ export function createAgnoRouter({
     res.json({ ok: true, status });
   }));
 
+  // Ensure Agent UI is running (starts AgentOS first if needed)
+  router.post(BASE + "/agent-ui/ensure", asyncHandler(async (req, res) => {
+    if (!config.agno.enabled) {
+      res.status(503).json({ error: "AGNO_DISABLED" });
+      return;
+    }
+    if (!config.agno.agentUi.enabled) {
+      res.status(503).json({ error: "AGNO_UI_DISABLED" });
+      return;
+    }
+    const agentOsStatus = await processManager.start();
+    if (!agentOsStatus.running || !agentOsStatus.healthy) {
+      res.status(503).json({ error: "AGENTOS_NOT_READY", message: "AgentOS could not be started" });
+      return;
+    }
+    let uiStatus;
+    try {
+      uiStatus = await agentUiProcessManager.start();
+    } catch (error) {
+      res.status(503).json({ error: error.code || "AGNO_UI_START_FAILED", message: error.message });
+      return;
+    }
+    if (!uiStatus.url) {
+      res.status(503).json({ error: "AGNO_UI_URL_MISSING" });
+      return;
+    }
+    res.json({
+      ok: true,
+      url: uiStatus.url,
+      agentOs: { host: config.agno.host, port: config.agno.port },
+      agentUi: uiStatus,
+    });
+  }));
+
+  // Stop Agent UI only (leaves AgentOS running)
+  router.post(BASE + "/agent-ui/stop", asyncHandler(async (req, res) => {
+    if (!config.agno.agentUi.enabled) {
+      res.status(503).json({ error: "AGNO_UI_DISABLED" });
+      return;
+    }
+    const status = await agentUiProcessManager.stop();
+    res.json({ ok: true, agentUi: status });
+  }));
+
   // Catalog
   router.get(BASE + "/catalog", asyncHandler(async (req, res) => {
     if (!config.agno.enabled) {
       res.status(503).json({ error: "AGNO_DISABLED" });
       return;
     }
-    // In MVP, we return a static catalog from config
-    res.json({
-      agents: [{ id: "ds4-assistant", kind: "agent", name: "DS4 Assistant", description: "Default assistant", enabled: true }],
-      teams: [],
-      workflows: [],
-    });
+    const catalog = await agnoClient.catalog();
+    res.json(catalog);
   }));
 
   // Create a run
@@ -138,14 +222,11 @@ export function createAgnoRouter({
       res.status(503).json({ error: "AGNO_DISABLED" });
       return;
     }
-    if (await checkNativeAgentActive()) {
-      res.status(409).json({ error: "NATIVE_AGENT_ACTIVE" });
-      return;
-    }
-    const serverModeOk = await ensureServerMode();
-    if (!serverModeOk) {
-      res.status(503).json({ error: "DS4_BACKEND_UNAVAILABLE" });
-      return;
+    try {
+      await executionGuard.ensureModelCallAllowed();
+    } catch (error) {
+      if (sendAgnoGuardError(res, error)) return;
+      throw error;
     }
     const body = await readRequestBody(req);
     const result = await agnoClient.createRun(JSON.parse(body.toString("utf8")));

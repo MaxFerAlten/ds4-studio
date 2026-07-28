@@ -146,10 +146,28 @@ import {
 import { abortOnClientDisconnect } from "./clientDisconnect.mjs";
 import { ensureAgnoTokens } from "./agno/agnoToken.mjs";
 import { AgnoModelGate } from "./agno/agnoModelGate.mjs";
+import { AgnoExecutionGuard } from "./agno/agnoExecutionGuard.mjs";
 import { createAgnoModelGateway } from "./agno/agnoModelGateway.mjs";
 import { createAgnoRouter } from "./agno/agnoRoutes.mjs";
 import { createAgnoProcessManager, createDisabledAgnoProcessManager } from "./agno/agnoProcessManager.mjs";
 import { AgnoClient } from "./agno/agnoClient.mjs";
+import {
+  createAgentUiProcessManager,
+  createDisabledAgentUiProcessManager
+} from "./agno/agnoUiProcessManager.mjs";
+import {
+  resolveAgentUiRuntimeDir
+} from "./agno/agnoUiConfig.mjs";
+import { AgnoToolAuthenticator } from "./agno/agnoToolAuth.mjs";
+import { AgnoToolGate } from "./agno/agnoToolGate.mjs";
+import { AgnoToolPolicy } from "./agno/agnoToolPolicy.mjs";
+import { AgnoToolSessionRegistry } from "./agno/agnoToolSession.mjs";
+import { AgnoToolExecutionService } from "./agno/agnoToolExecutionService.mjs";
+import { AgnoToolAudit } from "./agno/agnoToolAudit.mjs";
+import { createAgnoToolRoutes } from "./agno/agnoToolRoutes.mjs";
+
+const AGNO_AGENT_UI_COMMIT =
+  "6dad9593fca6756e1813e4f4b3b2620be6377691";
 
 const HTTP_DRAIN_GRACE_MS = 2000;
 const SHUTDOWN_TIMEOUT_MS = 10000;
@@ -437,39 +455,76 @@ const agnoClient = new AgnoClient({
   ownerId: AGNO_OWNER_ID
 });
 
-async function ensureServerModeForAgno() {
-  if (!wrapperEnabled()) return true;
-  try {
-    const up = await fetch(`${backendBase()}/api/wrapper/switch-mode`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ mode: "server" }),
-      signal: AbortSignal.timeout(config.wrapper?.modeSwitchTimeoutMs || 120000)
-    });
-    return up.ok;
-  } catch {
-    return false;
-  }
-}
+const resolvedAgentUiRuntimeDir =
+  resolveAgentUiRuntimeDir({
+    projectRoot: PROJECT_ROOT,
+    config
+  });
+const agentUiProcessManager =
+  config.agno.enabled && config.agno.agentUi.enabled
+    ? createAgentUiProcessManager({
+        config,
+        runtimeDir: resolvedAgentUiRuntimeDir,
+        expectedCommit: AGNO_AGENT_UI_COMMIT
+      })
+    : createDisabledAgentUiProcessManager({ config });
+
+const agnoExecutionGuard = new AgnoExecutionGuard({
+  controlBaseUrl: `http://${config.control.host}:${config.control.port}`,
+  wrapperEnabled,
+  modeSwitchTimeoutMs: config.wrapper?.modeSwitchTimeoutMs || 120000
+});
 
 const agnoModelGatewayRouter = createAgnoModelGateway({
   config,
   backendBase: backendBase(),
   modelGate: agnoModelGate,
-  modelGatewayToken: agnoTokens.modelGatewayToken
+  modelGatewayToken: agnoTokens.modelGatewayToken,
+  executionGuard: agnoExecutionGuard
 });
+// Tool-bridge components (Agno-originated /api/internal/agno-tools/* calls).
+// agnoToolAuthenticator needs agnoTokens.toolBridgeToken (line 425); policy
+// and gate have no such dependency but live alongside it for readability.
+// agnoToolSessions/agnoToolService are created further down, once their own
+// dependencies (fileWorkspace, agentResearchService) are ready.
+const agnoToolAuthenticator = new AgnoToolAuthenticator(agnoTokens.toolBridgeToken);
+const agnoToolPolicy = new AgnoToolPolicy({
+  enabled: config.agno.enabled && config.agno.tools.enabled,
+  profile: config.agno.tools.profile,
+  allowedTools: config.agno.tools.allowedTools,
+  deniedTools: config.agno.tools.deniedTools
+});
+const agnoToolGate = new AgnoToolGate({
+  maxInflight: config.agno.tools.maxInflight,
+  maxQueued: config.agno.tools.maxQueued,
+  waitTimeoutMs: config.agno.tools.requestTimeoutMs
+});
+
 const agnoRouter = createAgnoRouter({
   config,
   processManager: agnoProcessManager,
+  agentUiProcessManager,
   modelGate: agnoModelGate,
   modelGatewayToken: agnoTokens.modelGatewayToken,
   agnoClient,
-  ensureServerMode: ensureServerModeForAgno,
+  executionGuard: agnoExecutionGuard,
+  toolPolicy: agnoToolPolicy,
+  toolGate: agnoToolGate,
   asyncHandler
 });
 
 const app = express();
 const fileWorkspace = await ensureWorkspace();
+const agnoToolSessions = new AgnoToolSessionRegistry({
+  workspaceRoot: fileWorkspace.root,
+  maxHistoryMessages: config.agno.tools.maxHistoryMessages,
+  maxHistoryBytes: config.agno.tools.maxHistoryBytes
+});
+const agnoToolSessionSweepTimer = setInterval(
+  () => agnoToolSessions.sweep(),
+  60_000
+);
+agnoToolSessionSweepTimer.unref?.();
 const upload = multer({
   dest: fileWorkspace.uploadDir,
   limits: { fileSize: UPLOAD_LIMIT_BYTES },
@@ -514,6 +569,30 @@ app.use("/v1", async (req, res) => {
 app.use("/api/agno-model", (req, res) => agnoModelGatewayRouter.handle(req, res));
 app.use((req, res, next) => {
   if (req.path.startsWith("/api/agno") && !req.path.startsWith("/api/agno-model")) {
+    // Mutual exclusion: when Agno is explicitly started, stop agent mode.
+    // Agno and the native agent compete for the wrapper's mode.
+    if (req.method === "POST" && req.url.endsWith("/api/agno/start")) {
+      (async () => {
+        try {
+          const agentStatus = agentSessions.status(agentSessionKey(req));
+          if (agentStatus.active) {
+            agentSessions.stop(agentSessionKey(req));
+            if (wrapperEnabled()) {
+              await fetch(`${backendBase()}/api/wrapper/switch-mode`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ mode: "server" }),
+                signal: AbortSignal.timeout(config.wrapper?.modeSwitchTimeoutMs || 120000)
+              });
+            }
+          }
+        } catch {
+          // Best-effort: agent stop failure must not block agno start.
+        }
+        agnoRouter.handle(req, res);
+      })();
+      return;
+    }
     return agnoRouter.handle(req, res);
   }
   next();
@@ -979,6 +1058,55 @@ try {
 } catch (err) {
   console.warn("ds4-ui: research service init failed:", err.message);
 }
+
+// Tool-bridge execution service + router: created here (not alongside
+// agnoToolAuthenticator/Policy/Gate above) because it needs agentResearchService,
+// which isn't set until just above. §2.4 fail-closed: a disabled audit does
+// not skip auditing silently inside the service — it gets a no-op stub so
+// AgnoToolExecutionService.safeAudit() always has a real `.write()` to call.
+const agnoToolAuditDir = path.isAbsolute(config.agno.tools.auditDir)
+  ? config.agno.tools.auditDir
+  : path.join(PROJECT_ROOT, config.agno.tools.auditDir);
+const agnoToolAudit = config.agno.tools.auditEnabled
+  ? new AgnoToolAudit({ auditDir: agnoToolAuditDir })
+  : { write: async () => {} };
+
+const agnoToolService = new AgnoToolExecutionService({
+  policy: agnoToolPolicy,
+  gate: agnoToolGate,
+  sessionRegistry: agnoToolSessions,
+  executionGuard: agnoExecutionGuard,
+  workspaceRoot: fileWorkspace.root,
+  toolBlobStore,
+  sageCallLog,
+  researchService: agentResearchService,
+  crawlBaseUrl: crawlBase(),
+  crawlToken: await readCrawlToken(),
+  audit: agnoToolAudit,
+  maxResponseBytes: config.agno.tools.maxResponseBytes
+});
+
+const agnoToolRouter = createAgnoToolRoutes({
+  authenticator: agnoToolAuthenticator,
+  policy: agnoToolPolicy,
+  gate: agnoToolGate,
+  sessionRegistry: agnoToolSessions,
+  service: agnoToolService,
+  maxRequestBytes: config.agno.tools.maxRequestBytes,
+  asyncHandler
+});
+
+// createAgnoToolRoutes()'s router.handle() always writes a response (404s on
+// no match, never calls back out to next()) — unlike agnoRouter's mount
+// above, this MUST be gated on the path prefix or it would break every route
+// registered after it up to the Vite fallback (index.mjs's Vite middleware
+// mount, further below).
+app.use((req, res, next) => {
+  if (req.path.startsWith("/api/internal/agno-tools")) {
+    return agnoToolRouter.handle(req, res);
+  }
+  next();
+});
 
 const agentCapabilities = getAgentCapabilities(config);
 const AGENT_SYSTEM_PROMPT_WITH_CAPS = [
@@ -1449,6 +1577,20 @@ function ponyCommandEvents(req, command) {
 }
 
 app.post("/api/agent/start", asyncHandler(async (req, res) => {
+  // Mutual exclusion: stop Agno before entering agent mode. Agno and
+  // the native agent compete for the wrapper's mode — they must never
+  // run concurrently.
+  if (config.agno.enabled) {
+    try {
+      const agnoStatus = agnoProcessManager.status();
+      if (agnoStatus.running) {
+        await agnoProcessManager.stop();
+      }
+    } catch {
+      // Best-effort: agno stop failure must not block agent start.
+    }
+  }
+
   if (wrapperEnabled()) {
     const switchTimeoutMs = config.wrapper?.modeSwitchTimeoutMs || 120000;
     const up = await fetch(`${backendBase()}/api/wrapper/switch-mode`, {
@@ -3458,6 +3600,9 @@ const server = app.listen(config.control.port, config.control.host, async () => 
   startCrawlService().catch((err) => console.warn("ds4-ui: crawl service start failed:", err.message));
   if (config.agno.enabled && config.agno.autoStart) {
     agnoProcessManager.start().catch((err) => console.warn("ds4-ui: agno service start failed:", err.message));
+    if (config.agno.agentUi.enabled && config.agno.agentUi.autoStart) {
+      agentUiProcessManager.start().catch((err) => console.warn("ds4-ui: agno agent UI start failed:", err.message));
+    }
   }
   console.log(`ds4-ui: http://${config.control.host}:${config.control.port}`);
 });
@@ -3476,7 +3621,11 @@ async function shutdown() {
   });
   let forceCloseHttp;
   try {
+    clearInterval(agnoToolSessionSweepTimer);
+    agnoToolGate.cancelAll("DS4 shutdown");
+    agnoToolSessions.closeAll();
     await stopCrawlService();
+    await agentUiProcessManager.stop();
     await agnoProcessManager.stop();
     await manager.stop();
     await vite.close();

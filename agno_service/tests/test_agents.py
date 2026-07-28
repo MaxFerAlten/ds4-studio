@@ -11,16 +11,21 @@ def create_mock_model():
 def test_build_default_agent_has_id():
     model = create_mock_model()
     db = MagicMock(spec=SqliteDb)
-    agent = build_default_agent(model=model, db=db)
+    agent = build_default_agent(model=model, db=db, tools=[])
     assert agent.id == "ds4-assistant"
     assert agent.name == "DS4 Assistant"
 
 def test_build_default_agent_instructions():
     model = create_mock_model()
     db = MagicMock(spec=SqliteDb)
-    agent = build_default_agent(model=model, db=db)
+    agent = build_default_agent(model=model, db=db, tools=[])
     assert any("DS4-Studio" in instr for instr in agent.instructions)
-    assert any("privileged" in instr for instr in agent.instructions)
+    assert any("text input only" in instr for instr in agent.instructions)
+    assert any("OCR" in instr for instr in agent.instructions)
+    assert agent.send_media_to_model is False
+    assert agent.store_media is False
+    assert agent.store_events is True
+    assert agent.tool_choice is None
 
 def test_build_teams_empty():
     model = create_mock_model()
