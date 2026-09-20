@@ -118,7 +118,7 @@ static void ds4_sha256_final(ds4_sha256_ctx *ctx, uint8_t out[32]) {
     }
 }
 
-static void ds4_sha256_hex(const void *data, size_t len, char hex[65]) {
+void ds4_sha256_hex(const void *data, size_t len, char hex[65]) {
     static const char digits[] = "0123456789abcdef";
     uint8_t digest[32];
     ds4_sha256_ctx ctx;

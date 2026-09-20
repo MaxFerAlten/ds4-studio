@@ -9,8 +9,20 @@
  * Claim extraction is heuristic. // ponytail: regex claim sniffer; swap an LLM extractor if precision matters.
  */
 
+import { createHash } from "node:crypto";
 import { classifySource, SOURCE_TYPES } from "./sourceCritic.mjs";
 import { extractUrls } from "./agentTaskState.mjs";
+
+/**
+ * The status a heuristically extracted sentence carries.
+ *
+ * It used to be SUPPORTED_BY_THIS_SOURCE, which claimed far more than the
+ * regex behind it can establish: a sentence appearing in a page may be there
+ * to deny the claim, to report it as rumour, to describe a different entity,
+ * or to aggregate someone else's reporting. "Extracted from" is what actually
+ * happened. Entailment is a separate step and a separate verdict.
+ */
+export const EXTRACTED_FROM_SOURCE = "EXTRACTED_FROM_SOURCE";
 
 let _counter = 0;
 
@@ -35,7 +47,7 @@ export function extractClaims(text, { max = MAX_CLAIMS, scope = "reported" } = {
     if (CLAIM_RE.test(sentence)) {
       claims.push({
         claim: sentence,
-        status: "SUPPORTED_BY_THIS_SOURCE",
+        status: EXTRACTED_FROM_SOURCE,
         scope,
         evidenceText: sentence
       });
@@ -44,6 +56,21 @@ export function extractClaims(text, { max = MAX_CLAIMS, scope = "reported" } = {
   return claims;
 }
 
+/** SHA-256 over the evidence text, same convention as researchSources.mjs. */
+export function evidenceContentHash(text) {
+  return createHash("sha256").update(String(text || "")).digest("hex");
+}
+
+/**
+ * Every field below `nextLinks` is additive provenance (QF-03 §25.3): what
+ * produced this evidence, when, and over which bytes. Existing callers keep
+ * working unchanged — they simply leave the new fields at their defaults.
+ *
+ * The distinction the old shape could not make is between a tool that actually
+ * ran and prose describing a tool that ran. `evidenceType`, `toolCallId`,
+ * `executionId` and `exactResult` exist so that difference survives into the
+ * gate instead of being flattened into a text blob.
+ */
 export function normalizeEvidenceItem(item = {}) {
   const text = typeof item.contentSummary === "string" ? item.contentSummary : "";
   return {
@@ -58,7 +85,27 @@ export function normalizeEvidenceItem(item = {}) {
     extractedClaims: Array.isArray(item.extractedClaims) ? item.extractedClaims : [],
     limitations: Array.isArray(item.limitations) ? item.limitations : [],
     nextAction: item.nextAction || "none",
-    nextLinks: Array.isArray(item.nextLinks) ? item.nextLinks : []
+    nextLinks: Array.isArray(item.nextLinks) ? item.nextLinks : [],
+
+    evidenceType: item.evidenceType || "source_document",
+    retrievedAt: item.retrievedAt || new Date().toISOString(),
+    sourceHash: item.sourceHash || evidenceContentHash(text),
+    toolName: item.toolName || "",
+    toolCallId: item.toolCallId || "",
+    executionId: item.executionId || "",
+    // exactResult marks evidence read off a machine result rather than
+    // summarised prose; isError marks a tool that ran and failed, which is
+    // evidence too and must never read as a success.
+    exactResult: item.exactResult === true,
+    isError: item.isError === true,
+    // What ran and how it ended (QF-11 §33). null, not 0: an absent exit code
+    // means nothing reported one, and defaulting it to 0 would turn a tool
+    // that never started into a successful run.
+    command: item.command || "",
+    exitCode: Number.isInteger(item.exitCode) ? item.exitCode : null,
+    supportsClaimIds: Array.isArray(item.supportsClaimIds) ? item.supportsClaimIds : [],
+    contradictsClaimIds: Array.isArray(item.contradictsClaimIds) ? item.contradictsClaimIds : [],
+    sourceSpans: Array.isArray(item.sourceSpans) ? item.sourceSpans : []
   };
 }
 

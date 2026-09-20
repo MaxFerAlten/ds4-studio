@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { ArxivProvider, parseArxivFeed } from "./providers.mjs";
+import { ArxivProvider, arxivIdFromCanonicalUrl, parseArxivFeed } from "./providers.mjs";
 
 const FEED = `<?xml version='1.0' encoding='UTF-8'?>
 <feed xmlns="http://www.w3.org/2005/Atom">
@@ -12,6 +12,7 @@ const FEED = `<?xml version='1.0' encoding='UTF-8'?>
     <author><name>K. Fujii</name></author>
     <author><name>T. Suzuki</name></author>
     <published>2007-10-15T06:21:19Z</published>
+    <arxiv:doi xmlns:arxiv="http://arxiv.org/schemas/atom">10.1088/1751-8113/41/8/085303</arxiv:doi>
   </entry>
   <entry>
     <id>http://arxiv.org/abs/1234.5678v1</id>
@@ -68,4 +69,52 @@ test("arxiv warns on empty feed and throws on HTTP error", async () => {
   assert.deepEqual(out.warnings, ["arxiv: no results"]);
   const bad = new ArxivProvider({ fetchImpl: async () => textRes("", 503) });
   await assert.rejects(() => bad.search("x"), /HTTP 503/);
+});
+
+test("parseArxivFeed derives the canonical id and never invents a DOI", () => {
+  const [first, second] = parseArxivFeed(FEED);
+  // The version is not part of the paper's identity: v1 and v4 are one paper.
+  assert.equal(first.arxivId, "0710.2724");
+  assert.equal(first.doi, "10.1088/1751-8113/41/8/085303");
+  assert.equal(second.arxivId, "1234.5678");
+  // No <arxiv:doi> means no DOI. Deriving one from the arXiv id would fabricate
+  // the identifier this feed exists to establish.
+  assert.equal(second.doi, null);
+
+  assert.equal(arxivIdFromCanonicalUrl("http://arxiv.org/abs/math.GT/0309136v2"), "math.GT/0309136");
+  assert.equal(arxivIdFromCanonicalUrl("not a url"), null);
+  assert.equal(arxivIdFromCanonicalUrl(null), null);
+});
+
+test("arxiv search carries the identifiers through to results", async () => {
+  const p = new ArxivProvider({ fetchImpl: async () => textRes(FEED) });
+  const out = await p.search("quantum oscillator", { maxResults: 2 });
+  assert.equal(out.results[0].arxivId, "0710.2724");
+  assert.equal(out.results[0].doi, "10.1088/1751-8113/41/8/085303");
+  assert.equal(out.results[0].publishedAt, "2007-10-15T06:21:19Z");
+  assert.equal(out.results[1].doi, null);
+});
+
+test("arxiv lookup asks about the identifier rather than searching for it", async () => {
+  let calledUrl = null;
+  const p = new ArxivProvider({
+    fetchImpl: async (url) => {
+      calledUrl = url;
+      return textRes(FEED);
+    }
+  });
+  const record = await p.lookup("0710.2724");
+  // id_list, not search_query: the question is what this id resolves to.
+  assert.match(calledUrl, /id_list=0710\.2724/);
+  assert.ok(!calledUrl.includes("search_query"));
+  assert.equal(record.source, "arxiv");
+  assert.equal(record.arxivId, "0710.2724");
+  assert.deepEqual(record.authors, ["K. Fujii", "T. Suzuki"]);
+  assert.equal(record.publishedAt, "2007-10-15T06:21:19Z");
+
+  const empty = new ArxivProvider({ fetchImpl: async () => textRes("<feed></feed>") });
+  assert.equal(await empty.lookup("9999.9999"), null);
+  assert.equal(await empty.lookup(""), null);
+  const bad = new ArxivProvider({ fetchImpl: async () => textRes("", 503) });
+  await assert.rejects(() => bad.lookup("0710.2724"), /lookup HTTP 503/);
 });

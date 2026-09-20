@@ -1,6 +1,6 @@
 #include "ds4_wrapper_metrics.h"
-#include "ds4_agent_runtime.h"
-#include "ds4_server_runtime.h"
+#include "ds4_agent_ext.h"
+#include "ds4_server_ext.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -139,10 +139,10 @@ char *ds4_wrapper_status_json(const ds4_wrapper *w) {
         ds4_default_skills_status server_skills = {0};
         ds4_default_skills_status agent_skills = {0};
 
-        ds4_server_runtime_get_default_skills_status(
-            w->server_rt, &server_skills);
-        ds4_agent_runtime_get_default_skills_status(
-            w->agent_rt, &agent_skills);
+        ds4_server_ext_get_default_skills_status(
+            w->server_ext, &server_skills);
+        ds4_agent_ext_get_default_skills_status(
+            w->agent_ext, &agent_skills);
 
         met_buf_puts(&b, ",\"default_skills\":{");
         met_buf_printf(&b,
@@ -155,7 +155,7 @@ char *ds4_wrapper_status_json(const ds4_wrapper *w) {
             "\"ethic_bytes\":%zu,"
             "\"revision\":\"%.40s\""
             "},",
-            w->server_rt ? "true" : "false",
+            w->server_ext ? "true" : "false",
             server_skills.enabled ? "true" : "false",
             server_skills.soul_loaded ? "true" : "false",
             server_skills.ethic_loaded ? "true" : "false",
@@ -173,7 +173,7 @@ char *ds4_wrapper_status_json(const ds4_wrapper *w) {
             "\"revision\":\"%.40s\""
             "}"
             "}",
-            w->agent_rt ? "true" : "false",
+            w->agent_ext ? "true" : "false",
             agent_skills.enabled ? "true" : "false",
             agent_skills.soul_loaded ? "true" : "false",
             agent_skills.ethic_loaded ? "true" : "false",

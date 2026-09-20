@@ -1,0 +1,18 @@
+id = "vision-gpu-v41"
+enabled = true
+owner = "overlay"
+description = "DeepSeek 4.1 vision GPU path; includes the rsqrtf->1/sqrtf precision edit."
+
+[upstream]
+# Recorded when the patchset was last re-derived; not a constraint.
+reviewed_sha = "9139e2ae58a41503968a500f36f75895c1ba63fc"
+
+[[anchors]]
+file = "ds4_deepseek4_vision_gpu.cuh"
+kind = "exact"
+text = "__global__ static void deepseek4_vision_add_residual_kernel("
+count = 1
+
+[[shadow_patch]]
+file = "ds4_deepseek4_vision_gpu.cuh"
+patch = "patches/gpu/vision-gpu-v41__ds4_deepseek4_vision_gpu.cuh.patch"

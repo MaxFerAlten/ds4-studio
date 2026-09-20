@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "maxToolRoundsHard": 50,
+  "protocolSameFailureStrategyChange": 2,
+  "protocolSameFailureTerminal": 3,
+  "protocolTotalFailureTerminal": 6,
+  "repeatedActionStrategyChange": 2,
+  "repeatedActionTerminal": 4,
+  "noProgressTerminal": 3,
+  "degenerateGenerationTerminal": 4,
+  "finalizationOnlyMaxModelRounds": 1
+}

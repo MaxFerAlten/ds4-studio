@@ -4,7 +4,9 @@ import { test } from "node:test";
 import {
   SAGE_LEGACY_RESULT_CONTRACT_VERSION,
   SAGE_RESULT_CONTRACT_VERSION,
+  attachSageOrchestration,
   buildLegacySageResult,
+  buildSageOrchestration,
   normalizeSagePhase,
   normalizeSageTaskType,
   publicSageResult,
@@ -203,14 +205,32 @@ test("accepts a generic math report", () => {
   assert.equal(validateSageResult(minimalResult({ report })).ok, true);
 });
 
+const FUNCTION_STUDY_ARTIFACTS = [
+  { kind: "function_plot" },
+  { kind: "first_derivative_plot" },
+  { kind: "second_derivative_plot" }
+];
+
 test("accepts a complete function-study report", () => {
   assert.equal(
     validateSageResult(minimalResult({
       taskType: "function_study",
-      report: functionStudyReport()
+      report: functionStudyReport(),
+      artifacts: FUNCTION_STUDY_ARTIFACTS
     })).ok,
     true
   );
+});
+
+test("a publishable function study without its three plots is rejected", () => {
+  const result = validateSageResult(minimalResult({
+    taskType: "function_study",
+    report: functionStudyReport(),
+    artifacts: [{ kind: "function_plot" }]
+  }));
+  assert.equal(result.ok, false);
+  const codes = result.errors.map((error) => error.code);
+  assert.ok(codes.includes("FUNCTION_STUDY_ARTIFACTS_INCOMPLETE"));
 });
 
 test("rejects a function study without a domain", () => {
@@ -241,4 +261,104 @@ test("public result omits model content, report, and debug previews", () => {
   assert.equal(publicResult.validation.authoritative, true);
   assert.equal(publicResult.publication.publishable, true);
   assert.equal(publicResult.publication.markdown, "4");
+});
+
+test("orchestration: retryable e terminal non convivono", () => {
+  const result = validateSageResult(minimalResult({
+    publication: { publishable: false, markdown: "", reasonCodes: ["X"] },
+    orchestration: buildSageOrchestration(
+      { terminal: true, retryable: true, nextPhase: "publish" },
+      { candidateRevision: 1, validatedRevision: 1, state: "ready" }
+    )
+  }));
+  assert.equal(result.ok, false);
+  const codes = result.errors.map((error) => error.code);
+  assert.ok(codes.includes("ORCHESTRATION_RETRYABLE_TERMINAL"));
+});
+
+test("orchestration: nextPhase deve essere coerente con lo stato", () => {
+  const result = validateSageResult(minimalResult({
+    state: "repair_required",
+    publication: { publishable: false, markdown: "", reasonCodes: ["X"] },
+    orchestration: buildSageOrchestration(
+      { terminal: false, retryable: true, nextPhase: "plot" },
+      { candidateRevision: 2, validatedRevision: null, state: "repair_required" }
+    )
+  }));
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.map((error) => error.code).includes("NEXT_PHASE_STATE_MISMATCH"));
+});
+
+test("orchestration: pubblicare una revisione diversa da quella validata e' rifiutato", () => {
+  const result = validateSageResult(minimalResult({
+    orchestration: buildSageOrchestration(
+      { terminal: true, retryable: false, publishable: true, nextPhase: "publish" },
+      { candidateRevision: 3, validatedRevision: 2, state: "ready" }
+    )
+  }));
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.map((error) => error.code).includes("VALIDATED_REVISION_MISMATCH"));
+});
+
+test("orchestration: un risultato pubblicabile porta una decisione pubblicabile", () => {
+  const ok = validateSageResult(minimalResult({
+    orchestration: buildSageOrchestration(
+      { terminal: true, retryable: false, publishable: true, nextPhase: "publish" },
+      { candidateRevision: 1, validatedRevision: 1, state: "ready" }
+    )
+  }));
+  assert.equal(ok.ok, true);
+
+  const mismatch = validateSageResult(minimalResult({
+    orchestration: buildSageOrchestration(
+      { terminal: false, retryable: true, publishable: false, nextPhase: "publish" },
+      { candidateRevision: 1, validatedRevision: 1, state: "ready" }
+    )
+  }));
+  assert.equal(mismatch.ok, false);
+  assert.ok(mismatch.errors.map((error) => error.code).includes("ORCHESTRATION_PUBLISHABLE_MISMATCH"));
+});
+
+test("publicSageResult conserva la decisione di orchestrazione", () => {
+  const orchestration = buildSageOrchestration(
+    {
+      terminal: false,
+      retryable: true,
+      failureClass: "math_validation_failed",
+      nextPhase: "repair",
+      nextAction: "Correggi la derivata prima.",
+      diagnosticFingerprint: "sha256:abc"
+    },
+    {
+      candidateRevision: 2,
+      validatedRevision: 1,
+      state: "repair_required",
+      attemptsRemaining: { compute: 0, repair: 3, validate: 4, plot: 2, total: 8 }
+    }
+  );
+  const publicView = publicSageResult(minimalResult({
+    state: "repair_required",
+    publication: { publishable: false, markdown: "", reasonCodes: ["X"] },
+    orchestration
+  }));
+  assert.equal(publicView.orchestration.nextPhase, "repair");
+  assert.equal(publicView.orchestration.candidateRevision, 2);
+  assert.equal(publicView.orchestration.attemptsRemaining.repair, 3);
+});
+
+test("attachSageOrchestration espone anche le chiavi piatte per il client nativo", () => {
+  const result = attachSageOrchestration(
+    { tool: "sage" },
+    buildSageOrchestration(
+      { terminal: false, retryable: true, failureClass: "artifact_missing", nextPhase: "plot",
+        nextAction: "Genera i grafici mancanti." },
+      { candidateRevision: 2, validatedRevision: 2, state: "plot_required" }
+    )
+  );
+  assert.equal(result.orchestrationNextPhase, "plot");
+  assert.equal(result.orchestrationTerminal, false);
+  assert.equal(result.orchestrationRetryable, true);
+  assert.equal(result.orchestrationFailureClass, "artifact_missing");
+  assert.equal(result.orchestrationCandidateRevision, 2);
+  assert.equal(result.orchestrationState, "plot_required");
 });

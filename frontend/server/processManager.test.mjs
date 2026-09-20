@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { Ds4ProcessManager } from "./processManager.mjs";
+import { Ds4ProcessManager, pickEnv } from "./processManager.mjs";
 
 test("manager records command and captures child output", async () => {
   const manager = new Ds4ProcessManager({
@@ -136,5 +136,45 @@ test("delayed health checks do not mark an exited process healthy", async () => 
     assert.equal(status.healthy, false);
   } finally {
     await manager.stop();
+  }
+});
+
+test("pickEnv copies only the listed keys and never mutates its input", () => {
+  const source = { PATH: "/usr/bin", SECRET: "x", EMPTY: "" };
+  const picked = pickEnv(source, ["PATH", "EMPTY", "MISSING"]);
+  assert.deepEqual(picked, { PATH: "/usr/bin", EMPTY: "" });
+  assert.deepEqual(source, { PATH: "/usr/bin", SECRET: "x", EMPTY: "" });
+});
+
+test("resolveEnv defaults to the full parent environment", () => {
+  const pm = new Ds4ProcessManager({
+    buildCommand: () => ({ command: "true", args: [] }),
+    buildEnv: () => ({ DS4_TEST_DELTA: "1" })
+  });
+  process.env.DS4_TEST_PARENT_MARKER = "parent";
+  try {
+    const env = pm.resolveEnv();
+    assert.equal(env.DS4_TEST_PARENT_MARKER, "parent");
+    assert.equal(env.DS4_TEST_DELTA, "1");
+  } finally {
+    delete process.env.DS4_TEST_PARENT_MARKER;
+  }
+});
+
+test("resolveEnv honours an allowlisted base and lets buildEnv win", () => {
+  process.env.DS4_TEST_SECRET = "leak";
+  process.env.DS4_TEST_ALLOWED = "keep";
+  try {
+    const pm = new Ds4ProcessManager({
+      buildCommand: () => ({ command: "true", args: [] }),
+      buildEnv: () => ({ DS4_TEST_ALLOWED: "override" }),
+      buildBaseEnv: () => pickEnv(process.env, ["DS4_TEST_ALLOWED"])
+    });
+    const env = pm.resolveEnv();
+    assert.equal(env.DS4_TEST_SECRET, undefined);
+    assert.equal(env.DS4_TEST_ALLOWED, "override");
+  } finally {
+    delete process.env.DS4_TEST_SECRET;
+    delete process.env.DS4_TEST_ALLOWED;
   }
 });

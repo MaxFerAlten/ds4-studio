@@ -15,7 +15,7 @@
  */
 import { getAgentToolDefinition } from "../agentToolCatalog.mjs";
 import { validateToolArguments } from "../agentToolSchema.mjs";
-import { executeTool, checkBashFileReadFallback, sageSessionDir } from "../agentTools.mjs";
+import { executeTool, checkBashFileReadFallback, checkBashLeanGuard, sageSessionDir } from "../agentTools.mjs";
 import {
   checkPostGitnexusAnalyzeAction,
   recordGitnexusAnalyzeResult
@@ -368,6 +368,15 @@ export class AgnoToolExecutionService {
     }
 
     if (toolName === "bash") {
+      const leanBlock = checkBashLeanGuard(args);
+      if (leanBlock?.block) {
+        return {
+          content: leanBlock.reason,
+          isError: true,
+          guarded: true,
+          code: "BASH_LEAN_TOOLCHAIN_BLOCKED"
+        };
+      }
       const block = checkBashFileReadFallback(args, false);
       if (block?.block) {
         return {

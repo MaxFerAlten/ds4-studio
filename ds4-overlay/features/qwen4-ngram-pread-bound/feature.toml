@@ -1,0 +1,67 @@
+id = "qwen4-ngram-pread-bound"
+enabled = false
+owner = "overlay"
+description = """
+Silence a spurious -Wstringop-overflow on the pread() in qwen4_ngram_row().
+
+GCC 13+ with _FORTIFY_SOURCE reports:
+
+    warning: '__pread_alias' writing 9223372036854775492 or more bytes into a
+    region of size 320 overflows the destination [-Wstringop-overflow=]
+    note: at offset [0, 319] into destination object 'raw' of size 320
+
+The code is correct. The guard above rejects dim[0] == 0 and dim[0] > 160, so
+bytes = dim[0] * 2 is in [2, 320] and the loop keeps done < bytes, which means
+the read length `bytes - done` is in [1, 320] and `raw + done` stays in bounds.
+GCC loses the done < bytes relation across the fortify inlining and treats the
+two ranges as independent, so its model lets `bytes - done` underflow - hence
+the ~2^63 figure.
+
+The fix restates the same bound against `raw`:
+
+    size_t want = bytes - done;
+    if (want > sizeof raw - done) want = sizeof raw - done;
+
+The clamp is dead code (bytes <= sizeof raw), so the number of bytes read is
+unchanged. Two other formulations were tried and rejected: passing
+`sizeof raw - done` directly silences the warning but changes the read length,
+and a `return false` guard instead of an assignment does not silence it - GCC
+needs the bound as an assignment it can propagate.
+
+Retire this when upstream either bounds the length itself or the warning stops
+firing on the supported compilers.
+"""
+
+[upstream]
+reviewed_sha = "9139e2ae58a41503968a500f36f75895c1ba63fc"
+
+[[anchors]]
+file = "ds4.c"
+kind = "exact"
+text = "static bool qwen4_ngram_row(const ds4_model *m, uint32_t row, float *out) {"
+count = 1
+
+[[shadow_patch]]
+file = "ds4.c"
+patch = "patches/core/qwen4-ngram-pread-bound.patch"
+
+# RETIRED 2026-09-16 against upstream f3967519.
+#
+# Evidence, not a probe: pristine upstream ds4.c compiled with the exact flags
+# this project builds with
+#
+#   cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE #      -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -I. -c ds4.c
+#   
+#
+# produced zero stringop-overflow/pread/ngram diagnostics and exited 0.
+#
+# Upstream fixed it in the same rewrite that broke this patch's anchor: "done"
+# became uint32_t and the loop now rejects a short read with
+# "(size_t)n > bytes - done", which is the bound GCC needed. That is exactly
+# the condition this feature's own description named for retirement:
+# "Retire this when upstream either bounds the length itself or the warning
+# stops firing on the supported compilers." Both hold.
+#
+# Re-enable only if the warning returns on a supported compiler; the patch body
+# is kept alongside for that case, but it no longer applies to f3967519 and
+# would have to be re-derived first.

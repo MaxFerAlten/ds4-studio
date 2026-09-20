@@ -217,3 +217,52 @@ test("artifact run mismatch and legacy latest URLs fail closed", async () => {
   assert.ok(result.sageResult.publication.reasonCodes.includes("SAGE_ARTIFACT_RUN_MISMATCH"));
   assert.ok(result.sageResult.publication.reasonCodes.includes("SAGE_ARTIFACT_HASH_MISMATCH"));
 });
+
+test("una validazione matematica fallita e' riparabile, non un fallimento generico", async () => {
+  const result = await authorize(rawCandidate(), {
+    candidateRevision: 2,
+    validator: async () => ({
+      authoritative: true,
+      passed: false,
+      checks: [
+        { code: "EXECUTION_OK", passed: true },
+        { code: "FIRST_DERIVATIVE_EQUIVALENT", passed: false }
+      ],
+      errors: ["FIRST_DERIVATIVE_EQUIVALENT"],
+      normalizedReport: null
+    })
+  });
+
+  assert.equal(result.publishable, false);
+  assert.equal(result.orchestration.retryable, true);
+  assert.equal(result.orchestration.terminal, false);
+  assert.equal(result.orchestration.nextPhase, "repair");
+  assert.equal(result.orchestration.failureClass, "math_validation_failed");
+  assert.equal(result.state, "repair_required");
+});
+
+test("un validator assente e' terminale e non chiede riparazioni", async () => {
+  const result = await authorize(rawCandidate(), {
+    validator: async () => {
+      throw new Error("boom");
+    }
+  });
+
+  assert.equal(result.publishable, false);
+  assert.equal(result.orchestration.terminal, true);
+  assert.equal(result.orchestration.retryable, false);
+  assert.equal(result.orchestration.nextPhase, "terminal");
+  assert.equal(result.orchestration.failureClass, "runtime_unavailable");
+  assert.equal(result.state, "infrastructure_block");
+});
+
+test("un candidato pubblicabile porta una decisione pubblicabile e la revisione validata", async () => {
+  const result = await authorize(rawCandidate(), { candidateRevision: 3 });
+
+  assert.equal(result.publishable, true);
+  assert.equal(result.orchestration.publishable, true);
+  assert.equal(result.orchestration.terminal, true);
+  assert.equal(result.orchestration.nextPhase, "publish");
+  assert.equal(result.orchestration.candidateRevision, 3);
+  assert.equal(result.orchestration.validatedRevision, 3);
+});

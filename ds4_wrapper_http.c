@@ -1,8 +1,8 @@
 #include "ds4_wrapper_http.h"
 #include "ds4_wrapper_metrics.h"
 #include "ds4_wrapper_state.h"
-#include "ds4_server_runtime.h"
-#include "ds4_agent_runtime.h"
+#include "ds4_server_ext.h"
+#include "ds4_agent_ext.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -87,7 +87,7 @@ static void chat_event_cb(void *ud, const ds4_agent_event *ev) {
              * current turn ends and the wrapper releases busy, instead of
              * generating to completion with no consumer. */
             ctx->aborted = true;
-            ds4_agent_runtime_interrupt(ctx->w->agent_rt);
+            ds4_agent_ext_interrupt(ctx->w->agent_ext);
         }
     }
 }
@@ -362,19 +362,28 @@ static char *wrap_json_escape_dup(const char *s) {
 static char *native_agent_result_json(const ds4_agent_command_result *result,
                                       bool active) {
     char *message = wrap_json_escape_dup(result->message);
-    if (!message) return NULL;
+    char *code = wrap_json_escape_dup(result->error_code);
+    if (!message || !code) {
+        free(message);
+        free(code);
+        return NULL;
+    }
     const char *data = result->data_json ? result->data_json : "null";
     char *body = NULL;
     if (asprintf(&body,
-                 "{\"ok\":%s,\"command\":\"%s\",\"message\":\"%s\","
-                 "\"data\":%s,\"active\":%s}\n",
+                 "{\"ok\":%s,\"command\":\"%s\",\"code\":\"%s\","
+                 "\"message\":\"%s\",\"data\":%s,\"changed\":%s,"
+                 "\"active\":%s}\n",
                  result->ok ? "true" : "false",
                  result->command,
+                 code,
                  message,
                  data,
+                 result->changed ? "true" : "false",
                  active ? "true" : "false") < 0)
         body = NULL;
     free(message);
+    free(code);
     return body;
 }
 
@@ -391,7 +400,7 @@ static int execute_native_agent_command(ds4_wrapper *w, const char *command,
     }
 
     bool request_open = true;
-    if (ds4_wrapper_ensure_agent_rt(w, err, sizeof(err)) != 0) {
+    if (ds4_wrapper_ensure_agent_ext(w, err, sizeof(err)) != 0) {
         memset(result, 0, sizeof(*result));
         result->http_status = 500;
         result->message = strdup(err[0] ? err : "failed to initialize agent runtime");
@@ -399,7 +408,7 @@ static int execute_native_agent_command(ds4_wrapper *w, const char *command,
         return -1;
     }
 
-    int rc = ds4_agent_runtime_command(w->agent_rt, command, result);
+    int rc = ds4_agent_ext_command(w->agent_ext, command, result);
     if (rc == 0 && result->switch_to_server) {
         ds4_wrapper_leave_request(w);
         request_open = false;
@@ -481,8 +490,8 @@ static void send_agent_compression_metrics(ds4_wrapper *w, int fd) {
     pthread_mutex_lock(&w->mu);
     bool active = w->active_mode == DS4_WRAP_MODE_AGENT;
     ds4_agent_compression_metrics m = {0};
-    if (active && w->agent_rt)
-        ds4_agent_runtime_get_compression_metrics(w->agent_rt, &m);
+    if (active && w->agent_ext)
+        ds4_agent_ext_get_compression_metrics(w->agent_ext, &m);
     pthread_mutex_unlock(&w->mu);
 
     /* Build JSON manually to avoid printf %% format confusion. */
@@ -555,7 +564,7 @@ static void *client_thread_main(void *arg) {
         } else {
             struct http_request req = { .method = hr.method, .path = hr.path, .body = hr.body, .body_len = hr.body_len };
             struct http_response res = { .fd = fd, .enable_cors = true };
-            ds4_server_runtime_handle_models(w->server_rt, &req, &res);
+            ds4_server_ext_handle_models(w->server_ext, &req, &res);
             ds4_wrapper_leave_request(w);
         }
     } else if (!strcmp(hr.method, "GET") && !strcmp(hr.path, "/api/server/metrics")) {
@@ -566,7 +575,7 @@ static void *client_thread_main(void *arg) {
         } else {
             struct http_request req = { .method = hr.method, .path = hr.path, .body = hr.body, .body_len = hr.body_len };
             struct http_response res = { .fd = fd, .enable_cors = true };
-            ds4_server_runtime_handle_server_metrics(w->server_rt, &req, &res);
+            ds4_server_ext_handle_server_metrics(w->server_ext, &req, &res);
             ds4_wrapper_leave_request(w);
         }
     } else if (!strcmp(hr.method, "POST") && !strcmp(hr.path, "/api/wrapper/switch-mode")) {
@@ -659,13 +668,16 @@ static void *client_thread_main(void *arg) {
             }
         }
     } else if (!strcmp(hr.method, "POST") && !strcmp(hr.path, "/v1/cancel")) {
-        /* Cancellation is driven by the client aborting the streaming
-         * connection: the in-flight generation observes the closed socket and
-         * stops. This endpoint exists so the studio's belt-and-suspenders
-         * /v1/cancel POST is acknowledged instead of 404'd. It deliberately
-         * bypasses ds4_wrapper_enter_request so a cancel issued while a request
-         * is streaming (state BUSY) is not itself rejected with 409. */
-        send_response(fd, true, 200, "application/json", "{\"ok\":true}\n");
+        /* Keep this route outside ds4_wrapper_enter_request: cancellation must
+         * be admitted while the wrapper is BUSY. Closing the streaming socket
+         * stops decode once a write fails, but prefill emits no tokens; the
+         * runtime interrupt makes ds4_session_sync stop cooperatively at its
+         * next safe checkpoint instead of holding BUSY for the full prefill. */
+        bool interrupted = ds4_server_ext_interrupt(w->server_ext);
+        send_response(fd, true, 200, "application/json",
+                      interrupted
+                          ? "{\"ok\":true,\"interrupted\":true}\n"
+                          : "{\"ok\":true,\"interrupted\":false}\n");
     } else if (!strcmp(hr.method, "POST") && (
                !strcmp(hr.path, "/v1/chat/completions") ||
                !strcmp(hr.path, "/v1/token-count") ||
@@ -677,19 +689,21 @@ static void *client_thread_main(void *arg) {
         if (code != 0) {
             send_json_error(fd, true, code, code == 409 ? "conflict" : "error", err_buf);
         } else {
+            ds4_server_ext_begin_request(w->server_ext);
             struct http_request req = { .method = hr.method, .path = hr.path, .body = hr.body, .body_len = hr.body_len };
             struct http_response res = { .fd = fd, .enable_cors = true };
             if (!strcmp(hr.path, "/v1/chat/completions")) {
-                ds4_server_runtime_handle_chat_completions(w->server_rt, &req, &res);
+                ds4_server_ext_handle_chat_completions(w->server_ext, &req, &res);
             } else if (!strcmp(hr.path, "/v1/token-count")) {
-                ds4_server_runtime_handle_token_count(w->server_rt, &req, &res);
+                ds4_server_ext_handle_token_count(w->server_ext, &req, &res);
             } else if (!strcmp(hr.path, "/v1/responses")) {
-                ds4_server_runtime_handle_responses(w->server_rt, &req, &res);
+                ds4_server_ext_handle_responses(w->server_ext, &req, &res);
             } else if (!strcmp(hr.path, "/v1/messages")) {
-                ds4_server_runtime_handle_messages(w->server_rt, &req, &res);
+                ds4_server_ext_handle_messages(w->server_ext, &req, &res);
             } else if (!strcmp(hr.path, "/v1/completions")) {
-                ds4_server_runtime_handle_completions(w->server_rt, &req, &res);
+                ds4_server_ext_handle_completions(w->server_ext, &req, &res);
             }
+            ds4_server_ext_end_request(w->server_ext);
             ds4_wrapper_leave_request(w);
         }
     } else if (!strcmp(hr.method, "POST") &&
@@ -701,7 +715,7 @@ static void *client_thread_main(void *arg) {
             send_json_error(fd, true, code,
                             code == 409 ? "conflict" : "error", err_buf);
         } else {
-            int init_rc = ds4_wrapper_ensure_agent_rt(w, err_buf,
+            int init_rc = ds4_wrapper_ensure_agent_ext(w, err_buf,
                                                        sizeof(err_buf));
             if (init_rc == 0) {
                 send_response(fd, true, 200, "application/json",
@@ -716,7 +730,7 @@ static void *client_thread_main(void *arg) {
         int code = ds4_wrapper_enter_request(w, DS4_WRAP_MODE_AGENT, err_buf, sizeof(err_buf));
         if (code != 0) {
             send_json_error(fd, true, code, code == 409 ? "conflict" : "error", err_buf);
-        } else if (ds4_wrapper_ensure_agent_rt(w, err_buf, sizeof(err_buf)) != 0) {
+        } else if (ds4_wrapper_ensure_agent_ext(w, err_buf, sizeof(err_buf)) != 0) {
             send_json_error(fd, true, 500, "agent_init_error", err_buf);
             ds4_wrapper_leave_request(w);
         } else {
@@ -732,9 +746,21 @@ static void *client_thread_main(void *arg) {
                     "Access-Control-Allow-Origin: *\r\n\r\n";
                 wrap_send_all(fd, headers, strlen(headers));
                 chat_cb_ctx cbctx = { .fd = fd, .w = w, .aborted = false };
-                int chat_rc = ds4_agent_runtime_chat(w->agent_rt, message, chat_event_cb, &cbctx, err_buf, sizeof(err_buf));
+                int chat_rc = ds4_agent_ext_chat(w->agent_ext, message, chat_event_cb, &cbctx, err_buf, sizeof(err_buf));
                 if (chat_rc != 0) {
+                    /* No failing return in ds4_agent_ext_chat emits agent_error
+                     * (the runtime sends one only for a turn that ran and
+                     * returned 0), so without this the client gets a 200 stream
+                     * that just ends: the UI shows nothing, the cause is only
+                     * on stderr. */
                     fprintf(stderr, "ds4-wrapper: chat failed: %s\n", err_buf);
+                    char *esc = wrap_json_escape_dup(err_buf);
+                    char *sse = NULL;
+                    if (esc && asprintf(&sse, "event: agent_error\ndata: {\"error\":\"%s\"}\n\n", esc) >= 0) {
+                        wrap_send_all(fd, sse, strlen(sse));
+                        free(sse);
+                    }
+                    free(esc);
                 }
                 free(message);
             }

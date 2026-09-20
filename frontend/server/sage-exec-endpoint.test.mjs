@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import express from "express";
 import { createServer } from "node:http";
+import { readFile } from "node:fs/promises";
 
 // Minimal mock of sageSessionDir
 function mockSageSessionDir(base, sessionId) {
@@ -312,4 +313,29 @@ test("POST /api/sage/exec returns isError true on tool failure", async () => {
   assert.equal(status, 200);
   assert.equal(json.isError, true);
   assert.equal(json.raw.exit_code, 1);
+});
+
+// I test sopra costruiscono una copia del handler per iniettare il gateway.
+// Queste asserzioni guardano il sorgente reale: sono il legame fra la copia e
+// l'endpoint effettivamente servito.
+test("/api/sage/exec usa il registry e il tracker canonico", async () => {
+  const source = await readFile(new URL("./index.mjs", import.meta.url), "utf8");
+  const handler = source.slice(
+    source.indexOf('app.post("/api/sage/exec"'),
+    source.indexOf('const SAGE_ARTIFACT_CONTENT_TYPES')
+  );
+
+  assert.ok(handler.length > 0, "endpoint /api/sage/exec non trovato");
+  assert.match(handler, /sageRunRegistry\.getOrCreate\(/);
+  assert.match(handler, /tracker\.beforeCall\(/);
+  assert.match(handler, /tracker\.recordResult\(/);
+  assert.match(handler, /orchestration: decision/);
+  // Il rifiuto di fase e il registro pieno non sono 200.
+  assert.match(handler, /res\.status\(429\)/);
+  assert.match(handler, /res\.status\(409\)/);
+  // beforeCall deve precedere l'esecuzione, non seguirla.
+  assert.ok(
+    handler.indexOf("tracker.beforeCall(") < handler.indexOf('executeTool("sage"'),
+    "beforeCall viene dopo executeTool"
+  );
 });

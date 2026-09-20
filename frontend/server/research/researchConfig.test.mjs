@@ -18,6 +18,7 @@ test("mergeResearchConfig fills defaults for empty input", () => {
     exportEnabled: true,
     reflection: { enabled: true, maxAttempts: 2 },
     authorVerification: { enabled: true, maxAuthors: 10 },
+    citationEntailment: { enabled: false, maxChecks: 12 },
     engine: "local",
     gemini: {
       model: "deep-research-preview-04-2026",

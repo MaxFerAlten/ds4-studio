@@ -16,6 +16,35 @@ export const BUSY_RETRY_DEFAULTS = Object.freeze({
   maxDelayMs: 1500
 });
 
+/* A cancelled ROCm layer-major prefill releases the session only at the next
+ * safe chunk boundary. A cold production 8192-token chunk has taken 72s in a
+ * live run, so generation requests need a two-minute retry window while
+ * lightweight probes keep their short retry budget. */
+export const GENERATION_BUSY_RETRY_DEFAULTS = Object.freeze({
+  maxRetries: 34,
+  baseDelayMs: 250,
+  maxDelayMs: 4000
+});
+
+const GENERATION_ENDPOINTS = new Set([
+  "/v1/chat/completions",
+  "/v1/responses",
+  "/v1/messages",
+  "/v1/completions"
+]);
+
+export function isGenerationRequest(method, originalUrl) {
+  const path = String(originalUrl || "").split("?", 1)[0];
+  return String(method || "").toUpperCase() === "POST" &&
+    GENERATION_ENDPOINTS.has(path);
+}
+
+export function busyRetryOptionsForRequest(method, originalUrl) {
+  return isGenerationRequest(method, originalUrl)
+    ? GENERATION_BUSY_RETRY_DEFAULTS
+    : BUSY_RETRY_DEFAULTS;
+}
+
 /**
  * True only for the transient "wrapper is busy" 409. Other 409s (wrong mode,
  * lost continuation state, …) are real errors and must not be retried.

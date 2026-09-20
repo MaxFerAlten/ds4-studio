@@ -733,3 +733,40 @@ test("parseCliResearchResult falls back to output_text when no codexDeltaFiles",
   assert.equal(out.outputText, "Plain text answer");
   assert.deepEqual(out.artifacts, []);
 });
+
+test("the CLI environment carries the cookie and the toolchain, not the credentials", async () => {
+  const restore = {
+    GEMINI_API_KEY: process.env.GEMINI_API_KEY,
+    TAVILY_API_KEY: process.env.TAVILY_API_KEY,
+    DS4_EVOLUTION_WRITE_TOKEN: process.env.DS4_EVOLUTION_WRITE_TOKEN
+  };
+  for (const key of Object.keys(restore)) process.env[key] = `test-${key}`;
+  let captured = null;
+  try {
+    const client = new PrintingPressPrismResearchClient({
+      cliPath: "/tmp/prism-pp-cli",
+      env: { PRISM_COOKIES: "session=abc" },
+      execImpl: async (call) => {
+        captured = call;
+        return JSON.stringify({
+          status: "success",
+          output_text: "pong",
+          conversation_id: "conv_1",
+          citations: []
+        });
+      }
+    });
+    await client.runResearch({ prompt: "ping" });
+    assert.equal(captured.env.PRISM_COOKIES, "session=abc");
+    if (process.env.PATH) assert.equal(captured.env.PATH, process.env.PATH);
+    if (process.env.HOME) assert.equal(captured.env.HOME, process.env.HOME);
+    for (const key of Object.keys(restore)) {
+      assert.equal(captured.env[key], undefined, `env leaked ${key}`);
+    }
+  } finally {
+    for (const [key, value] of Object.entries(restore)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});

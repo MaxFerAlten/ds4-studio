@@ -1,0 +1,78 @@
+id = "rocm-deepseek41"
+enabled = true
+owner = "overlay"
+description = """
+Let DeepSeek V4.1 actually run on ROCm.
+
+Upstream refuses it outright:
+
+    #if !defined(DS4_NO_GPU) && !defined(DS4_ROCM_BUILD)
+    #define DS4_HAS_DEEPSEEK41_GPU 1
+    #endif
+
+so on a ROCm build the CUDA clause of the V4.1 support gate is compiled out and
+only Metal remains, producing at runtime:
+
+    ds4: V4.1 requires Metal or single-GPU CUDA per rank ...
+
+That exclusion is correct for upstream, which ships no ROCm V4.1 backend. This
+overlay does: rocm/ds4_rocm_v41.cuh, carried by feature rocm-strix-halo,
+implements the V4.1 GPU entry points, and a ROCm build reports
+DS4_BACKEND_CUDA, so the existing single-device clause applies unchanged once
+the macro is allowed to be defined.
+
+Three gaps had to be closed, all measured rather than assumed:
+
+  1. the macro itself (ds4.c);
+  2. the gate additionally refuses the SSD quality / preload-experts /
+     full-layers variants under ROCm, mirroring the downstream fork - those
+     have no ROCm implementation;
+  3. ds4_gpu_tp_init / _shutdown / _failed had no ROCm definition. TP is
+     refused by the gate before they can run, so they are stubs in
+     ds4_rocm_unavailable.cu alongside the TP gate stubs already there;
+     _failed returns failure so anything reaching it stops.
+
+ds4_engram.o also has to join the ROCm object set - see mk/overlay.mk. Upstream
+leaves it out because ROCm never needed Engram.
+
+SCOPE: this makes V4.1 build, link and pass its startup gate on ROCm. Whether
+inference is numerically correct on this hardware is a separate question that
+needs a real model run; nothing here has been validated against one.
+"""
+
+[upstream]
+reviewed_sha = "9139e2ae58a41503968a500f36f75895c1ba63fc"
+
+# Upstream f3967519 added an identical guard for DS4_HAS_QWEN4_GPU directly
+# below this one, so the bare "#if !defined(DS4_NO_GPU) && !defined(...)" line
+# now matches twice. Anchor on the define instead: it names the feature this
+# patch actually owns, and stays unique however many neighbours appear.
+[[anchors]]
+file = "ds4.c"
+kind = "exact"
+text = "#define DS4_HAS_DEEPSEEK41_GPU 1"
+count = 1
+
+[[anchors]]
+file = "ds4.c"
+kind = "exact"
+text = "                (e->backend == DS4_BACKEND_CUDA && !opt->cuda_tensor_parallel &&"
+count = 1
+
+[[anchors]]
+file = "ds4_rocm_unavailable.cu"
+kind = "exact"
+text = "ROCM_UNAVAILABLE_INT(ds4_gpu_tp_big_gate_wait)"
+count = 1
+
+[[shadow_patch]]
+file = "ds4.c"
+patch = "patches/core/rocm-deepseek41-enable.patch"
+
+[[shadow_patch]]
+file = "ds4_rocm_unavailable.cu"
+patch = "patches/rocm/rocm-deepseek41-tp-stubs.patch"
+
+[[test]]
+command = "make -f Makefile.overlay overlay-strix-halo"
+required = true

@@ -26,6 +26,7 @@ typedef struct {
     bool disable_exact_dsml_tool_replay;
     int tool_memory_max_ids;
 
+    const char *model_path;
     const char *kv_disk_dir;
     uint64_t kv_disk_space_mb;
     bool kv_reject_different_quant;
@@ -69,5 +70,12 @@ int ds4_server_runtime_handle_server_metrics(ds4_server_runtime *rt,
 void ds4_server_runtime_get_default_skills_status(
     ds4_server_runtime *rt,
     ds4_default_skills_status *out);
+
+/* Request cancellation is cooperative: begin/end delimit the single server-mode
+ * request admitted by ds4_wrapper, while interrupt makes the active session's
+ * prefill stop at the next safe checkpoint. */
+void ds4_server_runtime_begin_request(ds4_server_runtime *rt);
+bool ds4_server_runtime_interrupt(ds4_server_runtime *rt);
+void ds4_server_runtime_end_request(ds4_server_runtime *rt);
 
 #endif

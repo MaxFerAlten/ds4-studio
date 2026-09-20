@@ -51,6 +51,48 @@ test("does not intercept direct native commands outside agent mode except crawl"
   });
 });
 
+test("/skill is blocked locally outside Agent Mode", () => {
+  assert.deepEqual(parseAgentInput("/skill lean start", false), {
+    type: "skill",
+    action: "inactive",
+    command: "/skill lean start"
+  });
+});
+
+test("/skill is routed natively inside Agent Mode", () => {
+  assert.deepEqual(parseAgentInput(" /skill lean start ", true), {
+    type: "native",
+    command: "/skill lean start"
+  });
+});
+
+test("legacy /lean is routed natively inside Agent Mode", () => {
+  for (const verb of ["start", "stop", "status", "preflight"]) {
+    const command = `/lean ${verb}`;
+    assert.deepEqual(parseAgentInput(command, true), {
+      type: "native",
+      command
+    });
+  }
+  assert.deepEqual(parseAgentInput("/lean start", true), {
+    type: "native",
+    command: "/lean start"
+  });
+});
+
+test("legacy /lean is blocked locally outside Agent Mode", () => {
+  assert.deepEqual(parseAgentInput("/lean start", false), {
+    type: "lean",
+    action: "inactive",
+    command: "/lean start"
+  });
+  assert.deepEqual(parseAgentInput("/lean preflight", false), {
+    type: "lean",
+    action: "inactive",
+    command: "/lean preflight"
+  });
+});
+
 test("parses pony controls only as agent-scoped commands", () => {
   assert.deepEqual(parseAgentInput("/pony", true), { type: "pony", action: "status" });
   assert.deepEqual(parseAgentInput("/pony status", true), { type: "pony", action: "status" });

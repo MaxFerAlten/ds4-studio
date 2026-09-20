@@ -3,10 +3,35 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export DS4_SKILLS_DIR="${DS4_SKILLS_DIR:-$ROOT_DIR/skills}"
+
+# Lean 4. Off by default: the feature is only safe once the Lake runtime is
+# provisioned and the sandbox is verified on this host. Check with
+# `make lean-preflight`, then enable it either from the shell
+# (DS4_LEAN_ENABLED=1) or in ds4-ui.config.json ("lean.enabled": true).
+#
+# DS4_LEAN_ENABLED is deliberately NOT exported when unset: the Node control
+# plane resolves precedence as env defined > config JSON > default, and an
+# unconditional export of 0 here would shadow the config-file layer.
+if [[ -n "${DS4_LEAN_ENABLED+x}" ]]; then
+  export DS4_LEAN_ENABLED
+fi
+# One-release deprecation shim: DS4_LEAN_SKILL_AUTO -> DS4_LEAN_POLICY_AUTO.
+if [[ -n "${DS4_LEAN_SKILL_AUTO+x}" && -z "${DS4_LEAN_POLICY_AUTO+x}" ]]; then
+  export DS4_LEAN_POLICY_AUTO="$DS4_LEAN_SKILL_AUTO"
+  echo "srun.sh: warning: DS4_LEAN_SKILL_AUTO is deprecated; use DS4_LEAN_POLICY_AUTO" >&2
+fi
+# One-release deprecation shim: DS4_SAGE_SKILL_AUTO -> DS4_SAGE_POLICY_AUTO.
+if [[ -n "${DS4_SAGE_SKILL_AUTO+x}" && -z "${DS4_SAGE_POLICY_AUTO+x}" ]]; then
+  export DS4_SAGE_POLICY_AUTO="$DS4_SAGE_SKILL_AUTO"
+  echo "srun.sh: warning: DS4_SAGE_SKILL_AUTO is deprecated; use DS4_SAGE_POLICY_AUTO" >&2
+fi
+export DS4_LEAN_SANDBOX_REQUIRED="${DS4_LEAN_SANDBOX_REQUIRED:-1}"
+export DS4_LEAN_RUNTIME_ROOT="${DS4_LEAN_RUNTIME_ROOT:-$ROOT_DIR/lean-runtime}"
+export DS4_LEAN_RUNS_ROOT="${DS4_LEAN_RUNS_ROOT:-$ROOT_DIR/frontend/workspace/lean-runs}"
 source "$ROOT_DIR/scripts/rocm_settings.sh"
 source "$ROOT_DIR/scripts/agno_bootstrap.sh"
-source "$ROOT_DIR/scripts/crawl_bootstrap.sh"
 source "$ROOT_DIR/scripts/frontend_bootstrap.sh"
+source "$ROOT_DIR/scripts/crawl_bootstrap.sh"
 
 FRONTEND_DIR="$ROOT_DIR/frontend"
 HOST="127.0.0.1"
@@ -14,8 +39,10 @@ PORT="5173"
 CONFIG_PATH="$FRONTEND_DIR/ds4-ui.config.json"
 DRY_RUN=0
 NO_GUI=0
+NO_PICKER=0
+MODELS_DIR=""
 ROCM_ARCH="${ROCM_ARCH:-gfx1151}"
-DS4_MODEL_VARIANT="${DS4_MODEL_VARIANT:-q2-imatrix}"
+DS4_MODEL_VARIANT="${DS4_MODEL_VARIANT:-ds4f-q2}"
 SRUN_TUNING_GUI="${DS4_SRUN_TUNING_GUI:-$ROOT_DIR/scripts/srun_tuning_gui.py}"
 
 usage() {
@@ -39,6 +66,9 @@ Options:
   --port PORT          UI/control port. Default: 5173
   --config FILE        Config file path. Default: frontend/ds4-ui.config.json
   --no-gui             Skip the Python startup tuning window
+  --no-picker          Skip the model selection screen, open parameters directly
+  --models-dir DIR     Directory of .gguf models to list at startup
+                       (persisted as server.modelsDir in the config)
   --dry-run            Print what would run and exit
   -h, --help           Show this help
 
@@ -53,11 +83,22 @@ Environment:
   DS4_SERVER_PERFLEVEL=high|auto
                        ROCm performance level; use off/skip/none to bypass.
   DS4_SKILL_AUTO=0     Disable all default skills at startup.
-  DS4_SAGE_SKILL_AUTO=0
-                       Disable only the Sage default skill at startup.
-                       Both default to 1 and can be set in the startup GUI.
+  DS4_SAGE_POLICY_AUTO=0
+                       Disable auto-loading the Sage policy at startup.
+  DS4_LEAN_POLICY_AUTO=0
+                       Disable auto-loading the Lean 4 policy at startup.
+  DS4_LEAN_ENABLED=1   Enable the lean_check tool. Default 0; requires a
+                       provisioned lean-runtime and a working sandbox
+                       (verify with: make lean-preflight). Can also be enabled
+                       via "lean.enabled" in ds4-ui.config.json; an explicit
+                       env value wins over the config file.
+  Lean runs are bubblewrap-sandboxed by default; the srun.sh option to
+                       disable the sandbox has been removed.
   DS4_SKILLS_DIR=path  Absolute path to the skills directory.
                        Default: $ROOT_DIR/skills
+
+Persistent settings belong in ds4-ui.config.json; environment variables are
+temporary overrides and win until the UI server is restarted without them.
 
 After startup, open the printed local URL in your browser.
 USAGE
@@ -231,12 +272,49 @@ config_agno_port() {
   ' "$config_path" 2>/dev/null || echo "7777"
 }
 
+# "local" launches an engine here. "endpoint" points the frontend at a server
+# already running elsewhere: there is no model to download and no backend to
+# build, and ensure_backend would otherwise compile ./ds4-server for a machine
+# that is never going to run it (wrapper.enabled is false in endpoint mode).
+attach_mode() {
+  local mode="local"
+  if [[ -f "$CONFIG_PATH" ]] && command -v node >/dev/null 2>&1; then
+    mode="$(node -e '
+      const fs = require("fs");
+      try {
+        const cfg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+        const a = cfg && cfg.server && cfg.server.attach;
+        process.stdout.write(a && a.mode === "endpoint" ? "endpoint" : "local");
+      } catch { process.stdout.write("local"); }
+    ' "$CONFIG_PATH" 2>/dev/null || echo local)"
+  fi
+  printf '%s' "$mode"
+}
+
+attach_label() {
+  node -e '
+    const fs = require("fs");
+    try {
+      const cfg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+      const a = (cfg && cfg.server && cfg.server.attach) || {};
+      process.stdout.write(`${a.name || a.baseUrl || "endpoint"} (${a.model || "?"})`);
+    } catch { process.stdout.write("endpoint"); }
+  ' "$CONFIG_PATH" 2>/dev/null || printf 'endpoint'
+}
+
 stop_launch_ports() {
   stop_port "frontend" "$PORT"
   local backend_port
   backend_port="$(config_backend_port "$CONFIG_PATH" | head -n 1 || true)"
   if [[ -n "$backend_port" && "$backend_port" != "$PORT" ]]; then
-    stop_port "backend" "$backend_port"
+    # In endpoint mode that port belongs to the server we are attaching TO.
+    # Killing it is how the first attached launch took Halogen down and then
+    # connected to nothing: ECONNREFUSED 127.0.0.1:8731.
+    if [[ "$(attach_mode)" == "endpoint" ]]; then
+      echo "srun.sh: leaving backend port $backend_port alone (owned by $(attach_label))"
+    else
+      stop_port "backend" "$backend_port"
+    fi
   fi
   if [[ "$(ds4_agno_config_enabled "$CONFIG_PATH")" == "1" ]]; then
     local agno_port
@@ -279,19 +357,90 @@ if [[ $# -gt 0 && "$1" == "clean" ]]; then
 fi
 
 build_fe() {
-  if [[ ! -d "$FRONTEND_DIR/node_modules" ]]; then
-    echo "srun.sh: installing frontend dependencies"
-    npm install --prefix "$FRONTEND_DIR"
-  fi
+  ensure_frontend_dependencies "$ROOT_DIR"
   echo "srun.sh: building frontend"
   npm run build --prefix "$FRONTEND_DIR"
 }
 
+# The ROCm backend is built through the DS4 overlay, not in this checkout.
+# Upstream is kept pristine, so fixes it needs - notably the rsqrtf host-call
+# error on ROCm 7.2.4 - live in ds4-overlay and are applied into a shadow tree
+# at build time. Building `make rocm` here directly fails on that error.
+DS4_OVERLAY_DIR="${DS4_OVERLAY_DIR:-$ROOT_DIR/ds4-overlay}"
+DS4_BACKEND_BINARIES="ds4 ds4-server ds4-bench ds4-eval ds4-agent"
+
+overlay_shadow() {
+  "$DS4_OVERLAY_DIR/scripts/overlayctl.py" shadow-path
+}
+
+# compose() rmtree's the shadow before rebuilding it, so two builds racing on
+# the same tree delete each other's sources mid-compile. The symptom is a
+# compiler that cannot find a file the compose just reported writing. Hold this
+# for the whole compose+make, not just the compose.
+overlay_build_lock() {
+  local lock="$DS4_OVERLAY_DIR/.build.lock"
+  exec 9>"$lock" || return 0          # unwritable lock is not worth failing over
+  if ! flock -n 9; then
+    echo "srun.sh: another build holds $lock, waiting for it to finish"
+    flock 9
+  fi
+  # compose takes the same lock when run on its own; tell it we already hold it
+  # so it does not block waiting for this very shell.
+  export DS4_BUILD_LOCK_HELD=1
+}
+
+overlay_build_unlock() {
+  unset DS4_BUILD_LOCK_HELD
+  exec 9>&- 2>/dev/null || true
+}
+
 build_be() {
-  echo "srun.sh: cleaning previous build"
-  make clean
-  echo "srun.sh: building ROCm with ROCM_ARCH=$ROCM_ARCH"
-  make rocm ROCM_ARCH="$ROCM_ARCH"
+  if [[ -z "$DS4_OVERLAY_DIR" || ! -x "$DS4_OVERLAY_DIR/scripts/overlayctl.py" ]]; then
+    echo "srun.sh: DS4 overlay not found (expected ../ds4-overlay)" >&2
+    echo "srun.sh: set DS4_OVERLAY_DIR to its path" >&2
+    exit 1
+  fi
+
+  echo "srun.sh: composing overlay shadow tree"
+  overlay_build_lock
+  "$DS4_OVERLAY_DIR/scripts/overlayctl.py" compose || {
+    echo "srun.sh: overlay compose failed; upstream may have moved." >&2
+    echo "srun.sh: run '$DS4_OVERLAY_DIR/scripts/overlayctl.py rebase-check'" >&2
+    exit 1
+  }
+
+  local shadow
+  shadow="$(overlay_shadow)"
+  echo "srun.sh: building ROCm in $shadow with ROCM_ARCH=$ROCM_ARCH"
+  (cd "$shadow" && make -f Makefile.overlay overlay-strix-halo ROCM_ARCH="$ROCM_ARCH")
+  local be_rc=$?
+  # The wrapper links the same engine, so an engine change it does not rebuild
+  # leaves it running yesterday's ds4.c. That is not theoretical: enabling
+  # Qwen3.8 on ROCm rebuilt ds4/ds4-server and left ds4-wrapper refusing the
+  # model with the previous release's error text, which reads like a code bug
+  # rather than a stale binary. Build it here, under the same lock.
+  if [[ "$be_rc" -eq 0 && -f "$shadow/Makefile.studio" ]]; then
+    echo "srun.sh: building ds4-wrapper (DS4 Studio layer)"
+    (cd "$shadow" && make -f Makefile.overlay overlay-strix-halo-wrapper \
+        ROCM_ARCH="$ROCM_ARCH")
+    be_rc=$?
+  fi
+  overlay_build_unlock
+  [[ "$be_rc" -eq 0 ]] || return "$be_rc"
+
+  echo "srun.sh: installing backend binaries into $ROOT_DIR"
+  if [[ -x "$shadow/ds4-wrapper" ]]; then
+    cp -f "$shadow/ds4-wrapper" "$ROOT_DIR/ds4-wrapper"
+  fi
+  local b
+  for b in $DS4_BACKEND_BINARIES; do
+    if [[ -x "$shadow/$b" ]]; then
+      cp -f "$shadow/$b" "$ROOT_DIR/$b"
+    else
+      echo "srun.sh: overlay build did not produce $b" >&2
+      exit 1
+    fi
+  done
 }
 
 if [[ $# -gt 0 && "$1" == "build" ]]; then
@@ -318,6 +467,8 @@ while [[ $# -gt 0 ]]; do
     --port) PORT="${2:?missing --port value}"; shift 2 ;;
     --config) CONFIG_PATH="${2:?missing --config value}"; shift 2 ;;
     --no-gui) NO_GUI=1; shift ;;
+    --no-picker) NO_PICKER=1; shift ;;
+    --models-dir) MODELS_DIR="${2:?missing --models-dir value}"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "srun.sh: unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -325,20 +476,41 @@ while [[ $# -gt 0 ]]; do
 done
 
 ensure_model() {
+  # ds4flash.gguf is the default-model symlink for a fresh checkout. A config
+  # that already names an existing GGUF needs nothing downloaded, and trying
+  # anyway wasted a run on a stale variant name: DS4_MODEL_VARIANT still
+  # defaulted to "q2-imatrix" while download_model.sh had moved to "ds4f-q2",
+  # so startup printed the downloader's whole usage text and carried on.
+  local configured=""
+  if [[ -f "$CONFIG_PATH" ]] && command -v node >/dev/null 2>&1; then
+    configured="$(node -e '
+      const fs = require("fs");
+      try {
+        const cfg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+        process.stdout.write((cfg && cfg.server && cfg.server.model) || "");
+      } catch { process.stdout.write(""); }
+    ' "$CONFIG_PATH" 2>/dev/null || true)"
+  fi
+  if [[ -n "$configured" && -e "$configured" ]]; then
+    return 0
+  fi
   if [[ -e "$ROOT_DIR/ds4flash.gguf" ]]; then
     return 0
+  fi
+  if [[ -n "$configured" ]]; then
+    echo "srun.sh: configured model not found: $configured" >&2
+    echo "srun.sh: fix server.model in $CONFIG_PATH, or remove it to download a default" >&2
+    exit 1
   fi
   if [[ -L "$ROOT_DIR/ds4flash.gguf" ]]; then
     echo "srun.sh: ds4flash.gguf is a broken symlink, re-downloading" >&2
     rm -f "$ROOT_DIR/ds4flash.gguf"
   fi
-  case "$DS4_MODEL_VARIANT" in
-    q2-imatrix|q4-imatrix|q2|q4) ;;
-    *)
-      echo "srun.sh: invalid DS4_MODEL_VARIANT='$DS4_MODEL_VARIANT' (use q2-imatrix|q4-imatrix|q2|q4)" >&2
-      exit 1
-      ;;
-  esac
+  if ! "$ROOT_DIR/download_model.sh" 2>&1 | grep -qE "^  \\./download_model\\.sh $DS4_MODEL_VARIANT( |$)"; then
+    echo "srun.sh: DS4_MODEL_VARIANT='$DS4_MODEL_VARIANT' is not a target download_model.sh offers." >&2
+    echo "srun.sh: run ./download_model.sh with no arguments to list them." >&2
+    exit 1
+  fi
   if [[ ! -x "$ROOT_DIR/download_model.sh" ]]; then
     echo "srun.sh: download_model.sh missing or not executable" >&2
     exit 1
@@ -360,9 +532,25 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
   exit 0
 fi
 
+# Model-dependent settings are re-derived from whichever model is selected, so
+# switching models cannot leave the previous one's keys behind. Anything under
+# server.perModel[<file>] is an explicit user choice and survives.
+reconcile_config() {
+  local tool="$ROOT_DIR/scripts/srun_reconcile.py"
+  [[ -f "$tool" ]] || return 0
+  # Nothing to re-derive from a model file that is not on this machine.
+  [[ "$(attach_mode)" == "endpoint" ]] && return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+  python3 "$tool" --config "$CONFIG_PATH" --quiet || {
+    echo "srun.sh: config reconcile failed; launching with the file as-is" >&2
+    return 0
+  }
+}
+
 run_tuning_gui() {
   if [[ "$NO_GUI" -eq 1 || "${DS4_SRUN_NO_GUI:-}" == "1" ]]; then
     echo "srun.sh: startup tuning GUI skipped"
+    reconcile_config
     return 0
   fi
   if ! command -v python3 >/dev/null 2>&1; then
@@ -375,12 +563,16 @@ run_tuning_gui() {
   fi
   local rc
   set +e
-  python3 "$SRUN_TUNING_GUI" --config "$CONFIG_PATH"
+  local gui_args=(--config "$CONFIG_PATH")
+  [[ "$NO_PICKER" -eq 1 ]] && gui_args+=(--no-picker)
+  [[ -n "$MODELS_DIR" ]] && gui_args+=(--models-dir "$MODELS_DIR")
+  python3 "$SRUN_TUNING_GUI" "${gui_args[@]}"
   rc=$?
   set -e
   case "$rc" in
     0)
       echo "srun.sh: tuning confirmed"
+      reconcile_config
       ;;
     20)
       echo "srun.sh: tuning saved; launch skipped"
@@ -414,8 +606,30 @@ ensure_backend() {
     if [[ -x "$ROOT_DIR/ds4-wrapper" ]]; then
       return 0
     fi
-    echo "srun.sh: ds4-wrapper binary not found, building ROCm (incremental, no make clean)"
-    (cd "$ROOT_DIR" && make ds4-wrapper GPU_BACKEND=rocm ROCM_ARCH="$ROCM_ARCH")
+    echo "srun.sh: ds4-wrapper binary not found, building via the overlay"
+    # ds4-wrapper is DS4 Studio's own layer: ds4-overlay's studio-app-layer
+    # feature patches ds4_agent.c / ds4_server.c and places Makefile.studio in
+    # the shadow, so it is built there alongside the ROCm fixes.
+    local shadow
+    # Taken before the shadow is even probed: reusing an existing tree still
+    # races with a concurrent compose that is about to rmtree it.
+    overlay_build_lock
+    shadow="$(overlay_shadow 2>/dev/null || true)"
+    if [[ -z "$shadow" || ! -d "$shadow" ]]; then
+      "$DS4_OVERLAY_DIR/scripts/overlayctl.py" compose || exit 1
+      shadow="$(overlay_shadow)"
+    fi
+    # No separate Studio anchor check any more: the Studio edits are strict
+    # shadow patches, verified by the compose above (PATCH_FAIL, fail-closed).
+    # The shadow is keyed by upstream SHA, so after a `git pull` it is always
+    # recomposed and every hunk re-checked against the new upstream.
+    # ROCm is selected by overriding CORE_OBJS/CFLAGS/DS4_LINK, not by a
+    # GPU_BACKEND switch: that variable does not exist, so passing it fell
+    # through to the CUDA rule and died on a missing nvcc.
+    (cd "$shadow" && make -f Makefile.overlay overlay-strix-halo-wrapper \
+        ROCM_ARCH="$ROCM_ARCH")
+    overlay_build_unlock
+    [[ -x "$shadow/ds4-wrapper" ]] && cp -f "$shadow/ds4-wrapper" "$ROOT_DIR/ds4-wrapper"
     if [[ ! -x "$ROOT_DIR/ds4-wrapper" ]]; then
       echo "srun.sh: backend build did not produce ./ds4-wrapper" >&2
       exit 1
@@ -424,8 +638,8 @@ ensure_backend() {
     if [[ -x "$ROOT_DIR/ds4-server" ]]; then
       return 0
     fi
-    echo "srun.sh: ds4-server binary not found, building ROCm (incremental, no make clean)"
-    (cd "$ROOT_DIR" && make ds4-server GPU_BACKEND=rocm ROCM_ARCH="$ROCM_ARCH")
+    echo "srun.sh: ds4-server binary not found, building via the overlay"
+    build_be
     if [[ ! -x "$ROOT_DIR/ds4-server" ]]; then
       echo "srun.sh: backend build did not produce ./ds4-server" >&2
       exit 1
@@ -446,8 +660,12 @@ if ! command -v npm >/dev/null 2>&1; then
   exit 1
 fi
 
-ensure_model
-ensure_backend
+if [[ "$(attach_mode)" == "endpoint" ]]; then
+  echo "srun.sh: attached to $(attach_label); skipping model download and backend build"
+else
+  ensure_model
+  ensure_backend
+fi
 ensure_agno_service "$ROOT_DIR" "$CONFIG_PATH"
 ensure_crawl_service "$ROOT_DIR"
 
@@ -478,6 +696,9 @@ if [[ -f "$CONFIG_PATH" ]] && command -v node >/dev/null 2>&1; then
     } catch { console.log("0"); }
   ' "$CONFIG_PATH" 2>/dev/null || echo "0")"
   [[ "$_uw" == "1" ]] && _backend_label="ds4-wrapper"
+fi
+if [[ "$(attach_mode)" == "endpoint" ]]; then
+  _backend_label="$(attach_label)"
 fi
 
 echo "srun.sh: launching DS4 Studio at http://$HOST:$PORT (backend: $_backend_label)"

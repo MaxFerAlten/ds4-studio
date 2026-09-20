@@ -1,0 +1,50 @@
+id = "accelerator-span-bounds"
+enabled = true
+owner = "overlay"
+description = """
+Bounds-check every non-empty tensor in accelerator_cache_q8_tensors(), not only
+the Q8_0 2-D ones.
+
+Upstream now short-circuits with
+
+    if (t->bytes == 0 || t->type != DS4_TENSOR_Q8_0 || t->ndim != 2) continue;
+
+so a tensor lying outside the mapping is skipped before
+
+    if (t->abs_offset > m->size || t->bytes > m->size - t->abs_offset) return false;
+
+ever runs.  The downstream V4.1 work relies on that bounds check firing for ALL
+tensors: it is what makes the non-ROCm path reject a disk-only V4.1 descriptor
+instead of accepting it.  This patch restores the ordering - bounds-check
+everything, narrow to Q8_0 2-D at the point of use.
+
+Evidence, not a guess: tests/test_deepseek41_cache_spans.c passes against the
+downstream core and fails against upstream with
+
+    Assertion `!accelerator_cache_q8_tensors(&m, NULL, NULL, 0)' failed
+
+This is the plan section 21 case where a textual probe would have wrongly said
+"upstream shipped deepseek41, retire the overlay".
+"""
+
+[upstream]
+reviewed_sha = "9139e2ae58a41503968a500f36f75895c1ba63fc"
+
+[[anchors]]
+file = "ds4.c"
+kind = "exact"
+text = "static bool accelerator_cache_q8_tensors(const ds4_model *m,"
+count = 1
+
+[[shadow_patch]]
+file = "ds4.c"
+patch = "patches/core/accelerator-span-bounds.patch"
+
+[[test]]
+command = "make -f Makefile.overlay overlay-test-deepseek41-cache-spans"
+required = true
+
+[[retire_probe]]
+kind = "symbol"
+file = "ds4.c"
+text = "if (t->bytes == 0) continue;"

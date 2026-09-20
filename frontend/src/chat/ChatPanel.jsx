@@ -5,6 +5,7 @@ import { ResearchPanel } from "../research/ResearchPanel.jsx";
 import { EvolutionPanel } from "../evolution/EvolutionPanel.jsx";
 import { AgnoPanel } from "../agno/AgnoPanel.jsx";
 import { SageActivityCard } from "../sage/SageActivityCard.jsx";
+import { LeanProofActivityCard } from "../lean/LeanProofActivityCard.jsx";
 
 /* Memoized: typing in the composer re-renders ChatPanel on every keystroke,
  * but messages/messagesRef are unchanged, so the whole list (and every
@@ -63,6 +64,8 @@ export function ChatPanel({
   uploadBusy,
   fileAccept,
   uploadedFiles,
+  pendingImages = [],
+  setPendingImages,
   attachedDoc, setAttachedDoc,
   chunkProgress,
   searchStrategy,
@@ -77,6 +80,7 @@ export function ChatPanel({
   workspaceMode, onWorkspaceMode,
   selectedResearchSessionId, setSelectedResearchSessionId,
   sageActivities,
+  leanProofActivity,
   agnoOpenRunId, onAgnoRunOpened,
   canSend,
   filteredSuggestions,
@@ -169,6 +173,10 @@ export function ChatPanel({
       {workspaceMode === "agno" ? <AgnoPanel openRunId={agnoOpenRunId} onRunOpened={onAgnoRunOpened} /> : null}
       <div className="chat-workspace" hidden={workspaceMode !== "chat"}>
       <MessagesList messages={messages} messagesRef={messagesRef} sageActivities={sageActivities} />
+      {/* One proof task runs per turn, so a single live card is enough. It sits
+          below the messages because the repairs happen while the answer is
+          still being withheld. */}
+      <LeanProofActivityCard activity={leanProofActivity} />
       <div className="export-row">
         <button
           type="button"
@@ -235,12 +243,34 @@ export function ChatPanel({
           ))}
         </div>
       ) : null}
+      {pendingImages.length ? (
+        <div className="attachments">
+          {pendingImages.map((img, idx) => (
+            <span key={`${img.name}-${idx}`} className="attachment-chip">
+              <img
+                src={img.url}
+                alt={img.name}
+                style={{ height: 28, width: 28, objectFit: "cover", borderRadius: 4, verticalAlign: "middle" }}
+              />
+              {" "}{img.name} · {(img.bytes / 1024).toFixed(0)} KB
+              <button
+                className="attachment-remove"
+                type="button"
+                title="Remove image"
+                onClick={() => setPendingImages((prev) => prev.filter((_, i) => i !== idx))}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      ) : null}
       <div className="composer">
         <input
           ref={fileInputRef}
           className="file-input"
           type="file"
-          accept={fileAccept}
+          accept={[fileAccept, "image/png", "image/jpeg"].filter(Boolean).join(",")}
           onChange={(event) => {
             uploadFile(event.target.files?.[0]);
             event.target.value = "";
@@ -251,8 +281,8 @@ export function ChatPanel({
           type="button"
           onClick={() => fileInputRef.current?.click()}
           disabled={uploadBusy || generationBusy}
-          title="Add file"
-          aria-label="Add file"
+          title="Add file or image (PNG/JPEG)"
+          aria-label="Add file or image"
         >
           <Plus size={18} />
         </button>

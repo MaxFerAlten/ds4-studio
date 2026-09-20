@@ -1,4 +1,5 @@
 #include "ds4_wrapper_config.h"
+#include "ds4_ssd.h"   /* ds4_parse_streaming_cache_experts_arg */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -70,8 +71,9 @@ ds4_wrapper_config ds4_wrapper_default_config(void) {
             .backend = default_backend(),
             .mtp_draft_tokens = 1,
             .mtp_margin = 3.0f,
+            .prefill_chunk = 1024,
         },
-        .ctx_size = 32768,
+        .ctx_size = 550000,
         .default_tokens = 393216,
         .host = "127.0.0.1",
         .port = 8000,
@@ -97,7 +99,8 @@ static void usage(FILE *fp) {
         "  --mtp FILE                            MTP model path\n"
         "  --mtp-draft N                         Maximum autoregressive MTP draft tokens\n"
         "  --mtp-margin F                        Minimum speculative confidence confidence\n"
-        "  -c, --ctx N                           Context size allocated at startup. Default: 32768\n"
+        "  -c, --ctx N                           Context size allocated at startup. Default: 550000\n"
+        "  --prefill-chunk N                    Graph prefill chunk size. Default: 1024\n"
         "  -n, --tokens N                        Default max output tokens\n"
         "  -t, --threads N                       CPU helper threads\n"
         "  --host HOST                           Bind address. Default: 127.0.0.1\n"
@@ -113,6 +116,16 @@ static void usage(FILE *fp) {
         "  --dir-steering-ffn F                  Apply steering after FFN outputs\n"
         "  --dir-steering-attn F                 Apply steering after attention outputs\n"
         "  --power N                             Target GPU duty cycle percentage (1..100)\n"
+        "  --vision FILE                         Vision encoder GGUF for the selected model\n"
+        "  --dspark                              Enable DSpark speculative decode using the --mtp support GGUF\n"
+        "  --dspark-confidence F                 DSpark confidence pruning threshold 0..1 (ROCm default 0.7)\n"
+        "  --dspark-strict                       Load DSpark support but keep target-only decode\n"
+        "  --mtp-exact-sampling                  Exact stochastic p/q acceptance instead of greedy\n"
+        "  --ssd-streaming                       Stream experts from SSD instead of resident memory\n"
+        "  --ssd-streaming-cold                  Stream without warming the expert cache first\n"
+        "  --ssd-streaming-cache-experts N|NGB   Expert cache budget, as a count or a byte size\n"
+        "  --ssd-streaming-full-layers N         Keep this many whole layers resident\n"
+        "  --ssd-streaming-preload-experts N     Preload this many experts at startup\n"
         "  --kv-disk-dir DIR                     Enable disk KV checkpoints in DIR\n"
         "  --kv-disk-space-mb MB                 Disk budget for checkpoint files\n"
         "  --kv-cache-min-tokens N               Do not save checkpoints shorter than N\n"
@@ -144,6 +157,10 @@ ds4_wrapper_config ds4_wrapper_parse_options(int argc, char **argv) {
             exit(0);
         } else if (!strcmp(arg, "-m") || !strcmp(arg, "--model")) {
             c.engine.model_path = need_arg(&i, argc, argv, arg);
+        } else if (!strcmp(arg, "--vision")) {
+            /* Same spelling ds4-server accepts: the encoder sidecar. The
+             * Vision-Exp target refuses to load without it. */
+            c.engine.vision_path = need_arg(&i, argc, argv, arg);
         } else if (!strcmp(arg, "--mtp")) {
             c.engine.mtp_path = need_arg(&i, argc, argv, arg);
         } else if (!strcmp(arg, "--mtp-draft")) {
@@ -152,6 +169,14 @@ ds4_wrapper_config ds4_wrapper_parse_options(int argc, char **argv) {
             c.engine.mtp_margin = parse_float_arg(need_arg(&i, argc, argv, arg), arg, 0.0f, 1000.0f);
         } else if (!strcmp(arg, "-c") || !strcmp(arg, "--ctx")) {
             c.ctx_size = parse_int_arg(need_arg(&i, argc, argv, arg), arg);
+        } else if (!strcmp(arg, "--prefill-chunk")) {
+            int v = parse_int_arg(need_arg(&i, argc, argv, arg), arg);
+            if (v <= 0) {
+                fprintf(stderr,
+                        "ds4-wrapper: --prefill-chunk must be positive\n");
+                exit(2);
+            }
+            c.engine.prefill_chunk = (uint32_t)v;
         } else if (!strcmp(arg, "-n") || !strcmp(arg, "--tokens")) {
             c.default_tokens = parse_int_arg(need_arg(&i, argc, argv, arg), arg);
         } else if (!strcmp(arg, "-t") || !strcmp(arg, "--threads")) {
@@ -182,6 +207,44 @@ ds4_wrapper_config ds4_wrapper_parse_options(int argc, char **argv) {
         } else if (!strcmp(arg, "--dir-steering-attn")) {
             c.engine.directional_steering_attn = parse_float_arg(need_arg(&i, argc, argv, arg), arg, -100.0f, 100.0f);
             directional_steering_scale_set = true;
+        } else if (!strcmp(arg, "--dspark")) {
+            /* Same spelling ds4-server accepts. The support GGUF rides in the
+             * --mtp slot; ds4_engine_open rejects --dspark without it. */
+            c.engine.dspark = true;
+        } else if (!strcmp(arg, "--dspark-confidence")) {
+            c.engine.dspark = true;
+            c.engine.dspark_confidence_threshold =
+                parse_float_arg(need_arg(&i, argc, argv, arg), arg, 0.0f, 1.0f);
+            c.engine.dspark_confidence_threshold_set = true;
+        } else if (!strcmp(arg, "--dspark-strict")) {
+            c.engine.dspark = true;
+            c.engine.dspark_strict = true;
+        } else if (!strcmp(arg, "--mtp-exact-sampling")) {
+            c.engine.dspark_exact_sampling = true;
+        } else if (!strcmp(arg, "--ssd-streaming")) {
+            c.engine.ssd_streaming = true;
+        } else if (!strcmp(arg, "--ssd-streaming-cold")) {
+            c.engine.ssd_streaming_cold = true;
+        } else if (!strcmp(arg, "--ssd-streaming-cache-experts")) {
+            /* Same spelling ds4-server accepts: a positive expert count, or a
+             * byte budget such as 72GB. V4.1 at a large context does not fit
+             * without this, so the wrapper has to be able to pass it through. */
+            uint32_t experts = 0;
+            uint64_t bytes = 0;
+            if (!ds4_parse_streaming_cache_experts_arg(
+                    need_arg(&i, argc, argv, arg), &experts, &bytes)) {
+                fprintf(stderr, "ds4-wrapper: --ssd-streaming-cache-experts must be "
+                                "a positive count or <number>GB\n");
+                exit(2);
+            }
+            c.engine.ssd_streaming_cache_experts = experts;
+            c.engine.ssd_streaming_cache_bytes = bytes;
+        } else if (!strcmp(arg, "--ssd-streaming-full-layers")) {
+            c.engine.ssd_streaming_full_layers =
+                (uint32_t)parse_int_arg(need_arg(&i, argc, argv, arg), arg);
+        } else if (!strcmp(arg, "--ssd-streaming-preload-experts")) {
+            c.engine.ssd_streaming_preload_experts =
+                (uint32_t)parse_int_arg(need_arg(&i, argc, argv, arg), arg);
         } else if (!strcmp(arg, "--power")) {
             c.engine.power_percent = parse_int_arg(need_arg(&i, argc, argv, arg), arg);
             if (c.engine.power_percent < 1 || c.engine.power_percent > 100) {

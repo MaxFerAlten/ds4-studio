@@ -1,0 +1,86 @@
+diff --git a/ds4_gpu.h b/ds4_gpu.h
+--- a/ds4_gpu.h
++++ b/ds4_gpu.h
+@@ -238,6 +238,17 @@
+ void ds4_gpu_set_quality(bool quality);
+ void ds4_gpu_set_glm_model(bool enabled);
+ void ds4_gpu_set_ssd_streaming(bool enabled);
++#if defined(DS4_ROCM_BUILD) || defined(__HIP_PLATFORM_AMD__)
++/* overlay dsv41-expert-streaming: ds4.c calls both of these on the ROCm V4.1
++ * path and upstream declares neither, so they were being called through an
++ * implicit declaration - no prototype, no argument checking, and a uint64_t
++ * passed on nothing but ABI luck. */
++/* Called after set_ssd_streaming has released the preceding model caches. */
++void ds4_gpu_set_deepseek41_model(bool enabled);
++/* Override the allocator reserve for a model with an explicit admission plan.
++ * set_ssd_streaming resets this to the ROCm default for each engine open. */
++void ds4_gpu_set_streaming_free_reserve(uint64_t bytes);
++#endif
+ void ds4_gpu_set_glm_streaming_prefill_full_layer(bool enabled);
+ #ifdef __APPLE__
+ int ds4_gpu_device_is_pre_m5_apple_silicon(void);
+@@ -322,6 +333,64 @@
+         uint32_t                           n_tokens,
+         uint32_t                           n_selected);
+ #endif
++/* ---- overlay: dsv41-expert-streaming ------------------------------------
++ * ROCm-only declarations for the V4.1 SSD expert-streaming subsystem. Upstream
++ * ships no ROCm V4.1 backend, so it declares none of this; the implementation
++ * lives in the overlay's rocm/ds4_rocm_runtime.cuh. Without it a V4.1 decode
++ * step fails with "missing compact selected experts". */
++#if defined(DS4_ROCM_BUILD) || defined(__HIP_PLATFORM_AMD__)
++/* HC2048 F32 SGEMM: 1 enqueued, 0 unsupported, -1 failure.
++ * Never fall back after failure. Full heads scratch remains live on stream0;
++ * free the plan before graph tensors. Input is already RMS-normalized;
++ * output remains F32 for Sinkhorn. */
++typedef struct ds4_gpu_dsv41_hc_plan ds4_gpu_dsv41_hc_plan;
++int ds4_gpu_dsv41_hc_project(ds4_gpu_dsv41_hc_plan **plan,
++                            ds4_gpu_tensor *out, const void *model_map,
++                            uint64_t model_size, uint64_t weight_offset,
++                            uint32_t rows, const ds4_gpu_tensor *input,
++                            ds4_gpu_tensor *full_heads_scratch);
++void ds4_gpu_dsv41_hc_plan_free(ds4_gpu_dsv41_hc_plan *plan);
++
++/* Preserve V4.1 activation formats while applying Q8 weights. */
++int ds4_gpu_dsv41_q8_projection_rows(ds4_gpu_tensor *out,
++                                    const void *model_map, uint64_t model_size,
++                                    uint64_t weight_offset, uint32_t width,
++                                    uint32_t outputs, uint32_t rows,
++                                    const ds4_gpu_tensor *in);
++
++typedef struct ds4_gpu_stream_expert_memory {
++    uint64_t dynamic_bytes, layer_bytes, selected_bytes, pinned_bytes;
++} ds4_gpu_stream_expert_memory;
++/* Call reserve/query/quiesce without a concurrent full-layer loader. Slab
++ * capacity includes free slots; it is not the current cached-entry count. */
++int ds4_gpu_stream_expert_cache_reserve_layers(
++        const ds4_gpu_stream_expert_table *even,
++        const ds4_gpu_stream_expert_table *odd);
++int ds4_gpu_stream_expert_cache_note_layer_consumed(
++        const ds4_gpu_stream_expert_table *table);
++int ds4_gpu_stream_expert_cache_quiesce(void);
++int ds4_gpu_stream_expert_cache_get_memory(ds4_gpu_stream_expert_memory *out);
++int ds4_gpu_stream_expert_cache_load_layer(
++        const ds4_gpu_stream_expert_table *table);
++/* V4.1's single-owner sweep prepares on the graph thread after quiescing
++ * selected reads and joining its previous loader. All source copies finish
++ * before return; only this immutable descriptor crosses to the disk worker.
++ * Do not mutate/reuse a plan while its loader is running. */
++typedef struct ds4_gpu_dsv41_stream_layer_plan {
++    ds4_gpu_stream_expert_table table;
++    uint64_t generation;
++    uint64_t hits[6];
++} ds4_gpu_dsv41_stream_layer_plan;
++int ds4_gpu_dsv41_stream_prepare_layer(
++        const ds4_gpu_stream_expert_table *table,
++        ds4_gpu_dsv41_stream_layer_plan *plan);
++int ds4_gpu_dsv41_stream_load_layer(
++        const ds4_gpu_dsv41_stream_layer_plan *plan);
++int ds4_gpu_dsv41_stream_cancel_layer(
++        const ds4_gpu_dsv41_stream_layer_plan *plan);
++#endif
++/* ------------------------------------------------------------------------ */
++
+ #ifdef DS4_ROCM_BUILD
+ int ds4_gpu_stream_expert_cache_load_layer(
+         const ds4_gpu_stream_expert_table *table);

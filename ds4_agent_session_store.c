@@ -363,7 +363,6 @@ bool ds4_sess_load_disk(ds4_engine *engine,
         result->quant_bits = hdr.quant_bits;
         result->ext_flags = hdr.ext_flags;
         result->load_ms = 0.0;
-        result->consumed = true;
         result->path = store_xstrdup(path);
     }
 

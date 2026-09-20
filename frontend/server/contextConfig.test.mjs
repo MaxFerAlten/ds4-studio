@@ -57,3 +57,57 @@ test("enabled/previewOnly honor env overrides", () => {
   assert.equal(cfg.enabled, true);
   assert.equal(cfg.previewOnly, false);
 });
+
+// --- file layer (refactoring 000 F3) ---
+
+test("the file layer beats the default for all nine fields", () => {
+  const file = {
+    enabled: true,
+    previewOnly: false,
+    softTokens: 900,
+    hardTokens: 2000,
+    maxGrowthPct: 40,
+    maxEvidence: 3,
+    deltaRequired: false,
+    telemetry: false,
+    maxLedgerEvents: 77
+  };
+  assert.deepEqual(readContextConfig({}, file), file);
+});
+
+test("the environment beats the file", () => {
+  const cfg = readContextConfig(
+    { DS4_CONTEXT_WIKI_ENABLED: "0", DS4_CONTEXT_MAX_LEDGER_EVENTS: "11" },
+    { enabled: true, maxLedgerEvents: 77 }
+  );
+  assert.equal(cfg.enabled, false);
+  assert.equal(cfg.maxLedgerEvents, 11);
+});
+
+test("an unusable file value falls back to the default", () => {
+  const cfg = readContextConfig({}, { maxEvidence: 0, telemetry: "yes", softTokens: null });
+  assert.equal(cfg.maxEvidence, DEFAULT_CONTEXT_LIMITS.maxEvidence);
+  assert.equal(cfg.telemetry, DEFAULT_CONTEXT_LIMITS.telemetry);
+  assert.equal(cfg.softTokens, DEFAULT_CONTEXT_LIMITS.softTokens);
+});
+
+test("an invalid env value falls back to the valid file value", () => {
+  const cfg = readContextConfig(
+    { DS4_CONTEXT_MAX_LEDGER_EVENTS: "abc", DS4_CONTEXT_DELTA_REQUIRED: "maybe" },
+    { maxLedgerEvents: 77, deltaRequired: false }
+  );
+  assert.equal(cfg.maxLedgerEvents, 77);
+  assert.equal(cfg.deltaRequired, false);
+});
+
+test("soft tokens never exceed hard tokens, whatever the layer", () => {
+  assert.equal(readContextConfig({}, { softTokens: 9000, hardTokens: 2000 }).softTokens, 2000);
+  assert.equal(
+    readContextConfig({ DS4_CONTEXT_CAPSULE_SOFT_TOKENS: "9000" }, { hardTokens: 2000 }).softTokens,
+    2000
+  );
+});
+
+test("the one-argument call keeps the old defaults", () => {
+  assert.deepEqual(readContextConfig({}), { ...DEFAULT_CONTEXT_LIMITS });
+});

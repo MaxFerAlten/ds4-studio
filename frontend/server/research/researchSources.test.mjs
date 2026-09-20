@@ -97,3 +97,29 @@ test("formatCitations excludes non-citable sources from scientific references", 
   assert.deepEqual(out.nonCitableIds, ["src_002"]);
   assert.deepEqual(out.missingIds, []);
 });
+
+test("normalizeSource keeps bibliographic identity and never derives it", () => {
+  const s = normalizeSource(
+    {
+      url: "https://arxiv.org/abs/0710.2724",
+      title: "General Solution of the Quantum Damped Harmonic Oscillator",
+      doi: "10.1088/1751-8113/41/8/085303",
+      arxivId: "0710.2724",
+      openAlexId: "https://openalex.org/W123",
+      publishedAt: "2007-10-15"
+    },
+    1
+  );
+  assert.equal(s.doi, "10.1088/1751-8113/41/8/085303");
+  assert.equal(s.arxivId, "0710.2724");
+  assert.equal(s.openAlexId, "https://openalex.org/W123");
+  assert.equal(s.publishedAt, "2007-10-15");
+
+  // Absent stays absent: an identifier invented from the others is the failure
+  // the identity resolver exists to catch.
+  const bare = normalizeSource({ url: "https://arxiv.org/abs/0710.2724", title: "T" }, 2);
+  assert.equal(bare.doi, null);
+  assert.equal(bare.arxivId, null);
+  assert.equal(bare.openAlexId, null);
+  assert.equal(bare.publishedAt, null);
+});

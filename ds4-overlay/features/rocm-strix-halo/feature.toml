@@ -1,0 +1,39 @@
+id = "rocm-strix-halo"
+enabled = true
+owner = "overlay"
+description = """
+ROCm / Strix Halo entry points: the ds4_rocm.cu include hook plus the two
+downstream-only headers it pulls in.
+
+Scope is deliberately limited to what builds. The ROCm-side callers of the V4.1
+expert-streaming subsystem live in feature dsv41-expert-streaming, which is
+disabled because its declarations have not been ported yet.
+
+Verified: ds4_rocm.o compiles clean under ROCm 7.2.4 for gfx1151 with this
+feature enabled.
+"""
+
+[upstream]
+reviewed_sha = "9139e2ae58a41503968a500f36f75895c1ba63fc"
+
+[[anchors]]
+file = "ds4_rocm.cu"
+kind = "exact"
+text = "#include \"rocm/ds4_rocm_runtime.cuh\""
+count = 1
+
+[[shadow_patch]]
+file = "ds4_rocm.cu"
+patch = "patches/rocm/rocm-strix-halo__ds4_rocm.cu.patch"
+
+[[overlay_file]]
+source = "src/rocm/ds4_rocm_v41.cuh"
+target = "rocm/ds4_rocm_v41.cuh"
+
+[[overlay_file]]
+source = "src/rocm/ds4_rocm_hc_sgemm.cuh"
+target = "rocm/ds4_rocm_hc_sgemm.cuh"
+
+[[test]]
+command = "make -f Makefile.overlay ds4_rocm.o"
+required = true

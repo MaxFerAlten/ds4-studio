@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "maxAttempts": 6,
+  "maxSameFailure": 2,
+  "maxPrematureFinalizations": 3,
+  "maxWallClockMs": 360000,
+  "strategyChangeAfter": 2
+}

@@ -6,6 +6,8 @@ import {
   authorizeSageCandidate,
   publicationFailureResult
 } from "./sagePublicationGate.mjs";
+import { envBooleanWithAliases } from "./envBoolean.mjs";
+import { classifySageBridgeException } from "./sageErrorClassifier.mjs";
 
 export function normalizeAuthoritativeSageResponse(value = {}) {
   const sageResult = value?.sageResult && typeof value.sageResult === "object"
@@ -39,8 +41,12 @@ export function normalizeAuthoritativeSageResponse(value = {}) {
   };
 }
 
-export function sageAuthoritativeLoopEnabled() {
-  return process.env.DS4_SAGE_AUTHORITATIVE_LOOP !== "0";
+export function sageAuthoritativeLoopEnabled(env = process.env) {
+  return envBooleanWithAliases({
+    env,
+    key: "DS4_SAGE_AUTONOMOUS_ORCHESTRATION",
+    defaultValue: true,
+  });
 }
 
 export async function executeAuthoritativeSage(args, options = {}) {
@@ -72,12 +78,22 @@ export async function executeAuthoritativeSage(args, options = {}) {
       artifactValidator: options.artifactValidator
     });
     return normalizeAuthoritativeSageResponse(authorized);
-  } catch {
-    return normalizeAuthoritativeSageResponse(publicationFailureResult({
+  } catch (error) {
+    const classified = classifySageBridgeException(error);
+    const logger = options.logger ?? console;
+    logger.error?.({
+      event: "sage_authoritative_executor_error",
+      code: classified.code,
+      category: classified.category,
+      message: classified.safeMessage,
+    });
+    const response = normalizeAuthoritativeSageResponse(publicationFailureResult({
       args,
-      raw: { content: "SageMath execution failed.", isError: true },
+      raw: { content: classified.safeMessage, isError: true },
       runId: options.runId,
       forceError: true
-    }, ["SAGE_EXECUTION_FAILED"]));
+    }, [classified.code]));
+    response.orchestration = classified;
+    return response;
   }
 }

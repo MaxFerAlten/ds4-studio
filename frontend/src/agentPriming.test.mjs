@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildAgentPrimingPreamble, withAgentPriming, commandRebuildsSessionKeepingContext } from "./utils.mjs";
+import { buildAgentPrimingPreamble, withAgentPriming, commandRebuildsSessionKeepingContext, nativeCommandRearmsPriming } from "./utils.mjs";
 
 test("returns empty string for missing or empty history", () => {
   assert.equal(buildAgentPrimingPreamble(undefined), "");
@@ -85,6 +85,7 @@ test("skill toggles re-arm priming; session-changing and other commands do not",
     "/soul start", "/soul stop", "/ethic start", "/ethic stop",
     "/metacognition start", "/metacognition stop",
     "/sage-pol start", "/sage-pol stop", "/sage start", "/sage stop",
+    "/lean start", "/lean stop",
     "  /soul start  "
   ]) {
     assert.equal(commandRebuildsSessionKeepingContext(cmd), true, cmd);
@@ -94,10 +95,21 @@ test("skill toggles re-arm priming; session-changing and other commands do not",
     "/new", "/switch abc123", "/save", "/list", "/pony start",
     "/crawl https://x", "/metacognition status", "/soul status",
     "/ethic status", "/sage-pol status", "/sage status", "/soulmate start",
+    "/lean status", "/lean preflight",
     "soul start", "", null, undefined
   ]) {
     assert.equal(commandRebuildsSessionKeepingContext(cmd), false, String(cmd));
   }
+});
+
+test("generic skill mutations re-arm priming only for exact canonical commands", () => {
+  assert.equal(commandRebuildsSessionKeepingContext("/skill lean start"), true);
+  assert.equal(commandRebuildsSessionKeepingContext("/skill lean stop"), true);
+  assert.equal(commandRebuildsSessionKeepingContext("/skill lean status"), false);
+  assert.equal(commandRebuildsSessionKeepingContext("/skill list"), false);
+  assert.equal(commandRebuildsSessionKeepingContext("/skill ../lean start"), false);
+  assert.equal(commandRebuildsSessionKeepingContext("/skill lean start extra"), false);
+  assert.equal(commandRebuildsSessionKeepingContext("/skill LEAN start"), false);
 });
 
 test("priming replays the WHOLE conversation from the first turn (no cap / recent window)", () => {
@@ -121,4 +133,50 @@ test("priming replays the WHOLE conversation from the first turn (no cap / recen
   // Notices excluded; hidden reasoning never leaks into the replay.
   assert.ok(!out.includes("Agent mode started"));
   assert.ok(!out.includes("hidden-cot"));
+});
+
+// R2-08 — what the chat does with a control-plane answer.
+
+test("a real mutation on a rebuilding command re-arms the priming replay", () => {
+  const rearm = (payload, command = "/lean start", ok = true) =>
+    nativeCommandRearmsPriming({ ok, payload, command });
+
+  assert.equal(rearm({ changed: true }), true);
+  // A repair is a mutation: the session was rebuilt under the chat.
+  assert.equal(rearm({ changed: true, repaired: true }), true);
+  assert.equal(rearm({ changed: false, repaired: true }), true);
+  // Nothing moved.
+  assert.equal(rearm({ changed: false, repaired: false }), false);
+});
+
+test("a status command never re-arms priming, however it answers", () => {
+  assert.equal(
+    nativeCommandRearmsPriming({ ok: true, payload: { changed: true }, command: "/lean status" }),
+    false
+  );
+  assert.equal(
+    nativeCommandRearmsPriming({ ok: true, payload: { changed: true }, command: "/skill list" }),
+    false
+  );
+});
+
+test("a failed command is not a success, whatever the payload says", () => {
+  // 409 busy and 500 manifest error both arrive with ok=false; neither may
+  // re-arm priming, and neither is retried automatically.
+  assert.equal(
+    nativeCommandRearmsPriming({
+      ok: false,
+      payload: { changed: true, errorCode: "AGENT_BUSY" },
+      command: "/lean start"
+    }),
+    false
+  );
+  assert.equal(
+    nativeCommandRearmsPriming({
+      ok: false,
+      payload: { changed: false, errorCode: "SKILL_MANIFEST_IO_FAILED" },
+      command: "/lean stop"
+    }),
+    false
+  );
 });

@@ -2,21 +2,73 @@ import { randomUUID } from "node:crypto";
 
 import { formatSageReport } from "./sageReportFormatter.mjs";
 import { runSageRuntimeValidator } from "./sageOrchestratorBridge.mjs";
+import { classifySageResult } from "./sageRepairPolicy.mjs";
+import { SAGE_FUNCTION_STUDY_ARTIFACT_KINDS } from "./sageOrchestrationConfig.mjs";
 import {
   SAGE_RESULT_CONTRACT_VERSION,
+  attachSageOrchestration,
+  buildSageOrchestration,
   normalizeSagePhase,
   normalizeSageTaskType,
   validateSageResult
 } from "./sageResultContract.mjs";
 
-const FUNCTION_STUDY_ARTIFACT_KINDS = new Set([
-  "function_plot",
-  "first_derivative_plot",
-  "second_derivative_plot"
-]);
+/**
+ * State implied by the orchestration decision (§8.2). The gate publishes the
+ * state, so a repairable failure has to be visibly repairable: collapsing every
+ * failure onto "failed" is what made a wrong derivative look terminal.
+ */
+function stateFromDecision(decision, executionOk) {
+  if (decision.publishable) return "ready";
+  if (decision.infrastructure) return "infrastructure_block";
+  if (decision.failureClass === "cancelled") return "cancelled";
+  if (decision.nextPhase === "plot") return "plot_required";
+  if (decision.nextPhase === "repair") return "repair_required";
+  return executionOk ? "validation_required" : "repair_required";
+}
+
+/**
+ * Classify a gate outcome and attach the decision to the result, nested and
+ * flat. Everything the loop needs to continue travels with the result.
+ */
+function withOrchestration(sageResult, { candidateRevision, attemptsRemaining, cancelled } = {}) {
+  const decision = classifySageResult(
+    { ...sageResult, sageResult, publishable: sageResult.publication?.publishable === true },
+    {
+      phase: sageResult.phase,
+      taskType: sageResult.taskType,
+      candidateRevision,
+      cancelled,
+    }
+  );
+  const state = stateFromDecision(decision, sageResult.execution?.ok === true);
+  sageResult.state = state;
+  attachSageOrchestration(
+    sageResult,
+    buildSageOrchestration(decision, {
+      state,
+      candidateRevision: candidateRevision ?? sageResult.attempt ?? 1,
+      validatedRevision: decision.publishable
+        ? (candidateRevision ?? sageResult.attempt ?? 1)
+        : null,
+      attemptsRemaining
+    })
+  );
+  return sageResult;
+}
+
+// One list, in sageOrchestrationConfig: the tracker decides when a plot is
+// still missing and the gate decides whether it may publish, and those two
+// answers must come from the same three names.
+const FUNCTION_STUDY_ARTIFACT_KINDS = new Set(SAGE_FUNCTION_STUDY_ARTIFACT_KINDS);
 
 function executionFromRaw(raw) {
-  const source = raw?.sageResult?.execution;
+  // Three shapes reach here: the legacy executor's `raw.raw.exit_code`, a
+  // re-authorized result carrying `sageResult.execution`, and the Python
+  // bridge's own normalized `execution`. Ignoring the last one made every
+  // successful bridge run look like an execution failure, so the V2 path could
+  // never publish anything.
+  const source = raw?.sageResult?.execution ?? raw?.execution;
   if (source && typeof source === "object") {
     return {
       ok: source.ok === true,
@@ -82,6 +134,9 @@ function topLevelResult(sageResult, raw, { forceError = false } = {}) {
     runId: sageResult.runId ?? null,
     state: sageResult.state ?? "failed",
     sageResult,
+    // The decision travels at the top level too: the agent loop reads this
+    // object, not the nested contract.
+    orchestration: sageResult.orchestration ?? null,
     artifacts: Array.isArray(sageResult.artifacts) ? sageResult.artifacts : [],
     finalMarkdown: markdown
   };
@@ -115,7 +170,7 @@ export function publicationFailureResult(input = {}, reasonCodes = []) {
     runId: String(input.runId ?? prior.runId ?? randomUUID()),
     taskType,
     phase,
-    state: execution.ok ? "computed" : "failed",
+    state: "validating", // replaced by withOrchestration below
     status: execution.timedOut ? "timeout" : execution.ok ? "ok" : "error",
     attempt: Math.max(1, Number(input.attempt ?? prior.attempt) || 1),
     display: {
@@ -147,6 +202,11 @@ export function publicationFailureResult(input = {}, reasonCodes = []) {
       artifactGatePassed: false
     }
   };
+  withOrchestration(sageResult, {
+    candidateRevision: input.candidateRevision,
+    attemptsRemaining: input.attemptsRemaining,
+    cancelled: input.cancelled === true
+  });
   return topLevelResult(sageResult, raw, { forceError: input.forceError === true });
 }
 
@@ -235,7 +295,9 @@ export async function authorizeSageCandidate(input = {}) {
     runId: String(input.runId ?? raw.sageResult?.runId ?? randomUUID()),
     taskType,
     phase,
-    state: publishable ? "ready" : execution.ok ? "validated" : "failed",
+    // Placeholder: withOrchestration replaces it with the state the decision
+    // implies, so the state and the required next phase cannot disagree.
+    state: "validating",
     status: execution.timedOut ? "timeout" : execution.ok ? "ok" : "error",
     attempt: Math.max(1, Number(input.attempt ?? raw.sageResult?.attempt) || 1),
     display: {
@@ -263,6 +325,12 @@ export async function authorizeSageCandidate(input = {}) {
       artifactGatePassed: artifactGate?.passed === true
     }
   };
+
+  withOrchestration(sageResult, {
+    candidateRevision: input.candidateRevision,
+    attemptsRemaining: input.attemptsRemaining,
+    cancelled: input.cancelled === true
+  });
 
   const contract = validateSageResult(sageResult);
   if (!contract.ok || !canPublishSageResult(sageResult)) {

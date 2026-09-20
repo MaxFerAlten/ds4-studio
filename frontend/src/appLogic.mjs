@@ -222,6 +222,10 @@ export const AGENT_COMMANDS = [
   { name: "/history", desc: "Show recent user turns (e.g. /history [N])" },
   { name: "/power", desc: "Set GPU duty cycle % (e.g. /power <1..100>)" },
   { name: "/new", desc: "Start a fresh agent session" },
+  { name: "/skill <name> start", desc: "Enable a local skill in Agent Mode" },
+  { name: "/skill <name> stop", desc: "Disable a local skill in Agent Mode" },
+  { name: "/skill <name> status", desc: "Show local skill state in Agent Mode" },
+  { name: "/skill list", desc: "List local skill state in Agent Mode" },
   { name: "/quit", desc: "Save and return to server mode" },
   { name: "/exit", desc: "Save and return to server mode" },
   { name: "/agent stop", desc: "Exit agent mode and return to server mode" },
@@ -385,9 +389,29 @@ export function buildChatMessages(messages = [], { system = "" } = {}) {
     // operational tool transcript. They must not be re-injected into the
     // active prompt context to prevent corrupted commands from reaching the model.
     if (message.fromArchive) continue;
+    // ds4-server accepts images only as the OpenAI content-array form, and only
+    // as data:image/{png,jpeg,jpg};base64 URIs (ds4_server.c parse_image_uri).
+    // Anything else is dropped silently, so keep plain strings for text turns.
+    if (message.images?.length) {
+      out.push({
+        role: message.role,
+        content: [
+          ...(message.content ? [{ type: "text", text: message.content }] : []),
+          ...message.images.map((url) => ({ type: "image_url", image_url: { url } }))
+        ]
+      });
+      continue;
+    }
     out.push({ role: message.role, content: message.content });
   }
   return out;
+}
+
+/* Content is a string for text turns and an array once images ride along. */
+export function chatMessageText(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.filter((part) => part?.type === "text").map((part) => part.text).join("\n");
 }
 
 export function parseSseData(block) {

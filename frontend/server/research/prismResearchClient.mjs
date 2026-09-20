@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+import { pickEnv, SAFE_SIDECAR_ENV_KEYS } from "../processManager.mjs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -78,10 +79,20 @@ export function resolvePrintingPressPrismCliPath({
   return existsSyncImpl(candidate) ? candidate : requested;
 }
 
+// The Prism CLI needs its cookie and a working toolchain, not the search
+// provider keys or the Evolution write token frontend/.env loaded into this
+// process. An explicitly injected env object (tests, callers with their own
+// overrides) is still copied whole; process.env is not.
 function buildCliEnv(env, cookiesEnv, cookiesOverride = "") {
-  const childEnv = { ...process.env, ...env };
   const sourceName =
     typeof cookiesEnv === "string" && cookiesEnv.trim() ? cookiesEnv.trim() : DEFAULT_COOKIES_ENV;
+  const base = pickEnv(process.env, [
+    ...SAFE_SIDECAR_ENV_KEYS,
+    DEFAULT_COOKIES_ENV,
+    sourceName
+  ]);
+  const overrides = env && env !== process.env ? { ...env } : {};
+  const childEnv = { ...base, ...overrides };
   if (cookiesOverride) {
     childEnv[DEFAULT_COOKIES_ENV] = cookiesOverride;
   } else if (sourceName !== DEFAULT_COOKIES_ENV && childEnv[sourceName]) {

@@ -1,0 +1,173 @@
+/* ds4_agent_ext.c - see ds4_agent_ext.h. */
+#include "ds4_agent_ext.h"
+
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+#include <time.h>
+
+/* A turn that errors this many times in a row is a loop, not progress. */
+#define DS4_AGENT_EXT_LOOP_GUARD_DEFAULT 5
+
+struct ds4_agent_ext {
+    ds4_agent_runtime *base;
+    ds4_wrapper *wrapper;
+    ds4_agent_ext_options opt;
+    ds4_agent_ext_metrics m;
+};
+
+static double ext_now_sec(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+}
+
+static int ext_loop_guard_max(const ds4_agent_ext *ext) {
+    int n = ext->opt.loop_guard_max_errors;
+    return n > 0 ? n : DS4_AGENT_EXT_LOOP_GUARD_DEFAULT;
+}
+
+int ds4_agent_ext_init(ds4_agent_ext **out,
+                       ds4_wrapper *wrapper,
+                       const ds4_agent_runtime_options *base_opt,
+                       const ds4_agent_ext_options *ext_opt,
+                       char *err,
+                       size_t err_len) {
+    if (!out || !wrapper) {
+        snprintf(err, err_len, "agent extension called without a wrapper");
+        return -1;
+    }
+    *out = NULL;
+
+    ds4_agent_ext *ext = calloc(1, sizeof(*ext));
+    if (!ext) {
+        snprintf(err, err_len, "out of memory allocating the agent extension");
+        return -1;
+    }
+
+    ext->wrapper = wrapper;
+    if (ext_opt) ext->opt = *ext_opt;
+
+    if (ds4_agent_runtime_init(&ext->base, wrapper, base_opt, err, err_len) != 0) {
+        free(ext);
+        return -1;
+    }
+    *out = ext;
+    return 0;
+}
+
+void ds4_agent_ext_free(ds4_agent_ext *ext) {
+    if (!ext) return;
+    ds4_agent_runtime_free(ext->base);
+    free(ext);
+}
+
+ds4_agent_runtime *ds4_agent_ext_base(ds4_agent_ext *ext) {
+    return ext ? ext->base : NULL;
+}
+
+int ds4_agent_ext_chat(ds4_agent_ext *ext,
+                       const char *user_text,
+                       ds4_agent_event_cb cb,
+                       void *ud,
+                       char *err,
+                       size_t err_len) {
+    if (!ext || !ext->base) {
+        if (err && err_len) snprintf(err, err_len, "agent runtime not initialised");
+        return -1;
+    }
+
+    if (ext->opt.enable_loop_guard) {
+        const int max = ext_loop_guard_max(ext);
+        if (ext->m.consecutive_errors >= (uint64_t)max) {
+            ext->m.loop_guard_trips++;
+            if (err && err_len)
+                snprintf(err, err_len,
+                         "agent loop guard: %d consecutive failed turns, "
+                         "start a new session to continue", max);
+            return -1;
+        }
+    }
+
+    ext->m.turns++;
+    const double t0 = ext->opt.enable_usage_metrics ? ext_now_sec() : 0.0;
+
+    int rc = ds4_agent_runtime_chat(ext->base, user_text, cb, ud, err, err_len);
+
+    if (ext->opt.enable_usage_metrics) {
+        ext->m.last_turn_sec = ext_now_sec() - t0;
+        ext->m.total_turn_sec += ext->m.last_turn_sec;
+    }
+    if (rc != 0) {
+        ext->m.turns_failed++;
+        ext->m.consecutive_errors++;
+    } else {
+        ext->m.consecutive_errors = 0;
+    }
+    return rc;
+}
+
+void ds4_agent_ext_interrupt(ds4_agent_ext *ext) {
+    if (!ext || !ext->base) return;
+    ext->m.interrupts++;
+    ds4_agent_runtime_interrupt(ext->base);
+}
+
+int ds4_agent_ext_save(ds4_agent_ext *ext, char *sha_out, size_t sha_len) {
+    if (!ext || !ext->base) return -1;
+    return ds4_agent_runtime_save(ext->base, sha_out, sha_len);
+}
+
+int ds4_agent_ext_list(ds4_agent_ext *ext, char **json_out) {
+    if (!ext || !ext->base) return -1;
+    return ds4_agent_runtime_list(ext->base, json_out);
+}
+
+int ds4_agent_ext_switch(ds4_agent_ext *ext, const char *sha, char *err, size_t err_len) {
+    if (!ext || !ext->base) return -1;
+    /* A session switch discards the failure history the guard was counting. */
+    ext->m.consecutive_errors = 0;
+    return ds4_agent_runtime_switch(ext->base, sha, err, err_len);
+}
+
+int ds4_agent_ext_strip(ds4_agent_ext *ext, const char *sha, char *err, size_t err_len) {
+    if (!ext || !ext->base) return -1;
+    return ds4_agent_runtime_strip(ext->base, sha, err, err_len);
+}
+
+int ds4_agent_ext_new(ds4_agent_ext *ext, char *err, size_t err_len) {
+    if (!ext || !ext->base) return -1;
+    ext->m.consecutive_errors = 0;
+    return ds4_agent_runtime_new(ext->base, err, err_len);
+}
+
+int ds4_agent_ext_compact(ds4_agent_ext *ext, char *err, size_t err_len) {
+    if (!ext || !ext->base) return -1;
+    return ds4_agent_runtime_compact(ext->base, err, err_len);
+}
+
+int ds4_agent_ext_command(ds4_agent_ext *ext, const char *command,
+                          ds4_agent_command_result *result) {
+    if (!ext || !ext->base) return -1;
+    return ds4_agent_runtime_command(ext->base, command, result);
+}
+
+void ds4_agent_ext_get_compression_metrics(ds4_agent_ext *ext,
+                                           ds4_agent_compression_metrics *out) {
+    if (!out) return;
+    if (!ext || !ext->base) { memset(out, 0, sizeof(*out)); return; }
+    ds4_agent_runtime_get_compression_metrics(ext->base, out);
+}
+
+void ds4_agent_ext_get_default_skills_status(ds4_agent_ext *ext,
+                                             ds4_default_skills_status *out) {
+    if (!out) return;
+    if (!ext || !ext->base) { memset(out, 0, sizeof(*out)); return; }
+    ds4_agent_runtime_get_default_skills_status(ext->base, out);
+}
+
+void ds4_agent_ext_get_metrics(ds4_agent_ext *ext, ds4_agent_ext_metrics *out) {
+    if (!out) return;
+    if (!ext) { memset(out, 0, sizeof(*out)); return; }
+    *out = ext->m;
+}

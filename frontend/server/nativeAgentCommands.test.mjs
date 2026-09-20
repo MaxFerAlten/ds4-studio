@@ -56,6 +56,24 @@ test("includes structured command data in the SSE text", () => {
   );
 });
 
+test("authoritative prompt status remains observable through native SSE", () => {
+  const [textEvent] = nativeCommandEvents({
+    ok: true,
+    message: "Skill lean is operational.",
+    data: {
+      promptMode: "autonomous",
+      fragmentLoaded: true,
+      assembledRevision: "a".repeat(40),
+      orchestrationEnabled: true,
+      finalizationGateEnabled: true,
+    },
+  });
+  assert.equal(textEvent.event, "agent_text");
+  assert.match(textEvent.data.content, /"promptMode": "autonomous"/);
+  assert.match(textEvent.data.content, /"fragmentLoaded": true/);
+  assert.match(textEvent.data.content, /"finalizationGateEnabled": true/);
+});
+
 test("converts command failures to SSE error and done events", () => {
   assert.deepEqual(
     nativeCommandEvents({ ok: false, message: "bad command", active: true }, false),

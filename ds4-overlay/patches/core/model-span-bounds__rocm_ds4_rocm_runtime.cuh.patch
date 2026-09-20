@@ -1,0 +1,23 @@
+diff --git a/rocm/ds4_rocm_runtime.cuh b/rocm/ds4_rocm_runtime.cuh
+index 0d1ee546..253ba6b3 100644
+--- a/rocm/ds4_rocm_runtime.cuh
++++ b/rocm/ds4_rocm_runtime.cuh
+@@ -4595,16 +4595,18 @@ static const char *cuda_model_range_copy_uncached(
+         return NULL;
+     }
+     g_model_ranges.push_back({model_map, offset, bytes, (char *)dev, NULL, NULL, 0, 0, 0});
+     g_model_range_bytes += bytes;
+     return (const char *)dev;
+ }
+ 
+ static const char *cuda_model_range_ptr(const void *model_map, uint64_t offset, uint64_t bytes, const char *what) {
++    if (model_map == g_model_host_base &&
++        !cuda_model_range_fits(g_model_registered_size, offset, bytes)) return NULL;
+     if (bytes == 0) return cuda_model_ptr(model_map, offset);
+     const char *image_ptr =
+         cuda_model_image_range_ptr(model_map, offset, bytes);
+     if (image_ptr) return image_ptr;
+ 
+     const uint64_t end = offset + bytes;
+     auto exact = g_model_range_by_offset.find(offset);
+     if (exact != g_model_range_by_offset.end()) {

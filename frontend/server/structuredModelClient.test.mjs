@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { StructuredModelClient, extractStructuredJson } from "./structuredModelClient.mjs";
+import { StructuredModelClient, extractStructuredJson,
+  describeJsonFailure
+} from "./structuredModelClient.mjs";
 
 function jsonResponse(value, status = 200) {
   return new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
@@ -56,4 +58,28 @@ test("HTTP error output is bounded", async () => {
     () => client.completeRole({ roleName: "critic", userPrompt: "input" }),
     (error) => error.message.startsWith("evolution model HTTP 500") && error.message.length < 500
   );
+});
+
+test("a JSON failure says whether the reply was truncated", () => {
+  const truncated = describeJsonFailure("researcher", {
+    content: '{"step_id":"st_1","finding":"Gli operatori di innalzamento e abbass',
+    finishReason: "length",
+    usage: { completion_tokens: 1536, completion_tokens_details: { reasoning_tokens: 537 } }
+  });
+  assert.match(truncated, /finish_reason=length/);
+  assert.match(truncated, /completion_tokens=1536/);
+  assert.match(truncated, /reasoning_tokens=537/);
+  assert.match(truncated, /raise this role's maxTokens/);
+  assert.match(truncated, /innalzamento e abbass/);
+
+  // Prose instead of JSON is a different fix, and must not claim truncation.
+  const prose = describeJsonFailure("researcher", {
+    content: "Mi dispiace, non posso rispondere.",
+    finishReason: "stop",
+    usage: { completion_tokens: 12 }
+  });
+  assert.match(prose, /finish_reason=stop/);
+  assert.doesNotMatch(prose, /token budget/);
+
+  assert.match(describeJsonFailure("researcher", { content: "" }), /reply was empty/);
 });

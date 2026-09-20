@@ -15,6 +15,32 @@
 // It is unref'd so the backstop timer never keeps the process alive on its own.
 export const PROXY_TIMEOUT_MS = 60 * 60 * 1000;
 
+/* Arm only after the upstream accepted the generation request. This avoids a
+ * disconnected client cancelling an unrelated request while it was merely
+ * waiting on a busy retry. */
+export function armBackendCancelOnDisconnect(signal, cancelBackend) {
+  if (!signal || typeof cancelBackend !== "function") return () => {};
+
+  let armed = true;
+  const onAbort = () => {
+    if (!armed) return;
+    armed = false;
+    try {
+      Promise.resolve(cancelBackend()).catch(() => {});
+    } catch {
+      // Cancellation is best-effort; the original disconnect still wins.
+    }
+  };
+
+  if (signal.aborted) onAbort();
+  else signal.addEventListener("abort", onAbort, { once: true });
+
+  return () => {
+    armed = false;
+    signal.removeEventListener("abort", onAbort);
+  };
+}
+
 export function abortOnClientDisconnect(req, res) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(new Error("upstream request timed out")), PROXY_TIMEOUT_MS);

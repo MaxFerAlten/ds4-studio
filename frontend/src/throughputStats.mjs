@@ -4,6 +4,48 @@ export function estimateTokenCount(text) {
   return Math.ceil(value.length / 4);
 }
 
+/** Usage with a ds4-shaped `timing`, mapping the llama.cpp shape when needed.
+ *
+ * ds4 reports per-request timing as `usage.timing` in seconds. llama.cpp-derived
+ * servers (Halogen among them) report a sibling `timings` object in
+ * milliseconds. The panel read only the first, so against an endpoint
+ * "gen server" showed n/a while the server's own log printed the rate:
+ *
+ *   serve_api: mtp 225 tok in 6.25s = 35.98 t/s | prompt 82, prefill 0.84s
+ *
+ * Prefill still had a browser-side fallback (time to first token), which is why
+ * only the generation figure went missing -- and why "effettivo" and "con cache"
+ * showed the same number, there being no cached-token detail either.
+ */
+export function normalizeUsageTiming(payload) {
+  const usage = payload?.usage;
+  if (!usage || typeof usage !== "object") return null;
+  if (usage.timing) return usage;
+
+  const t = payload.timings;
+  if (!t || typeof t !== "object") return usage;
+
+  const seconds = (ms) => {
+    const value = Number(ms);
+    return Number.isFinite(value) && value > 0 ? value / 1000 : undefined;
+  };
+  const timing = {};
+  const prefill = seconds(t.prompt_ms);
+  const decode = seconds(t.predicted_ms);
+  if (prefill !== undefined) timing.prefill_sec = prefill;
+  if (decode !== undefined) timing.decode_sec = decode;
+  if (Number(t.predicted_n) > 0) timing.decode_tokens = Number(t.predicted_n);
+  if (!Object.keys(timing).length) return usage;
+
+  const out = { ...usage, timing };
+  // cache_n is the prompt prefix served from cache, which is what splits
+  // "prefill effettivo" from "prefill con cache".
+  if (Number(t.cache_n) > 0 && !out.prompt_tokens_details) {
+    out.prompt_tokens_details = { cached_tokens: Number(t.cache_n) };
+  }
+  return out;
+}
+
 export function streamStatsFromTiming({
   requestStartMs,
   firstTokenMs,

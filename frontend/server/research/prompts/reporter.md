@@ -33,6 +33,12 @@ in Markdown.
   a source, cite it inline using its id in square brackets, e.g. [src_001].
 - Only cite ids that appear in Available Sources. If sources are empty, state in
   "Limiti" that the analysis rests on model knowledge without retrieved sources.
+- A source ID may be cited only for a claim that is supported by the supplied
+  source passage. Topical similarity is not support.
+- Do not treat a real paper as evidence for a formula, architecture fact,
+  measurement or conclusion not contained in its supplied passages.
+- If support is partial, qualify the claim. If no supplied passage supports it,
+  state that it remains unverified.
 - If observations conflict, surface the conflict explicitly.
 - Do not invent precise figures, dates, or citations you are not confident about.
 - Answer in the language of the user query.

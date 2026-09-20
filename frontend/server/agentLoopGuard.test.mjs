@@ -5,9 +5,16 @@ import {
   checkAssistantFileListEcho,
   guardAssistantDelta,
   hasStructuredSynthesis,
-  normalizeAgentIntentText
+  normalizeAgentIntentText,
+  protocolFailureFingerprint
 } from "./agentLoopGuard.mjs";
 import * as loopGuardModule from "./agentLoopGuard.mjs";
+import { loadAgentLoopPolicy } from "./agentLoopPolicy.mjs";
+import {
+  DSML_IN_THINK_ERROR,
+  alternatingProtocolFailureRounds,
+  dsmlInThinkLoopRounds
+} from "../../tests/fixtures/agentProtocolLoopFixture.mjs";
 
 test("normalizes look/check/read inspection variants to same intent", () => {
   assert.equal(
@@ -199,4 +206,92 @@ test("structured synthesis requires all four markers in order", () => {
     ),
     true
   );
+});
+
+// ── refactoring.003 R003-06: one policy, two enforcement points ─────────────
+
+test("the guard's thresholds come from the shared policy, not from literals", () => {
+  const policy = loadAgentLoopPolicy();
+  const guard = new AgentLoopGuard();
+  assert.equal(guard.maxNoProgress, policy.noProgressTerminal);
+  assert.equal(guard.repeatedActionStrategyChange, policy.repeatedActionStrategyChange);
+  assert.equal(guard.maxSameIntent, policy.repeatedActionStrategyChange);
+});
+
+test("the protocol fingerprint matches the native implementation byte for byte", () => {
+  // The value on the right is printed by ds4_agent_test as
+  // PROTOCOL_FINGERPRINT DSML_TOOL_INSIDE_THINK=...  A divergence means one
+  // side stops recognising a repeat the other side counts.
+  assert.equal(
+    protocolFailureFingerprint("DSML_TOOL_INSIDE_THINK", DSML_IN_THINK_ERROR),
+    "a98864fb6133b0bb6570cf1c7fe9e58f0b48c2cb500dacea6cfe73523c539c05",
+  );
+});
+
+test("a changing narrative does not change the failure identity", () => {
+  const a = protocolFailureFingerprint("DSML_PARSE_ERROR", "parse error at byte 1024");
+  const b = protocolFailureFingerprint("DSML_PARSE_ERROR", "parse error at byte 77");
+  const c = protocolFailureFingerprint("DSML_PARSE_ERROR", "PARSE   ERROR at byte 3\n");
+  assert.equal(a, b);
+  assert.equal(a, c);
+  assert.notEqual(a, protocolFailureFingerprint("DSML_PARSE_ERROR", "unterminated string"));
+  assert.notEqual(a, protocolFailureFingerprint("DSML_INCOMPLETE_CALL", "parse error at byte 1"));
+});
+
+test("the observed loop is repair, then strategy change, then terminal", () => {
+  const guard = new AgentLoopGuard();
+  guard.beginTurn();
+  const decisions = dsmlInThinkLoopRounds.map((round) =>
+    guard.recordProtocolFailure({ code: round.code, detail: round.detail }),
+  );
+
+  assert.equal(decisions[0].terminal, false);
+  assert.equal(decisions[0].strategyChangeRequired, false);
+  assert.match(decisions[0].guidance, /TOOL_PROTOCOL_REPAIR_REQUIRED/);
+  assert.match(decisions[0].guidance, /Close <\/think>/);
+
+  assert.equal(decisions[1].terminal, false);
+  assert.equal(decisions[1].strategyChangeRequired, true);
+  assert.match(decisions[1].guidance, /TOOL_PROTOCOL_STRATEGY_CHANGE_REQUIRED/);
+
+  assert.equal(decisions[2].terminal, true);
+  assert.match(decisions[2].guidance, /TOOL_PROTOCOL_TERMINAL/);
+  assert.match(decisions[2].guidance, /code=TOOL_CONTRACT_FAILURE/);
+
+  // Terminal is latched: the model does not get to decide it is over it.
+  const after = guard.recordProtocolFailure({ code: "DSML_PARSE_ERROR", detail: "x" });
+  assert.equal(after.terminal, true);
+  guard.noteProtocolSuccess();
+  assert.equal(guard.protocol.terminal, true);
+
+  // A new turn starts clean.
+  guard.beginTurn();
+  assert.equal(guard.protocol.terminal, false);
+  assert.equal(guard.protocol.totalFailureCount, 0);
+});
+
+test("six failures that are never the same twice still end the turn", () => {
+  const guard = new AgentLoopGuard();
+  guard.beginTurn();
+  let last = null;
+  alternatingProtocolFailureRounds.forEach((round, i) => {
+    last = guard.recordProtocolFailure(round);
+    if (i < 5) assert.equal(last.terminal, false, `round ${i + 1} should not be terminal`);
+  });
+  assert.equal(last.terminal, true);
+  assert.equal(last.totalFailureCount, loadAgentLoopPolicy().protocolTotalFailureTerminal);
+});
+
+test("a well-formed round clears the streak but not the turn total", () => {
+  const guard = new AgentLoopGuard();
+  guard.beginTurn();
+  guard.recordProtocolFailure({ code: "DSML_PARSE_ERROR", detail: "boom" });
+  guard.recordProtocolFailure({ code: "DSML_PARSE_ERROR", detail: "boom" });
+  guard.noteProtocolSuccess();
+  assert.equal(guard.protocol.sameFailureCount, 0);
+  assert.equal(guard.protocol.totalFailureCount, 2);
+
+  const next = guard.recordProtocolFailure({ code: "DSML_PARSE_ERROR", detail: "boom" });
+  assert.equal(next.strategyChangeRequired, false);
+  assert.equal(next.sameFailureCount, 1);
 });

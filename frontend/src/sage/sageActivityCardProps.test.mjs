@@ -101,6 +101,46 @@ test("footer line is empty for fresh activity", () => {
   assert.equal(props.footerLine, "");
 });
 
+test("una correzione autonoma si legge come lavoro in corso, non come errore", () => {
+  const activity = applySageStatus(null, {
+    runId: "r1", phase: "repair", state: "repairing", status: "running",
+    candidateRevision: 2, repairCount: 1, requiredNextPhase: "repair"
+  });
+  const props = sageActivityCardProps(activity);
+  assert.equal(props.summary, "Correzione matematica autonoma in corso");
+});
+
+test("la rivalidazione di una revisione dice quale revisione", () => {
+  const activity = applySageStatus(null, {
+    runId: "r1", phase: "validate", state: "validating", status: "running",
+    candidateRevision: 3, validationCount: 2
+  });
+  const props = sageActivityCardProps(activity);
+  assert.equal(props.summary, "Nuova validazione della revisione 3");
+  assert.ok(props.footerLine.includes("revisione 3"));
+  assert.ok(props.footerLine.includes("2 validazioni"));
+});
+
+test("un artefatto mancante si vede nel titolo e la fase successiva nel footer", () => {
+  const activity = applySageStatus(null, {
+    runId: "r1", phase: "plot", state: "plotting", status: "running",
+    candidateRevision: 1, plotCount: 1, requiredNextPhase: "plot",
+    missingArtifactKinds: ["second_derivative_plot"]
+  });
+  const props = sageActivityCardProps(activity);
+  assert.equal(props.summary, "Generazione artefatto mancante");
+  assert.ok(props.footerLine.includes("prossima fase: grafici"));
+});
+
+test("il cambio di strategia richiesto e' visibile", () => {
+  const activity = applySageStatus(null, {
+    runId: "r1", phase: "validate", state: "validating", status: "error",
+    candidateRevision: 2, strategyChangeRequired: true, failureClass: "math_validation_failed"
+  });
+  const props = sageActivityCardProps(activity);
+  assert.ok(props.footerLine.includes("cambio di strategia richiesto"));
+});
+
 test("function study steps are ordered correctly", () => {
   let activity = applySageStatus(null, {
     runId: "r1", taskType: "function_study", phase: "compute",

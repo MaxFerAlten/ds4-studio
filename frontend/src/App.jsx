@@ -2,9 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Play, Power, RefreshCw, Terminal } from "lucide-react";
 
 import { commandLineFromConfig } from "../server/commandBuilder.mjs";
-import { REQUEST_DEFAULTS } from "../server/defaultConfig.mjs";
+import { REQUEST_DEFAULTS } from "../server/requestDefaults.mjs";
 import { buildChatPayload, isAutoMaxTokens } from "../server/requestPayload.mjs";
-import { backendHealthLabel, backendStartupDetail, streamFailureNotice, formatNativeAgentNotice, parseAgentInput, withAgentPriming, commandRebuildsSessionKeepingContext, historyHasPersistableAssistant, sessionHasAgentMetadata, sessionsExposeMetadata, clearStoredExportIncludeReasoning, readStoredExportDir, readStoredExportIncludeReasoning, writeStoredExportDir, writeStoredExportIncludeReasoning, createDeltaBatcher, documentIsVisible, clearCallDebug, fetchCallDebug } from "./utils.mjs";
+import { backendHealthLabel, backendStartupDetail, streamFailureNotice, formatNativeAgentNotice, parseAgentInput, withAgentPriming, commandRebuildsSessionKeepingContext, historyHasPersistableAssistant, sessionHasAgentMetadata, sessionsExposeMetadata, clearStoredExportIncludeReasoning, readStoredExportDir, readStoredExportIncludeReasoning, writeStoredExportDir, writeStoredExportIncludeReasoning, createDeltaBatcher, documentIsVisible, clearCallDebug, fetchCallDebug, nativeCommandRearmsPriming } from "./utils.mjs";
 import {
   exportConversationMarkdown,
   exportConversationMarkdownRaw,
@@ -13,9 +13,10 @@ import {
   professionalMarkdownFileName
 } from "./conversationExport.mjs";
 import { applySageStatus, applySageArtifact, finalizeSageActivity, toolResultMessages } from "./sage/sageActivityState.mjs";
+import { applyLeanStatus } from "./lean/leanProofActivityState.mjs";
 import { startProxy as startPageAgentProxy, stopProxy as stopPageAgentProxy } from "./pageagent/pageAgentProxy.mjs";
 import { ChatPanel } from "./chat/ChatPanel.jsx";
-import { RequestPanel, ProfilePanel, StartupPanel, StrategyPanel, LogsPanel, MetricsPanel, CompressionPanel, CallDebugPanel, PageAgentPanel } from "./panels/RightRailPanels.jsx";
+import { RequestPanel, ProfilePanel, StartupPanel, StrategyPanel, LogsPanel, MetricsPanel, CompressionPanel, CallDebugPanel, PageAgentPanel, LeanPanel } from "./panels/RightRailPanels.jsx";
 import { LeftRail } from "./panels/LeftRail.jsx";
 import { HistoryPanel } from "./panels/HistoryPanel.jsx";
 import { listResearchSessions } from "./research/researchApi.mjs";
@@ -23,7 +24,8 @@ import { workspaceFromPath, pathForWorkspace } from "./workspaceRouting.mjs";
 import {
   AGENT_HEADERS, AGENT_COMMANDS, ENV_FIELDS,
   appendAssistantDelta, replaceAssistantMessage,
-  appendAssistantNotice, appendTransientNotice, buildChatMessages, injectSearchResults, searchResultsBlock,
+  appendAssistantNotice, appendTransientNotice, buildChatMessages, chatMessageText,
+  injectSearchResults, searchResultsBlock,
   parseSseData, formatMetric, initialExportSettings,
   readStoredSession, writeStoredSession, clearStoredSession,
   requestFreshNativeAgentSession
@@ -33,6 +35,7 @@ import {
   estimateTokenCount,
   finalizeLiveStats,
   streamStatsFromTiming,
+  normalizeUsageTiming,
   updateLiveStats
 } from "./throughputStats.mjs";
 
@@ -233,6 +236,7 @@ export default function App() {
   const [uploadBusy, setUploadBusy] = useState(false);
   const [fileAccept, setFileAccept] = useState("");
   const [uploadedFiles, setUploadedFiles] = useState([]);
+  const [pendingImages, setPendingImages] = useState([]);
   const [rocm, setRocm] = useState(null);
   const [error, setError] = useState("");
   const [runtimeStats, setRuntimeStats] = useState(null);
@@ -253,6 +257,8 @@ export default function App() {
   const [searchStrategy, setSearchStrategy] = useState("F");
   const [searchChunkTokens, setSearchChunkTokens] = useState(25000);
   const [sageActivities, setSageActivities] = useState({});
+  // One Lean proof task is live at a time, so this is an object, not a map.
+  const [leanProofActivity, setLeanProofActivity] = useState(null);
   const [attachedDoc, setAttachedDoc] = useState(null);
   const [chunkProgress, setChunkProgress] = useState(null);
   const [exportSettings, setExportSettings] = useState(initialExportSettings);
@@ -641,6 +647,7 @@ export default function App() {
     setMessages(loadedMessages);
     setCurrentSessionFileName(data.session.fileName);
     setSageActivities({});
+    setLeanProofActivity(null);
     setHistoryAutoLoaded(true);
     lastSavedHistorySignatureRef.current = JSON.stringify({
       dir: historyConfig.dir,
@@ -691,6 +698,7 @@ export default function App() {
         setCurrentSessionFileName(null);
         setMessages([]);
         setSageActivities({});
+        setLeanProofActivity(null);
         lastSavedHistorySignatureRef.current = "";
         clearStoredSession();
       }
@@ -711,6 +719,7 @@ export default function App() {
       setCurrentSessionFileName(null);
       setMessages([]);
       setSageActivities({});
+      setLeanProofActivity(null);
       lastSavedHistorySignatureRef.current = "";
       clearStoredSession();
     } catch (err) {
@@ -745,6 +754,7 @@ export default function App() {
     setMessages([]);
     setCurrentSessionFileName(null);
     setSageActivities({});
+    setLeanProofActivity(null);
     setAttachedDoc(null);
     setChunkProgress(null);
     handleInputChange("");
@@ -952,6 +962,28 @@ export default function App() {
 
   async function uploadFile(file) {
     if (!file) return;
+    // Images bypass server-side text extraction: they ride with the next turn as
+    // a data URI. ds4-server only decodes png/jpeg/jpg and drops anything else
+    // without an error, so reject other types here instead of failing silently.
+    if (file.type?.startsWith("image/")) {
+      if (!["image/png", "image/jpeg", "image/jpg"].includes(file.type)) {
+        setError(`${file.name}: ds4 accepts only PNG and JPEG images (got ${file.type}).`);
+        return;
+      }
+      setError("");
+      try {
+        const url = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = () => reject(new Error(`cannot read ${file.name}`));
+          reader.readAsDataURL(file);
+        });
+        setPendingImages((prev) => [...prev, { name: file.name, url, bytes: file.size }]);
+      } catch (err) {
+        setError(err.message);
+      }
+      return;
+    }
     const form = new FormData();
     form.append("file", file);
     setUploadBusy(true);
@@ -1304,7 +1336,7 @@ export default function App() {
       // session from a new system prompt, discarding the live conversation.
       // Re-arm priming so the next turn replays the transcript into the fresh
       // session — same mechanism as entering agent mode with existing history.
-      if (res.ok && commandRebuildsSessionKeepingContext(command)) {
+      if (nativeCommandRearmsPriming({ ok: res.ok, payload, command })) {
         const hasReplayableHistory = messages.some(
           (msg) => msg && !msg.agentNotice && (msg.role === "user" || msg.role === "assistant")
         );
@@ -1987,6 +2019,11 @@ export default function App() {
             if (toolMsgs.length) {
               setMessages((prev) => [...prev, ...toolMsgs]);
             }
+          } else if (event === "agent_lean_status") {
+            deltaBatcher.flush();
+            setLeanProofActivity((prev) =>
+              applyLeanStatus(prev && prev.proofId === data.proofId ? prev : null, data)
+            );
           } else if (event === "agent_sage_status") {
             deltaBatcher.flush();
             setSageActivities((prev) => ({
@@ -2138,6 +2175,28 @@ export default function App() {
         if (agentInput.action === "stop") return toggleAgentMode(false);
         return callAgentStatus();
       }
+      if (agentInput.type === "skill" && agentInput.action === "inactive") {
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: "Il comando /skill è disponibile solo in Agent Mode. Attiva Agent Mode con /agent start.",
+            agentNotice: true
+          }
+        ]);
+        return;
+      }
+      if (agentInput.type === "lean" && agentInput.action === "inactive") {
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: "Il comando /lean è disponibile solo in Agent Mode. Attiva Agent Mode con /agent start.",
+            agentNotice: true
+          }
+        ]);
+        return;
+      }
       if (agentInput.type === "pony") {
         return callPonyControl(agentInput);
       }
@@ -2197,9 +2256,13 @@ export default function App() {
         ]
       : [
           ...messages,
-          { role: "user", content: text },
+          pendingImages.length
+            ? { role: "user", content: text, images: pendingImages.map((img) => img.url) }
+            : { role: "user", content: text },
           { role: "assistant", content: "", reasoning: "" }
         ];
+    const sentImages = pendingImages;
+    setPendingImages([]);
     setMessages(nextMessages);
     setHistoryAutoLoaded(true);
 
@@ -2223,7 +2286,7 @@ export default function App() {
       let streamUsage = null;
       let liveStats = createLiveStatsTracker({
         requestStartMs: tRequestStart,
-        promptTokens: estimateTokenCount(chatMessages.map((message) => message.content).join("\n\n"))
+        promptTokens: estimateTokenCount(chatMessages.map((message) => chatMessageText(message.content)).join("\n\n"))
       });
 
       const res = await fetch("/v1/chat/completions", {
@@ -2245,15 +2308,16 @@ export default function App() {
         } else {
           setMessages(replaceAssistantMessage(content, message.reasoning_content || message.reasoning || ""));
         }
-        if (data.usage) {
+        const usage = normalizeUsageTiming(data);
+        if (usage) {
           setRuntimeStats(streamStatsFromTiming({
             requestStartMs: tRequestStart,
-            promptTokens: data.usage.prompt_tokens,
-            promptTokensDetails: data.usage.prompt_tokens_details,
-            completionTokens: data.usage.completion_tokens,
-            prefillSeconds: data.usage.timing?.prefill_sec,
-            generationSeconds: data.usage.timing?.decode_sec,
-            generationTokens: data.usage.timing?.decode_tokens,
+            promptTokens: usage.prompt_tokens,
+            promptTokensDetails: usage.prompt_tokens_details,
+            completionTokens: usage.completion_tokens,
+            prefillSeconds: usage.timing?.prefill_sec,
+            generationSeconds: usage.timing?.decode_sec,
+            generationTokens: usage.timing?.decode_tokens,
             generationSource: "server",
             stream: false
           }));
@@ -2283,7 +2347,9 @@ export default function App() {
           } catch {
             continue;
           }
-          if (event.usage) streamUsage = event.usage;
+          // `timings` rides beside `usage` in the final chunk, not inside it.
+          const normalizedUsage = normalizeUsageTiming(event);
+          if (normalizedUsage) streamUsage = normalizedUsage;
           const delta = event.choices?.[0]?.delta || {};
           const content = delta.content || "";
           const reasoning = delta.reasoning_content || delta.reasoning || "";
@@ -2342,6 +2408,8 @@ export default function App() {
         deltaBatcher.flush();
         setMessages(appendTransientNotice(streamFailureNotice(err)));
       }
+      // Re-encoding a dropped image means picking the file again; hand it back.
+      if (sentImages.length) setPendingImages((prev) => [...sentImages, ...prev]);
     } finally {
       deltaBatcher.cancel();
       setGenerationBusy(false);
@@ -2382,6 +2450,8 @@ export default function App() {
           uploadBusy={uploadBusy}
           fileAccept={fileAccept}
           uploadedFiles={uploadedFiles}
+          pendingImages={pendingImages}
+          setPendingImages={setPendingImages}
           attachedDoc={attachedDoc}
           setAttachedDoc={setAttachedDoc}
           chunkProgress={chunkProgress}
@@ -2402,6 +2472,7 @@ export default function App() {
           agnoOpenRunId={agnoOpenRunId}
           onAgnoRunOpened={() => setAgnoOpenRunId(null)}
           sageActivities={sageActivities}
+          leanProofActivity={leanProofActivity}
           canSend={canSend}
           filteredSuggestions={filteredSuggestions}
           setActiveSuggestionIndex={setActiveSuggestionIndex}
@@ -2454,6 +2525,9 @@ export default function App() {
           </button>
           <button type="button" className={tab === "pageagent" ? "active" : ""} onClick={() => setTab("pageagent")} data-agent-id="right-rail-pageagent-tab">
             PageAgent
+          </button>
+          <button type="button" className={tab === "lean" ? "active" : ""} onClick={() => setTab("lean")} data-agent-id="right-rail-lean-tab">
+            Lean 4
           </button>
         </div>
         {tab === "request" ? (
@@ -2528,6 +2602,9 @@ export default function App() {
         ) : null}
         {tab === "pageagent" ? (
           <PageAgentPanel config={config} />
+        ) : null}
+        {tab === "lean" ? (
+          <LeanPanel config={config} />
         ) : null}
         </aside>
       </main>

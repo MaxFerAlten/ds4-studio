@@ -15,6 +15,17 @@ import { buildSynthesisBrief } from "./synthesisEngine.mjs";
 import { AgentSessionManager } from "./agentSession.mjs";
 import { ToolBlobStore } from "./toolBlobStore.mjs";
 import { compressToolResultForModel } from "./toolOutputCompressor.mjs";
+import { AuthoritativeOutputBuffer } from "./authoritativeOutputBuffer.mjs";
+import {
+  createEpistemicTurn,
+  evaluateEpistemicTurn,
+  withholdsOutput
+} from "./epistemic/epistemicTurn.mjs";
+import { evidenceFromToolResult } from "./epistemic/epistemicEvidence.mjs";
+import {
+  EXECUTION_VERDICT,
+  verifyExecutionClaim
+} from "./epistemic/epistemicExecutionVerifier.mjs";
 
 // --- fixtures: per-URL crawl content driving source classification ----------
 const PAGE_CONTENT = {
@@ -137,4 +148,53 @@ test("large list result forces observe-compress-target-verdict before further an
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }
+});
+
+test("§59 block mode emits zero candidate bytes before the epistemic verdict", async () => {
+  const config = { enabled: true, mode: "block", withholdOutput: true, blockSeverity: 4 };
+  const turn = createEpistemicTurn({ sessionKey: "qfix-no-leak", revision: 1, config });
+  const candidate = "This is verified without any evidence.";
+  const fakeBackendDeltas = ["This is ", "verified ", "without any evidence."];
+  const published = [];
+  const deferred = new AuthoritativeOutputBuffer();
+
+  for (const delta of fakeBackendDeltas) {
+    if (withholdsOutput(config)) deferred.append(delta);
+    else published.push(delta);
+  }
+  assert.equal(deferred.chunks.join(""), candidate);
+  assert.deepEqual(published, [], "no agent_text event exists before the verdict");
+
+  const verdict = await evaluateEpistemicTurn(turn, { assistantContent: candidate });
+  assert.equal(verdict.allowed, false);
+  assert.equal(verdict.mustContinue, true, "a blocked candidate starts a repair iteration");
+  assert.equal(verdict.code, "EPISTEMIC_UNSUPPORTED_EMPIRICAL_CLAIM");
+  deferred.discard();
+  assert.equal(deferred.size, 0);
+  assert.deepEqual(published, [], "blocked candidate bytes are never released");
+  assert.match(verdict.guidance, /Produce the evidence|not checked/i);
+});
+
+test("§60 test evidence is bound to the command that actually ran", () => {
+  const toolEvidence = (command) =>
+    evidenceFromToolResult({
+      callId: `call_${command}`,
+      toolName: "bash",
+      arguments: { command },
+      rawResult: { content: "passed", isError: false, raw: { exit_code: 0 } }
+    });
+
+  const actualTest = verifyExecutionClaim({
+    claim: "Tests passed.",
+    evidence: [toolEvidence("npm test")]
+  });
+  assert.equal(actualTest.verdict, EXECUTION_VERDICT.SUPPORTED);
+  assert.equal(actualTest.block, false);
+
+  const echoOnly = verifyExecutionClaim({
+    claim: "Project tests passed.",
+    evidence: [toolEvidence("echo passed")]
+  });
+  assert.equal(echoOnly.verdict, EXECUTION_VERDICT.UNSUPPORTED);
+  assert.deepEqual(echoOnly.failureCodes, ["F04"]);
 });

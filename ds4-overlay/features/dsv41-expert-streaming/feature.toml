@@ -1,0 +1,122 @@
+id = "dsv41-expert-streaming"
+enabled = true
+owner = "overlay"
+description = """
+ROCm-side callers of the downstream DeepSeek V4.1 expert-streaming subsystem.
+
+DISABLED: INCOMPLETE - AND REQUIRED FOR WORKING V4.1 INFERENCE ON ROCm.
+
+Measured 2026-09-15: with this feature off, a V4.1 model loads, serves and
+prefills on ROCm, but the very first decode step fails:
+
+    ds4: ROCm SSD streaming routed MoE missing compact selected experts
+        (layer=0 tokens=1 total_experts=384 selected=6);
+        full expert table is not mapped
+    ds4: V4.1 layer 0 failed at position 44
+    finish=error error="V4.1 decode failed at position 44"
+
+Decode needs per-token compact expert selection, which is precisely what the
+cuda_stream_layer_expert_cache_* / cuda_stream_resident_seed_experts functions
+below provide. So this is not an optional optimisation: without it V4.1 on ROCm
+prefills and then produces zero tokens. Reproduced identically through
+ds4-server standalone and through ds4-wrapper, so it is the engine, not the
+wrapper.
+
+These patches add the call sites but not the things they call. Enabling them as
+they stand breaks the ROCm build with 18 errors:
+
+    unknown type name 'ds4_gpu_dsv41_stream_layer_plan'
+    unknown type name 'ds4_gpu_stream_expert_memory'
+    use of undeclared identifier 'cuda_stream_layer_expert_cache_reserve'
+    use of undeclared identifier 'cuda_stream_layer_expert_cache_note_consumed'
+    use of undeclared identifier 'cuda_stream_expert_cache_quiesce'
+    use of undeclared identifier 'cuda_stream_layer_table_bytes'
+    no matching function for call to 'cuda_stream_resident_seed_experts'
+
+To finish it, the declarations and implementations have to come across too:
+
+  * types in `ds4_gpu.h`            (upstream vs downstream: +229/-247)
+  * `cuda_stream_*` in `ds4_cuda.cu` (+394/-1214)
+  * engine fields in `ds4.c`: `ds41_host_memory_baseline`, `ds41_model_loaded`
+
+All three are group-B "mixed" files where upstream has moved on independently,
+so this is a real multi-file port with design decisions in it - not a hunk copy.
+Per plan section 4.1 the engine fields should arrive as a single
+`ds4_overlay_engine_state ovl;` sub-struct rather than as scattered members.
+
+Completing this also unblocks tests/test_deepseek41_memory.c, which cannot
+currently compile against upstream, and the ds4-kernel-v41 link.
+"""
+
+# STATUS: header/declaration half done and proven to compile; engine half not
+# started. Left DISABLED because swapping a 7000-line ROCm runtime header
+# wholesale is unvalidated for non-V4.1 models, and with no engine-side caller
+# it changes nothing for V4.1 either - so enabling it today is all risk, no gain.
+#
+# Done and verified:
+#   * rocm/ds4_rocm_runtime.cuh + rocm/ds4_rocm_current_api_compat.cuh taken
+#     from the fork as overlay files
+#   * 13 missing declarations added to ds4_gpu.h (ds4_gpu_stream_expert_memory,
+#     ds4_gpu_dsv41_stream_layer_plan, the reserve/quiesce/get_memory API, the
+#     HC-plan and q8-projection entry points)
+#   * ds4_rocm.o compiles, all five binaries link, 0 errors
+#
+# Remaining, measured against the fork:
+#   ds41_gpu_graph        +5 ROCm-only fields (hc_sgemm, host_engram_rows,
+#                         host_engram_capacity, host_selected_comp, host_text_mask)
+#   ds4.c                 73 streaming-related hunks: 28 pure-add (+251 lines,
+#                         mechanical) and 45 mixed (+657/-345, need review)
+#   ds41_graph_prefill_sweep  13 hunks, mostly #ifdef DS4_ROCM_BUILD branches
+#   ds41_stream_table, the ds41_stream_layer_load scheduler, and the memory
+#   planning cluster (ds41_rocm_stream_reserve_bytes, ds41_host_memory_baseline,
+#   ds41_model_loaded)
+#
+# WARNING for whoever finishes this: those 45 mixed hunks cannot be applied
+# mechanically. Their removals include upstream work the fork predates -
+# DS4_HAS_QWEN4_METAL, model_unmap_qwen_ngrams, the ds4_test_* hooks - so a
+# wholesale apply silently deletes upstream's Qwen4 support. Take the
+# ROCm-guarded insertions only.
+#
+# Reference: the fork's prebuilt ds4-agent generates correctly with the same
+# flags, so it is a working oracle to diff startup logs against. Its log shows
+# "V4.1 ROCm SSD allocator reserve" and "two-layer staging" lines, and
+# prefill_cap=2048 / buffers 3.50 GiB where this build shows 8192 / 10.21 GiB.
+
+[upstream]
+reviewed_sha = "9139e2ae58a41503968a500f36f75895c1ba63fc"
+
+[[anchors]]
+file = "ds4_gpu.h"
+kind = "exact"
+text = "int ds4_gpu_stream_expert_cache_seed_from_layer_selected("
+count = 1
+
+# The ROCm runtime and its API-compat shim are taken from the fork wholesale
+# rather than patched. Upstream ships no ROCm V4.1 backend at all, the two
+# implementations diverged inside shared functions, and hand-merging ~700 lines
+# of GPU streaming code is exactly the change most likely to be silently wrong.
+[[overlay_file]]
+source = "src/rocm/ds4_rocm_runtime.cuh"
+target = "rocm/ds4_rocm_runtime.cuh"
+
+[[overlay_file]]
+source = "src/rocm/ds4_rocm_current_api_compat.cuh"
+target = "rocm/ds4_rocm_current_api_compat.cuh"
+
+[[anchors]]
+file = "ds4.c"
+kind = "exact"
+text = "} ds41_gpu_graph;"
+count = 1
+
+[[shadow_patch]]
+file = "ds4.c"
+patch = "patches/core/dsv41-expert-streaming__ds4.c.patch"
+
+[[shadow_patch]]
+file = "ds4_gpu.h"
+patch = "patches/gpu/dsv41-expert-streaming__ds4_gpu.h.patch"
+
+[[test]]
+command = "make -f Makefile.overlay ds4_rocm.o"
+required = true

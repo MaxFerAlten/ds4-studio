@@ -5,7 +5,8 @@ import {
   estimateTokenCount,
   finalizeLiveStats,
   streamStatsFromTiming,
-  updateLiveStats
+  updateLiveStats,
+  normalizeUsageTiming
 } from "./throughputStats.mjs";
 
 test("estimates tokens from streamed text", () => {
@@ -140,4 +141,45 @@ test("uses backend decode tokens for native throughput", () => {
   });
 
   assert.equal(stats.genTps, 20);
+});
+
+test("llama.cpp-style timings feed the same panel as ds4's", () => {
+  // The final streamed chunk Halogen sends: `timings` beside `usage`, in ms.
+  const chunk = {
+    usage: { prompt_tokens: 82, completion_tokens: 225 },
+    timings: { prompt_n: 82, predicted_n: 225, prompt_ms: 840, predicted_ms: 6254,
+               cache_n: 0, draft_n: 18, draft_n_accepted: 16 }
+  };
+  const usage = normalizeUsageTiming(chunk);
+  assert.equal(usage.timing.prefill_sec, 0.84);
+  assert.equal(usage.timing.decode_sec, 6.254);
+  assert.equal(usage.timing.decode_tokens, 225);
+
+  const stats = streamStatsFromTiming({
+    requestStartMs: 0, firstTokenMs: 840,
+    promptTokens: usage.prompt_tokens,
+    promptTokensDetails: usage.prompt_tokens_details,
+    completionTokens: usage.completion_tokens,
+    prefillSeconds: usage.timing.prefill_sec,
+    generationSeconds: usage.timing.decode_sec,
+    generationTokens: usage.timing.decode_tokens,
+    generationSource: "server"
+  });
+  // The server's own log printed 35.98 t/s for this request.
+  assert.ok(Math.abs(stats.genTps - 35.98) < 0.05, `genTps was ${stats.genTps}`);
+  assert.equal(stats.genSource, "server");
+
+  // cache_n splits "effettivo" from "con cache"
+  const cached = normalizeUsageTiming({
+    usage: { prompt_tokens: 60, completion_tokens: 10 },
+    timings: { prompt_ms: 100, predicted_ms: 500, predicted_n: 10, cache_n: 54 }
+  });
+  assert.equal(cached.prompt_tokens_details.cached_tokens, 54);
+
+  // ds4's own shape is passed through untouched, and a payload with neither
+  // must not invent a timing block.
+  const ds4 = { usage: { prompt_tokens: 1, timing: { decode_sec: 2 } }, timings: { predicted_ms: 999 } };
+  assert.equal(normalizeUsageTiming(ds4).timing.decode_sec, 2);
+  assert.equal(normalizeUsageTiming({ usage: { prompt_tokens: 1 } }).timing, undefined);
+  assert.equal(normalizeUsageTiming({}), null);
 });

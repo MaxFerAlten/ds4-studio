@@ -25,6 +25,7 @@ import { searchChatHistory, formatHistoryResults } from "./historyTool.mjs";
 import { toolPageSnapshot, toolPageAction } from "./pageAgentTool.mjs";
 import { toolPageTask } from "./pageAgentTask.mjs";
 import { enqueuePageAgentTool, isClientConnected } from "./pageAgentBridge.mjs";
+import { classifyRepositoryMutation } from "./leanRepositoryGuard.mjs";
 import {
   SAGE_RESULT_CONTRACT_VERSION,
   buildLegacySageResult,
@@ -222,14 +223,214 @@ class HeadTailBuffer {
 }
 
 /**
+ * Render a lean_result_v1 for the model. Deliberately spells out that a
+ * successful elaboration is not a certification, because the whole failure
+ * mode this tool exists to prevent is the model reporting "proved".
+ */
+export function formatLeanResult(result) {
+  const lines = [];
+
+  // The normative block leads: a small model must be able to decide what to do
+  // next without reading the diagnostics that follow.
+  const orch = result.orchestration;
+  if (orch) {
+    lines.push(
+      "LEAN_ORCHESTRATION",
+      `state=${orch.verified ? "verified" : orch.terminal ? "terminal" : orch.strategyChangeRequired ? "strategy_change_required" : "repair_required"}`,
+      `attempt=${orch.attempt}/${orch.maxAttempts}`,
+      `retryable=${orch.retryable}`,
+      `failureClass=${orch.failureClass || "none"}`,
+      `strategyChangeRequired=${orch.strategyChangeRequired}`,
+      `nextAction=${orch.nextAction || "Continue until status=checked."}`,
+      `FINALIZATION_ALLOWED=${orch.terminal}`
+    );
+    if (orch.verified && result.sourceArtifact?.sha256) {
+      lines.push(`VERIFIED_SOURCE_SHA256=${result.sourceArtifact.sha256}`);
+    } else if (orch.terminal && !orch.verified) {
+      lines.push(
+        "LEAN_TERMINAL_NOT_VERIFIED",
+        `reason=${orch.terminalReason || "UNKNOWN"}`,
+        "Do not claim the theorem was verified."
+      );
+    }
+    lines.push("");
+  }
+
+  lines.push(`status: ${result.status}`);
+  if (result.profile) lines.push(`profile: ${result.profile}`);
+  if (result.toolchain) lines.push(`toolchain: ${result.toolchain}`);
+  lines.push(result.summary || "");
+
+  const diagnostics = Array.isArray(result.diagnostics) ? result.diagnostics.slice(0, 20) : [];
+  if (diagnostics.length) {
+    lines.push("", "diagnostics:");
+    for (const d of diagnostics) {
+      const where = d.line == null ? d.file || "" : `${d.file || "Main.lean"}:${d.line}:${d.column ?? 0}`;
+      lines.push(`- ${d.severity || "error"} ${where}: ${d.message || d.raw || ""}`);
+    }
+  }
+
+  // Evidence entries are objects ({type, keyword, line, placeholder}); an
+  // `axiom` is reported but is not a placeholder, so the two are split.
+  const evidence = Array.isArray(result.placeholderEvidence) ? result.placeholderEvidence : [];
+  const render = (list) =>
+    list.map((e) => (typeof e === "string" ? e : `${e.keyword}${e.line ? ` (line ${e.line})` : ""}`)).join(", ");
+
+  if (result.containsPlaceholders) {
+    const placeholders = evidence.filter((e) => typeof e === "string" || e.placeholder !== false);
+    lines.push("", `placeholders detected: ${render(placeholders) || "yes"} — this is not a proof.`);
+  }
+
+  const axioms = evidence.filter((e) => typeof e === "object" && e.type === "axiom");
+  if (axioms.length) {
+    lines.push("", `axioms declared: ${render(axioms)} — the result holds only if these are accepted.`);
+  }
+
+  if (result.status === "checked") {
+    lines.push(
+      "",
+      "Lean elaborated the file without errors. certified=false: this is a typecheck, not a formal certification. Do not report this as a certified proof."
+    );
+  }
+
+  return lines.filter((l) => l !== undefined).join("\n").trim();
+}
+
+/**
+ * lean_check — thin adapter. All validation, sandboxing and process handling
+ * live in the Lean executor; this only translates the model-facing argument
+ * names into the lean_check_request_v1 contract and renders the result.
+ */
+export async function toolLeanCheck(args = {}, options = {}) {
+  const run = options.leanExecutor;
+  if (typeof run !== "function") {
+    return {
+      content: "lean_check is unavailable: the Lean runtime is not enabled on this server.",
+      isError: true
+    };
+  }
+
+  if (!args.code || typeof args.code !== "string" || !args.code.trim()) {
+    return { content: "Tool error: lean_check requires a non-empty 'code' string.", isError: true };
+  }
+
+  // WP08: proof mode without an explicit target declaration is refused before
+  // the executor is reached. Only presence is checked here; the contract owns
+  // the syntax validation of the declaration name.
+  const taskMode = args.task_mode === "proof" ? "proof" : "utility";
+  if (taskMode === "proof" && !args.target_declaration) {
+    return {
+      content:
+        "Tool error: lean_check task_mode=proof requires 'target_declaration': the exact theorem/lemma name being proved. Use task_mode=utility for diagnostic checks.",
+      isError: true
+    };
+  }
+
+  const request = {
+    contractVersion: "lean_check_request_v1",
+    code: args.code,
+    mode: "check",
+    taskMode,
+    profile: args.profile || undefined,
+    timeoutSec: args.timeout_sec === undefined ? undefined : Number(args.timeout_sec),
+    sessionId: sanitizeSessionId(options.sessionKey),
+    // attempt and proofId come from the caller's Lean turn tracker: a proof
+    // repaired four times is attempt 4 of one task, not four attempt-1 tasks.
+    attempt: Number.isInteger(options.leanAttempt) ? options.leanAttempt : 1,
+    proofId: options.leanProofId || undefined,
+    policyRevision: options.leanPolicyRevision || undefined,
+    targetDeclaration:
+      typeof args.target_declaration === "string" ? args.target_declaration : undefined,
+    // Orchestrator-only: the locked statement hash may come from the tracker
+    // via options, never from model-supplied arguments.
+    expectedTargetStatementSha256: options.leanExpectedTargetStatementSha256 || undefined,
+    expectedDeclarations: Array.isArray(args.expected_declarations)
+      ? args.expected_declarations
+      : undefined,
+    proofPolicy: "typecheck"
+  };
+
+  const result = await run(request, options);
+  return { content: formatLeanResult(result), isError: Boolean(result.isError), raw: result };
+}
+
+/**
+ * lean_inspect — discover Lean symbol signatures without consuming proof attempts.
+ *
+ * Delegates entirely to executeLeanInspect (request validation, sandboxing,
+ * #check output parsing). It must never reuse the lean_check execution path:
+ * that path skips symbol/import validation and would let injection
+ * characters in a "symbol" name reach the sandbox as arbitrary Lean source.
+ */
+async function toolLeanInspect(args = {}, options = {}) {
+  const run = options.leanInspectExecutor;
+  if (typeof run !== "function") {
+    return {
+      content: "lean_inspect is unavailable: the Lean runtime is not enabled on this server.",
+      isError: true,
+    };
+  }
+
+  const body = {
+    symbols: Array.isArray(args?.symbols) ? args.symbols : [],
+    imports: Array.isArray(args?.imports) ? args.imports : undefined,
+    profile: typeof args?.profile === "string" ? args.profile : undefined,
+    timeout_sec: args?.timeout_sec === undefined ? undefined : Number(args.timeout_sec),
+    sessionId: sanitizeSessionId(options.sessionKey),
+  };
+
+  const result = await run(body, options);
+
+  if (result.errorCode) {
+    return { content: `lean_inspect: ${result.message}`, isError: true, raw: result };
+  }
+
+  const lines = [
+    "LEAN_INSPECT",
+    "attempt_consumed=false",
+    "verified=false",
+    `status=${result.status}`,
+    `profile=${result.profile}`,
+  ];
+  for (const s of result.symbols) {
+    lines.push(`${s.name}: ${s.output}`);
+  }
+
+  return { content: lines.join("\n"), isError: result.status !== "inspected", raw: result };
+}
+
+/**
  * Dispatch a tool call to the appropriate handler.
  *
  * @param {string} name – Tool name (bash, read, write, edit, search, list)
  * @param {object} args – Tool arguments
- * @param {{ cwd?: string, signal?: AbortSignal, onProgress?: (chunk: string) => void }} options
+ * @param {{ cwd?: string, signal?: AbortSignal, onProgress?: (chunk: string) => void, allowedTools?: string[] }} options
  * @returns {Promise<{ content: string, isError: boolean, raw?: object }>}
  */
 export async function executeTool(name, args = {}, options = {}) {
+  // Per-turn tool scope enforcement: when allowedTools is provided, only those
+  // tools may be dispatched.  An empty array means "nothing is allowed" — the
+  // model is in read-only / observation mode.  When omitted, all known tools
+  // are permitted (backward-compatible default).
+  if (options.allowedTools && !options.allowedTools.includes(name)) {
+    return {
+      content: `Tool '${name}' is not permitted in this turn's scope.`,
+      isError: true,
+    };
+  }
+
+  // Repository immutability for Lean tasks (§7-§9, §53-§54). One guard in the
+  // shared dispatcher rather than one per handler: every path that can touch
+  // the filesystem routes through here.
+  const mutation = classifyRepositoryMutation(name, args, options);
+  if (mutation.blocked) {
+    return {
+      content: `${mutation.code}: ${mutation.message}`,
+      isError: true,
+      raw: { blocked: true, code: mutation.code },
+    };
+  }
+
   try {
     switch (name) {
       case "bash":
@@ -279,6 +480,10 @@ export async function executeTool(name, args = {}, options = {}) {
           if (result) return result;
         }
         return toolPageAction(args, options);
+      case "lean_check":
+        return await toolLeanCheck(args, options);
+      case "lean_inspect":
+        return await toolLeanInspect(args, options);
       case "page_task":
         if (isClientConnected()) {
           const result = await enqueuePageAgentTool("page_task", args);
@@ -1923,6 +2128,39 @@ function toolHistory(args, options) {
     isError: false,
     raw: { count: rows.length }
   };
+}
+
+/** Toolchain binaries that must go through lean_check instead of bash. */
+const LEAN_TOOLCHAIN_COMMANDS = new Set([
+  "lean", "lake", "elan", "leanc", "leanmake", "leanchecker", "leanpkg"
+]);
+
+/**
+ * Block bash from driving the Lean toolchain directly — bash bypasses the
+ * sandbox, the pinned Lake project and the result contract.
+ *
+ * Matches on the tokenized command word, so `/opt/lean/bin/lake build` is
+ * blocked while `grep -n lean README.md` is not.
+ */
+export function checkBashLeanGuard(input) {
+  const command = input && typeof input === "object" && !Array.isArray(input)
+    ? input.command
+    : undefined;
+  if (typeof command !== "string" || command.trim().length === 0) return undefined;
+
+  for (const segment of commandSegments(command)) {
+    const words = stripWrappers(shellWords(segment));
+    const cmd = words[0];
+    if (!cmd) continue;
+    const base = baseCommand(cmd) ?? cmd;
+    if (LEAN_TOOLCHAIN_COMMANDS.has(base)) {
+      return {
+        block: true,
+        reason: `Bash guard: command '${base}' drives the Lean toolchain directly. Use the 'lean_check' tool — bash cannot reach the sandboxed, pinned Lean runtime, and lean_check does not execute Lean programs.`
+      };
+    }
+  }
+  return undefined;
 }
 
 export function checkBashFileReadFallback(input, afterReadGuardBlock = false) {

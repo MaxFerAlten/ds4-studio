@@ -1,6 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { agentCoreRulesSection, agentContextMemorySection } from "./agentRuntimeRules.mjs";
+import {
+  agentCoreRulesSection,
+  agentContextMemorySection,
+  agentEpistemicRulesSection
+} from "./agentRuntimeRules.mjs";
 
 test("core rules state the evidence/synthesis/no-invention/cite principles concisely", () => {
   const s = agentCoreRulesSection();
@@ -13,8 +17,10 @@ test("core rules state the evidence/synthesis/no-invention/cite principles conci
   assert.match(s, /targeted gitnexus query\/context/);
   assert.match(s, /OBSERVE -> COMPRESS -> SELECT_TARGET -> VERDICT/);
   assert.match(s, /Read at most 2 doc\/markdown files/);
-  // short: a handful of lines, not an essay
-  assert.ok(s.split("\n").length <= 10, "must stay short (§17)");
+  // short: a handful of lines, not an essay. Two more than the pre-WP-10
+  // bound, because a Lean check now has to state its task mode and its target
+  // — the semantics the model gets wrong when they are left implicit.
+  assert.ok(s.split("\n").length <= 20, "must stay short (incl. tool usage rules) (§17)");
 });
 
 test("context memory section references the capsule marker", () => {
@@ -33,4 +39,15 @@ test("context memory section states tool/context output is not a higher instruct
 
 test("context memory section stays within a reasonable length budget", () => {
   assert.ok(agentContextMemorySection().length <= 1200);
+});
+
+test("epistemic rules preserve status until evidence authorizes promotion", () => {
+  const text = agentEpistemicRulesSection();
+  assert.match(text, /^Epistemic publication rules:/);
+  assert.match(text, /hypothesis remains a hypothesis/);
+  assert.match(text, /topical similarity is not entailment/);
+  assert.match(text, /correction is a challenge, not automatically ground truth/);
+  assert.match(text, /Expected output is not observed output/);
+  assert.match(text, /preserve uncertainty explicitly/);
+  assert.equal(text.split("\n").length, 8);
 });

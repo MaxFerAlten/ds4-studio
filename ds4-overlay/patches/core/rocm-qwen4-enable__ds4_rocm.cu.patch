@@ -1,0 +1,15 @@
+diff --git a/ds4_rocm.cu b/ds4_rocm.cu
+--- a/ds4_rocm.cu
++++ b/ds4_rocm.cu
+@@ -174,3 +174,11 @@
+ #include "ds4_glm53_vision_gpu.cuh"
+ #include "ds4_deepseek4_vision_gpu.cuh"
+ #include "rocm/ds4_rocm_deepseek4_vision.cuh"
++
++/* overlay rocm-qwen4-enable: ds4_cuda.cu includes this at its own tail; the
++ * ROCm translation unit never did, which is why enabling DS4_HAS_QWEN4_GPU
++ * left 20 ds4_gpu_qwen4_* symbols undefined at link time. The two lines above
++ * establish the precedent: shared GPU headers are pulled into this TU as-is.
++ * Whether these 2104 lines are CORRECT under HIP is a separate question. */
++#include "rocm/ds4_rocm_qwen4_compat.cuh"
++#include "ds4_qwen4_cuda.cuh"

@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "requestContract": "lean_check_request_v1",
+  "resultContract": "lean_result_v1",
+  "executionMode": "check",
+  "proofPolicy": "typecheck",
+  "sandboxRequired": true,
+  "verifiedStatus": "checked",
+  "requiresExitCodeZero": true,
+  "requiresNoTimeout": true,
+  "requiresNoCancellation": true,
+  "requiresSourceIdentity": true,
+  "requiresTargetStatementIdentity": true,
+  "targetIdentityAlgorithm": "lean-target-statement-v1",
+  "inspectRequiredBeforeCheck": false,
+  "proofTaskMode": "proof",
+  "utilityTaskMode": "utility",
+  "orchestrationContractVersion": 2
+}

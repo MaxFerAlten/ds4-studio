@@ -78,7 +78,12 @@ test("completeRole forwards think:false and a per-role max_tokens", async () => 
   });
   assert.equal(body.think, false);
   assert.equal(body.max_tokens, 1024);
-  assert.equal(body.reasoning_effort, undefined);
+  // `think` is ds4's field and an OpenAI-compatible endpoint ignores it, so
+  // "do not think" has to be said in a way such a server understands too --
+  // otherwise the reasoning it keeps doing is charged to this role's
+  // max_tokens and the JSON gets truncated.
+  assert.equal(body.enable_thinking, false);
+  assert.equal(body.reasoning_effort, "none");
 });
 
 test("completeRole omits think when unset (reporter keeps server default)", async () => {
@@ -97,7 +102,18 @@ test("completeRole omits think when unset (reporter keeps server default)", asyn
 });
 
 test("reporter is not assigned a reduced role option", () => {
-  assert.equal(RESEARCH_ROLE_OPTIONS.reporter, undefined);
+  const reporter = RESEARCH_ROLE_OPTIONS.reporter;
+  const others = Object.entries(RESEARCH_ROLE_OPTIONS).filter(([name]) => name !== "reporter");
+
+  // It writes the document, so its budget must exceed every extraction role's.
+  for (const [name, opts] of others) {
+    assert.ok(reporter.maxTokens > opts.maxTokens,
+      `reporter (${reporter.maxTokens}) must outsize ${name} (${opts.maxTokens})`);
+  }
+  // And it must not be the one role that gets thinking switched off: the others
+  // set think:false to protect a small budget, which is the opposite need here.
+  assert.equal(reporter.think, undefined);
+  for (const [, opts] of others) assert.equal(opts.think, false);
 });
 
 test("completeRole retries once when json is invalid", async () => {

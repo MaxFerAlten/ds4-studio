@@ -1,0 +1,19 @@
+diff --git a/ds4.c b/ds4.c
+--- a/ds4.c
++++ b/ds4.c
+@@ -57311,6 +57311,14 @@
+     const uint64_t offset = t->abs_offset + (uint64_t)row * bytes;
+     size_t done = 0;
+     while (done < bytes) {
+-        ssize_t n = pread(m->ngram_fd, raw + done, bytes - done, (off_t)(offset + done));
++        /* want == bytes - done always: dim[0] <= 160 above means bytes <= 320,
++         * so the clamp below is dead code. It exists because it is what lets
++         * value-range propagation bound the length by `raw` itself through the
++         * _FORTIFY_SOURCE inlining of pread; without it GCC reports a spurious
++         * -Wstringop-overflow claiming a ~2^63 byte write into a 320 byte
++         * buffer. The bytes actually read are unchanged. */
++        size_t want = bytes - done;
++        if (want > sizeof raw - done) want = sizeof raw - done;
++        ssize_t n = pread(m->ngram_fd, raw + done, want, (off_t)(offset + done));
+         if (n < 0 && errno == EINTR) continue;
+         if (n <= 0) {

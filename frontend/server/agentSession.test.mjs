@@ -237,3 +237,15 @@ test("AgentSessionStore isolates concurrent agent sessions", () => {
   assert.equal(store.status("tab-a").active, false);
   assert.equal(store.status("tab-b").active, true);
 });
+
+test("the system prompt separates a checked Lean result from a certified one", async () => {
+  const { AGENT_SYSTEM_PROMPT } = await import("./agentSession.mjs");
+  assert.match(AGENT_SYSTEM_PROMPT, /Use lean_check, never bash/);
+  assert.match(AGENT_SYSTEM_PROMPT, /checked result means Lean elaborated/);
+  assert.match(AGENT_SYSTEM_PROMPT, /Do not claim formal certification/);
+  // Performance advice, not a timing claim: how long a root import takes
+  // depends on version, cache and hardware (§R10).
+  assert.match(AGENT_SYSTEM_PROMPT, /Prefer targeted imports/);
+  assert.doesNotMatch(AGENT_SYSTEM_PROMPT, /always times out/);
+  assert.match(AGENT_SYSTEM_PROMPT, /does not invoke a compiled main/);
+});

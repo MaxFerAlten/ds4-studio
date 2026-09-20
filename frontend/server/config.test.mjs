@@ -11,6 +11,7 @@ import {
   buildDs4Args,
   loadConfig,
   mergeConfig,
+  mergeRequestOverConfig,
   redactConfigSecrets,
   saveConfig,
   validateConfig
@@ -496,6 +497,54 @@ test("mergeConfig fills research defaults", () => {
   assert.equal(config.research.model.max_tokens, 8192);
 });
 
+test("mergeConfig fills lean defaults and merges the file layer", () => {
+  const defaults = mergeConfig({});
+  assert.deepEqual(defaults.lean, {
+    enabled: false,
+    policyAuto: true,
+    defaultProfile: "core",
+    orchestration: {
+      enabled: true,
+      prompt: false,
+      maxAttempts: 6,
+      maxSameFailure: 2,
+      maxPrematureFinalizations: 3,
+      maxWallClockMs: 360000,
+    },
+  });
+  const merged = mergeConfig({ lean: { enabled: true } });
+  assert.equal(merged.lean.enabled, true);
+  assert.equal(merged.lean.policyAuto, true);
+  assert.equal(merged.lean.defaultProfile, "core");
+  // A file that overrides one budget key must keep the rest, or the missing
+  // ones silently fall back to a different layer's defaults.
+  const partial = mergeConfig({ lean: { orchestration: { maxAttempts: 8 } } });
+  assert.equal(partial.lean.orchestration.maxAttempts, 8);
+  assert.equal(partial.lean.orchestration.maxSameFailure, 2);
+  assert.equal(partial.lean.orchestration.maxWallClockMs, 360000);
+  // Non-object input must not blow up the merge.
+  assert.deepEqual(mergeConfig({ lean: "x" }).lean, defaults.lean);
+});
+
+test("validateConfig accepts a valid lean block", () => {
+  const result = validateConfig(mergeConfig({ lean: { enabled: true, policyAuto: false, defaultProfile: "mathlib" } }));
+  assert.equal(result.ok, true);
+});
+
+test("validateConfig rejects invalid lean blocks", () => {
+  const badBool = validateConfig(mergeConfig({ lean: { enabled: "yes" } }));
+  assert.equal(badBool.ok, false);
+  assert.match(badBool.errors.lean.enabled, /boolean/);
+
+  const badPolicy = validateConfig(mergeConfig({ lean: { policyAuto: 1 } }));
+  assert.equal(badPolicy.ok, false);
+  assert.match(badPolicy.errors.lean.policyAuto, /boolean/);
+
+  const badProfile = validateConfig(mergeConfig({ lean: { defaultProfile: "banana" } }));
+  assert.equal(badProfile.ok, false);
+  assert.match(badProfile.errors.lean.defaultProfile, /core.*mathlib/);
+});
+
 test("mergeConfig keeps research overrides", () => {
   const config = mergeConfig({ research: { enabled: true } });
   assert.equal(config.research.enabled, true);
@@ -835,4 +884,210 @@ test("rejects an audit path containing ..", () => {
   const v = validateConfig(mergeConfig({ agno: { tools: { auditDir: "data/../../etc" } } }));
   assert.equal(v.ok, false);
   assert.match(v.errors.agno.toolsAuditDir, /\.\./);
+});
+
+// --- typed Lean/Sage schema + legacy server.env migration (refactoring 000 F2) ---
+
+test("mergeConfig migrates the six legacy server.env switches onto typed fields", () => {
+  const merged = mergeConfig({
+    server: {
+      env: {
+        DS4_LEAN_POLICY_AUTO: "0",
+        DS4_SAGE_POLICY_AUTO: "0",
+        DS4_LEAN_AUTONOMOUS_ORCHESTRATION: "1",
+        DS4_LEAN_AUTONOMOUS_PROMPT: "1",
+        DS4_SAGE_AUTONOMOUS_ORCHESTRATION: "1",
+        DS4_SAGE_AUTONOMOUS_PROMPT: "1",
+        DS4_SKILL_AUTO: "1"
+      }
+    }
+  });
+  assert.equal(merged.lean.policyAuto, false);
+  assert.equal(merged.sage.policyAuto, false);
+  assert.equal(merged.lean.orchestration.enabled, true);
+  assert.equal(merged.lean.orchestration.prompt, true);
+  assert.equal(merged.sage.orchestration.enabled, true);
+  assert.equal(merged.sage.orchestration.prompt, true);
+  // DS4_SKILL_AUTO is a child-process env, not a typed field.
+  assert.equal(merged.server.env.DS4_SKILL_AUTO, "1");
+  for (const key of [
+    "DS4_LEAN_POLICY_AUTO",
+    "DS4_SAGE_POLICY_AUTO",
+    "DS4_LEAN_AUTONOMOUS_ORCHESTRATION",
+    "DS4_LEAN_AUTONOMOUS_PROMPT",
+    "DS4_SAGE_AUTONOMOUS_ORCHESTRATION",
+    "DS4_SAGE_AUTONOMOUS_PROMPT"
+  ]) {
+    assert.equal(key in merged.server.env, false, `${key} must not survive the merge`);
+  }
+  assert.equal(validateConfig(merged).ok, true);
+});
+
+test("an explicit typed field beats the legacy server.env value", () => {
+  const merged = mergeConfig({
+    lean: { orchestration: { prompt: false } },
+    server: { env: { DS4_LEAN_AUTONOMOUS_PROMPT: "1" } }
+  });
+  assert.equal(merged.lean.orchestration.prompt, false);
+  assert.equal("DS4_LEAN_AUTONOMOUS_PROMPT" in merged.server.env, false);
+});
+
+test("an unparseable legacy boolean is rejected instead of defaulted", () => {
+  const merged = mergeConfig({ server: { env: { DS4_SAGE_AUTONOMOUS_PROMPT: "perhaps" } } });
+  assert.equal(merged.server.env.DS4_SAGE_AUTONOMOUS_PROMPT, "perhaps");
+  const v = validateConfig(merged);
+  assert.equal(v.ok, false);
+  assert.match(v.errors.server.env, /typed Lean\/Sage fields/);
+});
+
+test("validateConfig checks the ContextWiki block", () => {
+  assert.equal(validateConfig(mergeConfig({})).ok, true);
+  const badBool = validateConfig(mergeConfig({ contextWiki: { telemetry: "yes" } }));
+  assert.equal(badBool.ok, false);
+  assert.match(badBool.errors.contextWiki.telemetry, /boolean/);
+  const badInt = validateConfig(mergeConfig({ contextWiki: { maxEvidence: 0 } }));
+  assert.equal(badInt.ok, false);
+  assert.match(badInt.errors.contextWiki.maxEvidence, /positive integer/);
+  const softOverHard = validateConfig(
+    mergeConfig({ contextWiki: { softTokens: 4000, hardTokens: 3000 } })
+  );
+  assert.equal(softOverHard.ok, false);
+  assert.match(softOverHard.errors.contextWiki.softTokens, /hardTokens/);
+});
+
+test("a partial orchestration update keeps its sibling fields", () => {
+  const lean = mergeConfig({ lean: { orchestration: { prompt: true } } }).lean.orchestration;
+  assert.equal(lean.prompt, true);
+  assert.equal(lean.enabled, true);
+  assert.equal(lean.maxAttempts, DEFAULT_CONFIG.lean.orchestration.maxAttempts);
+  const sage = mergeConfig({ sage: { orchestration: { enabled: false } } }).sage.orchestration;
+  assert.equal(sage.enabled, false);
+  assert.equal(sage.prompt, false);
+  assert.equal(sage.maxTotalToolCalls, DEFAULT_CONFIG.sage.orchestration.maxTotalToolCalls);
+});
+
+test("validateConfig rejects non-boolean semantic fields", () => {
+  const badSagePolicy = validateConfig(mergeConfig({ sage: { policyAuto: "1" } }));
+  assert.equal(badSagePolicy.ok, false);
+  assert.match(badSagePolicy.errors.sage.policyAuto, /boolean/);
+  const badLeanEnabled = validateConfig(mergeConfig({ lean: { orchestration: { enabled: "1" } } }));
+  assert.equal(badLeanEnabled.ok, false);
+  assert.match(badLeanEnabled.errors.lean.orchestration, /boolean/);
+});
+
+test("saving a legacy file writes the typed schema back to disk", async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "ds4-semantic-test-"));
+  const configPath = path.join(tmpDir, "ds4-ui.config.json");
+  try {
+    const saved = await saveConfig(
+      { server: { env: { DS4_LEAN_AUTONOMOUS_PROMPT: "1", DS4_SKILL_AUTO: "1" } } },
+      configPath
+    );
+    assert.equal(saved.lean.orchestration.prompt, true);
+    const onDisk = JSON.parse(await fs.readFile(configPath, "utf8"));
+    assert.equal("DS4_LEAN_AUTONOMOUS_PROMPT" in onDisk.server.env, false);
+    assert.equal(onDisk.server.env.DS4_SKILL_AUTO, "1");
+    assert.equal(onDisk.lean.orchestration.prompt, true);
+    // Reloading the migrated file must not change it again.
+    const reloaded = await loadConfig(configPath, path.join(tmpDir, "missing-deep-research.json"));
+    assert.deepEqual(reloaded, saved);
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("mergeConfig keeps the agent block instead of dropping it", () => {
+  // Regression: mergeConfig() builds an explicit object literal, and `agent`
+  // was not one of its keys, so DEFAULT_CONFIG.agent was discarded on every
+  // load, save and API merge. index.mjs reads config.agent?.nativeChatTimeoutMs
+  // and falls back to Infinity when it is missing, which left the native-stream
+  // watchdog permanently unarmed.
+  assert.deepEqual(mergeConfig({}).agent, DEFAULT_CONFIG.agent);
+  assert.equal(mergeConfig({}).agent.nativeChatTimeoutMs, 180_000);
+  assert.equal(
+    mergeConfig({ agent: { nativeChatTimeoutMs: 900_000 } }).agent.nativeChatTimeoutMs,
+    900_000
+  );
+  // A sibling key survives the merge, and a non-object never spreads into it.
+  assert.equal(mergeConfig({ agent: { extra: 1 } }).agent.nativeChatTimeoutMs, 180_000);
+  for (const bad of [null, [], "x", 7]) {
+    assert.deepEqual(mergeConfig({ agent: bad }).agent, DEFAULT_CONFIG.agent);
+  }
+});
+
+test("validateConfig bounds the native chat timeout", () => {
+  const at = (nativeChatTimeoutMs) =>
+    validateConfig(mergeConfig({ agent: { nativeChatTimeoutMs } })).errors.agent
+      ?.nativeChatTimeoutMs;
+  // 0 means "no deadline" to index.mjs, so it stays legal.
+  assert.equal(at(0), undefined);
+  assert.equal(at(1000), undefined);
+  assert.equal(at(180_000), undefined);
+  assert.equal(at(7_200_000), undefined);
+  // Anything that would arm setTimeout with a nonsense delay is rejected.
+  for (const bad of [999, 7_200_001, -1, 1.5, Number.NaN, "abc", null, undefined]) {
+    assert.ok(at(bad), `expected ${String(bad)} to be rejected`);
+  }
+  assert.equal(validateConfig(mergeConfig({ agent: { nativeChatTimeoutMs: -1 } })).ok, false);
+  assert.equal(validateConfig(mergeConfig({})).ok, true);
+});
+
+test("mergeConfig keeps agent epistemic defaults", () => {
+  const ep = mergeConfig({}).agent.epistemic;
+  assert.deepEqual(ep, DEFAULT_CONFIG.agent.epistemic);
+  // Ships inert: the early Quantum Fix commits observe, they do not change
+  // what a turn publishes.
+  assert.equal(ep.enabled, false);
+  assert.equal(ep.mode, "shadow");
+});
+
+test("mergeConfig preserves nested epistemic siblings", () => {
+  // A UI panel that posts one epistemic field must not wipe the rest, the same
+  // guarantee lean.orchestration and sage.orchestration already have.
+  const merged = mergeConfig({ agent: { epistemic: { mode: "block" } } });
+  assert.equal(merged.agent.epistemic.mode, "block");
+  assert.equal(merged.agent.epistemic.maxClaimsPerTurn, 64);
+  assert.equal(merged.agent.epistemic.blockSeverity, 4);
+  assert.equal(merged.agent.nativeChatTimeoutMs, 180_000);
+  for (const bad of [null, [], "x"]) {
+    assert.deepEqual(
+      mergeConfig({ agent: { epistemic: bad } }).agent.epistemic,
+      DEFAULT_CONFIG.agent.epistemic
+    );
+  }
+});
+
+test("validateConfig rejects invalid epistemic mode", () => {
+  const at = (mode) =>
+    validateConfig(mergeConfig({ agent: { epistemic: { mode } } })).errors.agent?.[
+      "epistemic.mode"
+    ];
+  for (const ok of ["off", "shadow", "block"]) assert.equal(at(ok), undefined);
+  for (const bad of ["Block", "on", "", null, 1]) assert.ok(at(bad), `expected ${String(bad)} rejected`);
+  assert.equal(validateConfig(mergeConfig({ agent: { epistemic: { mode: "nope" } } })).ok, false);
+});
+
+test("validateConfig rejects invalid blockSeverity", () => {
+  const at = (blockSeverity) =>
+    validateConfig(mergeConfig({ agent: { epistemic: { blockSeverity } } })).errors.agent?.[
+      "epistemic.blockSeverity"
+    ];
+  // Both ends are meaningful: 0 blocks everything, 5 blocks only the top class.
+  for (const ok of [0, 1, 4, 5]) assert.equal(at(ok), undefined);
+  for (const bad of [-1, 6, 2.5, Number.NaN, "4", null]) {
+    assert.ok(at(bad), `expected ${String(bad)} rejected`);
+  }
+});
+
+test("mergeRequestOverConfig does not drop nativeChatTimeoutMs", () => {
+  // An API save that touches only one epistemic flag used to come back with the
+  // whole agent block missing, because mergeConfig rebuilt the config without
+  // it and mergeRequestOverConfig had no agent case.
+  const current = mergeConfig({ agent: { nativeChatTimeoutMs: 900_000 } });
+  const merged = mergeRequestOverConfig(current, { agent: { epistemic: { enabled: true } } });
+  assert.equal(merged.agent.nativeChatTimeoutMs, 900_000);
+  assert.equal(merged.agent.epistemic.enabled, true);
+  assert.equal(merged.agent.epistemic.mode, "shadow");
+  assert.equal(merged.agent.epistemic.maxVerifierCallsPerTurn, 24);
+  assert.equal(validateConfig(merged).ok, true);
 });

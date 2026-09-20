@@ -569,3 +569,80 @@ test("ToolArgumentValidationError is instanceof Error", () => {
   assert.ok(error instanceof Error);
   assert.ok(error instanceof ToolArgumentValidationError);
 });
+
+// ---------------------------------------------------------------------------
+// lean_check schema
+// ---------------------------------------------------------------------------
+
+const { getAgentToolDefinition, AGENT_TOOLS } = await import("./agentToolCatalog.mjs");
+
+test("lean_check is catalogued exactly once with a serializable schema", () => {
+  const matches = AGENT_TOOLS.filter((t) => t.function?.name === "lean_check");
+  assert.equal(matches.length, 1);
+  assert.doesNotThrow(() => JSON.parse(JSON.stringify(matches[0])));
+});
+
+test("lean_check exposes no command, path, args or run mode", () => {
+  const params = getAgentToolDefinition("lean_check").function.parameters;
+  // task_mode is required: a check that does not say whether it is the user's
+  // proof or a probe cannot be classified after the fact (WP-08).
+  assert.deepEqual(params.required, ["code", "task_mode"]);
+  assert.equal(params.additionalProperties, false);
+  // target_statement is a Lean declaration header, not a run knob: it seals
+  // what the task means before any candidate runs (§11.2).
+  assert.deepEqual(
+    Object.keys(params.properties).sort(),
+    [
+      "code",
+      "expected_declarations",
+      "profile",
+      "target_declaration",
+      "target_statement",
+      "task_mode",
+      "timeout_sec"
+    ]
+  );
+  for (const forbidden of ["command", "args", "path", "mode", "output_mode", "run"]) {
+    assert.equal(params.properties[forbidden], undefined, `must not expose ${forbidden}`);
+  }
+  assert.deepEqual(params.properties.profile.enum, ["core", "mathlib"]);
+});
+
+test("lean_check arguments validate against the catalog schema", () => {
+  const params = getAgentToolDefinition("lean_check").function.parameters;
+
+  const ok = validateToolArguments(params, {
+    code: "theorem t : True := trivial",
+    task_mode: "proof",
+    target_declaration: "t",
+    profile: "core",
+  });
+  assert.equal(ok.code, "theorem t : True := trivial");
+  assert.equal(ok.task_mode, "proof");
+  assert.equal(ok.target_declaration, "t");
+
+  assert.throws(() => validateToolArguments(params, {}), ToolArgumentValidationError);
+  // A check with no task mode is refused by the schema, not defaulted.
+  assert.throws(
+    () => validateToolArguments(params, { code: "x" }),
+    ToolArgumentValidationError
+  );
+  assert.throws(
+    () => validateToolArguments(params, { code: "x", task_mode: "authoritative" }),
+    ToolArgumentValidationError
+  );
+  assert.throws(
+    () => validateToolArguments(params, { code: "x", task_mode: "proof", profile: "sage" }),
+    ToolArgumentValidationError
+  );
+  assert.throws(
+    () => validateToolArguments(params, { code: "x", task_mode: "proof", command: "rm -rf /" }, { rejectUnknown: true }),
+    ToolArgumentValidationError
+  );
+});
+
+test("lean_check description does not promise certification", () => {
+  const description = getAgentToolDefinition("lean_check").function.description;
+  assert.match(description, /does not .*certify|not .*certif/i);
+  assert.doesNotMatch(description, /proves|certified proof/i);
+});

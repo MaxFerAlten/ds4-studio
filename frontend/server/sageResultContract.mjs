@@ -1,3 +1,5 @@
+import { SAGE_FUNCTION_STUDY_ARTIFACT_KINDS } from "./sageOrchestrationConfig.mjs";
+
 export const SAGE_RESULT_CONTRACT_VERSION = "sage_result_v2";
 export const SAGE_LEGACY_RESULT_CONTRACT_VERSION = "sage_result_v1";
 
@@ -31,16 +33,57 @@ export const SAGE_PHASES = new Set([
 ]);
 
 const SAGE_STATUSES = new Set(["ok", "error", "timeout", "cancelled"]);
-const SAGE_STATES = new Set([
+
+/**
+ * Canonical states of the Sage workflow (§2.3). The four legacy names
+ * (computed, repairing, validated, plotted, failed) are still accepted because
+ * buildLegacySageResult and older stored sessions use them.
+ */
+export const SAGE_CANONICAL_STATES = Object.freeze([
   "idle",
   "prepared",
   "computed",
-  "repairing",
+  "validation_required",
+  "repair_required",
+  "validating",
   "validated",
-  "plotted",
+  "plot_required",
+  "plotting",
   "ready",
+  "infrastructure_block",
+  "budget_exhausted",
+  "cancelled",
+  "failed_non_retryable"
+]);
+
+const SAGE_STATES = new Set([
+  ...SAGE_CANONICAL_STATES,
+  // legacy
+  "repairing",
+  "plotted",
   "failed"
 ]);
+
+/** Phase the runtime may demand next, plus the two ways a run ends. */
+const SAGE_NEXT_PHASES = new Set(["compute", "repair", "validate", "plot", "publish", "terminal"]);
+
+/** state → the only next phase that makes sense for it (§7.2). */
+const STATE_NEXT_PHASE = Object.freeze({
+  idle: "compute",
+  prepared: "compute",
+  computed: "validate",
+  validation_required: "validate",
+  validating: "validate",
+  repair_required: "repair",
+  validated: "plot",
+  plot_required: "plot",
+  plotting: "plot",
+  ready: "publish",
+  infrastructure_block: "terminal",
+  budget_exhausted: "terminal",
+  cancelled: "terminal",
+  failed_non_retryable: "terminal"
+});
 const DEBUG_PREVIEW_BYTES = 8 * 1024;
 
 const PHASE_LABELS = {
@@ -85,6 +128,69 @@ export function normalizeSageTaskType(value) {
 export function normalizeSagePhase(value) {
   const normalized = normalizedString(value);
   return SAGE_PHASES.has(normalized) ? normalized : "compute";
+}
+
+/**
+ * Build the orchestration block of §7.1 from a classifier decision plus the
+ * tracker's revision accounting.
+ *
+ * @param {object} decision - classifySageResult output
+ * @param {object} [extras]
+ * @param {number} [extras.candidateRevision]
+ * @param {number|null} [extras.validatedRevision]
+ * @param {object} [extras.attemptsRemaining]
+ * @param {string} [extras.state]
+ */
+export function buildSageOrchestration(decision = {}, extras = {}) {
+  const attempts = extras.attemptsRemaining ?? {};
+  return {
+    state: extras.state ?? null,
+    terminal: decision.terminal === true,
+    retryable: decision.retryable === true,
+    publishable: decision.publishable === true,
+    failureClass: decision.failureClass ?? null,
+    nextPhase: decision.nextPhase ?? null,
+    nextAction: decision.nextAction ?? null,
+    strategyChangeRequired: decision.strategyChangeRequired === true,
+    diagnosticFingerprint: decision.diagnosticFingerprint ?? null,
+    terminalReason: decision.terminalReason ?? null,
+    candidateRevision: Number(extras.candidateRevision ?? 0),
+    validatedRevision: extras.validatedRevision ?? null,
+    missingArtifactKinds: Array.isArray(decision.missingArtifactKinds)
+      ? [...decision.missingArtifactKinds]
+      : [],
+    attemptsRemaining: {
+      compute: Number(attempts.compute ?? 0),
+      repair: Number(attempts.repair ?? 0),
+      validate: Number(attempts.validate ?? 0),
+      plot: Number(attempts.plot ?? 0),
+      total: Number(attempts.total ?? 0)
+    }
+  };
+}
+
+/**
+ * Attach the orchestration decision to a result, nested and flat.
+ *
+ * The flat mirror exists for the native client: the C mirror parses keys, not
+ * nested objects, and it must never re-derive the decision itself (§12.2).
+ */
+export function attachSageOrchestration(result, orchestration) {
+  if (!result || typeof result !== "object" || !orchestration) return result;
+  result.orchestration = orchestration;
+  result.orchestrationState = orchestration.state ?? "";
+  result.orchestrationTerminal = orchestration.terminal === true;
+  result.orchestrationRetryable = orchestration.retryable === true;
+  result.orchestrationPublishable = orchestration.publishable === true;
+  result.orchestrationNextPhase = orchestration.nextPhase ?? "";
+  result.orchestrationNextAction = orchestration.nextAction ?? "";
+  result.orchestrationFailureClass = orchestration.failureClass ?? "";
+  result.orchestrationTerminalReason = orchestration.terminalReason ?? "";
+  result.orchestrationStrategyChangeRequired = orchestration.strategyChangeRequired === true;
+  result.orchestrationFingerprint = orchestration.diagnosticFingerprint ?? "";
+  result.orchestrationCandidateRevision = orchestration.candidateRevision ?? 0;
+  result.orchestrationValidatedRevision = orchestration.validatedRevision ?? null;
+  return result;
 }
 
 export function validateSageResult(value) {
@@ -202,6 +308,78 @@ export function validateSageResult(value) {
           "FINAL_MARKDOWN_MISSING",
           "publication.markdown",
           "Publishable results require final Markdown."
+        );
+      }
+    }
+
+    // §7.2 — orchestration invariants. The block is optional (a legacy caller
+    // may not attach one), but when present it must not contradict the result:
+    // that contradiction is exactly how an unvalidated candidate would slip out.
+    const orchestration = value.orchestration;
+    if (orchestration !== undefined && orchestration !== null) {
+      if (typeof orchestration !== "object" || Array.isArray(orchestration)) {
+        addError("INVALID_ORCHESTRATION", "orchestration", "Orchestration must be an object.");
+      } else {
+        if (orchestration.retryable === true && orchestration.terminal === true) {
+          addError(
+            "ORCHESTRATION_RETRYABLE_TERMINAL",
+            "orchestration.retryable",
+            "A retryable decision cannot also be terminal."
+          );
+        }
+        if (orchestration.nextPhase != null && !SAGE_NEXT_PHASES.has(orchestration.nextPhase)) {
+          addError("INVALID_NEXT_PHASE", "orchestration.nextPhase", "Unknown next phase.");
+        }
+        const expectedPhase = STATE_NEXT_PHASE[orchestration.state ?? value.state];
+        if (expectedPhase && orchestration.nextPhase != null &&
+            orchestration.nextPhase !== expectedPhase) {
+          addError(
+            "NEXT_PHASE_STATE_MISMATCH",
+            "orchestration.nextPhase",
+            `State ${orchestration.state ?? value.state} demands ${expectedPhase}.`
+          );
+        }
+        if (publication?.publishable === true) {
+          if (orchestration.publishable !== true) {
+            addError(
+              "ORCHESTRATION_PUBLISHABLE_MISMATCH",
+              "orchestration.publishable",
+              "A publishable result must carry a publishable decision."
+            );
+          }
+          if (orchestration.validatedRevision !== orchestration.candidateRevision) {
+            addError(
+              "VALIDATED_REVISION_MISMATCH",
+              "orchestration.validatedRevision",
+              "Publication requires the validated revision to be the current candidate."
+            );
+          }
+          if (orchestration.missingArtifactKinds?.length) {
+            addError(
+              "PUBLICATION_ARTIFACTS_INCOMPLETE",
+              "orchestration.missingArtifactKinds",
+              "A publishable result cannot be missing required artifacts."
+            );
+          }
+        }
+      }
+    }
+
+    // A publishable function study must carry its three artifact kinds, whatever
+    // the orchestration block says.
+    if (publication?.publishable === true && value.taskType === "function_study") {
+      const kinds = new Set(
+        (Array.isArray(value.artifacts) ? value.artifacts : [])
+          .map((artifact) => String(artifact?.kind ?? ""))
+          .filter(Boolean)
+      );
+      const missing = SAGE_FUNCTION_STUDY_ARTIFACT_KINDS
+        .filter((kind) => !kinds.has(kind));
+      if (missing.length) {
+        addError(
+          "FUNCTION_STUDY_ARTIFACTS_INCOMPLETE",
+          "artifacts",
+          `A publishable function study is missing: ${missing.join(", ")}.`
         );
       }
     }
@@ -364,6 +542,17 @@ export function publicSageResult(value) {
           reasonCodes: Array.isArray(value.publication.reasonCodes)
             ? [...value.publication.reasonCodes]
             : []
+        }
+      : null,
+    // §10.3: the orchestration decision must survive normalization. Losing it
+    // here would leave the native path with nothing to mirror.
+    orchestration: value.orchestration
+      ? {
+          ...value.orchestration,
+          missingArtifactKinds: Array.isArray(value.orchestration.missingArtifactKinds)
+            ? [...value.orchestration.missingArtifactKinds]
+            : [],
+          attemptsRemaining: { ...(value.orchestration.attemptsRemaining ?? {}) }
         }
       : null,
     debug

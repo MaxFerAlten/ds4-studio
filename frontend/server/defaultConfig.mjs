@@ -1,4 +1,11 @@
 import { RESEARCH_DEFAULTS } from "./research/researchConfig.mjs";
+// Re-exported so every existing server importer keeps working. The definition
+// lives in a leaf module because the browser bundle needs it without dragging
+// this file's Node-only dependencies along.
+export { REQUEST_DEFAULTS } from "./requestDefaults.mjs";
+import { DEFAULT_CONTEXT_LIMITS } from "./contextConfig.mjs";
+import { LEAN_ORCHESTRATION_DEFAULTS } from "./lean/leanOrchestrationConfig.mjs";
+import { SAGE_ORCHESTRATION_DEFAULTS } from "./sageOrchestrationConfig.mjs";
 
 export const DEFAULT_CONFIG = Object.freeze({
   selectedProfile: "",
@@ -26,6 +33,10 @@ export const DEFAULT_CONFIG = Object.freeze({
     port: 8000,
     maxQueuedJobs: 8,
     env: Object.freeze({
+      // Native default (ds4_agent.c agent_default_skills_enabled): unset means
+      // enabled. Spelled out here because the tuning GUI renders it as a
+      // two-state toggle and had been carrying its own copy of this default.
+      DS4_SKILL_AUTO: "1",
       DS4_METAL_PREFILL_CHUNK: "8192",
       DS4_CUDA_Q8_F16_CACHE_MB: "11264",
       DS4_CUDA_Q8_F16_CACHE_RESERVE_MB: "512",
@@ -85,6 +96,46 @@ export const DEFAULT_CONFIG = Object.freeze({
     modeSwitchTimeoutMs: 120000
   }),
   research: RESEARCH_DEFAULTS,
+  lean: Object.freeze({
+    enabled: false,
+    policyAuto: true,
+    defaultProfile: "core",
+    // Autonomous proof orchestration budget. The numbers mirror
+    // config/lean-orchestration-policy.json, which is also what the C header is
+    // generated from; leanOrchestrationConfig.resolveLeanOrchestrationConfig
+    // reads that file, so this block is only the file layer of the override
+    // chain (env > file > policy default).
+    orchestration: Object.freeze({
+      // Native defaults (ds4_agent.c): orchestration on, autonomous prompt off.
+      enabled: true,
+      prompt: false,
+      maxAttempts: LEAN_ORCHESTRATION_DEFAULTS.maxAttempts,
+      maxSameFailure: LEAN_ORCHESTRATION_DEFAULTS.maxSameFailure,
+      maxPrematureFinalizations: LEAN_ORCHESTRATION_DEFAULTS.maxPrematureFinalizations,
+      maxWallClockMs: LEAN_ORCHESTRATION_DEFAULTS.maxWallClockMs
+    })
+  }),
+  sage: Object.freeze({
+    policyAuto: true,
+    // Autonomous Sage orchestration budget. The numbers mirror
+    // config/sage-orchestration-policy.json, which is also what the C header is
+    // generated from; sageOrchestrationConfig.resolveSageOrchestrationConfig
+    // reads that file, so this block is only the file layer of the override
+    // chain (env > file > policy default).
+    orchestration: Object.freeze({
+      // Native defaults (ds4_agent_runtime.c): orchestration on, prompt off.
+      enabled: true,
+      prompt: false,
+      maxComputeAttempts: SAGE_ORCHESTRATION_DEFAULTS.maxComputeAttempts,
+      maxRepairAttempts: SAGE_ORCHESTRATION_DEFAULTS.maxRepairAttempts,
+      maxValidationAttempts: SAGE_ORCHESTRATION_DEFAULTS.maxValidationAttempts,
+      maxPlotAttempts: SAGE_ORCHESTRATION_DEFAULTS.maxPlotAttempts,
+      maxPrematureFinalizations: SAGE_ORCHESTRATION_DEFAULTS.maxPrematureFinalizations,
+      maxSameFailure: SAGE_ORCHESTRATION_DEFAULTS.maxSameFailure,
+      maxWallClockMs: SAGE_ORCHESTRATION_DEFAULTS.maxWallClockMs,
+      maxTotalToolCalls: SAGE_ORCHESTRATION_DEFAULTS.maxTotalToolCalls
+    })
+  }),
   evolution: Object.freeze({
     enabled: false,
     maxLevel: "B",
@@ -136,10 +187,9 @@ export const DEFAULT_CONFIG = Object.freeze({
     ]),
     auditDir: "data/pageagent-runs"
   }),
-  contextWiki: Object.freeze({
-    enabled: false,
-    previewOnly: true
-  }),
+  // The nine ContextWiki knobs live once, in contextConfig.DEFAULT_CONTEXT_LIMITS;
+  // this block is only the file layer of the chain (env > file > default).
+  contextWiki: Object.freeze({ ...DEFAULT_CONTEXT_LIMITS }),
   agno: Object.freeze({
     enabled: false,
     autoStart: false,
@@ -184,25 +234,25 @@ export const DEFAULT_CONFIG = Object.freeze({
       auditEnabled: true,
       auditDir: "data/agno/tool-audit"
     })
+  }),
+  agent: Object.freeze({
+    nativeChatTimeoutMs: 180_000,
+    // Quantum Fix epistemic gate. Ships disabled and in shadow: the first
+    // commits must observe and record, never change what a turn publishes.
+    epistemic: Object.freeze({
+      enabled: false,
+      mode: "shadow", // off | shadow | block
+      withholdOutput: true,
+      maxClaimsPerTurn: 64,
+      maxVerifierCallsPerTurn: 24,
+      maxRepairRounds: 2,
+      blockSeverity: 4,
+      verifyCitations: true,
+      verifyMath: true,
+      verifyExecutionClaims: true,
+      verifyChallenges: true,
+      strictRepair: true,
+      persistSessionClaims: true
+    })
   })
-});
-
-export const REQUEST_DEFAULTS = Object.freeze({
-  endpoint: "/v1/chat/completions",
-  model: "deepseek-v4-flash",
-  system: "",
-  // "auto" is resolved by the DS4-Studio proxy to:
-  // min(context room - context_margin, max_tokens_safety_cap).
-  max_tokens: "auto",
-  max_tokens_safety_cap: 32768,
-  context_margin: 1024,
-  temperature: 0,
-  top_p: 1,
-  top_k: 0,
-  min_p: 0,
-  seed: 42,
-  stream: true,
-  thinking: false,
-  reasoning_effort: "high",
-  stop: ""
 });

@@ -149,7 +149,11 @@ const BASE_AGENT_TOOLS = [
           phase: {
             type: "string",
             enum: ["prepare", "compute", "validate", "plot", "repair"],
-            description: "Optional phase of the current Sage workflow."
+            description: "Phase of the current Sage workflow. The runtime returns requiredNextPhase. Use that value on the next call. A repaired candidate must be validated again before publication."
+          },
+          candidate_revision: {
+            type: "number",
+            description: "Candidate revision this call acts on, as reported by the runtime. Validating a revision other than the current one is refused."
           },
           output_mode: {
             type: "string",
@@ -270,6 +274,85 @@ const BASE_AGENT_TOOLS = [
   {
     type: "function",
     function: {
+      name: "lean_inspect",
+      description: "Discover the signature of uncertain Lean/Mathlib symbols. This tool is optional discovery: it never authorizes lean_check, never creates a proof task, and never verifies. Use it only when a symbol signature is genuinely uncertain.",
+      parameters: {
+        type: "object",
+        properties: {
+          symbols: {
+            type: "array",
+            maxItems: 16,
+            items: { type: "string" },
+            description: "One or more fully-qualified Lean symbol names to inspect."
+          },
+          imports: {
+            type: "array",
+            maxItems: 8,
+            items: { type: "string" },
+            description: "Module imports to include (e.g. Mathlib.Data.Nat.Prime.Basic)."
+          },
+          profile: {
+            type: "string",
+            enum: ["core", "mathlib"],
+            description: "Runtime profile. Default core."
+          },
+          timeout_sec: {
+            type: "number",
+            minimum: 1,
+            maximum: 120,
+            description: "Timeout in seconds. Default 30."
+          }
+        },
+        required: ["symbols"],
+        additionalProperties: false
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
+      name: "lean_check",
+      description: "Typecheck Lean 4 source in a pinned Lake project. Lean elaboration may execute metaprograms, tactics, #eval commands and IO, so every source is treated as untrusted code and runs only inside the mandatory sandbox. The tool does not invoke a compiled main, and a checked result does not by itself certify that no axioms or placeholders are used. A utility check returning status=checked is not a verified user proof. In proof mode the runtime locks the target statement and forbids statement substitution. Returns an orchestration decision: if retryable=true, repair the source immediately and call lean_check again in the same turn. Plain-text finalization is blocked until verified=true or a terminal non-verification reason is returned.",
+      parameters: {
+        type: "object",
+        properties: {
+          code: { type: "string", description: "Lean 4 source code to check." },
+          task_mode: {
+            type: "string",
+            enum: ["proof", "utility"],
+            description:
+              "proof = authoritative theorem/lemma requested by the user and requires target_declaration; utility = syntax/runtime/auxiliary typecheck and can never satisfy a proof request."
+          },
+          target_declaration: {
+            type: "string",
+            description:
+              "Exact theorem/lemma declaration name being proved. Required when task_mode=proof."
+          },
+          target_statement: {
+            type: "string",
+            description:
+              "The theorem being proved, as a Lean declaration header up to (not including) ':= by' — " +
+              "for example 'theorem cauchy_mvt (f g : \u211d \u2192 \u211d) (hab : a < b) : \u2203 c \u2208 Set.Ioo a b, ...'. " +
+              "Required on the first task_mode=proof call: it seals what this task means before any " +
+              "candidate runs, so a later candidate cannot redefine the task to something easier."
+          },
+          profile: { type: "string", enum: ["core", "mathlib"], description: "Runtime profile. Default core." },
+          timeout_sec: { type: "number", minimum: 1, maximum: 120, description: "Timeout in seconds. Default 30." },
+          expected_declarations: {
+            type: "array",
+            maxItems: 16,
+            items: { type: "string" },
+            description: "Optional list of declaration names to expect."
+          }
+        },
+        required: ["code", "task_mode"],
+        additionalProperties: false
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
       name: "page_task",
       description: "Perform a high-level UI task described in natural language. Automatically inspects the page, plans and executes actions, and confirms the result. Use for multi-step tasks instead of chaining page_snapshot + page_action manually.",
       parameters: {
@@ -333,6 +416,38 @@ export function listAgentTools() {
   return AGENT_TOOLS.map((item) =>
     structuredClone(item)
   );
+}
+
+/**
+ * The tools advertised to the model, with the ones whose backend is disabled
+ * removed. A tool the model can see but never successfully call only teaches
+ * it to waste turns, so the gate belongs here rather than at the call site.
+ *
+ * @param {{ sageEnabled?: boolean, leanEnabled?: boolean, leanCoreOnly?: boolean }} flags
+ *   When `leanCoreOnly` is true (core ready, mathlib not) the lean_check schema
+ *   is narrowed to the core profile and the description declares core-only, so
+ *   the model cannot plan mathlib work that would fail deterministically.
+ * @returns {object[]} Defensive copies, safe to mutate
+ */
+export function advertisedAgentTools({ sageEnabled = true, leanEnabled = false, leanCoreOnly = false } = {}) {
+  return listAgentTools()
+    .filter((tool) => {
+      const name = tool.function?.name;
+      if (name === "sage") return sageEnabled;
+      if (name === "lean_check" || name === "lean_inspect") return leanEnabled;
+      return true;
+    })
+    .map((tool) => {
+      if (tool.function?.name !== "lean_check" || !leanCoreOnly) return tool;
+      const leanCheck = structuredClone(tool);
+      leanCheck.function.parameters.properties.profile = {
+        type: "string",
+        enum: ["core"],
+        description: "Runtime profile. This server is core-only: profile=mathlib is not available."
+      };
+      leanCheck.function.description += " This server is core-only: profile=mathlib is not available.";
+      return leanCheck;
+    });
 }
 
 /**

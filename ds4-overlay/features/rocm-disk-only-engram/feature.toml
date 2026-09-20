@@ -1,0 +1,50 @@
+id = "rocm-disk-only-engram"
+enabled = true
+owner = "overlay"
+description = """
+On ROCm, grant the disk-only Engram mapping exemption only to a descriptor that
+actually validates as an Engram table.
+
+Upstream recognises an Engram table by name alone, and on the ROCm path that
+same name check is what exempts the tensor from the mapping bounds check. A
+name is not evidence: a malformed descriptor called blk.1.engram_embd.weight
+inherits the exemption and is then trusted to point outside the mapping.
+
+This feature adds model_engram_table_index() and
+model_tensor_is_disk_only_engram() - which check architecture, row encoding,
+shape, and bounds against the file rather than the mapping - and uses them for
+the exemption under DS4_ROCM_BUILD. The non-ROCm path is left exactly as
+upstream has it.
+
+Evidence: tests/test_deepseek41_cache_spans.c, ROCm branch, which asserts that
+neither an arbitrary tail tensor nor a malformed recognised table can acquire
+the exemption.
+"""
+
+[upstream]
+reviewed_sha = "9139e2ae58a41503968a500f36f75895c1ba63fc"
+
+[[anchors]]
+file = "ds4.c"
+kind = "exact"
+text = "static void model_unmap_engram(ds4_model *m) {"
+count = 1
+
+[[anchors]]
+file = "ds4.c"
+kind = "exact"
+text = "             ds4_streq(t->name, \"blk.14.engram_embd.weight\"))) continue;"
+count = 1
+
+[[shadow_patch]]
+file = "ds4.c"
+patch = "patches/core/rocm-disk-only-engram.patch"
+
+[[test]]
+command = "make -f Makefile.overlay overlay-test-deepseek41-cache-spans"
+required = true
+
+[[retire_probe]]
+kind = "symbol"
+file = "ds4.c"
+text = "model_tensor_is_disk_only_engram"

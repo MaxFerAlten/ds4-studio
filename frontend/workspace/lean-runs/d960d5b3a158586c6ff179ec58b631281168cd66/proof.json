@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "proofs": {
+    "proof-8be965446672-1788119059740-3494283299": [
+      {
+        "runId": "lean-d960d5b3a158-0-2",
+        "attempt": 1,
+        "status": "failed",
+        "sourceSha256": "a2ef29630d858291e90faac5a3f8969bef942bc021ef6001ba31b4a093fe9f14",
+        "at": "2026-08-30T19:44:20.725Z"
+      }
+    ],
+    "proof-1563b4789938-1788119128734-2932003475": [
+      {
+        "runId": "lean-d960d5b3a158-0-3",
+        "attempt": 1,
+        "status": "failed",
+        "sourceSha256": "92d4652b533708ea1eaacd1cf0c7643b87bdb96a2de5b27a63a2d22362ccf17a",
+        "at": "2026-08-30T19:45:30.419Z"
+      }
+    ],
+    "proof-91caf74d6e29-1788119293273-1713427151": [
+      {
+        "runId": "lean-d960d5b3a158-0-5",
+        "attempt": 1,
+        "status": "timeout",
+        "sourceSha256": "98e5147e6ab7e20002fe74e54001083fb241660e3a40efd3c7fdcc4f43bd5287",
+        "at": "2026-08-30T19:48:43.378Z"
+      }
+    ],
+    "proof-c5791bdff738-1788119394917-1503240801": [
+      {
+        "runId": "lean-d960d5b3a158-0-6",
+        "attempt": 1,
+        "status": "failed",
+        "sourceSha256": "cc3b5c40ac9dac77464fbeaf5e54c724ce9007c509756f9a0ad3c6da8d889c73",
+        "at": "2026-08-30T19:50:04.226Z"
+      }
+    ],
+    "proof-698eb6ec8fa7-1788119497284-1182922460": [
+      {
+        "runId": "lean-d960d5b3a158-0-7",
+        "attempt": 1,
+        "status": "failed",
+        "sourceSha256": "fa5f1d18a74c104090f71253f6e8def489d34d53ebc641da7be003e15cb0aded",
+        "at": "2026-08-30T19:51:40.105Z"
+      }
+    ],
+    "proof-d15a1ba01022-1788119546908-3155546405": [
+      {
+        "runId": "lean-d960d5b3a158-0-8",
+        "attempt": 1,
+        "status": "failed",
+        "sourceSha256": "15e3cc4f28a1421b584b7aff3f5ce200d4e61dd97e12da07eeb3195ddeb5ad7e",
+        "at": "2026-08-30T19:52:29.315Z"
+      }
+    ],
+    "proof-e878ae5388c9-1788119605538-3615845662": [
+      {
+        "runId": "lean-d960d5b3a158-0-9",
+        "attempt": 1,
+        "status": "checked",
+        "sourceSha256": "b3b3874d4f8973441f61e013a6f6a60e8544c913e543a0c6b02e296f9a00d0be",
+        "at": "2026-08-30T19:53:27.185Z"
+      }
+    ],
+    "proof-19723242d487-1788119665552-3369838522": [
+      {
+        "runId": "lean-d960d5b3a158-0-10",
+        "attempt": 1,
+        "status": "failed",
+        "sourceSha256": "4d42b9269adf85d112902fbee2dd2416a16cf651c2e31573d7e831a7d5db7481",
+        "at": "2026-08-30T19:54:27.760Z"
+      }
+    ]
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "maxComputeAttempts": 1,
+  "maxRepairAttempts": 4,
+  "maxValidationAttempts": 5,
+  "maxPlotAttempts": 2,
+  "maxPrematureFinalizations": 3,
+  "maxSameFailure": 2,
+  "maxWallClockMs": 480000,
+  "maxTotalToolCalls": 12,
+  "hardMaxTotalCalls": 16,
+  "hardMaxWallClockMs": 900000
+}

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ExternalLink, Play, RefreshCw, Square } from "lucide-react";
 
-import { fetchAgnoStatus, startAgno, createAgnoRun, cancelAgnoRun, ensureAgnoUi } from "./agnoApi.mjs";
+import { fetchAgnoStatus, startAgno, stopAgno, createAgnoRun, cancelAgnoRun, ensureAgnoUi } from "./agnoApi.mjs";
 import { launchAgnoUi } from "./agnoUiLauncher.mjs";
 import { openAgnoRunEvents } from "./agnoEvents.mjs";
 import { applyAgnoEvent, initialAgnoRun } from "./agnoStore.mjs";
@@ -106,6 +106,22 @@ export function AgnoPanel({ openRunId, onRunOpened } = {}) {
     setNotice("");
     try {
       await startAgno();
+      await refreshStatus();
+    } catch (error) {
+      setNotice(error.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleStop() {
+    setBusy(true);
+    setNotice("");
+    try {
+      // Closes the run stream first: the service going away mid-stream would
+      // otherwise surface as a connection error rather than a deliberate stop.
+      streamRef.current?.close();
+      await stopAgno();
       await refreshStatus();
     } catch (error) {
       setNotice(error.message);
@@ -223,6 +239,19 @@ export function AgnoPanel({ openRunId, onRunOpened } = {}) {
             ? `Tool ${status.tools.profile}: ${status.tools.registeredCount ?? status.tools.catalogCount}/${status.tools.expectedProfileCount}`
             : "Tool disabilitati"}
         </span>
+        {serviceReady ? (
+          <button
+            type="button"
+            className="agno-stop-service-button"
+            onClick={handleStop}
+            disabled={busy}
+            title="Arresta il servizio Agno (AgentOS)"
+            aria-label="Arresta il servizio Agno"
+            data-agent-id="agno-stop-service-button"
+          >
+            <Square size={15} /> Arresta servizio
+          </button>
+        ) : null}
         <button
           type="button"
           className={`agno-native-ui-button ${agentUiReady ? "ready" : ""}`}

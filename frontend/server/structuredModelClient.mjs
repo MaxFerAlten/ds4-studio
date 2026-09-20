@@ -7,6 +7,27 @@
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_ERROR_BODY_CHARS = 400;
 
+/** Why the reply could not be parsed, in the error the operator actually sees.
+ *
+ * "did not return valid JSON" alone says nothing: a reply truncated by the
+ * token budget and a reply wrapped in prose need opposite fixes, and the raw
+ * text was discarded, so neither could be told apart from the message.
+ */
+export function describeJsonFailure(roleName, reply = {}) {
+  const usage = reply.usage || {};
+  const reasoning = usage.completion_tokens_details?.reasoning_tokens;
+  const parts = [`role ${roleName}: model did not return valid JSON`];
+  if (reply.finishReason) parts.push(`finish_reason=${reply.finishReason}`);
+  if (usage.completion_tokens != null) parts.push(`completion_tokens=${usage.completion_tokens}`);
+  if (reasoning != null) parts.push(`reasoning_tokens=${reasoning}`);
+  const text = String(reply.content || "");
+  parts.push(text ? `reply ended: ...${JSON.stringify(text.slice(-180))}` : "reply was empty");
+  if (reply.finishReason === "length") {
+    parts.push("the reply hit the token budget: raise this role's maxTokens, or stop it thinking");
+  }
+  return parts.join(" | ");
+}
+
 export function extractStructuredJson(text) {
   if (typeof text !== "string" || !text.trim()) return null;
   let candidate = text.trim();
@@ -83,6 +104,16 @@ export class StructuredModelClient {
     };
     if (think !== undefined) payload.think = Boolean(think);
     if (payload.think && reasoningEffort) payload.reasoning_effort = reasoningEffort;
+    if (think === false) {
+      // `think` is ds4's own field. An OpenAI-compatible endpoint drops it in
+      // silence and keeps thinking at its default effort, and with the budget
+      // covering reasoning those tokens come out of this role's maxTokens.
+      // Measured on Halogen (Qwen3.8) at maxTokens 1536: `think: false` alone
+      // spent 430 tokens on reasoning, `enable_thinking: false` spent 0 and the
+      // whole completion fell from 854 tokens to 125.
+      payload.enable_thinking = false;
+      payload.reasoning_effort = "none";
+    }
     return payload;
   }
 
@@ -118,7 +149,7 @@ export class StructuredModelClient {
     });
     const second = await this.#complete(retryPayload, { signal });
     parsed = extractStructuredJson(second.content);
-    if (parsed === null) throw new Error(`role ${roleName}: model did not return valid JSON`);
+    if (parsed === null) throw new Error(describeJsonFailure(roleName, second));
     return { ...second, json: parsed, usage: mergeTokenUsage(first.usage, second.usage), attempts: 2 };
   }
 
@@ -142,13 +173,16 @@ export class StructuredModelClient {
     const response = await this.#post("/v1/chat/completions", payload, signal);
     if (!payload.stream) {
       const data = await response.json();
-      const message = data.choices?.[0]?.message || {};
+      const choice = data.choices?.[0] || {};
+      const message = choice.message || {};
       return {
         content: message.content || "",
         reasoning: message.reasoning_content || message.reasoning || "",
-        usage: data.usage || null
+        usage: data.usage || null,
+        finishReason: choice.finish_reason || null
       };
     }
+    let finishReason = null;
     let content = "";
     let reasoning = "";
     let usage = null;
@@ -168,6 +202,7 @@ export class StructuredModelClient {
           continue;
         }
         if (event.usage) usage = event.usage;
+        if (event.choices?.[0]?.finish_reason) finishReason = event.choices[0].finish_reason;
         const delta = event.choices?.[0]?.delta || {};
         if (delta.content) {
           content += delta.content;
@@ -176,7 +211,7 @@ export class StructuredModelClient {
         reasoning += delta.reasoning_content || delta.reasoning || "";
       }
     }
-    return { content, reasoning, usage };
+    return { content, reasoning, usage, finishReason };
   }
 
   async #post(pathName, body, signal) {

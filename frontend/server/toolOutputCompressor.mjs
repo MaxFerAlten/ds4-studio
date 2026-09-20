@@ -340,6 +340,16 @@ function buildMarker(info, body) {
     `blob_id: ${info.blobId}`,
     `retrieve: retrieve_context_blob id=${info.blobId} offset=0 length=20000`,
     "note: lossy live-zone compression; use retrieve_context_blob for exact original bytes.",
+    // Compressing an observation is what makes the structured reply mandatory
+    // (AgentLoopGuard.recordCompressedObservation -> STOP_MISSING_OBSERVATION_FLOW).
+    // The requirement was created here and stated nowhere: no system prompt
+    // carries it, so a model that has not been told fails a contract it was
+    // never given. State it where it is created.
+    "required reply format, in this order:",
+    "  [OBSERVATION] what this output showed",
+    "  [COMPRESSED] <= 10 lines",
+    "  [TARGET_SELECTED] the single next thing to read, if any",
+    "  [VERDICT] GO / STOP / RETEST",
     "",
     body || ""
   ];

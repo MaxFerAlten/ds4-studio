@@ -15,8 +15,10 @@
 import { createHash } from "node:crypto";
 import { ReadGuard } from "./agentTools.mjs";
 import { AgentLoopGuard } from "./agentLoopGuard.mjs";
+import { loadAgentLoopPolicy } from "./agentLoopPolicy.mjs";
 import { normalizePonyMode } from "./agentPonyPolicy.mjs";
 import { AGENT_TOOLS } from "./agentToolCatalog.mjs";
+import { EpistemicSessionLedger } from "./epistemic/epistemicSessionLedger.mjs";
 
 /** Recursively convert any value into a key-sorted, stable representation. */
 function stable(value) {
@@ -75,8 +77,11 @@ Other rules:
   - Treat Sage execution as internal computation, not as user-facing prose.
   - Do not narrate retries, code edits, stdout, stderr, tracebacks, or local paths.
   - Set task_type and phase when possible.
-  - Prefer one complete compute call, then one validation call.
-  - Use repair only after an actual error; maximum two repairs.
+  - Follow the runtime-provided nextPhase exactly.
+  - Continue compute/validate/repair/revalidate until the publication gate is ready
+    or the orchestrator reports a terminal block.
+  - Do not ask the user to send another message to continue a repairable workflow.
+  - After two identical failure fingerprints, change mathematical strategy.
   - The final answer must be a single coherent response based only on validated results.
   - Use $...$ and $$...$$ for formulas.
   - For function_study, include domain, intercepts, sign, limits, asymptotes,
@@ -87,6 +92,50 @@ Other rules:
   - Enumerate periodic trigonometric solutions over the requested domain; do not rely on a principal branch.
   - For numeric roots, isolate intervals before using find_root and respect excluded domain points.
   - Classify critical points and validate exact or numeric results before presenting them.
+
+- Lean 4:
+  - Use lean_check, never bash, to verify Lean source; lean_inspect is optional discovery of
+    uncertain symbol signatures — it is never a prerequisite for lean_check, never verifies,
+    never creates a proof task, and does not authorize finalization.
+  - For a user-requested theorem or proof call lean_check with task_mode=proof and set
+    target_declaration to the exact theorem/lemma being proved; the target must use a
+    top-level ':= by' proof body. After the runtime locks the target statement only the
+    proof body, imports and helper lemmas may change — never the declaration name, binders,
+    hypotheses, conclusion, quantifier order or domain/types. A proof task is complete only
+    when the checked source is that locked target declaration and statement — not merely
+    because some Lean source returned status=checked.
+  - task_mode=utility is for diagnostic/smoke/auxiliary typechecks only: a utility result
+    with status=checked means that source elaborated (verified=false, no proofId) and can
+    never satisfy a proof request. Never use a trivial theorem such as 1+1=2 as a proof-mode
+    health probe for a different user theorem.
+  - A checked result means Lean elaborated the file without errors.
+    Do not claim formal certification unless the result explicitly has certified=true.
+  - Use profile=mathlib only when imports require Mathlib. Prefer targeted imports to reduce
+    latency and memory; use "import Mathlib" only when justified and within the configured
+    budget, and do not assume a fixed timing.
+  - Continue autonomously until the current Lean candidate returns status=checked or the
+    orchestrator reports a terminal infrastructure/budget block; never ask the user to
+    send another message to continue a repairable proof. Follow orchestration.nextAction:
+    the LEAN_ORCHESTRATION block at the top of every lean_check result already says whether
+    another attempt is owed; never resend byte-identical source after a failure, and change
+    proof strategy after two identical diagnostic fingerprints.
+  - lean_check does not invoke a compiled main; elaboration may still execute metaprograms,
+    tactics, #eval and IO, which is why every check runs inside the mandatory sandbox.
+  - The only Lean commands that exist are /lean start, stop, status and preflight; never suggest /lean restart, /lean reset, ds4-admin, sudo, a Lean daemon or a container restart: none of them exist.
+  - promptRevision identifies the exact policy text injected into this session; contractRevision
+    identifies the machine-readable lean_check protocol. Neither is a Lean or Mathlib version.
+  - LEAN_POLICY_DRIFT with blocking=false is not an error: the server holds newer editorial
+    policy text and the contract matches. Continue the proof in the same proof task. Do not
+    ask the user to restart, do not ask for another message, do not change the theorem for it.
+    LEAN_CONTRACT_REVISION_MISMATCH is terminal infrastructure evidence: Lean was not run and
+    the theorem code is not the cause. Publish NOT_VERIFIED with the code; do not rewrite it.
+  - A LEAN_POLICY_* or other state-coherence error is a state-coherence bug: do not loop;
+    run /lean start once to repair the skill state, then report the structured code and do
+    not retry further. For
+    proof diagnostics with orchestration.retryable=true, repair the Lean source and call
+    lean_check again in the same proof task without a new user turn. For transport failures
+    explicitly marked retryable, the runtime may allow one byte-identical retry. Never
+    resend unchanged source for a proof failure.
 
 `;
 
@@ -116,10 +165,29 @@ export class AgentSessionManager {
     this.ponyMode = "off";
     this.gitnexusEnabled = false;
     this.readGuard = new ReadGuard();
+    // QF-18 §40 — claim state that outlives the turn, kept beside the
+    // transcript and never inside it: a ledger entry in state.messages
+    // would change the message hashes and break the delta protocol.
+    this.epistemic = new EpistemicSessionLedger();
+    /** Per-turn tool scope: null means "all tools allowed" (backward-compatible).
+     *  An empty Set means "no tools allowed" (observation/read-only mode).
+     *  A non-empty Set restricts dispatch to only those tool names. */
+    this.toolScope = null;
+    const loopPolicy = loadAgentLoopPolicy();
     this.loopGuard = new AgentLoopGuard({
-      maxSameIntent: Number(process.env.DS4_AGENT_MAX_SAME_INTENT || 2),
-      maxSameAction: Number(process.env.DS4_AGENT_MAX_SAME_ACTION || 1),
-      maxNoProgress: Number(process.env.DS4_AGENT_MAX_NO_PROGRESS || 3),
+      policy: loopPolicy,
+      // These used to default to 2/1/3 written out here — a third copy of the
+      // policy, free to drift from both the JSON and the native worker. The
+      // env overrides stay; only the defaults moved.
+      maxSameIntent: Number(
+        process.env.DS4_AGENT_MAX_SAME_INTENT || loopPolicy.repeatedActionStrategyChange
+      ),
+      repeatedActionStrategyChange: Number(
+        process.env.DS4_AGENT_MAX_SAME_ACTION || loopPolicy.repeatedActionStrategyChange
+      ),
+      maxNoProgress: Number(
+        process.env.DS4_AGENT_MAX_NO_PROGRESS || loopPolicy.noProgressTerminal
+      ),
       loopMode: process.env.DS4_AGENT_LOOP_GUARD || "block",
       outputEchoMode: process.env.DS4_AGENT_OUTPUT_ECHO_GUARD || "block"
     });
@@ -140,6 +208,7 @@ export class AgentSessionManager {
     this.gitnexusEnabled = false;
     this.lastMode = "none";
     this.lastReason = "agent started";
+    this.epistemic.clear();
     return this.status();
   }
 
@@ -152,8 +221,22 @@ export class AgentSessionManager {
     this.lastMode = "none";
     this.lastReason = "agent stopped";
     this.readGuard.clearAll();
+    this.epistemic.clear();
+    this.toolScope = null;
     this.usageTotals = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
     return this.status();
+  }
+
+  /**
+   * Set the per-turn tool scope.
+   * @param {string[] | null} allowedTools – null = all tools, [] = none, ["read","search"] = only those
+   */
+  setToolScope(allowedTools) {
+    if (allowedTools === null || allowedTools === undefined) {
+      this.toolScope = null;
+    } else if (Array.isArray(allowedTools)) {
+      this.toolScope = allowedTools.length > 0 ? new Set(allowedTools) : new Set();
+    }
   }
 
   /** Accumulate usage tokens reported by the backend. */
@@ -419,6 +502,7 @@ export class AgentSessionManager {
     this.lastMode = "none";
     this.lastReason = reason;
     this.readGuard.clearAll();
+    this.epistemic.clear();
     this.usageTotals = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
   }
 }
