@@ -6,6 +6,7 @@ export DS4_SKILLS_DIR="${DS4_SKILLS_DIR:-$ROOT_DIR/skills}"
 source "$ROOT_DIR/scripts/rocm_settings.sh"
 source "$ROOT_DIR/scripts/agno_bootstrap.sh"
 source "$ROOT_DIR/scripts/crawl_bootstrap.sh"
+source "$ROOT_DIR/scripts/frontend_bootstrap.sh"
 
 FRONTEND_DIR="$ROOT_DIR/frontend"
 HOST="127.0.0.1"
@@ -454,10 +455,7 @@ if [[ "$(ds4_agno_agent_ui_config_enabled "$CONFIG_PATH")" == "1" ]]; then
   ensure_agno_agent_ui "$ROOT_DIR" "$CONFIG_PATH"
 fi
 
-if [[ ! -d "$FRONTEND_DIR/node_modules" ]]; then
-  echo "srun.sh: installing frontend dependencies"
-  npm install --prefix "$FRONTEND_DIR"
-fi
+ensure_frontend_dependencies "$ROOT_DIR"
 
 echo "srun.sh: cleaning stale ds4 processes before launch"
 stop_all_ds4
