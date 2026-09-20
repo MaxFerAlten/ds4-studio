@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export DS4_SKILLS_DIR="${DS4_SKILLS_DIR:-$ROOT_DIR/skills}"
 source "$ROOT_DIR/scripts/rocm_settings.sh"
 source "$ROOT_DIR/scripts/agno_bootstrap.sh"
+source "$ROOT_DIR/scripts/crawl_bootstrap.sh"
 
 FRONTEND_DIR="$ROOT_DIR/frontend"
 HOST="127.0.0.1"
@@ -447,6 +448,7 @@ fi
 ensure_model
 ensure_backend
 ensure_agno_service "$ROOT_DIR" "$CONFIG_PATH"
+ensure_crawl_service "$ROOT_DIR"
 
 if [[ "$(ds4_agno_agent_ui_config_enabled "$CONFIG_PATH")" == "1" ]]; then
   ensure_agno_agent_ui "$ROOT_DIR" "$CONFIG_PATH"

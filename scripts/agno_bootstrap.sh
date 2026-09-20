@@ -126,12 +126,77 @@ ds4_agno_agent_ui_config_enabled() {
     const fs = require("fs");
     try {
       const cfg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+      const agentUi = cfg && cfg.agno && cfg.agno.agentUi;
       console.log(
         cfg && cfg.agno && cfg.agno.enabled &&
-        cfg.agno.agentUi && cfg.agno.agentUi.enabled !== false ? "1" : "0"
+        (!agentUi || agentUi.enabled !== false) ? "1" : "0"
       );
     } catch { console.log("0"); }
   ' "$config_path" 2>/dev/null || echo "0"
+}
+
+ds4_agno_agent_ui_runtime_dir() {
+  local root_dir="$1"
+  local config_path="$2"
+  node -e '
+    const fs = require("fs");
+    const path = require("path");
+    const root = path.resolve(process.argv[1]);
+    try {
+      const cfg = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+      const configured = cfg?.agno?.agentUi?.runtimeDir;
+      const relative = configured && String(configured).trim()
+        ? String(configured)
+        : ".runtime/agno-agent-ui";
+      if (path.isAbsolute(relative)) process.exit(1);
+      const resolved = path.resolve(root, relative);
+      if (resolved === root || !resolved.startsWith(root + path.sep)) process.exit(1);
+      console.log(resolved);
+    } catch {
+      process.exit(1);
+    }
+  ' "$root_dir" "$config_path"
+}
+
+ensure_agno_agent_ui() {
+  local root_dir="$1"
+  local config_path="$2"
+  local bootstrap="$root_dir/scripts/agno_agent_ui_bootstrap.sh"
+  local lock_file="$root_dir/third_party/agno-agent-ui/upstream.lock"
+  local runtime_dir expected_commit marker_commit
+
+  runtime_dir="$(ds4_agno_agent_ui_runtime_dir "$root_dir" "$config_path")" || {
+    echo "srun.sh: invalid agno.agentUi.runtimeDir" >&2
+    return 1
+  }
+  [[ -x "$bootstrap" ]] || {
+    echo "srun.sh: Agno Agent UI bootstrap missing or not executable" >&2
+    return 1
+  }
+  [[ -f "$lock_file" ]] || {
+    echo "srun.sh: Agno Agent UI lock file missing" >&2
+    return 1
+  }
+
+  expected_commit="$(sed -n 's/^AGNO_AGENT_UI_COMMIT=//p' "$lock_file" | head -n 1)"
+  [[ "$expected_commit" =~ ^[0-9a-f]{40}$ ]] || {
+    echo "srun.sh: invalid Agno Agent UI commit in lock file" >&2
+    return 1
+  }
+  marker_commit=""
+  if [[ -f "$runtime_dir/.ds4-ready" ]]; then
+    marker_commit="$(sed -n 's/^commit=//p' "$runtime_dir/.ds4-ready" | head -n 1)"
+  fi
+
+  if [[ "$marker_commit" == "$expected_commit" &&
+        -f "$runtime_dir/.next/BUILD_ID" &&
+        -d "$runtime_dir/node_modules" &&
+        -f "$runtime_dir/package.json" ]]; then
+    return 0
+  fi
+
+  echo "srun.sh: Agno Agent UI runtime not ready, bootstrapping"
+  DS4_AGNO_AGENT_UI_RUNTIME_DIR="$runtime_dir" "$bootstrap" "$root_dir"
 }
 
 # Echoes the Agent UI port (default 3000).
