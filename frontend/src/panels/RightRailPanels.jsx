@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { RefreshCw } from "lucide-react";
+import { leanStatusView } from "../lean/leanStatusView.mjs";
 import {
   STARTUP_GROUPS,
   FIELD_LABELS,
@@ -365,6 +366,71 @@ export function PageAgentPanel({ config }) {
         >
           Stop
         </button>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Lean 4 status. Reports what the server measured, never what the config
+ * requested: "enabled" is a request, readiness is a measurement, and the two
+ * disagreed in every failure mode this integration had (R13).
+ */
+export function LeanPanel({ config }) {
+  const [status, setStatus] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const refresh = async () => {
+    setBusy(true);
+    try {
+      const res = await fetch("/api/lean/status");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setStatus(await res.json());
+      setError("");
+    } catch (err) {
+      setStatus(null);
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    refresh();
+  }, []);
+
+  const view = leanStatusView(status, config?.lean, {
+    busy: Boolean(status?.concurrency?.activeGlobalRuns),
+  });
+  const profiles = status?.preflight?.profiles || {};
+
+  return (
+    <div className="lean-panel">
+      <div className="lean-toolbar">
+        <button type="button" onClick={refresh} disabled={busy}>
+          <RefreshCw size={14} /> {busy ? "Loading…" : "Refresh"}
+        </button>
+      </div>
+      <div className={`status-pill ${view.tone}`}>{view.label}</div>
+      {view.detail ? <div className="lean-detail">{view.detail}</div> : null}
+      {view.restartRequired ? (
+        <div className="status-pill warn">
+          lean.enabled is resolved once at boot — restart the Node UI server to apply it.
+        </div>
+      ) : null}
+      {error ? <div className="status-pill bad">{error}</div> : null}
+      {Object.entries(profiles).map(([name, p]) => (
+        <div key={name} className="lean-profile">
+          <span>{name}</span>
+          <strong>{p.ok ? `ready · ${p.toolchain || "?"}` : "not ready"}</strong>
+        </div>
+      ))}
+      {status?.metrics ? (
+        <div className="lean-metrics">
+          checks {status.metrics.calls ?? 0} · checked {status.metrics.checked ?? 0} · failed{" "}
+          {status.metrics.failed ?? 0} · timeout {status.metrics.timeout ?? 0}
+        </div>
       ) : null}
     </div>
   );

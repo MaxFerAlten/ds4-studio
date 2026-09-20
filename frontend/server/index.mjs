@@ -2,8 +2,9 @@ import express from "express";
 import multer from "multer";
 import { createServer as createViteServer } from "vite";
 import { parseCommandLine, buildDs4WrapperArgs } from "./commandBuilder.mjs";
-import { buildDs4Args, loadConfig, redactConfigSecrets, saveConfig, validateConfig } from "./config.mjs";
+import { buildDs4Args, loadConfig, mergeRequestOverConfig, redactConfigSecrets, saveConfig, validateConfig } from "./config.mjs";
 import { DEFAULT_CONFIG, REQUEST_DEFAULTS } from "./defaultConfig.mjs";
+import { buildServerLaunchConfig, prepareServerLaunchPaths } from "./serverLaunchConfig.mjs";
 import {
   deleteAllConversationHistory,
   deleteConversationHistory,
@@ -50,11 +51,22 @@ import {
 } from "./costLimits.mjs";
 import { Ds4ProcessManager } from "./processManager.mjs";
 import { readRequestBody, requestHeadersForProxy } from "./proxy.mjs";
-import { fetchWithBusyRetry } from "./backendRetry.mjs";
+import {
+  busyRetryOptionsForRequest,
+  fetchWithBusyRetry,
+  isGenerationRequest
+} from "./backendRetry.mjs";
 import { readAmdSmiStatusCached } from "./amdSmi.mjs";
 import { AgentSessionStore, AGENT_SYSTEM_PROMPT, AGENT_TOOLS } from "./agentSession.mjs";
+import { advertisedAgentTools } from "./agentToolCatalog.mjs";
 import { normalizeSagePhase } from "./sageResultContract.mjs";
 import { SageTurnTracker } from "./sageTurnTracker.mjs";
+import { SageRunRegistry } from "./sageRunRegistry.mjs";
+import { createSageMetrics, sageTransitionEvent } from "./sageMetrics.mjs";
+import {
+  LeanTurnTracker,
+  sha256Hex
+} from "./lean/leanTurnTracker.mjs";
 import {
   authoritativeSageFinalFromResult,
   canonicalSageCommitPending,
@@ -62,9 +74,14 @@ import {
   sageArtifactKinds,
   sageToolBlockDecision
 } from "./sageAgentLoopPolicy.mjs";
+import {
+  authoritativeToolBlockGuidance,
+  evaluateAuthoritativeToolCalls
+} from "./authoritativeToolGate.mjs";
 import { appendPonyPolicy, buildPonyPolicy, normalizePonyMode, ponyCommandMessage } from "./agentPonyPolicy.mjs";
 import {
   checkBashFileReadFallback,
+  checkBashLeanGuard,
   executeTool,
   findLatestSageImageArtifact,
   resolveSageArtifactById,
@@ -89,8 +106,28 @@ import { evidenceFromCrawlManifest } from "./evidenceStore.mjs";
 import { crawlPreflight } from "./crawlPreflight.mjs";
 import { buildSynthesisBrief } from "./synthesisEngine.mjs";
 import { getAgentCapabilities, capabilitiesPromptSection } from "./agentCapabilities.mjs";
+import { resolveLeanConfig } from "./lean/leanConfig.mjs";
+import { resolveSageConfig } from "./sageConfig.mjs";
+import { buildDs4SemanticEnv, buildDs4EpistemicEnv } from "./semanticConfig.mjs";
+import { runLeanPreflight } from "./lean/leanPreflight.mjs";
+import { pruneExpiredLeanRuns } from "./lean/leanPaths.mjs";
+import { createLeanMetrics } from "./lean/leanMetrics.mjs";
+import { createLeanRouter } from "./lean/leanRoutes.mjs";
+import { executeLeanCheck } from "./lean/leanExecutor.mjs";
+import { executeLeanInspect } from "./lean/leanInspect.mjs";
+import { LeanRunRegistry } from "./lean/leanRunRegistry.mjs";
+import { getLeanPolicyState as loadLeanPolicyState } from "./lean/leanPolicyBundle.mjs";
+import {
+  createLeanRuntimeStateCache,
+  isLeanToolAdvertised,
+  leanToolCapability
+} from "./lean/leanRuntimeState.mjs";
 import { autonomyPromptSection } from "./agentAutonomy.mjs";
-import { agentCoreRulesSection, agentContextMemorySection } from "./agentRuntimeRules.mjs";
+import {
+  agentCoreRulesSection,
+  agentContextMemorySection,
+  agentEpistemicRulesSection
+} from "./agentRuntimeRules.mjs";
 import { createHeadroomHandlers } from "./headroomControl.mjs";
 import {
   buildGitnexusPolicy,
@@ -101,6 +138,15 @@ import { ToolBlobStore } from "./toolBlobStore.mjs";
 import { compressToolOutput, compressToolResultForModel } from "./toolOutputCompressor.mjs";
 import { guardAssistantDelta, hasStructuredSynthesis } from "./agentLoopGuard.mjs";
 import { checkVerifiedClaim } from "./claimGuard.mjs";
+import { envBooleanWithAliases } from "./envBoolean.mjs";
+import { evaluateLeanFinalCandidate } from "./authoritativeFinalizationGate.mjs";
+import { createLeanTaskSpec } from "./lean/leanTaskSpec.mjs";
+import { AuthoritativeOutputBuffer } from "./authoritativeOutputBuffer.mjs";
+import { createEpistemicTurn, evaluateEpistemicTurn, withholdsOutput } from "./epistemic/epistemicTurn.mjs";
+import { EpistemicSourceContext } from "./epistemic/epistemicSourceContext.mjs";
+import { applyChallenges, extractChallenges } from "./epistemic/epistemicChallengeExtractor.mjs";
+import { REPAIR_NEXT, evaluateRepairTransition } from "./epistemic/epistemicRepairPolicy.mjs";
+import { createEpistemicTelemetry } from "./epistemic/epistemicTelemetry.mjs";
 import {
   canonicalLegacyCommand,
   isAgentSlashCommand,
@@ -143,7 +189,10 @@ import {
   sageState,
   syncSageStateFromNativeCommand
 } from "./sageState.mjs";
-import { abortOnClientDisconnect } from "./clientDisconnect.mjs";
+import {
+  abortOnClientDisconnect,
+  armBackendCancelOnDisconnect
+} from "./clientDisconnect.mjs";
 import { ensureAgnoTokens } from "./agno/agnoToken.mjs";
 import { AgnoModelGate } from "./agno/agnoModelGate.mjs";
 import { AgnoExecutionGuard } from "./agno/agnoExecutionGuard.mjs";
@@ -194,47 +243,128 @@ let config = await loadConfig();
 if (process.env.DS4_UI_HOST) config.control.host = process.env.DS4_UI_HOST;
 if (process.env.DS4_UI_PORT) config.control.port = process.env.DS4_UI_PORT;
 
+// Lean 4 precedence is env defined > config JSON > default. The JSON layer is
+// the top-level `lean` block of ds4-ui.config.json (validated in config.mjs);
+// machine-specific sandbox paths stay env-driven or derived from the project
+// root and never come from the JSON schema. srun.sh deliberately does NOT
+// export DS4_LEAN_ENABLED when unset, so the file layer can win.
+const leanResolution = resolveLeanConfig(process.env, {
+  fileConfig: config.lean,
+  runtimeRoot: process.env.DS4_LEAN_RUNTIME_ROOT || path.join(PROJECT_ROOT, "lean-runtime"),
+  runsRoot: process.env.DS4_LEAN_RUNS_ROOT || path.join(PROJECT_ROOT, "frontend", "workspace", "lean-runs")
+});
+for (const warning of leanResolution.warnings) {
+  console.warn(`[lean] ${warning}`);
+}
+const sageResolution = resolveSageConfig(process.env, config.sage);
+for (const warning of sageResolution.warnings) {
+  console.warn(`[sage] ${warning}`);
+}
+
+// `config` stays the persistable JSON; `runtimeConfig` is what the boot
+// actually resolved. Keeping them apart is what stops saveConfig() from
+// writing runtime-only fields (requested, sources, runtimeRoot) into the file.
+const runtimeConfig = Object.freeze({
+  lean: {
+    ...leanResolution.config,
+    requested: leanResolution.requested,
+    sources: leanResolution.sources
+  },
+  sage: sageResolution.config,
+  contextWiki: readContextConfig(process.env, config.contextWiki),
+  // QF-14 §36 reads runtimeConfig.agent.epistemic. mergeConfig already
+  // guarantees the block exists and is well-formed (QF-01).
+  agent: config.agent
+});
+
+// The typed fields, translated once into the environment variables the Node
+// modules and the C backend still read. This is a translation of an already
+// resolved value, not a second source of defaults.
+const semanticEnv = Object.freeze({
+  ...buildDs4SemanticEnv(runtimeConfig),
+  ...buildDs4EpistemicEnv(runtimeConfig)
+});
+Object.assign(process.env, semanticEnv);
+
+console.log(
+  "[epistemic] runtime:",
+  JSON.stringify({
+    enabled: runtimeConfig.agent.epistemic.enabled,
+    mode: runtimeConfig.agent.epistemic.mode,
+    withholdOutput: runtimeConfig.agent.epistemic.withholdOutput,
+    nativeEnv: process.env.DS4_EPISTEMIC_MODE ?? null
+  })
+);
+
+const effectiveEpistemicMode = runtimeConfig.agent.epistemic.enabled
+  ? runtimeConfig.agent.epistemic.mode
+  : "off";
+const epistemicTelemetry = createEpistemicTelemetry();
+const epistemicModeParity = effectiveEpistemicMode === process.env.DS4_EPISTEMIC_MODE;
+console.log(
+  `EPISTEMIC_MODE js=${effectiveEpistemicMode} native_env=${
+    process.env.DS4_EPISTEMIC_MODE ?? "unset"
+  } parity=${epistemicModeParity ? 1 : 0}`
+);
+if (!epistemicModeParity) {
+  epistemicTelemetry.record({
+    mode: effectiveEpistemicMode,
+    decision: { code: "EPISTEMIC_RUNTIME_MODE_MISMATCH", allowed: true },
+    jsNativeModeMismatch: true
+  });
+}
+
+// Boot report of the resolved Lean state (R3: configurazione vs stato effettivo).
+console.log(`Lean requested: enabled=${runtimeConfig.lean.requested.enabled} source=${runtimeConfig.lean.sources.enabled}`);
+console.log(`Lean policy auto: ${runtimeConfig.lean.policyAuto}`);
+console.log(`Lean runtime root: ${runtimeConfig.lean.runtimeRoot || "(unset)"}`);
+console.log(`Lean runs root: ${runtimeConfig.lean.runsRoot || "(unset)"}`);
+console.log(`Lean sandbox: ${runtimeConfig.lean.sandboxRequired ? "mandatory" : "NOT REQUIRED (unsafe)"}`);
+
+// R5: single normalized view of "is Lean actually usable" (sandbox + userns +
+// profiles + policy revision). Every consumer — capabilities, advertised
+// tools, the lean_check tool call — reads the same cached state.
+const leanRuntimeState = createLeanRuntimeStateCache(runtimeConfig.lean, {
+  getPreflight: () => runLeanPreflight(runtimeConfig.lean),
+  getLeanPolicyState
+});
+
+// Built after the config load so the JSON budget actually reaches it. The
+// module-level singleton is constructed at import time, before .env and
+// ds4-ui.config.json exist, so it never saw the file layer.
+const sageRunRegistry = new SageRunRegistry({
+  config: runtimeConfig.sage.orchestration
+});
+
 // Expose the frontend port to child processes (ds4-wrapper agent needs it
 // to call back into the Node server for delegated sage execution).
 process.env.FRONTEND_PORT = String(config.control.port);
 
-// ContextWiki: let the startup tuning GUI (ds4-ui.config.json → contextWiki)
-// drive the capsule flags, unless an explicit env var already set them (e.g.
-// the A/B benchmark exporting per-arm env wins over the config file).
-if (config.contextWiki && typeof config.contextWiki === "object") {
-  if (!process.env.DS4_CONTEXT_WIKI_ENABLED) {
-    process.env.DS4_CONTEXT_WIKI_ENABLED = config.contextWiki.enabled ? "1" : "0";
-  }
-  if (!process.env.DS4_CONTEXT_PREVIEW_ONLY) {
-    process.env.DS4_CONTEXT_PREVIEW_ONLY = config.contextWiki.previewOnly ? "1" : "0";
-  }
-}
+// ContextWiki no longer travels through process.env: readContextConfig resolves
+// all nine limits once (env > file > default) into runtimeConfig.contextWiki,
+// and the consumers read that object.
 
 let activeProfile = null;
+let serverLaunchConfig = null;
 let activeRequestDefaults = { ...REQUEST_DEFAULTS, ...(config.requestDefaults || {}) };
 
 function effectiveRequestDefaults(base = REQUEST_DEFAULTS) {
   return { ...base, ...(config.requestDefaults || {}) };
 }
 
+async function refreshServerLaunchConfig() {
+  const validation = validateConfig(config);
+  if (!validation.ok) {
+    throw new Error(`invalid config: ${JSON.stringify(validation.errors)}`);
+  }
+  const next = buildServerLaunchConfig(config, PROJECT_ROOT);
+  await prepareServerLaunchPaths(next, PROJECT_ROOT);
+  serverLaunchConfig = next;
+  return serverLaunchConfig;
+}
+
 async function ensureBackendDirs() {
-  const tracePath = config.server.trace;
-  if (tracePath && typeof tracePath === "string") {
-    const abs = path.isAbsolute(tracePath) ? tracePath : path.join(PROJECT_ROOT, tracePath);
-    try {
-      await fs.mkdir(path.dirname(abs), { recursive: true });
-    } catch (err) {
-      console.warn(`profile: failed to create trace dir for ${tracePath}: ${err.message}`);
-    }
-  }
-  const kvDir = config.server.kvDiskDir;
-  if (kvDir && typeof kvDir === "string") {
-    try {
-      await fs.mkdir(kvDir, { recursive: true });
-    } catch (err) {
-      console.warn(`profile: failed to create kv-disk-dir ${kvDir}: ${err.message}`);
-    }
-  }
+  return refreshServerLaunchConfig();
 }
 
 async function applyProfileByName(name, { applyServerConfig = true } = {}) {
@@ -250,7 +380,6 @@ async function applyProfileByName(name, { applyServerConfig = true } = {}) {
   config = candidate.config;
   activeRequestDefaults = effectiveRequestDefaults(candidate.requestDefaults);
   activeProfile = entry;
-  await ensureBackendDirs();
   return entry;
 }
 
@@ -265,9 +394,21 @@ const initialValidation = validateConfig(config);
 if (!initialValidation.ok) {
   throw new Error(`invalid config: ${JSON.stringify(initialValidation.errors)}`);
 }
+await refreshServerLaunchConfig();
 
 function backendBase() {
   return `http://${config.server.host}:${config.server.port}`;
+}
+
+function createEpistemicStructuredClient() {
+  const baseUrl = backendBase();
+  const model = activeRequestDefaults.model;
+  if (!baseUrl || !model) return null;
+  return new StructuredModelClient({
+    baseUrl,
+    model,
+    errorPrefix: "epistemic model"
+  });
 }
 
 // Call Debug recorder — wraps globalThis.fetch once so every outbound call to the
@@ -319,14 +460,7 @@ function wrapperEnabled() {
 }
 
 function mergeRequestConfig(body = {}) {
-  return {
-    ...config,
-    ...body,
-    server: { ...config.server, ...(body.server || {}) },
-    control: { ...config.control, ...(body.control || {}) },
-    history: { ...config.history, ...(body.history || {}) },
-    wrapper: { ...config.wrapper, ...(body.wrapper || {}) }
-  };
+  return mergeRequestOverConfig(config, body);
 }
 
 function publicConfig() {
@@ -423,8 +557,15 @@ async function maybeResolveProxyAutoMaxTokens(req, body, signal) {
 }
 
 const manager = new Ds4ProcessManager({
-  buildCommand: () => (wrapperEnabled() ? buildDs4WrapperArgs(config) : buildDs4Args(config)),
-  buildEnv: () => config.server.env,
+  buildCommand: () => {
+    if (!serverLaunchConfig) throw new Error("server launch config not initialized");
+    return wrapperEnabled()
+      ? buildDs4WrapperArgs(serverLaunchConfig)
+      : buildDs4Args(serverLaunchConfig);
+  },
+  // semanticEnv last: a legacy key that survived in server.env must never win
+  // over the resolved typed value.
+  buildEnv: () => ({ ...config.server.env, ...semanticEnv }),
   healthCheck,
   cwd: PROJECT_ROOT
 });
@@ -537,6 +678,7 @@ const upload = multer({
 app.use("/v1", async (req, res) => {
   const target = `${backendBase()}${req.originalUrl}`;
   const { signal, cleanup } = abortOnClientDisconnect(req, res);
+  let disarmBackendCancel = () => {};
   try {
     const hasRequestBody = !["GET", "HEAD"].includes(req.method);
     const rawBody = hasRequestBody ? await readRequestBody(req) : undefined;
@@ -550,7 +692,20 @@ app.use("/v1", async (req, res) => {
     // The wrapper answers a transient 409 "busy" while another request is
     // streaming; retry with backoff so a quick race does not surface to the
     // user. The 409 is returned before any stream starts, so this is safe.
-    const upstream = await fetchWithBusyRetry(fetch, target, options);
+    const upstream = await fetchWithBusyRetry(
+      fetch,
+      target,
+      options,
+      busyRetryOptionsForRequest(req.method, req.originalUrl)
+    );
+    if (upstream.ok && isGenerationRequest(req.method, req.originalUrl)) {
+      disarmBackendCancel = armBackendCancelOnDisconnect(signal, () =>
+        fetch(`${backendBase()}/v1/cancel`, {
+          method: "POST",
+          signal: AbortSignal.timeout(5000)
+        })
+      );
+    }
     res.status(upstream.status);
     upstream.headers.forEach((value, key) => res.setHeader(key, value));
     if (!upstream.body) return res.end();
@@ -562,6 +717,7 @@ app.use("/v1", async (req, res) => {
     if (!res.headersSent) res.status(502).json({ error: err.message });
     else res.destroy(err);
   } finally {
+    disarmBackendCancel();
     cleanup();
   }
 });
@@ -735,6 +891,29 @@ function maybeAddRetrieveBlobTool(payload) {
   };
 }
 
+/**
+ * Tools advertised to the model. Wrapped so the call sites that must produce
+ * an identical tools hash cannot drift apart. Lean flags are resolved once per
+ * request (see {@link leanToolFlags}) and passed explicitly to every call.
+ */
+function modelFacingTools({ includeSage, leanEnabled, leanCoreOnly }) {
+  return advertisedAgentTools({ sageEnabled: includeSage, leanEnabled, leanCoreOnly });
+}
+
+/**
+ * Lean advertising flags, resolved once per request. Lean is advertised only
+ * when the runtime is actually ready (requested && sandbox && userns && core),
+ * and its schema shrinks to core-only when mathlib is not prepared — the model
+ * is told what it can call, and unready profiles fail deterministically.
+ */
+async function leanToolFlags() {
+  const state = await leanRuntimeState.get();
+  return {
+    leanEnabled: isLeanToolAdvertised(state),
+    leanCoreOnly: leanToolCapability(state) === "core-only"
+  };
+}
+
 async function callBackendCompletion({ messages, request, stream, signal }) {
   const compressed = await compressToolResultsInMessages(messages, toolBlobStore);
   let payload = await resolveAutoMaxTokensPayload(
@@ -743,7 +922,7 @@ async function callBackendCompletion({ messages, request, stream, signal }) {
   );
   /* In Chat Mode, add standard tools (excluding sage) so the model can use web_search, web_read, search, etc. */
   if (!payload.tools) {
-    payload.tools = AGENT_TOOLS.filter((t) => t.function?.name !== "sage");
+    payload.tools = modelFacingTools({ includeSage: false, ...(await leanToolFlags()) });
     /* Inform the model about available tools via a system message with examples */
     const toolNames = payload.tools.map(t => t.function.name).join(", ");
     const toolMsg = "[AVAILABLE TOOLS] You have access to: " + toolNames + 
@@ -1059,6 +1238,13 @@ try {
   console.warn("ds4-ui: research service init failed:", err.message);
 }
 
+function currentEpistemicCitationProviders() {
+  return {
+    arxivProvider: agentResearchService?.providers?.arxiv ?? null,
+    openAlexProvider: agentResearchService?.providers?.openalex ?? null
+  };
+}
+
 // Tool-bridge execution service + router: created here (not alongside
 // agnoToolAuthenticator/Policy/Gate above) because it needs agentResearchService,
 // which isn't set until just above. §2.4 fail-closed: a disabled audit does
@@ -1108,12 +1294,15 @@ app.use((req, res, next) => {
   next();
 });
 
-const agentCapabilities = getAgentCapabilities(config);
+const agentCapabilities = getAgentCapabilities(config, {
+  leanAdvertised: isLeanToolAdvertised(await leanRuntimeState.get())
+});
 const AGENT_SYSTEM_PROMPT_WITH_CAPS = [
   AGENT_SYSTEM_PROMPT,
   capabilitiesPromptSection(agentCapabilities),
   autonomyPromptSection(),
-  agentCoreRulesSection()
+  agentCoreRulesSection(),
+  agentEpistemicRulesSection()
 ].filter(Boolean).join("\n\n");
 
 app.get("/api/crawl/preflight", asyncHandler(async (_req, res) => {
@@ -1194,11 +1383,13 @@ app.post("/api/profiles/select", asyncHandler(async (req, res) => {
   }
   const candidate = buildProfileCandidate(entry, config, REQUEST_DEFAULTS, name);
   const validation = validateConfig(candidate.config);
-  if (!validation.ok) return res.status(400).json(validation);
-  config = await saveConfig(candidate.config);
+    if (!validation.ok) return res.status(400).json(validation);
+    const launchCandidate = buildServerLaunchConfig(candidate.config, PROJECT_ROOT);
+    await prepareServerLaunchPaths(launchCandidate, PROJECT_ROOT);
+    config = await saveConfig(candidate.config);
+    serverLaunchConfig = launchCandidate;
   activeRequestDefaults = effectiveRequestDefaults(candidate.requestDefaults);
   activeProfile = entry;
-  await ensureBackendDirs();
   res.json({
     selected: activeProfile?.name || null,
     requestDefaults: activeRequestDefaults,
@@ -1276,6 +1467,7 @@ app.put("/api/server/config", asyncHandler(async (req, res) => {
   const validation = validateConfig(next);
   if (!validation.ok) return res.status(400).json(validation);
   config = await saveConfig(next);
+  await refreshServerLaunchConfig();
   res.json({ config: publicConfig() });
 }));
 
@@ -1401,6 +1593,7 @@ app.post("/api/server/restart", asyncHandler(async (req, res) => {
       config = await saveConfig(next);
       manager.setOverrideCommand(null);
     }
+    await refreshServerLaunchConfig();
   } catch (err) {
     return res.status(400).json({ error: err.message });
   }
@@ -1659,7 +1852,7 @@ app.get("/api/agent/status", async (req, res) => {
 // full capsule text, raw evidence, or blob content — only sanitized summaries.
 app.get("/api/agent/context/status", async (req, res) => {
   const sessionKey = agentSessionKey(req);
-  const cfg = readContextConfig(process.env);
+  const cfg = runtimeConfig.contextWiki;
   const meta = await readCapsuleMeta(sessionKey).catch(() => null);
   const telemetry = await readContextTelemetry(sessionKey, { limit: 20 }).catch(() => []);
   const events = await readContextEvents(sessionKey, { limit: 20 }).catch(() => []);
@@ -1959,6 +2152,7 @@ app.get("/api/sage/status", asyncHandler(async (req, res) => {
     policyPath: sageState.policyPath,
     policyRevision: sageState.policyRevision,
     binaryExists: sageBinaryExists(),
+    orchestration: sageMetrics.snapshot(),
     message: `SageMath ${sageState.enabled ? "attivo" : "inattivo"}; skill Sage ${policyActive ? "attiva" : "inattiva"}.`
   });
 }));
@@ -2003,6 +2197,61 @@ app.post("/api/sage/exec", asyncHandler(async (req, res) => {
     });
   }
 
+  // The run keeps one tracker for its whole life, whoever calls: the native
+  // path and the agent loop must not each keep their own idea of the state.
+  const registered = sageRunRegistry.getOrCreate({
+    sessionId: sessionId || null,
+    runId,
+    taskType: task_type
+  });
+  if (!registered.ok) {
+    return res.status(429).json({
+      content: registered.code,
+      isError: true,
+      displayContent: "Too many active Sage runs.",
+      contractVersion: "sage_result_v2",
+      publishable: false,
+      authoritative: false,
+      validationPassed: false,
+      reportReady: false,
+      finalMarkdown: "",
+      runId,
+      state: "budget_exhausted"
+    });
+  }
+  const { entry } = registered;
+  const tracker = entry.tracker;
+  const codeSha256 = sha256Hex(code);
+  const snapshotBefore = tracker.snapshot();
+  const decisionBefore = tracker.beforeCall({
+    phase,
+    candidateRevision: Number(req.body?.candidateRevision) || undefined,
+    codeSha256
+  });
+  if (!decisionBefore.allowed) {
+    emitSageTransition(snapshotBefore, tracker.snapshot(), decisionBefore.code);
+    sageMetrics.recordOrchestration(
+      decisionBefore.code === "SAGE_CANDIDATE_UNCHANGED"
+        ? "sage_candidate_unchanged_rejected_total"
+        : "sage_phase_rejected_total"
+    );
+    const decision = tracker.nextDecision();
+    return res.status(409).json({
+      content: decisionBefore.code,
+      isError: true,
+      displayContent: decisionBefore.nextAction ?? decision.nextAction,
+      contractVersion: "sage_result_v2",
+      publishable: false,
+      authoritative: false,
+      validationPassed: false,
+      reportReady: false,
+      finalMarkdown: "",
+      runId,
+      state: decision.state,
+      orchestration: decision
+    });
+  }
+
   const args = {
     code,
     timeout_sec: Number(timeout_sec) || 60,
@@ -2017,12 +2266,23 @@ app.post("/api/sage/exec", asyncHandler(async (req, res) => {
     sageAttempt: Number(attempt) || 1,
     runId,
     phase,
+    candidateRevision: tracker.snapshot().candidateRevision,
+    attemptsRemaining: tracker.attemptsRemaining(),
     policyRevision: requestedPolicyRevision || sageState.policyRevision,
     sageWorkdir: sageRunDir(fileWorkspace.root, runId)
   };
 
   const result = await executeTool("sage", args, opts);
-  res.json(result);
+  const snapshotBeforeResult = tracker.snapshot();
+  tracker.recordResult({ phase, result });
+  emitSageTransition(snapshotBeforeResult, tracker.snapshot(), `PHASE_${phase ?? "auto"}`.toUpperCase());
+  const decision = tracker.nextDecision();
+  sageRunRegistry.update(entry, {
+    candidate: phase === "compute" || phase === "repair" ? { codeSha256 } : undefined,
+    validation: phase === "validate" ? result?.sageResult?.validation ?? null : undefined,
+    finalResult: decision.publishable ? result : undefined
+  });
+  res.json({ ...result, orchestration: decision, state: decision.state });
 }));
 
 const SAGE_ARTIFACT_CONTENT_TYPES = Object.freeze({
@@ -2260,30 +2520,59 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
       return res.status(up.status).json({ error: `Wrapper error: ${errorBody}` });
     }
 
-    // Simple timeout guard for the native agent stream
+    // D-017 — Concurrent timeout for the native agent stream.
+    // The previous guard checked Date.now() only inside the for-await loop,
+    // so a silent upstream (zero bytes after the first chunk) could hang the
+    // proxy indefinitely.  A concurrent AbortController + setTimeout wakes
+    // the loop even when zero new bytes arrive.
     const nativeStartedAt = Date.now();
     const nativeMaxMs = config.agent?.nativeChatTimeoutMs;
     const nativeMaxMsFinal = (nativeMaxMs === undefined || nativeMaxMs === null || nativeMaxMs === 0)
         ? Infinity : nativeMaxMs;
 
+    let nativeTimedOut = false;
+    const nativeTimeoutController = new AbortController();
+    let nativeTimeoutHandle = null;
+    if (Number.isFinite(nativeMaxMsFinal)) {
+      nativeTimeoutHandle = setTimeout(() => {
+        nativeTimedOut = true;
+        nativeTimeoutController.abort(new Error("Native agent stream timeout"));
+      }, nativeMaxMsFinal);
+      nativeTimeoutHandle.unref?.();
+    }
+
+    // Combine client disconnect + native timeout into one signal for the
+    // upstream fetch body.  If either fires, the for-await loop throws.
+    const combinedController = new AbortController();
+    const combinedSignal = combinedController.signal;
+    const onClientAbort = () => { if (!combinedSignal.aborted) combinedController.abort(); };
+    const onNativeTimeout = () => { if (!combinedSignal.aborted) combinedController.abort(); };
+    nativeSignal.addEventListener("abort", onClientAbort, { once: true });
+    nativeTimeoutController.signal.addEventListener("abort", onNativeTimeout, { once: true });
+
     res.status(up.status);
     up.headers.forEach((value, key) => res.setHeader(key, value));
     try {
       if (up.body) {
+        // Use the combined signal so the stream unblocks on client disconnect
+        // OR native timeout, whichever comes first.
         for await (const chunk of up.body) {
-          if (Date.now() - nativeStartedAt > nativeMaxMsFinal) {
-            res.write(`event: agent_error\ndata: ${JSON.stringify({ error: "Native agent timeout" })}\n\n`);
-            break;
-          }
           res.write(chunk);
         }
       }
     } catch (err) {
-      // Client disconnected, upstream closed, or res.write failed — all are
-      // non-fatal for a proxied SSE stream.  Silently close what we can.
+      if (nativeTimedOut && !res.writableEnded) {
+        res.write(`event: agent_error\ndata: ${JSON.stringify({ error: "Native agent stream timeout" })}\n\n`);
+      }
+      // Client disconnect / upstream close / res.write failure — all non-fatal
+      // for a proxied SSE stream.  Silently close what we can.
+    } finally {
+      clearTimeout(nativeTimeoutHandle);
+      nativeSignal.removeEventListener("abort", onClientAbort);
+      nativeTimeoutController.signal.removeEventListener("abort", onNativeTimeout);
+      nativeCleanup();
+      if (!res.writableEnded) res.end();
     }
-    nativeCleanup();
-    if (!res.writableEnded) res.end();
     return;
   }
 
@@ -2310,7 +2599,7 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
 
   // ContextWiki (§8/§9/§13): read config once per turn. When disabled (default),
   // the context memory rules are omitted so the base system prompt is unchanged.
-  const contextConfig = readContextConfig(process.env);
+  const contextConfig = runtimeConfig.contextWiki;
 
   let fullMessages = agentSession.messages();
   if (!fullMessages.length) {
@@ -2322,6 +2611,7 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
       capabilitiesPromptSection(caps),
       autonomyPromptSection(),
       agentCoreRulesSection(),
+      agentEpistemicRulesSection(),
       contextConfig.enabled ? agentContextMemorySection() : null
     ].filter(Boolean).join("\n\n");
     fullMessages = [
@@ -2339,8 +2629,11 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
   // it honors config/env resolved at startup). Same expression is used for the
   // real payload below so the tools hash — and the delta path — stay consistent.
   const withContextTool = (base) => (contextConfig.enabled ? [...base, CONTEXT_SEARCH_TOOL] : base);
+  // Resolve the Lean advertising flags once per request so the context-tools
+  // hash and the real payload hash below cannot drift apart.
+  const leanFlags = await leanToolFlags();
   const contextTools = withContextTool(
-    sagePolicyIsActive() ? AGENT_TOOLS : AGENT_TOOLS.filter((t) => t.function?.name !== "sage")
+    modelFacingTools({ includeSage: sagePolicyIsActive(), ...leanFlags })
   );
   const contextInjection = await prepareContextInjection({
     sessionKey,
@@ -2353,6 +2646,48 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
   if (contextInjection?.capsuleMessage) fullMessages.push(contextInjection.capsuleMessage);
 
   const turnEvidence = [];
+  // QF-03 §25.6 — structured provenance alongside the legacy text blob, which
+  // stays until the claim guard stops reading it. Collected in parallel, not
+  // instead.
+  const epistemicTurn = createEpistemicTurn({
+    sessionKey,
+    // §36 writes agentSession.revision; this class keeps it on state, and an
+    // undefined revision would make every turn's audit record indistinguishable.
+    revision: agentSession.state?.revision ?? 0,
+    config: runtimeConfig.agent.epistemic,
+    userText: String(userMessage ?? "")
+  });
+  const epistemicClient = epistemicTurn.enabled ? createEpistemicStructuredClient() : null;
+  const epistemicSourceContext = new EpistemicSourceContext();
+  const epistemicCitationProviders = currentEpistemicCitationProviders();
+  const epistemicSageExecutor = async (request, { signal } = {}) =>
+    executeTool("sage", request, {
+      signal,
+      sessionKey,
+      policyRevision: sageState.policyRevision,
+      sageCallLog,
+      toolBlobStore,
+      sageWorkdir: sageSessionDir(fileWorkspace.root, sessionKey)
+    });
+  const persistEpistemicClaims = runtimeConfig.agent.epistemic.persistSessionClaims === true;
+  const priorEpistemicClaims = persistEpistemicClaims
+    ? agentSession.epistemic.acceptedClaims()
+    : [];
+  if (persistEpistemicClaims) agentSession.epistemic.beginTurn();
+  for (const prior of priorEpistemicClaims) {
+    try {
+      epistemicTurn.ledger.importSnapshotClaim(prior);
+    } catch {
+      // Invalid legacy session snapshots are not forced into the live ledger.
+    }
+  }
+  const epistemicChallengeExtraction = await extractChallenges({
+    userText: epistemicTurn.userText,
+    priorClaims: priorEpistemicClaims,
+    client: epistemicClient
+  });
+  applyChallenges(epistemicTurn.ledger, epistemicChallengeExtraction);
+  epistemicTurn.noteChallenges(epistemicChallengeExtraction.challenges);
   const policyState = { gitnexusAnalyzeSeen: false };
 
   const agentTokenBudget = maxAgentTotalTokens(process.env);
@@ -2382,15 +2717,56 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   }
 
-  const compactSageChat = process.env.DS4_SAGE_COMPACT_CHAT !== "0" &&
+const compactSageChat = process.env.DS4_SAGE_COMPACT_CHAT !== "0" &&
     process.env.DS4_SAGE_STRUCTURED_RESULT !== "0";
-  const authoritativeSageChat = compactSageChat &&
-    process.env.DS4_SAGE_AUTHORITATIVE_LOOP !== "0";
-  const sageTracker = new SageTurnTracker();
+const authoritativeSageChat = compactSageChat &&
+    envBooleanWithAliases({
+      env: process.env,
+      key: "DS4_SAGE_AUTONOMOUS_ORCHESTRATION",
+      defaultValue: true,
+    });
+  // §15.1: one tracker per run, owned by the registry. The native path
+  // (POST /api/sage/exec) and this loop must not each keep their own idea of
+  // the same run's state — that divergence is what the whole plan removes.
+  // The placeholder below only exists until the first sage call registers the
+  // run; nothing reads it before then, because every reader gates on runId.
+  let sageEntry = null;
+  let sageTracker = new SageTurnTracker(runtimeConfig.sage.orchestration);
   let sageFinalStatusEmitted = false;
   let authoritativeSageFinal = null;
   let sageAuthoritativePublished = false;
   let forceResetNextIteration = false;
+
+  // Lean proof orchestration for this turn. Same contract as the native path:
+  // a repairable failure is not an ending, and only status=checked releases a
+  // verified claim.
+  const leanTracker = new LeanTurnTracker(runtimeConfig.lean.orchestration);
+  // §11/§58 — the sealed reading of what this turn is trying to prove. It is
+  // built before the first candidate runs and never rebuilt.
+  let leanTaskSpec = null;
+  let leanFinalStatusEmitted = false;
+
+  const writeLeanStatus = (data) => {
+    const snapshot = leanTracker.snapshot();
+    if (!snapshot.proofId) return;
+    writeAgentSse("agent_lean_status", {
+      proofId: snapshot.proofId,
+      state: snapshot.state,
+      attempt: snapshot.attempt,
+      maxAttempts: snapshot.maxAttempts,
+      failureClass: snapshot.failureClass,
+      strategyChangeRequired: snapshot.strategyChangeRequired,
+      verified: snapshot.verified,
+      terminalReason: snapshot.terminalReason,
+      ...data
+    });
+  };
+
+  const finalizeLeanStatus = (summary) => {
+    if (leanFinalStatusEmitted || !leanTracker.snapshot().proofId) return;
+    leanFinalStatusEmitted = true;
+    writeLeanStatus({ status: leanTracker.snapshot().verified ? "verified" : "not_verified", summary });
+  };
 
   const sagePhaseState = (phase) => ({
     prepare: "preparing",
@@ -2401,10 +2777,24 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
   })[normalizeSagePhase(phase)];
 
   const writeSageStatus = (data) => {
-    if (!compactSageChat || !sageTracker.snapshot().runId) return;
+    const snapshot = sageTracker.snapshot();
+    if (!compactSageChat || !snapshot.runId) return;
+    // §17.1: the card shows the orchestration decision itself. Sourcing it here
+    // rather than at each call site is what keeps every event consistent with
+    // the tracker instead of with whatever the local branch happened to know.
     writeAgentSse("agent_sage_status", {
-      runId: sageTracker.snapshot().runId,
-      taskType: sageTracker.snapshot().taskType,
+      runId: snapshot.runId,
+      taskType: snapshot.taskType,
+      candidateRevision: snapshot.candidateRevision,
+      validatedRevision: snapshot.validatedRevision,
+      computeCount: snapshot.computeCount,
+      repairCount: snapshot.repairCount,
+      validationCount: snapshot.validationCount,
+      plotCount: snapshot.plotCount,
+      requiredNextPhase: snapshot.requiredNextPhase,
+      failureClass: snapshot.failureClass,
+      strategyChangeRequired: snapshot.strategyChangeRequired,
+      missingArtifactKinds: sageTracker.nextDecision().missingArtifactKinds,
       ...data
     });
   };
@@ -2513,7 +2903,7 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
       let basePayload = buildChatPayload({ ...reqParams, stream: true }, fullMessages);
       // Filter out sage tool if SageMath is not enabled
       basePayload.tools = withContextTool(
-        sagePolicyIsActive() ? AGENT_TOOLS : AGENT_TOOLS.filter((t) => t.function?.name !== "sage")
+        modelFacingTools({ includeSage: sagePolicyIsActive(), ...leanFlags })
       );
       basePayload.stream = true;
       basePayload.stream_options = { include_usage: true };
@@ -2596,10 +2986,21 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
       let currentToolCalls = new Map();
       let finishReason = null;
       let streamGuardBlocked = false;
-      const deferPotentialSageOutput = authoritativeSageChat &&
-        (sagePolicyIsActive() || Boolean(sageTracker.snapshot().runId));
-      const deferredAssistantText = [];
-      const deferredAssistantReasoning = [];
+      // Nothing may be streamed while an authoritative backend still owes a
+      // verdict: not one byte of a "teorema dimostrato" prefix may reach the
+      // client before the finalization gate has had a chance to discard it.
+      // QF-15 §37 — block mode owes a verdict too, so its candidate prose is
+      // withheld on the same terms as Sage's and Lean's. withholdOutput is what
+      // lets an operator run block mode without the buffering, so it is read
+      // rather than assumed.
+      const epistemicWithholdsOutput = withholdsOutput(runtimeConfig.agent.epistemic);
+      const deferPotentialAuthoritativeOutput =
+        epistemicWithholdsOutput ||
+        (authoritativeSageChat &&
+          (sagePolicyIsActive() || Boolean(sageTracker.snapshot().runId))) ||
+        leanTracker.used;
+      const deferredAssistantText = new AuthoritativeOutputBuffer();
+      const deferredAssistantReasoning = new AuthoritativeOutputBuffer();
 
       for (;;) {
         if (controller.signal.aborted) break;
@@ -2658,7 +3059,7 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
             const acceptedDelta = guarded.content.slice(assistantContent.length);
             assistantContent = guarded.content;
             if (acceptedDelta) {
-              if (deferPotentialSageOutput) deferredAssistantText.push(acceptedDelta);
+              if (deferPotentialAuthoritativeOutput) deferredAssistantText.append(acceptedDelta);
               else writeAgentSse("agent_text", { content: acceptedDelta });
             }
           }
@@ -2667,7 +3068,7 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
           const reasoning = delta.reasoning_content || delta.reasoning || "";
           if (reasoning) {
             assistantReasoning += reasoning;
-            if (deferPotentialSageOutput) deferredAssistantReasoning.push(reasoning);
+            if (deferPotentialAuthoritativeOutput) deferredAssistantReasoning.append(reasoning);
             else writeAgentSse("agent_reasoning", { content: reasoning });
           }
 
@@ -2698,9 +3099,16 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
       });
       const responseBelongsToSage = authoritativeSageChat &&
         (toolCalls.some((tc) => tc.name === "sage") || Boolean(sageTracker.snapshot().runId));
-      if (!responseBelongsToSage) {
-        for (const content of deferredAssistantText) writeAgentSse("agent_text", { content });
-        for (const content of deferredAssistantReasoning) writeAgentSse("agent_reasoning", { content });
+      // A Lean turn that is still repairable withholds its prose too: the gate
+      // below discards it, so streaming it first would publish exactly the
+      // premature claim the gate exists to stop.
+      const responseWithheldForLean = leanTracker.used;
+      // §37 — with tool calls pending this prose is a candidate, not a
+      // publication, and in block mode a candidate is never streamed before the
+      // gate has ruled on it.
+      if (!responseBelongsToSage && !responseWithheldForLean && !epistemicWithholdsOutput) {
+        deferredAssistantText.flush((content) => writeAgentSse("agent_text", { content }));
+        deferredAssistantReasoning.flush((content) => writeAgentSse("agent_reasoning", { content }));
       }
 
       // Build assistant message for session tracking
@@ -2719,8 +3127,15 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
 
       const isFinalResponse = !toolCalls.length || finishReason !== "tool_calls";
       if (isFinalResponse) {
+        const snapshotBeforeGuard = sageTracker.snapshot();
         const finalization = guardSageFinalization(sageTracker);
         if (finalization.blocked) {
+          sageMetrics.recordOrchestration("sage_premature_finalizations_blocked_total");
+          emitSageTransition(
+            snapshotBeforeGuard,
+            sageTracker.snapshot(),
+            "PREMATURE_FINALIZATION_BLOCKED"
+          );
           if (finalization.retryAllowed) {
             fullMessages.push({ role: "system", content: finalization.guidance });
             forceResetNextIteration = true;
@@ -2746,19 +3161,65 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
           });
           break;
         }
+
+        // Lean finalization gate. Runs before agentSession.commit: a response
+        // written while a repairable Lean failure is outstanding must never
+        // become continuation state, or the next iteration inherits the claim.
+        if (leanTracker.mustContinue()) {
+          const block = leanTracker.recordPrematureFinalization();
+          leanMetrics.recordOrchestration?.("proof_premature_finalizations_blocked_total");
+          if (block.retryAllowed) {
+            fullMessages.push({ role: "system", content: block.guidance });
+            forceResetNextIteration = true;
+            writeLeanStatus({
+              status: "blocked",
+              code: "LEAN_FINALIZATION_BLOCKED",
+              summary: "Finalizzazione prematura bloccata; la prova non è ancora verificata."
+            });
+            continue;
+          }
+          // The premature-finalization budget is spent. The turn may end now,
+          // but only as NOT_VERIFIED — never as a proof.
+          fullMessages.push({
+            role: "system",
+            content:
+              "LEAN_TERMINAL_NOT_VERIFIED\n" +
+              `reason=${leanTracker.snapshot().terminalReason || "PREMATURE_FINALIZATION_BUDGET_EXHAUSTED"}\n` +
+              "Do not claim the theorem was verified. Answer with STATO: NOT_VERIFIED and the reason code."
+          });
+          forceResetNextIteration = true;
+          finalizeLeanStatus("Budget di finalizzazione esaurito; nessuna prova verificata.");
+          continue;
+        }
       }
 
       // Validate the completed response before committing it to continuation state.
+      const authoritativeClaimMode =
+        leanTracker.used || sageTracker.used() ? "block" : "warn";
       const claimDecision = checkVerifiedClaim(
         assistantContent,
         turnEvidence.join("\n"),
-        { mode: "warn" }
+        { mode: authoritativeClaimMode }
       );
       if (claimDecision?.warn) {
         writeAgentSse("agent_warning", {
           type: claimDecision.type,
           warning: `${claimDecision.reason}\n${claimDecision.guidance}`
         });
+      }
+      if (claimDecision?.block && !isFinalResponse) {
+        deferredAssistantText.discard();
+        deferredAssistantReasoning.discard();
+        fullMessages.push({
+          role: "system",
+          content: `${claimDecision.reason}\n${claimDecision.guidance}`
+        });
+        forceResetNextIteration = true;
+        writeAgentSse("agent_warning", {
+          type: claimDecision.type,
+          warning: `${claimDecision.reason}\n${claimDecision.guidance}`
+        });
+        continue;
       }
       const intentDecision = agentSession.loopGuard.checkAssistantText(assistantContent);
       if (intentDecision?.warn) {
@@ -2781,18 +3242,214 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
         agentSession.readGuard.markSummaryProduced();
       }
 
-      // Commit only a response accepted by the loop guard.
+      const leanSnapshotBeforeCommit = leanTracker.snapshot();
+      const authoritativeDecision = isFinalResponse
+        ? evaluateLeanFinalCandidate({
+            assistantContent,
+            leanSnapshot: leanSnapshotBeforeCommit,
+            verifiedSource: leanTracker.checkedSource,
+            claimDecision
+          })
+        : null;
+      if (authoritativeDecision && !authoritativeDecision.allowed) {
+        deferredAssistantText.discard();
+        deferredAssistantReasoning.discard();
+        fullMessages.push({
+          role: "system",
+          content: authoritativeDecision.guidance
+        });
+        forceResetNextIteration = true;
+        writeAgentSse("agent_warning", {
+          type: authoritativeDecision.code,
+          warning: authoritativeDecision.guidance
+        });
+        continue;
+      }
+
+      // QF-14 §36.3 — the Quantum Fix gate runs after Sage and Lean and before
+      // the commit, which is the order §36.3 states as an invariant. Inert
+      // unless agent.epistemic.enabled; in shadow it reports and lets the turn
+      // through, in block it discards the candidate answer and asks again.
+        const epistemicDecision = isFinalResponse
+          ? await evaluateEpistemicTurn(epistemicTurn, {
+              assistantContent,
+              assistantReasoning,
+              client: epistemicClient,
+              executeSage: runtimeConfig.agent.epistemic.verifyMath
+                ? epistemicSageExecutor
+                : null,
+              citationProviders: epistemicCitationProviders,
+              sourceContext: epistemicSourceContext,
+              sessionLedger: agentSession.epistemic,
+              signal: controller.signal
+            })
+          : null;
+    if (persistEpistemicClaims && epistemicDecision) {
+      // REM-005: stage the bounded history so challenge/rejection events
+      // survive the turn boundary into the session event map.
+      agentSession.epistemic.stageClaims(epistemicTurn.ledger.allClaims(), {
+        history: epistemicTurn.ledger.historySnapshot()
+      });
+    }
+    if (epistemicDecision) {
+      const epistemicAuditEvent = epistemicTelemetry.record({
+        mode: runtimeConfig.agent.epistemic.mode,
+        decision: epistemicDecision,
+        claims: epistemicTurn.ledger.allClaims(),
+        extraction: epistemicDecision.extraction,
+        promotions: epistemicDecision.promotions,
+        sessionRepromotionBlocks: epistemicDecision.verifierSummary?.sessionBlocks ?? 0
+      });
+      console.info("EPISTEMIC_AUDIT", JSON.stringify(epistemicAuditEvent));
+    }
+    if (epistemicDecision?.shadowTrace) {
+          console.info("EPISTEMIC_SHADOW", JSON.stringify(epistemicDecision.shadowTrace));
+        }
+        if (epistemicDecision && epistemicDecision.code !== "EPISTEMIC_NOT_ACTIVE" && epistemicDecision.code !== "EPISTEMIC_CLEAN") {
+        writeAgentSse("agent_warning", {
+          type: epistemicDecision.code,
+          warning: epistemicDecision.guidance || epistemicDecision.code,
+          // shadow ships the turn and records what block mode would have done.
+          wouldBlock: epistemicDecision.wouldBlock === true,
+          blockedClaimIds: epistemicDecision.blockedClaimIds ?? []
+        });
+      }
+      if (epistemicDecision && !epistemicDecision.allowed) {
+        deferredAssistantText.discard();
+        deferredAssistantReasoning.discard();
+        if (persistEpistemicClaims) {
+          agentSession.epistemic.discardCandidate(epistemicDecision.code);
+        }
+        // REM-007/008: the repair policy owns the loop decision. The transition
+        // is a pure state machine shared with the behavioral tests; the turn
+        // only carries the policy state across rounds (single source of truth)
+        // and beginRepair() records the transport round, never a decision.
+        const repairTransition = evaluateRepairTransition({
+          claims: epistemicTurn.ledger.allClaims(),
+          previous: epistemicTurn.repairState.policy ?? null,
+          config: {
+            maxRepairRounds: runtimeConfig.agent.epistemic.maxRepairRounds,
+            blockSeverity: runtimeConfig.agent.epistemic.blockSeverity
+          }
+        });
+        epistemicTurn.repairState = {
+          ...epistemicTurn.repairState,
+          policy: repairTransition.decision
+        };
+        if (repairTransition.next === REPAIR_NEXT.EXHAUSTED) {
+          writeAgentSse("agent_warning", {
+            type: "EPISTEMIC_REPAIR_EXHAUSTED",
+            warning: repairTransition.decision.guidance
+          });
+          writeAgentSse("agent_done", { finish_reason: "epistemic_blocked" });
+          break;
+        }
+        if (repairTransition.next !== REPAIR_NEXT.REPAIR) {
+          // NOT_REQUIRED/RESOLVED while the current gate is blocked is
+          // incoherent. Fail safe: report and terminate rather than loop.
+          console.info("EPISTEMIC_REPAIR_INCOHERENT", JSON.stringify(repairTransition.decision));
+          writeAgentSse("agent_warning", {
+            type: "EPISTEMIC_REPAIR_EXHAUSTED",
+            warning: "The candidate answer could not be verified and no coherent repair is owed."
+          });
+          writeAgentSse("agent_done", { finish_reason: "epistemic_blocked" });
+          break;
+        }
+        const repairGuidance = runtimeConfig.agent.epistemic.strictRepair
+          ? repairTransition.decision.guidance
+          : epistemicDecision.guidance;
+        epistemicTurn.beginRepair();
+        fullMessages.push({
+          role: "system",
+          content: repairGuidance
+        });
+        forceResetNextIteration = true;
+        continue;
+      }
+
+      // Commit only after every authoritative finalization decision accepted it.
+      if (persistEpistemicClaims && epistemicDecision) {
+        agentSession.epistemic.commitClaims(epistemicTurn.ledger.allClaims());
+      }
       agentSession.commit(modeChoice.pending, assistantMessage);
+
+      // §37 — the withheld prose is released here, after every gate ruled and
+      // never before. Sage and Lean turns flush on their own paths below.
+      if (epistemicWithholdsOutput && !responseBelongsToSage && !responseWithheldForLean) {
+        deferredAssistantText.flush((content) => writeAgentSse("agent_text", { content }));
+        deferredAssistantReasoning.flush((content) => writeAgentSse("agent_reasoning", { content }));
+      }
       fullMessages = agentSession.messages();
 
       // If no tool calls, we're done
       if (isFinalResponse) {
+        const leanSnapshot = leanSnapshotBeforeCommit;
+        const leanSourceMatches = leanSnapshot.verified
+          ? authoritativeDecision?.code === "LEAN_VERIFIED"
+          : true;
+        if (leanSnapshot.proofId) {
+          deferredAssistantText.flush((content) => writeAgentSse("agent_text", { content }));
+          deferredAssistantReasoning.flush((content) => writeAgentSse("agent_reasoning", { content }));
+          finalizeLeanStatus(
+            leanSnapshot.verified && leanSourceMatches
+              ? "Prova verificata: status=checked."
+              : leanSnapshot.verified
+                ? "Sorgente pubblicato diverso da quello verificato."
+                : `Prova non verificata (${leanSnapshot.terminalReason || leanSnapshot.state}).`
+          );
+        }
         writeAgentSse("agent_done", {
           iterations: iteration,
-          finish_reason: finishReason || "stop",
+          // A Lean turn names its own outcome so the UI never has to infer the
+          // badge from the prose.
+          finish_reason: leanSnapshot.proofId
+            ? (authoritativeDecision?.finishReason || "lean_not_verified")
+            : (finishReason || "stop"),
+          ...(leanSnapshot.proofId
+            ? {
+                leanVerified: leanSnapshot.verified && leanSourceMatches,
+                leanTerminalReason: leanSnapshot.terminalReason,
+                leanCheckedSourceSha256: leanSnapshot.checkedSourceSha256,
+                leanFinalSourceMatchesVerified: leanSourceMatches
+              }
+            : {}),
           totals: agentSession.usageTotals
         });
         break;
+      }
+
+      // May this TOOL run?  Separate question from "may this PROSE be
+      // published?", which authoritativeFinalizationGate already answered
+      // above.  Once a domain verdict is terminal nothing runs for it, whatever
+      // tool the model reached for.
+      const toolGate = evaluateAuthoritativeToolCalls({
+        leanSnapshot: leanSnapshotBeforeCommit,
+        sageSnapshot: sageTracker.snapshot(),
+        toolCalls
+      });
+      if (!toolGate.allowed) {
+        const guidance = authoritativeToolBlockGuidance(toolGate);
+        writeAgentSse("agent_warning", { type: toolGate.code, warning: guidance });
+        for (const tc of toolCalls) {
+          writeAgentSse("agent_tool_call", {
+            id: tc.id,
+            name: tc.name,
+            arguments: tc.arguments
+          });
+          writeAgentSse("agent_tool_result", {
+            id: tc.id,
+            name: tc.name,
+            content: toolGate.code,
+            isError: true,
+            guarded: true
+          });
+          fullMessages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: `${toolGate.code}\n${guidance}`
+          });
+        }
+        continue;
       }
 
       const sageBlock = sageToolBlockDecision(toolCalls);
@@ -2852,16 +3509,49 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
           String(tc.arguments?.output_mode || "auto").toLowerCase() !== "legacy";
         const sagePhase = normalizeSagePhase(tc.arguments?.phase);
         let sageSnapshot = null;
+        const sageCodeSha256 = typeof tc.arguments?.code === "string"
+          ? sha256Hex(tc.arguments.code)
+          : null;
 
         if (compactSage) {
-          if (!sageTracker.snapshot().runId) {
-            sageTracker.begin({
+          if (!sageEntry) {
+            const registered = sageRunRegistry.getOrCreate({
+              sessionId: sessionKey,
               runId: crypto.randomUUID(),
               taskType: tc.arguments?.task_type
             });
+            if (!registered.ok) {
+              return {
+                id: tc.id,
+                name: tc.name,
+                content: registered.code,
+                displayContent: "Troppe esecuzioni SageMath attive.",
+                isError: true,
+                guarded: true,
+                hiddenByDefault: true,
+                phase: sagePhase,
+                validated: false
+              };
+            }
+            // The registry already called begin() for this run.
+            sageEntry = registered.entry;
+            sageTracker = sageEntry.tracker;
           }
-          const callState = sageTracker.recordCall({ phase: sagePhase });
+          const snapshotBeforeCall = sageTracker.snapshot();
+          const callState = sageTracker.beforeCall({
+            phase: sagePhase,
+            candidateRevision: Number(tc.arguments?.candidate_revision) || undefined,
+            codeSha256: sageCodeSha256 ?? undefined
+          });
           sageSnapshot = sageTracker.snapshot();
+          if (!callState.allowed) {
+            emitSageTransition(snapshotBeforeCall, sageSnapshot, callState.code);
+            sageMetrics.recordOrchestration(
+              callState.code === "SAGE_CANDIDATE_UNCHANGED"
+                ? "sage_candidate_unchanged_rejected_total"
+                : "sage_phase_rejected_total"
+            );
+          }
           writeSageStatus({
             callId: tc.id,
             phase: sagePhase,
@@ -2883,17 +3573,27 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
             hiddenByDefault: true
           });
           if (!callState.allowed) {
+            // §15.3: a refused call is answered with the phase the runtime
+            // demands, not with a dead end. A wrong phase or an unchanged
+            // candidate is repairable and must say so; only a terminal run gets
+            // the NOT_PUBLISHABLE notice.
+            const guidance = sageTracker.isTerminal()
+              ? sageTracker.terminalNotice()
+              : sageTracker.continuationInstruction();
             return {
               id: tc.id,
               name: tc.name,
-              content: "Sage workflow budget exceeded for this phase.",
-              displayContent: "Budget SageMath esaurito.",
+              content: `${callState.code}\n${guidance}`,
+              displayContent: sageTracker.isTerminal()
+                ? "Flusso SageMath terminato senza risultato pubblicabile."
+                : "Fase SageMath rifiutata; il runtime indica quella corretta.",
               isError: true,
               guarded: true,
               hiddenByDefault: true,
               runId: sageSnapshot.runId,
               taskType: sageSnapshot.taskType,
               phase: sagePhase,
+              requiredNextPhase: callState.requiredNextPhase ?? sageSnapshot.requiredNextPhase,
               validated: false
             };
           }
@@ -2939,6 +3639,10 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
         // Bash guard: refuse bash commands that bypass the read tool to
         // dump file contents (cat/head/tail/sed/awk, find -exec, xargs).
         if (tc.name === "bash") {
+          const leanBlock = checkBashLeanGuard(tc.arguments);
+          if (leanBlock?.block) {
+            return { id: tc.id, name: tc.name, content: leanBlock.reason, isError: true, guarded: true };
+          }
           const decision = checkBashFileReadFallback(
             tc.arguments,
             agentSession.readGuard.hasBlockedReadsThisTurn()
@@ -2960,6 +3664,79 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
           }
         }
 
+        // Lean attempt gate: budget, wall clock and unchanged-source refusal all
+        // happen before the sandbox is spawned. A refused attempt returns a
+        // contract-shaped result so the model reads a decision, not an excuse.
+        let leanSourceSha256 = null;
+        const leanTaskMode = (args) =>
+          args?.task_mode === "proof" ? "proof" : "utility";
+        const isLeanProofCall =
+          tc.name === "lean_check" && leanTaskMode(tc.arguments) === "proof";
+
+        if (isLeanProofCall) {
+          const targetDeclaration = tc.arguments?.target_declaration;
+          const profile = tc.arguments?.profile || "core";
+          // §11.2 — the target may not be derived from the first lean_check.
+          // Sealing here, before the tracker starts and before Lean is spawned,
+          // is what stops `theorem cauchy_mvt : True := by trivial` from
+          // locking itself as the task and then matching itself.
+          if (!leanTaskSpec) {
+            const sealed = createLeanTaskSpec({
+              targetDeclaration,
+              targetStatement: tc.arguments?.target_statement,
+              requiredProfile: profile,
+              expectedDeclarations: tc.arguments?.expected_declarations,
+              taskMode: "proof"
+            });
+            if (!sealed.ok) {
+              writeLeanStatus({ callId: tc.id, status: "blocked" });
+              return {
+                id: tc.id,
+                name: tc.name,
+                content:
+                  `LEAN_ORCHESTRATION\ncode=${sealed.error.code}\n` +
+                  `attemptConsumed=false\n${sealed.error.message}`,
+                isError: true,
+                guarded: true
+              };
+            }
+            leanTaskSpec = sealed.value;
+          }
+          leanTracker.begin({ targetDeclaration, profile, taskSpec: leanTaskSpec });
+          leanSourceSha256 = sha256Hex(tc.arguments?.code ?? "");
+          const decision = leanTracker.beforeAttempt({
+            sourceSha256: leanSourceSha256,
+            code: tc.arguments?.code ?? "",
+            targetDeclaration,
+            profile,
+          });
+          writeLeanStatus({ callId: tc.id, status: decision.allowed ? "running" : "blocked" });
+          if (!decision.allowed) {
+            if (decision.code === "LEAN_SOURCE_UNCHANGED_AFTER_FAILURE") {
+              leanMetrics.recordOrchestration?.("proof_same_source_rejected_total");
+            }
+            return {
+              id: tc.id,
+              name: tc.name,
+              content:
+                `LEAN_ORCHESTRATION\nstate=${decision.state}\n` +
+                `attempt=${decision.attempt}/${decision.maxAttempts}\n` +
+                `code=${decision.code}\nFINALIZATION_ALLOWED=${leanTracker.canFinalize()}\n` +
+                decision.reason,
+              isError: true,
+              guarded: true
+            };
+          }
+        } else if (tc.name === "lean_check") {
+          // Utility mode: no tracker ownership, no proof lifecycle.
+          // The check runs immediately without budget or strategy tracking.
+          leanSourceSha256 = sha256Hex(tc.arguments?.code ?? "");
+        }
+
+        // R5: the lean_check tool call carries the policy revision that is
+        // actually available, so the contract's optional policyRevision is set
+        // explicitly in the JS path instead of being implicit.
+        const leanCheckPolicyRevision = (await leanRuntimeState.get()).policy.availableRevision;
         const opts = {
           signal: controller.signal,
           crawlBaseUrl: tc.name === "crawl" ? crawlBase() : undefined,
@@ -2985,7 +3762,35 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
           runId: compactSage ? sageSnapshot.runId : undefined,
           phase: compactSage ? sagePhase : undefined,
           policyRevision: tc.name === "sage" ? sageState.policyRevision : undefined,
-          sessionKey
+          leanPolicyRevision: tc.name === "lean_check" ? leanCheckPolicyRevision : undefined,
+          leanExecutor: tc.name === "lean_check" ? runLeanCheckForAgent : undefined,
+          leanAttempt: isLeanProofCall ? leanTracker.snapshot().attempt : undefined,
+          leanProofId: isLeanProofCall ? leanTracker.snapshot().proofId : undefined,
+          leanExpectedTargetStatementSha256:
+            isLeanProofCall ? leanTracker.snapshot().targetStatementSha256 : undefined,
+          // The classifier needs the previous failure to tell "failed again the
+          // same way" from "failed differently". For utility calls there is no
+          // tracker state and no escalation context.
+          leanOrchestrationContext:
+            isLeanProofCall
+              ? {
+                  previousFingerprint: leanTracker.lastFingerprint,
+                  sameFailureCount: leanTracker.sameFailureCount,
+                  strategyChangeAfter: leanTracker.config.strategyChangeAfter,
+                  // Read from the tracker, never summed from timeouts.
+                  elapsedWallClockMs: leanTracker.elapsedWallClockMs(),
+                  maxWallClockMs: leanTracker.config.maxWallClockMs,
+                  remainingWallClockMs: leanTracker.remainingWallClockMs()
+                }
+              : undefined,
+          sessionKey,
+          // Per-turn tool scope: when set, only listed tools may dispatch.
+          allowedTools: agentSession?.toolScope ? Array.from(agentSession.toolScope) : undefined,
+          // §8 — once a Lean task is running, the repository is read-only: the
+          // proof candidate belongs in lean_check(code=...), not in a scratch
+          // file. The regression left four my_*.lean fixtures behind, one of
+          // them carrying `sorry`.
+          leanRepositoryMutationBlocked: leanTracker.used,
         };
         const rawResult = await executeTool(tc.name, tc.arguments, opts);
         recordGitnexusAnalyzeResult(
@@ -2993,6 +3798,38 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
           rawResult,
           policyState
         );
+
+        if (isLeanProofCall) {
+          // The decision is recomputed from the result itself, so a bridge that
+          // ever skipped finalizeLeanResult still lands in the right state.
+          const snapshot = leanTracker.recordResult(rawResult?.raw ?? rawResult);
+          writeLeanStatus({
+            callId: tc.id,
+            status: snapshot.verified ? "verified" : snapshot.terminal ? "terminal" : "repair_required",
+            summary: snapshot.verified
+              ? "Prova verificata: status=checked."
+              : snapshot.nextAction || "Correzione autonoma in corso."
+          });
+        } else if (tc.name === "lean_check") {
+          // Utility check: no tracker ownership and no proof lifecycle. A
+          // checked utility result is diagnostic evidence only — it must not
+          // create a proofId, mutate the budget, or arm the authoritative
+          // finalization gate.
+        }
+        // Recorded for every call, including the failures the text blob below
+        // skips. A tool that ran and failed is evidence — it is what separates
+        // "the tests failed" from "the tests were never run", and the legacy
+        // array cannot express either.
+        // Through the turn, not straight onto its evidence: the turn's wrapper
+        // is what records the lean_check assumption/scope audit (§30/§35/§48).
+        // Recording on epistemicEvidence bypassed it and left leanAudits empty
+        // for every production turn.
+        epistemicTurn.addToolResult({
+          callId: tc.id,
+          toolName: tc.name,
+          arguments: tc.arguments || {},
+          rawResult
+        });
         if (!rawResult?.isError) {
           const evidenceArgs = compactSage
             ? { task_type: sageSnapshot.taskType, phase: sagePhase }
@@ -3063,17 +3900,25 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
 
         if (compactSage) {
           const artifactKinds = sageArtifactKinds(rawResult);
+          // Canonical form: the tracker classifies the runtime's own evidence,
+          // exactly as POST /api/sage/exec does. A flat summary would lose the
+          // execution/validation detail the failure classifier needs.
+          const snapshotBeforeResult = sageTracker.snapshot();
           sageSnapshot = sageTracker.recordResult({
             phase: sagePhase,
-            isError: Boolean(result.isError),
-            authoritative: rawResult?.authoritative === true,
-            validationPassed: rawResult?.validationPassed === true,
-            publishable: rawResult?.publishable === true,
-            reportReady: rawResult?.reportReady === true,
-            finalMarkdownReady: typeof rawResult?.finalMarkdown === "string" &&
-              rawResult.finalMarkdown.trim().length > 0,
+            result: rawResult,
             artifactKinds,
             artifactCount: rawResult?.artifacts?.length || 0
+          });
+          emitSageTransition(snapshotBeforeResult, sageSnapshot, `PHASE_${sagePhase}`.toUpperCase());
+          sageRunRegistry.update(sageEntry, {
+            candidate: (sagePhase === "compute" || sagePhase === "repair") && sageCodeSha256
+              ? { codeSha256: sageCodeSha256 }
+              : undefined,
+            validation: sagePhase === "validate"
+              ? rawResult?.sageResult?.validation ?? null
+              : undefined,
+            finalResult: sageTracker.canFinalize() ? rawResult : undefined
           });
           const finalCandidate = authoritativeSageFinalFromResult(rawResult);
           if (finalCandidate && sageTracker.canFinalize()) {
@@ -3121,9 +3966,17 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
           return {
             id: tc.id,
             name: tc.name,
+            // §15.3: every non-final Sage result carries the phase the runtime
+            // demands next, so the model does not have to guess it — and a
+            // terminal run carries the NOT_PUBLISHABLE notice instead.
             content: authoritativeSageFinal
               ? "SAGE_AUTHORITATIVE_RESULT_READY"
-              : String(result.content ?? ""),
+              : [
+                  String(result.content ?? ""),
+                  sageTracker.isTerminal()
+                    ? sageTracker.terminalNotice()
+                    : sageTracker.continuationInstruction()
+                ].filter(Boolean).join("\n\n"),
             displayContent: rawResult?.displayContent || "SageMath completato.",
             isError: result.isError,
             sageResult: rawResult?.sageResult,
@@ -3225,6 +4078,10 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
     }
   } finally {
     req.off("aborted", abort);
+    // A run left mid-flight (abort, error, iteration cap) stays non-terminal in
+    // the registry, and the registry only evicts terminal entries: without this
+    // the 64 slots fill with runs nobody will ever finish.
+    if (sageEntry && !sageTracker.isTerminal()) sageTracker.markCancelled("SAGE_TURN_ENDED");
   }
 }));
 
@@ -3359,6 +4216,116 @@ app.use("/api/evolution", createEvolutionRouter({
   enabled: config.evolution.enabled,
   maxLevel: config.evolution.maxLevel
 }));
+
+// ---------------------------------------------------------------------------
+// Lean 4 Endpoints
+// ---------------------------------------------------------------------------
+
+const leanRunRegistry = new LeanRunRegistry({
+  maxGlobalRuns: runtimeConfig.lean.maxGlobalRuns,
+  maxRunsPerSession: runtimeConfig.lean.maxRunsPerSession,
+  maxQueuedPerSession: runtimeConfig.lean.maxQueuedPerSession,
+  capacity: runtimeConfig.lean.registryCapacity,
+  ttlMs: runtimeConfig.lean.registryTtlMs,
+});
+const leanMetrics = createLeanMetrics();
+const sageMetrics = createSageMetrics();
+
+/**
+ * Record one Sage orchestration transition (§18). Never throws: telemetry must
+ * not be able to turn a completed run into a failure. The event carries state
+ * names and reason codes only — never source, stdout or a host path.
+ */
+function emitSageTransition(before, after, reasonCode) {
+  try {
+    const event = sageTransitionEvent(before, after, reasonCode);
+    if (!event) return;
+    sageMetrics.record(event);
+    console.info("sage_orchestration", JSON.stringify(event));
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * One line per Lean run. The event carries sizes, counts and hashes — never
+ * the source, stderr bodies, host paths or environment.
+ */
+const leanLogger = {
+  info: (label, event) => console.log(`[lean] ${label} ${JSON.stringify(event)}`),
+  warn: (...args) => console.warn("[lean]", ...args),
+  error: (...args) => console.error("[lean]", ...args)
+};
+
+/**
+ * Revision of the Lean policy, composed the way the native agent composes it.
+ *
+ * The local version of this hashed skills/lean/SKILL.md alone, which is only the
+ * whole policy in base mode: with DS4_LEAN_AUTONOMOUS_PROMPT=1 the native side
+ * also appends the orchestration fragment, so the two sides reported different
+ * revisions for the same files. leanPolicyBundle.mjs is the one implementation.
+ *
+ * Declared, not assigned to a const: leanRuntimeState is built near the top of
+ * this file and takes this as a dependency, so it has to be hoisted.
+ */
+function getLeanPolicyState() {
+  return loadLeanPolicyState({ projectRoot: PROJECT_ROOT });
+}
+
+app.use("/api/lean", createLeanRouter({
+  express,
+  config: runtimeConfig.lean,
+  executeLeanCheck,
+  getPreflight: () => runLeanPreflight(runtimeConfig.lean),
+  getLeanPolicyState,
+  runRegistry: leanRunRegistry,
+  metrics: leanMetrics,
+  logger: leanLogger
+}));
+
+// Lean run artifacts are kept for DS4_LEAN_RETENTION_HOURS so a result can be
+// inspected after the fact, then pruned. Off the request path on purpose:
+// pruning walks the runs root, and a check must never wait on it.
+if (runtimeConfig.lean.enabled && runtimeConfig.lean.retentionHours > 0) {
+  const pruneLeanRuns = () =>
+    pruneExpiredLeanRuns(runtimeConfig.lean).catch((err) =>
+      console.warn(`[lean] pruning failed: ${err.message}`)
+    );
+  pruneLeanRuns();
+  setInterval(pruneLeanRuns, 60 * 60 * 1000).unref();
+}
+
+// The in-memory run registry (cached results + in-flight accounting) also gets
+// a periodic prune so completed results expire even when no new /exec request
+// ever comes in to trigger the opportunistic prune in reserve().
+if (runtimeConfig.lean.enabled) {
+  setInterval(() => leanRunRegistry.prune(), 60 * 1000).unref();
+}
+
+/**
+ * Bridge the lean_check agent tool onto the same executor the HTTP route uses,
+ * so there is exactly one place that knows about the sandbox and the runtime.
+ */
+async function runLeanCheckForAgent(request, options = {}) {
+  return executeLeanCheck(request, {
+    config: runtimeConfig.lean,
+    preflight: await runLeanPreflight(runtimeConfig.lean),
+    abortSignal: options.signal ?? null,
+    metrics: leanMetrics,
+    logger: leanLogger,
+    orchestrationContext: options.leanOrchestrationContext ?? {}
+  });
+}
+
+async function runLeanInspectForAgent(body, options = {}) {
+  return executeLeanInspect(body, {
+    config: runtimeConfig.lean,
+    preflight: await runLeanPreflight(runtimeConfig.lean),
+    abortSignal: options.signal ?? null,
+    logger: leanLogger,
+    metrics: leanMetrics,
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Deep Research Endpoints
@@ -3566,6 +4533,13 @@ async function startCrawlService() {
   crawlProcess.stderr.on("data", (chunk) => process.stderr.write(`[crawl] ${chunk}`));
   crawlProcess.on("exit", (code) => {
     console.log(`ds4-ui: crawl service exited (code=${code})`);
+    crawlProcess = null;
+  });
+  // Without this listener a failed spawn (no venv, no python) raises an
+  // unhandled 'error' event, which takes the whole UI server down seconds
+  // after boot — an optional side service must never do that.
+  crawlProcess.on("error", (err) => {
+    console.warn(`ds4-ui: crawl service could not start: ${err.message}`);
     crawlProcess = null;
   });
   for (let i = 0; i < 30; i++) {

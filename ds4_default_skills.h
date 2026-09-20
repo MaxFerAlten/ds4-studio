@@ -29,6 +29,11 @@
 #define DS4_SAGE_END \
     "[END DS4 SAGE POLICY]"
 
+#define DS4_LEAN_BEGIN \
+    "[BEGIN DS4 LEAN POLICY]"
+#define DS4_LEAN_END \
+    "[END DS4 LEAN POLICY]"
+
 typedef struct {
     bool enabled;
     bool soul_loaded;

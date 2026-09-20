@@ -1,0 +1,38 @@
+id = "deepseek41-harness"
+enabled = true
+owner = "overlay"
+description = """
+Downstream-only V4.1 test harnesses. Upstream carries the V4.1 feature itself
+but not these checks, and they are what caught both behavioural divergences the
+overlay now closes.
+
+Only test_deepseek41_cache_spans.c runs today. The other two are installed but
+not yet runnable against upstream:
+
+  test_deepseek41_memory.c  needs ds4_engine.ds41_host_memory_baseline,
+                            ds4_engine.ds41_model_loaded and the type
+                            ds4_gpu_stream_expert_memory - see feature
+                            dsv41-expert-streaming
+  test_deepseek41_rocm.c    compiles, but linking ds4-kernel-v41 needs
+                            ds4_rocm.o built with dsv41-expert-streaming
+"""
+
+[upstream]
+# Recorded when the patchset was last re-derived; not a constraint.
+reviewed_sha = "9139e2ae58a41503968a500f36f75895c1ba63fc"
+
+[[overlay_file]]
+source = "tests/test_deepseek41_cache_spans.c"
+target = "tests/test_deepseek41_cache_spans.c"
+
+[[overlay_file]]
+source = "tests/test_deepseek41_memory.c"
+target = "tests/test_deepseek41_memory.c"
+
+[[overlay_file]]
+source = "tests/test_deepseek41_rocm.c"
+target = "tests/test_deepseek41_rocm.c"
+
+[[test]]
+command = "make -f Makefile.overlay overlay-test-deepseek41-cache-spans"
+required = true

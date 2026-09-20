@@ -162,6 +162,59 @@ test("timeout guard lets fast chunks pass through", async () => {
   assert.equal(typeof results[1], "string");
 });
 
+// D-017 — Silent upstream stall: the watchdog must fire even when zero bytes
+// arrive after the initial chunk.  The old in-loop Date.now() check would
+// never execute because the for-await blocks on the next chunk.
+test("D-017: concurrent watchdog fires on silent upstream stall", async () => {
+  const TIMEOUT_MS = 50;
+  let timedOut = false;
+
+  const controller = new AbortController();
+  const timeoutHandle = setTimeout(() => {
+    timedOut = true;
+    controller.abort(new Error("Native agent stream timeout"));
+  }, TIMEOUT_MS);
+
+  // Simulate a stream that yields one chunk then blocks.
+  // In production, the upstream fetch body's async iterator throws when the
+  // AbortController fires.  We simulate this with Promise.race.
+  let resolveBlock;
+  const blockPromise = new Promise((resolve, reject) => {
+    resolveBlock = resolve;
+    controller.signal.addEventListener("abort", () => {
+      reject(new DOMException("The operation was aborted", "AbortError"));
+    }, { once: true });
+  });
+
+  const silentStream = {
+    async *[Symbol.asyncIterator]() {
+      yield "event: agent_text\ndata: {\"content\":\"first\"}\n\n";
+      await blockPromise;
+    }
+  };
+
+  const results = [];
+  try {
+    for await (const chunk of silentStream) {
+      results.push(chunk);
+    }
+  } catch (err) {
+    if (timedOut) {
+      results.push({ event: "agent_error", data: { error: "Native agent stream timeout" } });
+    }
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
+
+  assert.equal(results.length, 2, "should have first chunk + timeout error");
+  assert.equal(typeof results[0], "string", "first chunk passed through");
+  assert.deepEqual(results[1], {
+    event: "agent_error",
+    data: { error: "Native agent stream timeout" }
+  });
+  assert.equal(timedOut, true, "watchdog must have fired");
+});
+
 test("pony policy preserves message content", () => {
   const message = "Ciao, analizza il progetto.";
   const policy = "<ponyPolicy>\nFocus on code.";
@@ -215,7 +268,7 @@ test("JS agent compresses crawl results before SSE and model context exposure", 
   );
 });
 
-test("JS agent warns on unsupported verified claims using current-turn evidence", async () => {
+test("JS agent gates unsupported verified claims using current-turn evidence", async () => {
   const source = await readFile(new URL("./index.mjs", import.meta.url), "utf8");
 
   assert.match(source, /import \{ checkVerifiedClaim \} from "\.\/claimGuard\.mjs"/);
@@ -223,7 +276,11 @@ test("JS agent warns on unsupported verified claims using current-turn evidence"
   assert.match(source, /turnEvidence\.push\(/);
   assert.match(
     source,
-    /checkVerifiedClaim\(\s*assistantContent,\s*turnEvidence\.join\("\\n"\),\s*\{ mode: "warn" \}\s*\)/
+    /const authoritativeClaimMode =\s*leanTracker\.used \|\| sageTracker\.used\(\) \? "block" : "warn";/
+  );
+  assert.match(
+    source,
+    /checkVerifiedClaim\(\s*assistantContent,\s*turnEvidence\.join\("\\n"\),\s*\{ mode: authoritativeClaimMode \}\s*\)/
   );
   assert.match(source, /type: claimDecision\.type/);
 });
@@ -310,16 +367,24 @@ function validateSageTracker(tracker, overrides = {}) {
   return tracker;
 }
 
-test("compute followed by final text is blocked and permits only one retry", () => {
+test("compute followed by final text is blocked and keeps guiding, not failing", () => {
   const tracker = computedSageTracker();
-  const first = guardSageFinalization(tracker);
-  const second = guardSageFinalization(tracker);
+  const budget = tracker.config.maxPrematureFinalizations;
 
-  assert.equal(first.blocked, true);
-  assert.equal(first.retryAllowed, true);
-  assert.equal(second.blocked, true);
-  assert.equal(second.retryAllowed, false);
-  assert.equal(tracker.snapshot().failureCode, "SAGE_FINALIZATION_BLOCKED");
+  for (let episode = 1; episode <= budget; episode += 1) {
+    const blocked = guardSageFinalization(tracker);
+    assert.equal(blocked.blocked, true, `episodio ${episode}`);
+    assert.equal(blocked.retryAllowed, true, `episodio ${episode} chiuso troppo presto`);
+    assert.match(blocked.guidance, /nextPhase=validate/);
+  }
+
+  // Oltre il budget il turno termina, ma la prosa gia' scritta non passa: viene
+  // sostituita dall'avviso NOT_PUBLISHABLE.
+  const exhausted = guardSageFinalization(tracker);
+  assert.equal(exhausted.blocked, true);
+  assert.equal(exhausted.retryAllowed, false);
+  assert.match(exhausted.guidance, /SAGE_TERMINAL_NOT_PUBLISHABLE/);
+  assert.equal(tracker.snapshot().state, "budget_exhausted");
 });
 
 test("non-authoritative validation and publication=false block final text", () => {
@@ -330,8 +395,18 @@ test("non-authoritative validation and publication=false block final text", () =
     publishable: false
   });
 
-  assert.equal(guardSageFinalization(nonAuthoritative).blocked, true);
-  assert.equal(guardSageFinalization(nonPublishable).blocked, true);
+  // Una validazione non autorevole e' una violazione di contratto: terminale,
+  // ma la prima risposta viene comunque riscritta come NOT_PUBLISHABLE.
+  const blockedNonAuthoritative = guardSageFinalization(nonAuthoritative);
+  assert.equal(blockedNonAuthoritative.blocked, true);
+  assert.match(blockedNonAuthoritative.guidance, /SAGE_TERMINAL_NOT_PUBLISHABLE/);
+  assert.equal(guardSageFinalization(nonAuthoritative).blocked, false);
+
+  // Una validazione fallita e' riparabile: si continua, non si pubblica.
+  const blockedNonPublishable = guardSageFinalization(nonPublishable);
+  assert.equal(blockedNonPublishable.blocked, true);
+  assert.equal(blockedNonPublishable.retryAllowed, true);
+  assert.match(blockedNonPublishable.guidance, /nextPhase=repair/);
 });
 
 test("ready Sage and non-Sage final text remain allowed", () => {

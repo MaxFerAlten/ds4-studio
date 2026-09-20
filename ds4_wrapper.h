@@ -83,8 +83,10 @@ typedef struct {
     double last_thaw_ms;
     double last_switch_ms;
 
-    struct ds4_server_runtime *server_rt;
-    struct ds4_agent_runtime *agent_rt;
+    /* The wrapper talks to the Studio extension layer only; the runtime
+     * adapters and the upstream monoliths sit behind it. */
+    struct ds4_server_ext *server_ext;
+    struct ds4_agent_ext *agent_ext;
 
     /* Agent config stored for lazy runtime init */
     const char *agent_system_prompt;
@@ -98,6 +100,6 @@ const char *ds4_wrap_mode_name(ds4_wrap_mode mode);
 const char *ds4_wrap_state_name(ds4_wrap_state state);
 const char *ds4_wrap_frozen_kind_name(ds4_wrap_frozen_kind kind);
 
-int ds4_wrapper_ensure_agent_rt(ds4_wrapper *w, char *err, size_t err_len);
+int ds4_wrapper_ensure_agent_ext(ds4_wrapper *w, char *err, size_t err_len);
 
 #endif

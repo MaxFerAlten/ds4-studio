@@ -245,6 +245,13 @@ export function parseAgentInput(text, agentMode) {
     return { type: "control", action: control[1].toLowerCase() };
   }
 
+  if (/^\/skill(?:\s|$)/i.test(trimmed)) {
+    if (!agentMode) {
+      return { type: "skill", action: "inactive", command: trimmed };
+    }
+    return { type: "native", command: trimmed };
+  }
+
   const pony = trimmed.match(/^\/pony(?:\s+(\S+))?\s*$/i);
   if (pony) {
     if (!agentMode) return { type: "pony", action: "inactive" };
@@ -289,6 +296,19 @@ export function parseAgentInput(text, agentMode) {
   if (sagePol) {
     const action = sagePol[1].toLowerCase();
     return { type: "native", command: `/sage-pol ${action}` };
+  }
+
+  // Legacy /lean alias for the /skill lean command family. Kept as its own
+  // verb instead of being canonized to /skill lean: the runtime's generic
+  // skill parser only accepts start|stop|status, while /lean preflight is a
+  // Lean-only verb that queries the Node control plane read-only.
+  const leanCmd = trimmed.match(/^\/lean(?:\s+([\s\S]*))?$/i);
+  if (leanCmd) {
+    if (!agentMode) {
+      return { type: "lean", action: "inactive", command: trimmed };
+    }
+    const arg = (leanCmd[1] || "").trim();
+    return { type: "native", command: arg ? `/lean ${arg}` : "/lean" };
   }
 
   const gitnexus = trimmed.match(/^\/gitnexus\s+(start|stop|status)\s*$/i);
@@ -418,7 +438,28 @@ export function withAgentPriming(messages, requestText) {
 // system prompt, which drops the live conversation from the agent's context.
 // Status is read-only; /new and /switch intentionally change sessions.
 // Case-sensitive to mirror the runtime's own command parsing.
+/**
+ * Should a native control-plane answer re-arm the priming replay?
+ *
+ * Only a command that actually rebuilt the session may do so, and only when
+ * the backend says the state really moved. `repaired` is accepted next to
+ * `changed` because a repair *is* a mutation: the C side sets both, and
+ * treating a repair as a no-op is what left the chat primed against a session
+ * that had been rebuilt underneath it (piano-rimedio 2 §13).
+ *
+ * @param {{ ok: boolean, payload: object, command: string }} answer
+ * @returns {boolean}
+ */
+export function nativeCommandRearmsPriming({ ok, payload, command }) {
+  if (!ok) return false;
+  const mutated = payload?.changed === true || payload?.repaired === true;
+  return mutated && commandRebuildsSessionKeepingContext(command);
+}
+
 export function commandRebuildsSessionKeepingContext(command) {
   const normalized = String(command || "").trim();
-  return /^\/(metacognition|soul|ethic|sage-pol|sage)\s+(start|stop)\b/.test(normalized);
+  const genericSkillToggle =
+    /^\/skill\s+[a-z0-9][a-z0-9_-]{0,63}\s+(start|stop)\s*$/.test(normalized);
+  return genericSkillToggle ||
+    /^\/(metacognition|soul|ethic|sage-pol|sage|lean)\s+(start|stop)\b/.test(normalized);
 }

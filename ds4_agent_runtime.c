@@ -7,14 +7,23 @@
 
 #define DS4_AGENT_TEST
 #define DS4_AGENT_TEST_NO_MAIN
-#include "ds4_agent.c"
+/* The upstream monolith is included textually so the runtime can reach its
+ * static helpers.  Makefile.studio redirects this to the overlay-generated
+ * copy under build/studio/ so upstream itself stays pristine; building
+ * without Makefile.studio still compiles against the raw upstream file. */
+#ifndef DS4_AGENT_UPSTREAM_SRC
+#define DS4_AGENT_UPSTREAM_SRC "ds4_agent.c"
+#endif
+#include DS4_AGENT_UPSTREAM_SRC
 
 #include "ds4_agent_runtime.h"
 #include "ds4_crawl_client.h"
 #include "ds4_crawl_grounding.h"
 #include <poll.h>
+#include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <stdio.h>
 
 /* =========================================================================
@@ -31,6 +40,22 @@ struct ds4_agent_runtime {
     /* Active callback – set for the duration of a _chat call. */
     ds4_agent_event_cb cb;
     void *cb_ud;
+    uint64_t skill_start_success_total;
+    uint64_t skill_start_idempotent_total;
+    uint64_t skill_stop_success_total;
+    uint64_t skill_stop_idempotent_total;
+    uint64_t skill_load_failure_total;
+    uint64_t skill_prompt_rebuild_failure_total;
+    uint64_t skill_rollback_failure_total;
+    uint64_t skill_manifest_failure_total;
+    bool sysprompt_dirty;
+
+    /* UTF8-001 §33 — the byte-stream → JSON-text boundary lives here, so the
+     * partial code point at the end of a chunk waits here for its tail. */
+    ds4_utf8_stream_state publish_utf8;
+    int publish_utf8_event_type;
+    uint64_t utf8_invalid_stream_total;
+    uint64_t utf8_truncated_at_end_total;
 };
 
 /* =========================================================================
@@ -63,7 +88,7 @@ static size_t json_escape_into(char *dst, size_t dst_cap,
 
 /* Filter out ANSI escape sequences from published text.  Returns malloc'd
  * cleaned string.  If the input contains no escapes, just duplicates it. */
-static char *strip_ansi(const char *s, size_t n) {
+static char *strip_ansi(const char *s, size_t n, size_t *out_len) {
     char *out = malloc(n + 1);
     if (!out) return NULL;
     size_t w = 0;
@@ -79,17 +104,64 @@ static char *strip_ansi(const char *s, size_t n) {
         }
     }
     out[w] = '\0';
+    /* §83 — the caller already has an explicit length; do not make it
+     * rediscover one with strlen() after a byte-level transformation. */
+    if (out_len) *out_len = w;
     return out;
+}
+
+/* Structured integrity failure.  §35: silent U+FFFD substitution is worse than
+ * a visible hard failure, because it rewrites a source presented as verified. */
+static void runtime_publish_utf8_error(ds4_agent_runtime *rt,
+                                       const char *code,
+                                       size_t byte_offset) {
+    if (!rt->cb) return;
+    char json[256];
+    snprintf(json, sizeof(json),
+             "{\"code\":\"%s\",\"stage\":\"runtime_publish_cb\","
+             "\"byteOffset\":%zu}", code, byte_offset);
+    ds4_agent_event ev = { .type = DS4_AGENT_EVENT_ERROR, .json_payload = json };
+    rt->cb(rt->cb_ud, &ev);
+}
+
+typedef struct {
+    ds4_agent_runtime *rt;
+    ds4_agent_event_type type;
+} runtime_publish_ctx;
+
+/* Receives only complete code points, so every JSON string it builds decodes
+ * back to exactly the bytes the renderer produced. */
+static void runtime_publish_complete_utf8(void *ud, const char *s, size_t n) {
+    runtime_publish_ctx *ctx = ud;
+    ds4_agent_runtime *rt = ctx->rt;
+    if (!rt->cb || !n) return;
+
+    /* §353 — bound the escape expansion before trusting the multiplication. */
+    if (n > (SIZE_MAX - 64) / 6) return;
+    size_t json_cap = n * 6 + 64;
+    char *json = malloc(json_cap);
+    if (!json) return;
+
+    size_t pos = 0;
+    pos += (size_t)snprintf(json + pos, json_cap - pos, "{\"content\":\"");
+    pos += json_escape_into(json + pos, json_cap - pos, s, n);
+    pos += (size_t)snprintf(json + pos, json_cap - pos, "\"}");
+
+    ds4_agent_event ev = { .type = ctx->type, .json_payload = json };
+    rt->cb(rt->cb_ud, &ev);
+    free(json);
 }
 
 static void runtime_publish_cb(void *ud, const char *s, size_t n) {
     ds4_agent_runtime *rt = ud;
     if (!rt->cb || !n) return;
 
-    /* Strip ANSI colour codes – the HTTP/SSE layer does not want them. */
-    char *clean = strip_ansi(s, n);
+    /* Strip ANSI colour codes – the HTTP/SSE layer does not want them.  The
+     * copy is byte-for-byte outside the escape sequences, so it neither
+     * interprets nor reframes UTF-8. */
+    size_t clean_len = 0;
+    char *clean = strip_ansi(s, n, &clean_len);
     if (!clean) return;
-    size_t clean_len = strlen(clean);
     if (clean_len == 0) { free(clean); return; }
 
     /* Map current_event_type from the worker to our enum. */
@@ -115,20 +187,28 @@ static void runtime_publish_cb(void *ud, const char *s, size_t n) {
         return;
     }
 
-    /* Build a minimal JSON payload: {"content":"..."} */
-    size_t json_cap = clean_len * 6 + 64;
-    char *json = malloc(json_cap);
-    if (!json) { free(clean); return; }
+    /* §296 — a code point may not straddle two event types.  If the stream
+     * switches while a sequence is still open, the tail can never arrive. */
+    if (etype != rt->publish_utf8_event_type) {
+        if (!ds4_utf8_stream_finished(&rt->publish_utf8)) {
+            rt->utf8_truncated_at_end_total++;
+            runtime_publish_utf8_error(rt, "DS4_UTF8_TRUNCATED_AT_END", 0);
+            ds4_utf8_stream_reset(&rt->publish_utf8);
+        }
+        rt->publish_utf8_event_type = etype;
+    }
 
-    size_t pos = 0;
-    pos += (size_t)snprintf(json + pos, json_cap - pos, "{\"content\":\"");
-    pos += json_escape_into(json + pos, json_cap - pos, clean, clean_len);
-    pos += (size_t)snprintf(json + pos, json_cap - pos, "\"}");
+    /* §32.2/§34 — defence in depth.  The renderer is streaming-safe now, but
+     * the (const char *, size_t) contract still promises nothing about code
+     * point boundaries, and other producers publish through here too. */
+    runtime_publish_ctx ctx = { .rt = rt, .type = type };
+    if (!ds4_utf8_stream_feed(&rt->publish_utf8, clean, clean_len,
+                              runtime_publish_complete_utf8, &ctx)) {
+        rt->utf8_invalid_stream_total++;
+        ds4_utf8_stream_reset(&rt->publish_utf8);
+        runtime_publish_utf8_error(rt, "DS4_UTF8_INVALID_STREAM", clean_len);
+    }
 
-    ds4_agent_event ev = { .type = type, .json_payload = json };
-    rt->cb(rt->cb_ud, &ev);
-
-    free(json);
     free(clean);
 }
 
@@ -136,11 +216,30 @@ static void runtime_publish_cb(void *ud, const char *s, size_t n) {
  * Init / Free
  * ========================================================================= */
 
+/* Init frees the wrapper's placeholder agent session to make room for the
+ * worker's. A failed init must put it back: without it the wrapper sits in
+ * agent mode with no session, and every later request is refused as "no active
+ * session" instead of retrying init and reporting why it failed. */
+static void restore_placeholder_session(ds4_wrapper *wrapper) {
+    if (wrapper->active_session) return;
+    if (ds4_session_create(&wrapper->active_session, wrapper->engine,
+                           wrapper->configured_ctx_size) != 0) {
+        wrapper->active_session = NULL;
+        fprintf(stderr, "ds4-wrapper: could not restore the agent session "
+                "after a failed agent init\n");
+    }
+}
+
 int ds4_agent_runtime_init(ds4_agent_runtime **out,
                            ds4_wrapper *wrapper,
-                           const ds4_agent_runtime_options *opt) {
+                           const ds4_agent_runtime_options *opt,
+                           char *err,
+                           size_t err_len) {
     ds4_agent_runtime *rt = calloc(1, sizeof(*rt));
-    if (!rt) return -1;
+    if (!rt) {
+        snprintf(err, err_len, "out of memory allocating the agent runtime");
+        return -1;
+    }
     rt->wrapper = wrapper;
     if (opt) rt->opt = *opt;
 
@@ -159,7 +258,19 @@ int ds4_agent_runtime_init(ds4_agent_runtime **out,
     rt->cfg.gen.think_mode = (opt && opt->nothink) ? DS4_THINK_NONE : DS4_THINK_HIGH;
     rt->cfg.gen.prompt = NULL; /* not one-shot */
     rt->cfg.gen.system = opt ? opt->system_prompt : NULL;
-    rt->cfg.non_interactive = true;
+    /* non_interactive short-circuits agent_web_confirm() before it ever raises
+     * the approval request this runtime answers below, so with it set the
+     * google_search/visit_page tools always failed with "visible Chrome browser
+     * startup requires interactive approval" -- even when the operator had
+     * passed --agent-allow-browser. Clearing it for that case lets the handshake
+     * run and reach worker_answer_web_approval().
+     *
+     * The other two things non_interactive guards are checked and harmless here:
+     * agent_publish_system_status() is additionally gated on isatty(), false in
+     * the wrapper, and the KV-save failure path merely reports into the agent
+     * buffer instead of stderr, which surfaces the error in the UI rather than
+     * hiding it. */
+    rt->cfg.non_interactive = !(opt && opt->allow_browser);
 
     /* Read the frontend server port from environment so the worker can call
      * back into the Node server for delegated sage execution. */
@@ -183,6 +294,8 @@ int ds4_agent_runtime_init(ds4_agent_runtime **out,
     }
 
     if (agent_worker_init(&rt->worker, wrapper->engine, &rt->cfg) != 0) {
+        snprintf(err, err_len, "agent worker could not be started");
+        restore_placeholder_session(wrapper);
         free(rt);
         return -1;
     }
@@ -197,6 +310,30 @@ int ds4_agent_runtime_init(ds4_agent_runtime **out,
         struct pollfd pfd = {.fd = rt->worker.wake_fd[0], .events = POLLIN};
         poll(&pfd, 1, 10);
         if (pfd.revents & POLLIN) drain_wake_fd(rt->worker.wake_fd[0]);
+    }
+
+    /* `initialized` means the worker's startup FINISHED, not that it succeeded.
+     * Upstream's worker_main sets it after recording a failure too, and the CLI
+     * then reads status.error to show it. This runtime took `initialized` for
+     * "ready", so a failed system prompt -- 25951 tokens against --ctx 8192 --
+     * left the worker in AGENT_WORKER_ERROR while prepare answered ready:true,
+     * every chat was refused as "agent worker busy or not idle", and the real
+     * reason was neither logged nor returned. */
+    pthread_mutex_lock(&rt->worker.mu);
+    bool start_failed = rt->worker.status.state == AGENT_WORKER_ERROR;
+    if (start_failed) {
+        snprintf(err, err_len, "%s", rt->worker.status.error[0]
+                 ? rt->worker.status.error : "agent worker failed to start");
+    }
+    pthread_mutex_unlock(&rt->worker.mu);
+    if (start_failed) {
+        /* The worker still owns its session (nothing was transferred), so
+         * agent_worker_free releases it along with the thread -- before the
+         * placeholder comes back, for the same GPU headroom reason as above. */
+        agent_worker_free(&rt->worker);
+        restore_placeholder_session(wrapper);
+        free(rt);
+        return -1;
     }
 
     /* Transfer the system-prompt-processed session from the worker to the
@@ -236,6 +373,9 @@ void ds4_agent_runtime_free(ds4_agent_runtime *rt) {
  * Chat
  * ========================================================================= */
 
+static int runtime_sysprompt_rebuild_if_dirty(
+    ds4_agent_runtime *rt, char *err, size_t err_len);
+
 int ds4_agent_runtime_chat(ds4_agent_runtime *rt,
                            const char *user_text,
                            ds4_agent_event_cb cb,
@@ -272,6 +412,26 @@ int ds4_agent_runtime_chat(ds4_agent_runtime *rt,
     rt->worker.publish_cb = runtime_publish_cb;
     rt->worker.publish_ud = rt;
     rt->worker.current_event_type = 0; /* TEXT */
+    /* §118 — continuation bytes never carry across turns. */
+    ds4_utf8_stream_reset(&rt->publish_utf8);
+    rt->publish_utf8_event_type = 0;
+
+    /* If a skill was toggled since the last chat, rebuild the system prompt
+     * now — the prefill cost is borne here once, not on every skill command. */
+    {
+        char rebuild_err[256] = {0};
+        if (runtime_sysprompt_rebuild_if_dirty(
+                rt, rebuild_err, sizeof(rebuild_err)) != 0) {
+            rt->worker.publish_cb = NULL;
+            rt->worker.publish_ud = NULL;
+            rt->cb = NULL;
+            rt->cb_ud = NULL;
+            snprintf(err, err_len,
+                     "sysprompt rebuild after skill change failed: %s",
+                     rebuild_err[0] ? rebuild_err : "unknown error");
+            return -1;
+        }
+    }
 
     /* Submit the user message. */
     if (!worker_submit(&rt->worker, user_text)) {
@@ -279,7 +439,19 @@ int ds4_agent_runtime_chat(ds4_agent_runtime *rt,
         rt->worker.publish_ud = NULL;
         rt->cb = NULL;
         rt->cb_ud = NULL;
-        snprintf(err, err_len, "agent worker busy or not idle");
+        /* Upstream treats AGENT_WORKER_ERROR as terminal (the CLI exits on it)
+         * and only a reset to the system prompt clears it, so after a failed
+         * turn every later submit is refused. Say so, with the original cause;
+         * resetting here would silently drop the conversation. */
+        agent_status st = {0};
+        worker_is_initialized(&rt->worker, &st);
+        if (st.state == AGENT_WORKER_ERROR) {
+            snprintf(err, err_len, "agent stopped after an error: %s; "
+                     "start a new session to continue",
+                     st.error[0] ? st.error : "unknown error");
+        } else {
+            snprintf(err, err_len, "agent worker busy or not idle");
+        }
         return -1;
     }
 
@@ -387,6 +559,14 @@ int ds4_agent_runtime_chat(ds4_agent_runtime *rt,
             }
             break;
         }
+    }
+
+    /* §119 — a partial sequence left at end of stream is an integrity failure,
+     * not something to flush raw. */
+    if (!ds4_utf8_stream_finished(&rt->publish_utf8)) {
+        rt->utf8_truncated_at_end_total++;
+        runtime_publish_utf8_error(rt, "DS4_UTF8_TRUNCATED_AT_END", 0);
+        ds4_utf8_stream_reset(&rt->publish_utf8);
     }
 
     /* Detach the publish callback. */
@@ -582,8 +762,22 @@ int ds4_agent_runtime_compact(ds4_agent_runtime *rt, char *err, size_t err_len) 
  * Native slash-command dispatcher
  * ========================================================================= */
 
+#ifdef DS4_AGENT_RUNTIME_TEST
+static int (*runtime_skill_rebuild_test_hook)(
+    ds4_agent_runtime *, char *, size_t);
+/* Same seam for the session save: a real save needs an engine and a live KV
+ * session, so the ordering invariant "save before mutate" (piano-rimedio 2
+ * §11) can only be tested with an injectable outcome. */
+static bool (*runtime_command_save_test_hook)(
+    ds4_agent_runtime *, char *, size_t);
+#endif
+
 static int runtime_rebuild_current_system_prompt(
     ds4_agent_runtime *rt, char *err, size_t err_len) {
+#ifdef DS4_AGENT_RUNTIME_TEST
+    if (runtime_skill_rebuild_test_hook)
+        return runtime_skill_rebuild_test_hook(rt, err, err_len);
+#endif
     if (!rt || !rt->worker_valid) {
         snprintf(err, err_len, "runtime not initialized");
         return -1;
@@ -595,8 +789,26 @@ static int runtime_rebuild_current_system_prompt(
         return -1;
     }
 
-    return agent_worker_reset_to_sysprompt(&rt->worker,
-                                           err, err_len) ? 0 : -1;
+    if (agent_worker_reset_to_sysprompt(&rt->worker, err, err_len)) return 0;
+    /* reset_to_sysprompt returns with whatever state its sync left, PREFILL
+     * for a prompt that no longer fits, and nothing moves it on: commands then
+     * answer "model is busy", so the skill that broke the prompt could not be
+     * stopped. ERROR is the true state, carries the cause, and still counts as
+     * idle for commands. */
+    agent_set_error(&rt->worker, err[0] ? err : "system prompt rebuild failed");
+    return -1;
+}
+
+static int runtime_sysprompt_rebuild_if_dirty(
+    ds4_agent_runtime *rt, char *err, size_t err_len) {
+    if (!rt->sysprompt_dirty) return 0;
+    /* Stays dirty on failure: a failed rebuild leaves the worker unusable, and
+     * clearing the flag first meant the next chat skipped straight to submit and
+     * reported "agent worker busy or not idle" instead of retrying and saying
+     * why (e.g. the skills no longer fit the context). */
+    if (runtime_rebuild_current_system_prompt(rt, err, err_len) != 0) return -1;
+    rt->sysprompt_dirty = false;
+    return 0;
 }
 
 typedef struct {
@@ -605,7 +817,7 @@ typedef struct {
 
 static void runtime_command_capture_cb(void *ud, const char *s, size_t n) {
     runtime_command_capture *capture = ud;
-    char *clean = strip_ansi(s, n);
+    char *clean = strip_ansi(s, n, NULL);
     if (!clean) return;
     agent_buf_puts(&capture->output, clean);
     free(clean);
@@ -626,11 +838,14 @@ static const char *runtime_command_name(agent_slash_command_kind kind) {
     case AGENT_SLASH_STRIP:   return "strip";
     case AGENT_SLASH_HISTORY: return "history";
     case AGENT_SLASH_CRAWL:   return "crawl";
+    case AGENT_SLASH_SKILL:   return "skill";
     case AGENT_SLASH_METACOGNITION: return "metacognition";
     case AGENT_SLASH_SOUL:    return "soul";
     case AGENT_SLASH_ETHIC:   return "ethic";
+    case AGENT_SLASH_STRUCTURE: return "structure";
     case AGENT_SLASH_SAGE_POL: return "sage-pol";
     case AGENT_SLASH_SAGE:    return "sage";
+    case AGENT_SLASH_LEAN:    return "lean";
     default:                  return "unknown";
     }
 }
@@ -689,19 +904,43 @@ static int runtime_command_fail(ds4_agent_command_result *result,
     return -1;
 }
 
+static int runtime_command_fail_code(ds4_agent_command_result *result,
+                                     int status,
+                                     const char *code,
+                                     const char *fmt,
+                                     ...) {
+    result->ok = false;
+    result->http_status = status;
+    snprintf(result->error_code, sizeof(result->error_code), "%s",
+             code ? code : "NATIVE_AGENT_ERROR");
+    free(result->message);
+    result->message = NULL;
+    va_list ap;
+    va_start(ap, fmt);
+    result->message = runtime_command_vformat_or_null(fmt, ap);
+    va_end(ap);
+    if (!result->message)
+        result->message =
+            runtime_command_strdup_or_null("native agent command failed");
+    return -1;
+}
+
 static bool runtime_command_require_session(ds4_agent_runtime *rt,
                                             ds4_agent_command_result *result) {
     if (!rt || !rt->worker_valid) {
-        runtime_command_fail(result, 503, "agent runtime is not initialized");
+        runtime_command_fail_code(result, 503, "AGENT_RUNTIME_UNAVAILABLE",
+                                  "agent runtime is not initialized");
         return false;
     }
     rt->worker.session = rt->wrapper->active_session;
     if (!rt->worker.session) {
-        runtime_command_fail(result, 409, "no active agent session");
+        runtime_command_fail_code(result, 409, "AGENT_MODE_REQUIRED",
+                                  "no active agent session");
         return false;
     }
     if (!worker_is_idle(&rt->worker)) {
-        runtime_command_fail(result, 409, "model is busy");
+        runtime_command_fail_code(result, 409, "AGENT_BUSY",
+                                  "model is busy");
         return false;
     }
     return true;
@@ -709,6 +948,16 @@ static bool runtime_command_require_session(ds4_agent_runtime *rt,
 
 static bool runtime_command_save_if_dirty(ds4_agent_runtime *rt,
                                           ds4_agent_command_result *result) {
+#ifdef DS4_AGENT_RUNTIME_TEST
+    if (runtime_command_save_test_hook) {
+        char hook_err[256] = {0};
+        if (runtime_command_save_test_hook(rt, hook_err, sizeof(hook_err)))
+            return true;
+        runtime_command_fail(result, 500, "save failed: %s",
+                             hook_err[0] ? hook_err : "unknown error");
+        return false;
+    }
+#endif
     if (!agent_worker_needs_save(&rt->worker)) return true;
     char sha[41] = {0};
     int tokens = 0;
@@ -719,6 +968,787 @@ static bool runtime_command_save_if_dirty(ds4_agent_runtime *rt,
     runtime_command_fail(result, 500, "save failed: %s",
                          err[0] ? err : "unknown error");
     return false;
+}
+
+typedef struct {
+    char name[DS4_AGENT_SKILL_NAME_MAX + 1];
+    const char *kind;
+    bool loaded;
+    size_t bytes;
+    char revision[41];
+} runtime_skill_view;
+
+static bool runtime_env_boolean(const char *name, bool default_value) {
+    const char *value = getenv(name);
+    if (!value) return default_value;
+    while (*value && isspace((unsigned char)*value)) value++;
+    const char *end = value + strlen(value);
+    while (end > value && isspace((unsigned char)end[-1])) end--;
+    const size_t len = (size_t)(end - value);
+    if ((len == 1 && value[0] == '1') ||
+        (len == 4 && !strncasecmp(value, "true", len)) ||
+        (len == 3 && !strncasecmp(value, "yes", len)) ||
+        (len == 2 && !strncasecmp(value, "on", len)))
+        return true;
+    if (len == 0 || (len == 1 && value[0] == '0') ||
+        (len == 5 && !strncasecmp(value, "false", len)) ||
+        (len == 2 && !strncasecmp(value, "no", len)) ||
+        (len == 3 && !strncasecmp(value, "off", len)))
+        return false;
+    return default_value;
+}
+
+static bool runtime_autonomous_prompt_enabled(ds4_agent_skill_kind kind) {
+    if (kind == DS4_AGENT_SKILL_BUILTIN_LEAN_POLICY)
+        return runtime_env_boolean("DS4_LEAN_AUTONOMOUS_PROMPT", false);
+    if (kind == DS4_AGENT_SKILL_BUILTIN_SAGE_POLICY)
+        return runtime_env_boolean("DS4_SAGE_AUTONOMOUS_PROMPT", false);
+    return false;
+}
+
+static bool runtime_autonomous_orchestration_enabled(
+    ds4_agent_skill_kind kind) {
+    if (kind == DS4_AGENT_SKILL_BUILTIN_LEAN_POLICY)
+        return runtime_env_boolean(
+            "DS4_LEAN_AUTONOMOUS_ORCHESTRATION", true);
+    if (kind == DS4_AGENT_SKILL_BUILTIN_SAGE_POLICY)
+        return runtime_env_boolean(
+            "DS4_SAGE_AUTONOMOUS_ORCHESTRATION", true);
+    return false;
+}
+
+static const char *runtime_autonomous_fragment_marker(
+    ds4_agent_skill_kind kind) {
+    if (kind == DS4_AGENT_SKILL_BUILTIN_LEAN_POLICY)
+        return "[BEGIN DS4 LEAN AUTONOMOUS ORCHESTRATION]";
+    if (kind == DS4_AGENT_SKILL_BUILTIN_SAGE_POLICY)
+        return "[BEGIN DS4 SAGE AUTONOMOUS ORCHESTRATION]";
+    return "";
+}
+
+static bool runtime_autonomous_fragment_loaded(
+    const agent_worker *worker,
+    ds4_agent_skill_kind kind) {
+    const char *prompt = NULL;
+    if (kind == DS4_AGENT_SKILL_BUILTIN_LEAN_POLICY)
+        prompt = worker->lean_prompt;
+    else if (kind == DS4_AGENT_SKILL_BUILTIN_SAGE_POLICY)
+        prompt = worker->sage_prompt;
+    const char *marker = runtime_autonomous_fragment_marker(kind);
+    return prompt && marker[0] && strstr(prompt, marker) != NULL;
+}
+
+static ds4_agent_skill_stage_options runtime_skill_stage_options(
+    ds4_agent_skill_kind kind) {
+    ds4_agent_skill_stage_options options = {0};
+    if (kind == DS4_AGENT_SKILL_BUILTIN_LEAN_POLICY) {
+        options.fragment_name =
+            "LEAN_AUTONOMOUS_PROOF_ORCHESTRATION_PROMPT.md";
+        options.fragment_begin_marker =
+            "[BEGIN DS4 LEAN AUTONOMOUS ORCHESTRATION]";
+        options.fragment_end_marker =
+            "[END DS4 LEAN AUTONOMOUS ORCHESTRATION]";
+    } else if (kind == DS4_AGENT_SKILL_BUILTIN_SAGE_POLICY) {
+        options.fragment_name =
+            "SAGE_AUTONOMOUS_MATHEMATICAL_ORCHESTRATION_PROMPT.md";
+        options.fragment_begin_marker =
+            "[BEGIN DS4 SAGE AUTONOMOUS ORCHESTRATION]";
+        options.fragment_end_marker =
+            "[END DS4 SAGE AUTONOMOUS ORCHESTRATION]";
+    }
+    options.fragment_enabled = runtime_autonomous_prompt_enabled(kind);
+    options.fragment_required = options.fragment_enabled;
+    return options;
+}
+
+static bool runtime_skill_stage_from_disk(
+    const char *skills_root,
+    const char *name,
+    ds4_agent_skill_kind kind,
+    ds4_agent_skill_entry *out,
+    char *err,
+    size_t err_len) {
+    ds4_agent_skill_stage_options options = runtime_skill_stage_options(kind);
+    if (options.fragment_enabled &&
+        !runtime_autonomous_orchestration_enabled(kind)) {
+        snprintf(err, err_len,
+                 "SKILL_ORCHESTRATOR_REQUIRED: autonomous prompt requires its orchestrator");
+        memset(out, 0, sizeof(*out));
+        return false;
+    }
+    return ds4_agent_skill_stage_from_disk_ex(
+        skills_root, name, kind,
+        options.fragment_enabled ? &options : NULL,
+        out, err, err_len);
+}
+
+static bool runtime_authoritative_math_mode_conflicts(
+    const agent_worker *worker,
+    ds4_agent_skill_kind requested_kind) {
+    if (!runtime_autonomous_prompt_enabled(requested_kind)) return false;
+    if (requested_kind == DS4_AGENT_SKILL_BUILTIN_LEAN_POLICY)
+        return runtime_autonomous_fragment_loaded(
+            worker, DS4_AGENT_SKILL_BUILTIN_SAGE_POLICY);
+    if (requested_kind == DS4_AGENT_SKILL_BUILTIN_SAGE_POLICY)
+        return runtime_autonomous_fragment_loaded(
+            worker, DS4_AGENT_SKILL_BUILTIN_LEAN_POLICY);
+    return false;
+}
+
+static bool runtime_dynamic_skills_enabled(void) {
+    const char *value = getenv("DS4_AGENT_DYNAMIC_SKILLS");
+    return !value || strcmp(value, "0") != 0;
+}
+
+static bool runtime_is_agent_mode(ds4_agent_runtime *rt) {
+    if (!rt || !rt->wrapper) return false;
+    pthread_mutex_lock(&rt->wrapper->mu);
+    bool active = rt->wrapper->active_mode == DS4_WRAP_MODE_AGENT;
+    pthread_mutex_unlock(&rt->wrapper->mu);
+    return active;
+}
+
+static char **runtime_skill_builtin_slot(agent_worker *worker,
+                                         ds4_agent_skill_kind kind,
+                                         bool **active) {
+    if (active) *active = NULL;
+    const agent_builtin_skill_descriptor *d = agent_builtin_skill_by_kind(kind);
+    if (!d) return NULL;
+    if (active) *active = agent_builtin_skill_active(worker, d);
+    return agent_builtin_skill_prompt(worker, d);
+}
+
+static bool runtime_skill_state(agent_worker *worker,
+                                const char *name,
+                                ds4_agent_skill_kind kind,
+                                bool *loaded,
+                                size_t *bytes,
+                                char revision[41]) {
+    *loaded = false;
+    *bytes = 0;
+    revision[0] = '\0';
+    if (kind == DS4_AGENT_SKILL_DYNAMIC) {
+        const ds4_agent_skill_entry *entry =
+            ds4_agent_skill_registry_find(&worker->dynamic_skills, name);
+        if (!entry) return true;
+        *loaded = true;
+        *bytes = entry->content_len;
+        memcpy(revision, entry->revision, 41);
+        return true;
+    }
+
+    bool *active = NULL;
+    char **slot = runtime_skill_builtin_slot(worker, kind, &active);
+    if (!slot) return false;
+    *loaded = active ? *active : *slot != NULL;
+    if (!*loaded || !*slot) return true;
+    *bytes = strlen(*slot);
+    ds4_kvstore_sha1_bytes_hex(*slot, *bytes, revision);
+    return true;
+}
+
+static void runtime_default_skills_revise(agent_worker *worker) {
+    char *block = agent_build_default_skills_block(
+        worker->soul_active ? worker->soul_prompt : NULL,
+        worker->ethic_active ? worker->ethic_prompt : NULL,
+        worker->structure_active ? worker->structure_prompt : NULL);
+    if (!block) {
+        worker->default_skills_revision[0] = '\0';
+        return;
+    }
+    ds4_kvstore_sha1_bytes_hex(block, strlen(block),
+                               worker->default_skills_revision);
+    free(block);
+}
+
+
+
+static int runtime_skill_error_status(const char *err) {
+    if (!err) return 500;
+    if (!strncmp(err, "SKILL_NAME_INVALID", 18) ||
+        !strncmp(err, "SKILL_USAGE_INVALID", 19))
+        return 400;
+    if (!strncmp(err, "SKILL_SYMLINK_REJECTED", 22) ||
+        !strncmp(err, "SKILL_PATH_OUTSIDE_ROOT", 23))
+        return 403;
+    if (!strncmp(err, "SKILL_NOT_FOUND", 15) ||
+        !strncmp(err, "SKILL_FRAGMENT_NOT_FOUND", 24))
+        return 404;
+    if (!strncmp(err, "SKILL_FILE_TOO_LARGE", 20) ||
+        !strncmp(err, "SKILL_TOTAL_TOO_LARGE", 21))
+        return 413;
+    if (!strncmp(err, "SKILL_EMPTY", 11) ||
+        !strncmp(err, "SKILL_NUL_BYTE", 14) ||
+        !strncmp(err, "SKILL_UTF8_INVALID", 18) ||
+        !strncmp(err, "SKILL_RESERVED_MARKER", 21) ||
+        !strncmp(err, "SKILL_FILE_INVALID", 18) ||
+        !strncmp(err, "SKILL_FRAGMENT_INVALID", 22) ||
+        !strncmp(err, "SKILL_FRAGMENT_CONFIG_INVALID", 29))
+        return 422;
+    if (!strncmp(err, "SKILL_ACTIVE_LIMIT", 18) ||
+        !strncmp(err, "SKILL_CHANGED_DURING_READ", 25) ||
+        !strncmp(err, "SKILL_SESSION_REVISION_MISMATCH", 31) ||
+        !strncmp(err, "SKILL_ORCHESTRATOR_REQUIRED", 27))
+        return 409;
+    return 500;
+}
+
+static const char *runtime_skill_error_code(const char *err) {
+    static const char *codes[] = {
+        "SKILL_NAME_INVALID", "SKILL_USAGE_INVALID",
+        "SKILL_SYMLINK_REJECTED", "SKILL_PATH_OUTSIDE_ROOT",
+        "SKILL_NOT_FOUND", "SKILL_FILE_TOO_LARGE",
+        "SKILL_TOTAL_TOO_LARGE", "SKILL_EMPTY", "SKILL_NUL_BYTE",
+        "SKILL_UTF8_INVALID", "SKILL_RESERVED_MARKER",
+        "SKILL_FILE_INVALID", "SKILL_ACTIVE_LIMIT",
+        "SKILL_CHANGED_DURING_READ", "SKILL_IO_FAILED",
+        "SKILL_PROMPT_RENDER_FAILED", "SKILL_MANIFEST_IO_FAILED",
+        "SKILL_SESSION_REVISION_MISMATCH",
+        "SKILL_FRAGMENT_INVALID", "SKILL_FRAGMENT_NOT_FOUND",
+        "SKILL_FRAGMENT_CONFIG_INVALID", "SKILL_ORCHESTRATOR_REQUIRED"
+    };
+    for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); i++) {
+        size_t len = strlen(codes[i]);
+        if (err && !strncmp(err, codes[i], len)) return codes[i];
+    }
+    return "SKILL_IO_FAILED";
+}
+
+static int runtime_skill_fail(ds4_agent_command_result *result,
+                              const char *err) {
+    return runtime_command_fail_code(
+        result, runtime_skill_error_status(err),
+        runtime_skill_error_code(err), "%s",
+        err && err[0] ? err : "skill operation failed");
+}
+
+static size_t runtime_skill_active_count(agent_worker *worker) {
+    size_t count = worker->dynamic_skills.len;
+    for (size_t i = 0; i < AGENT_BUILTIN_SKILL_COUNT; i++)
+        if (agent_builtin_skill_loaded(worker, &AGENT_BUILTIN_SKILLS[i]))
+            count++;
+    return count;
+}
+
+static size_t runtime_skill_active_bytes(agent_worker *worker) {
+    size_t total = worker->dynamic_skills.total_bytes;
+    for (size_t i = 0; i < AGENT_BUILTIN_SKILL_COUNT; i++) {
+        const agent_builtin_skill_descriptor *d = &AGENT_BUILTIN_SKILLS[i];
+        if (!agent_builtin_skill_loaded(worker, d)) continue;
+        const char *prompt = *agent_builtin_skill_prompt(worker, d);
+        if (prompt) total += strlen(prompt);
+    }
+    return total;
+}
+
+/* Fallible on purpose: an empty aggregate revision means the session cannot be
+ * serialized, which is a health problem, not a formatting detail. Reporting it
+ * as an empty string next to "Skill lean is active." is how the operator was
+ * left without an explanation (piano-rimedio 2 §12). */
+static bool runtime_skill_aggregate_revision(agent_worker *worker,
+                                             char revision[41],
+                                             char *err,
+                                             size_t err_len) {
+    ds4_agent_skill_manifest manifest;
+    char local_err[128] = {0};
+    if (agent_worker_build_skill_manifest(
+            worker, &manifest, local_err, sizeof(local_err))) {
+        memcpy(revision, manifest.aggregate_revision, 41);
+        if (err && err_len) err[0] = '\0';
+        return true;
+    }
+    revision[0] = '\0';
+    if (err && err_len)
+        snprintf(err, err_len, "%s", local_err[0] ? local_err
+                 : "SKILL_MANIFEST_IO_FAILED: manifest could not be built");
+    return false;
+}
+
+static const char *runtime_skill_action_name(
+    agent_skill_command_action action) {
+    switch (action) {
+    case AGENT_SKILL_CMD_START: return "start";
+    case AGENT_SKILL_CMD_STOP: return "stop";
+    case AGENT_SKILL_CMD_STATUS: return "status";
+    case AGENT_SKILL_CMD_LIST: return "list";
+    default: return "invalid";
+    }
+}
+
+/* Is this skill's session state usable, not merely present?
+ *
+ * For a policy skill "loaded" is not enough: the operational revision must
+ * match the content, or the tool is advertised and then refused. Other kinds
+ * have no second half, so loaded is the whole answer. */
+static bool runtime_skill_coherent(const agent_worker *worker,
+                                   ds4_agent_skill_kind kind,
+                                   bool loaded) {
+    if (kind == DS4_AGENT_SKILL_BUILTIN_LEAN_POLICY)
+        return agent_worker_lean_policy_coherent(worker);
+    return loaded;
+}
+
+static void runtime_skill_set_result(ds4_agent_runtime *rt,
+                                     const agent_skill_command *command,
+                                     ds4_agent_skill_kind kind,
+                                     bool available,
+                                     bool loaded,
+                                     bool changed,
+                                     bool repaired,
+                                     size_t bytes,
+                                     const char *revision,
+                                     ds4_agent_command_result *result) {
+    char aggregate_revision[41];
+    char manifest_err[160] = {0};
+    bool manifest_healthy = runtime_skill_aggregate_revision(
+        &rt->worker, aggregate_revision, manifest_err, sizeof(manifest_err));
+    bool coherent = runtime_skill_coherent(&rt->worker, kind, loaded);
+    /* Operational means the tool can be used *and* the session can be saved:
+     * a broken manifest blocks the next stop or save. */
+    bool operational = loaded && coherent && manifest_healthy;
+    bool fragment_loaded = loaded && runtime_autonomous_fragment_loaded(
+        &rt->worker, kind);
+    bool orchestration_enabled = runtime_autonomous_orchestration_enabled(kind);
+    const char *prompt_mode = !loaded ? "none" :
+        (fragment_loaded ? "autonomous" : "base");
+    result->changed = changed;
+    runtime_command_set_data_json(
+        result,
+        "{\"action\":\"%s\",\"name\":\"%s\",\"kind\":\"%s\","
+        "\"available\":%s,\"loaded\":%s,\"changed\":%s,"
+        "\"coherent\":%s,\"operational\":%s,\"repaired\":%s,"
+        "\"manifestHealthy\":%s,\"degraded\":%s,\"errorCode\":\"%s\","
+        "\"retryable\":%s,"
+        "\"bytes\":%zu,\"revision\":\"%s\",\"active_count\":%zu,"
+        "\"aggregate_revision\":\"%s\","
+        "\"promptMode\":\"%s\",\"fragmentLoaded\":%s,"
+        "\"assembledRevision\":\"%s\",\"orchestrationEnabled\":%s,"
+        "\"finalizationGateEnabled\":%s,"
+        "\"publicationGateEnabled\":%s,\"revalidationEnabled\":%s}",
+        runtime_skill_action_name(command->action), command->name,
+        ds4_agent_skill_kind_name(kind),
+        available ? "true" : "false",
+        loaded ? "true" : "false",
+        changed ? "true" : "false",
+        coherent ? "true" : "false",
+        operational ? "true" : "false",
+        repaired ? "true" : "false",
+        manifest_healthy ? "true" : "false",
+        (loaded && !operational) ? "true" : "false",
+        manifest_healthy ? "" : runtime_skill_error_code(manifest_err),
+        "false",
+        bytes, revision ? revision : "",
+        runtime_skill_active_count(&rt->worker),
+        aggregate_revision,
+        prompt_mode, fragment_loaded ? "true" : "false",
+        revision ? revision : "",
+        orchestration_enabled ? "true" : "false",
+        (kind == DS4_AGENT_SKILL_BUILTIN_LEAN_POLICY &&
+         orchestration_enabled) ? "true" : "false",
+        (kind == DS4_AGENT_SKILL_BUILTIN_SAGE_POLICY &&
+         orchestration_enabled) ? "true" : "false",
+        (kind == DS4_AGENT_SKILL_BUILTIN_SAGE_POLICY &&
+         orchestration_enabled) ? "true" : "false");
+    /* Never say "active" for a state the tool cannot use, and never report an
+     * unsaveable session as healthy. */
+    runtime_command_set_message(
+        result, "Skill %s is %s%s%s%s",
+        command->name,
+        !loaded ? "inactive" : (operational ? "active" : "loaded but not operational"),
+        changed ? " (state changed)" : "",
+        repaired ? " (repaired)" : "",
+        manifest_healthy ? "." : ": the session manifest cannot be built, so "
+                                 "the session cannot be saved.");
+}
+
+static int runtime_skill_view_cmp(const void *a, const void *b) {
+    const runtime_skill_view *left = a;
+    const runtime_skill_view *right = b;
+    return strcmp(left->name, right->name);
+}
+
+static int runtime_skill_list(ds4_agent_runtime *rt,
+                              ds4_agent_command_result *result) {
+    runtime_skill_view views[DS4_AGENT_SKILL_ACTIVE_MAX + 5];
+    size_t count = 0;
+    for (size_t i = 0; i < AGENT_BUILTIN_SKILL_COUNT; i++) {
+        ds4_agent_skill_kind kind = AGENT_BUILTIN_SKILLS[i].kind;
+        runtime_skill_view candidate = {0};
+        snprintf(candidate.name, sizeof(candidate.name), "%s",
+                 AGENT_BUILTIN_SKILLS[i].name);
+        candidate.kind = "builtin";
+        runtime_skill_state(&rt->worker, candidate.name, kind,
+                            &candidate.loaded, &candidate.bytes,
+                            candidate.revision);
+        if (candidate.loaded)
+            views[count++] = candidate;
+    }
+    for (size_t i = 0; i < rt->worker.dynamic_skills.len; i++) {
+        const ds4_agent_skill_entry *entry =
+            &rt->worker.dynamic_skills.items[i];
+        runtime_skill_view *view = &views[count++];
+        memset(view, 0, sizeof(*view));
+        snprintf(view->name, sizeof(view->name), "%s", entry->name);
+        view->kind = "dynamic";
+        view->loaded = true;
+        view->bytes = entry->content_len;
+        memcpy(view->revision, entry->revision, sizeof(view->revision));
+    }
+    qsort(views, count, sizeof(views[0]), runtime_skill_view_cmp);
+
+    agent_buf json = {0};
+    agent_buf_puts(&json, "{\"action\":\"list\",\"active_count\":");
+    char number[64];
+    snprintf(number, sizeof(number), "%zu",
+             runtime_skill_active_count(&rt->worker));
+    agent_buf_puts(&json, number);
+    agent_buf_puts(&json, ",\"aggregate_revision\":\"");
+    char aggregate_revision[41];
+    char list_manifest_err[160] = {0};
+    bool list_manifest_healthy = runtime_skill_aggregate_revision(
+        &rt->worker, aggregate_revision,
+        list_manifest_err, sizeof(list_manifest_err));
+    agent_buf_puts(&json, aggregate_revision);
+    agent_buf_puts(&json, "\",\"manifestHealthy\":");
+    agent_buf_puts(&json, list_manifest_healthy ? "true" : "false");
+    if (!list_manifest_healthy) {
+        agent_buf_puts(&json, ",\"errorCode\":\"");
+        agent_buf_puts(&json, runtime_skill_error_code(list_manifest_err));
+        agent_buf_puts(&json, "\"");
+    }
+    agent_buf_puts(&json, ",\"skills\":[");
+    for (size_t i = 0; i < count; i++) {
+        char item[384];
+        int len = snprintf(
+            item, sizeof(item),
+            "%s{\"name\":\"%s\",\"kind\":\"%s\",\"loaded\":%s,"
+            "\"revision\":\"%s\",\"bytes\":%zu}",
+            i ? "," : "", views[i].name, views[i].kind,
+            views[i].loaded ? "true" : "false",
+            views[i].revision, views[i].bytes);
+        if (len < 0 || (size_t)len >= sizeof(item)) {
+            free(json.ptr);
+            return runtime_command_fail_code(
+                result, 500, "SKILL_IO_FAILED",
+                "failed to serialize skill list");
+        }
+        agent_buf_append(&json, item, (size_t)len);
+    }
+    agent_buf_puts(&json, "]}");
+    free(result->data_json);
+    result->data_json = agent_buf_take(&json);
+    runtime_command_set_message(result, "Active skill state.");
+    return 0;
+}
+
+static bool runtime_skill_apply_staged(ds4_agent_runtime *rt,
+                                       ds4_agent_skill_entry *staged,
+                                       char *err,
+                                       size_t err_len) {
+    if (staged->kind == DS4_AGENT_SKILL_DYNAMIC) {
+        bool changed = false;
+        return ds4_agent_skill_registry_upsert(
+            &rt->worker.dynamic_skills, staged, &changed, err, err_len);
+    }
+    bool *active = NULL;
+    char **slot =
+        runtime_skill_builtin_slot(&rt->worker, staged->kind, &active);
+    if (!slot) {
+        snprintf(err, err_len, "SKILL_IO_FAILED: invalid built-in skill");
+        return false;
+    }
+    free(*slot);
+    *slot = staged->content;
+    staged->content = NULL;
+    if (active) *active = true;
+    /* Policy skills carry an operational revision the tool dispatcher reads.
+     * Derived from the descriptor: the Lean case was originally missing here,
+     * so lean_prompt was set while lean_policy_revision stayed empty and
+     * lean_check answered right after a "successful" /lean start. */
+    const agent_builtin_skill_descriptor *d =
+        agent_builtin_skill_by_kind(staged->kind);
+    if (d) {
+        char *revision = agent_builtin_skill_revision(&rt->worker, d);
+        if (revision)
+            memcpy(revision, staged->revision,
+                   DS4_AGENT_SKILL_REVISION_HEX + 1);
+        if (d->contributes_default_revision)
+            runtime_default_skills_revise(&rt->worker);
+    }
+    /* /lean start is the supported repair for a prompt drift, so it is also what
+     * forgets one: this session now holds whatever is on disk, and the previous
+     * comparison with the server describes text it no longer has (§23.2). */
+    if (staged->kind == DS4_AGENT_SKILL_BUILTIN_LEAN_POLICY)
+        agent_worker_init_lean_contract(&rt->worker);
+    return true;
+}
+
+static bool runtime_skill_remove(ds4_agent_runtime *rt,
+                                 const char *name,
+                                 ds4_agent_skill_kind kind) {
+    if (kind == DS4_AGENT_SKILL_DYNAMIC) {
+        bool changed = false;
+        return ds4_agent_skill_registry_remove(
+            &rt->worker.dynamic_skills, name, &changed);
+    }
+    bool *active = NULL;
+    char **slot = runtime_skill_builtin_slot(&rt->worker, kind, &active);
+    if (!slot) return false;
+    free(*slot);
+    *slot = NULL;
+    if (active) *active = false;
+    /* Stop clears both halves or neither: a leftover revision would keep the
+     * tool looking invocable after the policy is gone. */
+    const agent_builtin_skill_descriptor *d = agent_builtin_skill_by_kind(kind);
+    if (d) {
+        char *revision = agent_builtin_skill_revision(&rt->worker, d);
+        if (revision) revision[0] = '\0';
+        if (d->contributes_default_revision)
+            runtime_default_skills_revise(&rt->worker);
+    }
+    return true;
+}
+
+static int runtime_apply_skill_command(
+    ds4_agent_runtime *rt,
+    const agent_skill_command *command,
+    bool generic_syntax,
+    ds4_agent_command_result *result) {
+    if (generic_syntax && !runtime_dynamic_skills_enabled())
+        return runtime_command_fail_code(
+            result, 409, "DYNAMIC_SKILLS_DISABLED",
+            "Dynamic skills are disabled.");
+    if (!runtime_is_agent_mode(rt))
+        return runtime_command_fail_code(
+            result, 409, "AGENT_MODE_REQUIRED",
+            "The /skill command requires Agent Mode.");
+    if (command->action == AGENT_SKILL_CMD_LIST)
+        return runtime_skill_list(rt, result);
+
+    ds4_agent_skill_kind kind = DS4_AGENT_SKILL_DYNAMIC;
+    agent_skill_builtin_kind_for_name(command->name, &kind);
+    if (command->action == AGENT_SKILL_CMD_START &&
+        runtime_authoritative_math_mode_conflicts(&rt->worker, kind))
+        return runtime_command_fail_code(
+            result, 409, "AUTHORITATIVE_MATH_MODE_CONFLICT",
+            "Lean and Sage autonomous policies cannot be active together.");
+    bool loaded = false;
+    bool same_content = false;
+    bool coherent_now = false;
+    bool repairing = false;
+    size_t bytes = 0;
+    char revision[41] = {0};
+    runtime_skill_state(&rt->worker, command->name, kind,
+                        &loaded, &bytes, revision);
+
+    if (command->action == AGENT_SKILL_CMD_STATUS) {
+        ds4_agent_skill_entry available_entry = {0};
+        char available_err[256] = {0};
+        bool available = runtime_skill_stage_from_disk(
+            agent_skills_dir(), command->name, kind,
+            &available_entry, available_err, sizeof(available_err));
+        ds4_agent_skill_entry_free(&available_entry);
+        runtime_skill_set_result(rt, command, kind, available, loaded,
+                                 false, false, bytes, revision, result);
+        return 0;
+    }
+
+    ds4_agent_skill_entry staged = {0};
+    if (command->action == AGENT_SKILL_CMD_START) {
+        char stage_err[256] = {0};
+        if (!runtime_skill_stage_from_disk(
+                agent_skills_dir(), command->name, kind,
+                &staged, stage_err, sizeof(stage_err))) {
+            rt->skill_load_failure_total++;
+            return runtime_skill_fail(result, stage_err);
+        }
+        /* Same content is not the same state: a session whose policy
+         * revision is missing or stale must be repaired, not reported as an
+         * idempotent success (piano-rimedio 2 §6). */
+        same_content = !strcmp(revision, staged.revision);
+        coherent_now = runtime_skill_coherent(&rt->worker, kind, loaded);
+        if (loaded && same_content && coherent_now) {
+            rt->skill_start_idempotent_total++;
+            /* Idempotent for the policy, not for a recorded drift: the drift is
+             * the memory of one comparison with the server, and the next
+             * lean_check redoes it. Leaving it set would keep /lean preflight
+             * reporting a difference the operator has already acted on (§23.2). */
+            if (kind == DS4_AGENT_SKILL_BUILTIN_LEAN_POLICY)
+                agent_worker_init_lean_contract(&rt->worker);
+            runtime_skill_set_result(
+                rt, command, kind, true, true, false, false,
+                bytes, revision, result);
+            ds4_agent_skill_entry_free(&staged);
+            return 0;
+        }
+        repairing = loaded && same_content && !coherent_now;
+        if (!loaded &&
+            runtime_skill_active_count(&rt->worker) >=
+                DS4_AGENT_SKILL_ACTIVE_MAX) {
+            ds4_agent_skill_entry_free(&staged);
+            return runtime_command_fail_code(
+                result, 409, "SKILL_ACTIVE_LIMIT",
+                "at most 32 skills may be active");
+        }
+        size_t active_bytes = runtime_skill_active_bytes(&rt->worker);
+        size_t replaced = loaded ? bytes : 0;
+        /* Saturating: if accounting ever misses an active skill again, this
+         * must under-report, never wrap into a bogus 16 EiB. */
+        size_t retained_bytes = active_bytes > replaced ? active_bytes - replaced : 0;
+        if (staged.content_len > DS4_AGENT_SKILL_TOTAL_MAX ||
+            retained_bytes >
+                DS4_AGENT_SKILL_TOTAL_MAX - staged.content_len) {
+            ds4_agent_skill_entry_free(&staged);
+            return runtime_command_fail_code(
+                result, 413, "SKILL_TOTAL_TOO_LARGE",
+                "active skills exceed 1 MiB");
+        }
+    } else if (!loaded) {
+        rt->skill_stop_idempotent_total++;
+        runtime_skill_set_result(
+            rt, command, kind, false, false, false, false, 0, "", result);
+        return 0;
+    }
+
+    if (!runtime_command_save_if_dirty(rt, result)) {
+        if (result->message &&
+            strstr(result->message, "SKILL_MANIFEST_IO_FAILED"))
+            rt->skill_manifest_failure_total++;
+        ds4_agent_skill_entry_free(&staged);
+        return -1;
+    }
+
+    char apply_err[256] = {0};
+    bool applied = command->action == AGENT_SKILL_CMD_START
+        ? runtime_skill_apply_staged(rt, &staged,
+                                     apply_err, sizeof(apply_err))
+        : runtime_skill_remove(rt, command->name, kind);
+    ds4_agent_skill_entry_free(&staged);
+    if (!applied) {
+        return runtime_skill_fail(result, apply_err);
+    }
+
+    runtime_skill_state(&rt->worker, command->name, kind,
+                        &loaded, &bytes, revision);
+    runtime_skill_set_result(
+        rt, command, kind,
+        command->action == AGENT_SKILL_CMD_START,
+        loaded, true, repairing, bytes, revision, result);
+    if (command->action == AGENT_SKILL_CMD_START)
+        rt->skill_start_success_total++;
+    else
+        rt->skill_stop_success_total++;
+
+    rt->sysprompt_dirty = true;
+    return 0;
+}
+
+/* Report a boolean the way a preflight reader wants to read it. */
+static const char *runtime_lean_yes_no(const char *json, const char *key) {
+    return agent_json_extract_bool(json, key) ? "yes" : "no";
+}
+
+/* `/lean preflight` — ask the Node side whether the Lean runtime is usable.
+ *
+ * Read-only by construction: it installs nothing and provisions nothing, and it
+ * reports what the server says rather than guessing from the C side, which has
+ * no view of the sandbox or the Lake profiles. */
+static int runtime_command_lean_preflight(ds4_agent_runtime *rt,
+                                          ds4_agent_command_result *result) {
+    int port = rt->cfg.frontend_port;
+    if (port <= 0)
+        return runtime_command_fail_code(
+            result, 503, "LEAN_FRONTEND_UNAVAILABLE",
+            "no frontend port is configured; the Lean runtime cannot be queried "
+            "from the native agent");
+
+    char *body = agent_http_get_local(port, "/api/lean/status", 65536);
+    if (!body)
+        return runtime_command_fail_code(
+            result, 503, "LEAN_HTTP_TRANSPORT_FAILED",
+            "the Lean status endpoint did not answer on port %d", port);
+
+    char *contract = agent_json_extract_string(body, "contractVersion");
+    if (!contract || strcmp(contract, "lean_result_v1")) {
+        free(contract);
+        free(body);
+        return runtime_command_fail_code(
+            result, 502, "LEAN_CONTRACT_UNSUPPORTED",
+            "the Lean status endpoint returned an unexpected payload");
+    }
+    free(contract);
+
+    /* Three separate lines for three separate facts. One "policy matches: no"
+     * was what the operator saw when the server merely had a newer SKILL.md, and
+     * it read as "Lean is broken" (fix-revision-lean §22.2). */
+    char *server_prompt = agent_json_extract_string(body, "policyRevision");
+    char *server_contract = agent_json_extract_string(body, "contractRevision");
+    const char *session_prompt = rt->worker.lean_policy_revision[0]
+        ? rt->worker.lean_policy_revision
+        : "(none)";
+    bool prompt_drift =
+        server_prompt && server_prompt[0] && rt->worker.lean_policy_revision[0] &&
+        strcmp(server_prompt, rt->worker.lean_policy_revision) != 0;
+    bool contract_compatible =
+        server_contract && server_contract[0] &&
+        !strcmp(server_contract, DS4_LEAN_CONTRACT_REVISION);
+
+    /* The status payload nests preflight/profiles; the flat extractor cannot
+     * reach them, so report the top-level verdicts and hand back the raw body
+     * for anything finer. */
+    runtime_command_set_message(
+        result,
+        "Lean preflight:\n"
+        "  feature enabled         : %s\n"
+        "  local prompt loaded     : %s\n"
+        "  local prompt coherent   : %s\n"
+        "  session prompt revision : %.8s\n"
+        "  server prompt revision  : %.8s\n"
+        "  prompt drift            : %s\n"
+        "  prompt drift blocking   : no\n"
+        "  contract revision       : %.8s\n"
+        "  contract compatible     : %s\n"
+        "See data for sandbox and per-profile detail.",
+        runtime_lean_yes_no(body, "enabled"),
+        rt->worker.lean_prompt ? "yes" : "no",
+        agent_worker_lean_policy_coherent(&rt->worker) ? "yes" : "no",
+        session_prompt,
+        (server_prompt && server_prompt[0]) ? server_prompt : "(none)",
+        prompt_drift ? "yes" : "no",
+        rt->worker.lean_contract_revision[0]
+            ? rt->worker.lean_contract_revision
+            : DS4_LEAN_CONTRACT_REVISION,
+        contract_compatible ? "yes"
+                            : (server_contract && server_contract[0] ? "NO" : "unknown"));
+
+    free(result->data_json);
+    result->data_json = body;
+    free(server_prompt);
+    free(server_contract);
+
+    result->ok = true;
+    result->http_status = 200;
+    return 0;
+}
+
+static int runtime_apply_legacy_skill_command(
+    ds4_agent_runtime *rt,
+    const char *name,
+    const char *arg,
+    ds4_agent_command_result *result) {
+    char combined[160];
+    int len = snprintf(combined, sizeof(combined), "%s %s",
+                       name, arg ? arg : "");
+    if (len < 0 || (size_t)len >= sizeof(combined))
+        return runtime_command_fail_code(
+            result, 400, "SKILL_USAGE_INVALID",
+            "invalid legacy skill command");
+    agent_skill_command command = {0};
+    char err[256] = {0};
+    if (!agent_parse_skill_command_arg(
+            combined, &command, err, sizeof(err)))
+        return runtime_skill_fail(result, err);
+    return runtime_apply_skill_command(rt, &command, false, result);
 }
 
 static char *runtime_command_capture_history(ds4_agent_runtime *rt,
@@ -932,11 +1962,17 @@ int ds4_agent_runtime_command(ds4_agent_runtime *rt, const char *command,
             "  /history [N] Show N recent user turns from the current session.\n"
             "  /power N     Set GPU duty cycle percentage, 1..100.\n"
             "  /new         Start a fresh session from the system prompt.\n"
+            "  /skill NAME start|stop|status  Manage an Agent Chat skill.\n"
+            "  /skill list  List skill state.\n"
             "  /metacognition start|stop|status  Manage the metacognition skill.\n"
             "  /soul start|stop|status  Manage the soul skill.\n"
             "  /ethic start|stop|status  Manage the ethic skill.\n"
+            "  /structure start|stop|status  Manage the structure skill.\n"
             "  /sage-pol start|stop|status  Manage the Sage policy skill.\n"
             "  /sage start|stop|status  Manage SageMath and its policy skill.\n"
+            "  /lean start|stop|status|preflight\n"
+            "                          Manage the Lean 4 policy skill; preflight\n"
+            "                          reports whether the runtime is usable.\n"
             "  /quit, /exit Save if needed and return to server mode.");
         break;
 
@@ -1070,215 +2106,62 @@ int ds4_agent_runtime_command(ds4_agent_runtime *rt, const char *command,
                                     parsed.number);
         break;
 
-    case AGENT_SLASH_METACOGNITION: {
-        char *arg = parsed.arg;
-        while (*arg == ' ' || *arg == '\t') arg++;
-        if (!strncmp(arg, "start", 5) &&
-            (arg[5] == '\0' || arg[5] == ' ' || arg[5] == '\t')) {
-            char rerr[256] = {0};
-            char *content = agent_read_metacognition_skill(rerr, sizeof(rerr));
-            if (!content)
-                return runtime_command_fail(result, 404, "%s", rerr);
-            free(rt->worker.metacognition_prompt);
-            rt->worker.metacognition_prompt = content;
-            if (!runtime_command_save_if_dirty(rt, result)) return -1;
-            if (runtime_rebuild_current_system_prompt(rt, rerr, sizeof(rerr)) != 0)
-                return runtime_command_fail(result, 500, "session reset failed: %s",
-                                            rerr[0] ? rerr : "unknown error");
-            runtime_command_set_message(result, "Metacognition skill activated.");
-        } else if (!strncmp(arg, "stop", 4) &&
-                   (arg[4] == '\0' || arg[4] == ' ' || arg[4] == '\t')) {
-            if (!rt->worker.metacognition_prompt)
-                return runtime_command_fail(result, 400,
-                                            "Metacognition skill is not active.");
-            free(rt->worker.metacognition_prompt);
-            rt->worker.metacognition_prompt = NULL;
-            if (!runtime_command_save_if_dirty(rt, result)) return -1;
-            if (runtime_rebuild_current_system_prompt(rt, err, sizeof(err)) != 0)
-                return runtime_command_fail(result, 500, "session reset failed: %s",
-                                            err[0] ? err : "unknown error");
-            runtime_command_set_message(result, "Metacognition skill deactivated.");
-        } else if (!strncmp(arg, "status", 6) &&
-                   (arg[6] == '\0' || arg[6] == ' ' || arg[6] == '\t')) {
-            bool loaded = rt->worker.metacognition_prompt != NULL;
-            runtime_command_set_message(result, "Metacognition skill is %s.",
-                                        loaded ? "active" : "inactive");
-            runtime_command_set_data_json(result, "{\"loaded\":%s}",
-                                          loaded ? "true" : "false");
-        } else {
-            return runtime_command_fail(result, 400,
-                                        "usage: /metacognition start|stop|status");
-        }
+    case AGENT_SLASH_SKILL: {
+        agent_skill_command skill_command = {0};
+        char skill_err[256] = {0};
+        if (!agent_parse_skill_command_arg(
+                parsed.arg, &skill_command,
+                skill_err, sizeof(skill_err)))
+            return runtime_skill_fail(result, skill_err);
+        if (runtime_apply_skill_command(
+                rt, &skill_command, true, result) != 0)
+            return -1;
         break;
     }
 
-    case AGENT_SLASH_SOUL: {
-        char *arg = parsed.arg;
-        while (*arg == ' ' || *arg == '\t') arg++;
-        if (!strncmp(arg, "start", 5) &&
-            (arg[5] == '\0' || arg[5] == ' ' || arg[5] == '\t')) {
-            char rerr[256] = {0};
-            char *content = agent_read_soul_skill(rerr, sizeof(rerr));
-            if (!content)
-                return runtime_command_fail(result, 404, "%s", rerr);
-            free(rt->worker.soul_prompt);
-            rt->worker.soul_prompt = content;
-            if (!runtime_command_save_if_dirty(rt, result)) return -1;
-            if (runtime_rebuild_current_system_prompt(rt, rerr, sizeof(rerr)) != 0)
-                return runtime_command_fail(result, 500, "session reset failed: %s",
-                                            rerr[0] ? rerr : "unknown error");
-            runtime_command_set_message(result, "Soul skill activated.");
-        } else if (!strncmp(arg, "stop", 4) &&
-                   (arg[4] == '\0' || arg[4] == ' ' || arg[4] == '\t')) {
-            if (!rt->worker.soul_prompt)
-                return runtime_command_fail(result, 400,
-                                            "Soul skill is not active.");
-            free(rt->worker.soul_prompt);
-            rt->worker.soul_prompt = NULL;
-            if (!runtime_command_save_if_dirty(rt, result)) return -1;
-            if (runtime_rebuild_current_system_prompt(rt, err, sizeof(err)) != 0)
-                return runtime_command_fail(result, 500, "session reset failed: %s",
-                                            err[0] ? err : "unknown error");
-            runtime_command_set_message(result, "Soul skill deactivated.");
-        } else if (!strncmp(arg, "status", 6) &&
-                   (arg[6] == '\0' || arg[6] == ' ' || arg[6] == '\t')) {
-            bool loaded = rt->worker.soul_prompt != NULL;
-            runtime_command_set_message(result, "Soul skill is %s.",
-                                        loaded ? "active" : "inactive");
-            runtime_command_set_data_json(result, "{\"loaded\":%s}",
-                                          loaded ? "true" : "false");
-        } else {
-            return runtime_command_fail(result, 400,
-                                        "usage: /soul start|stop|status");
-        }
+    case AGENT_SLASH_METACOGNITION:
+        if (runtime_apply_legacy_skill_command(
+                rt, "metacognition", parsed.arg, result) != 0)
+            return -1;
         break;
-    }
 
-    case AGENT_SLASH_ETHIC: {
-        char *arg = parsed.arg;
-        while (*arg == ' ' || *arg == '\t') arg++;
-        if (!strncmp(arg, "start", 5) &&
-            (arg[5] == '\0' || arg[5] == ' ' || arg[5] == '\t')) {
-            char rerr[256] = {0};
-            char *content = agent_read_ethic_skill(rerr, sizeof(rerr));
-            if (!content)
-                return runtime_command_fail(result, 404, "%s", rerr);
-            free(rt->worker.ethic_prompt);
-            rt->worker.ethic_prompt = content;
-            if (!runtime_command_save_if_dirty(rt, result)) return -1;
-            if (runtime_rebuild_current_system_prompt(rt, rerr, sizeof(rerr)) != 0)
-                return runtime_command_fail(result, 500, "session reset failed: %s",
-                                            rerr[0] ? rerr : "unknown error");
-            runtime_command_set_message(result, "Ethic skill activated.");
-        } else if (!strncmp(arg, "stop", 4) &&
-                   (arg[4] == '\0' || arg[4] == ' ' || arg[4] == '\t')) {
-            if (!rt->worker.ethic_prompt)
-                return runtime_command_fail(result, 400,
-                                            "Ethic skill is not active.");
-            free(rt->worker.ethic_prompt);
-            rt->worker.ethic_prompt = NULL;
-            if (!runtime_command_save_if_dirty(rt, result)) return -1;
-            if (runtime_rebuild_current_system_prompt(rt, err, sizeof(err)) != 0)
-                return runtime_command_fail(result, 500, "session reset failed: %s",
-                                            err[0] ? err : "unknown error");
-            runtime_command_set_message(result, "Ethic skill deactivated.");
-        } else if (!strncmp(arg, "status", 6) &&
-                   (arg[6] == '\0' || arg[6] == ' ' || arg[6] == '\t')) {
-            bool loaded = rt->worker.ethic_prompt != NULL;
-            runtime_command_set_message(result, "Ethic skill is %s.",
-                                        loaded ? "active" : "inactive");
-            runtime_command_set_data_json(result, "{\"loaded\":%s}",
-                                          loaded ? "true" : "false");
-        } else {
-            return runtime_command_fail(result, 400,
-                                        "usage: /ethic start|stop|status");
-        }
+    case AGENT_SLASH_SOUL:
+        if (runtime_apply_legacy_skill_command(
+                rt, "soul", parsed.arg, result) != 0)
+            return -1;
         break;
-    }
 
-    case AGENT_SLASH_SAGE_POL: {
-        char *arg = parsed.arg;
-        while (*arg == ' ' || *arg == '\t') arg++;
-        if (!strncmp(arg, "start", 5) &&
-            (arg[5] == '\0' || arg[5] == ' ' || arg[5] == '\t')) {
-            char rerr[256] = {0};
-            char *content = agent_read_sage_skill(rerr, sizeof(rerr));
-            if (!content)
-                return runtime_command_fail(result, 404, "%s", rerr);
-            free(rt->worker.sage_prompt);
-            rt->worker.sage_prompt = content;
-            if (!runtime_command_save_if_dirty(rt, result)) return -1;
-            if (runtime_rebuild_current_system_prompt(rt, rerr, sizeof(rerr)) != 0)
-                return runtime_command_fail(result, 500, "session reset failed: %s",
-                                            rerr[0] ? rerr : "unknown error");
-            runtime_command_set_message(result, "Sage skill activated.");
-        } else if (!strncmp(arg, "stop", 4) &&
-                   (arg[4] == '\0' || arg[4] == ' ' || arg[4] == '\t')) {
-            if (!rt->worker.sage_prompt)
-                return runtime_command_fail(result, 400,
-                                            "Sage skill is not active.");
-            free(rt->worker.sage_prompt);
-            rt->worker.sage_prompt = NULL;
-            if (!runtime_command_save_if_dirty(rt, result)) return -1;
-            if (runtime_rebuild_current_system_prompt(rt, err, sizeof(err)) != 0)
-                return runtime_command_fail(result, 500, "session reset failed: %s",
-                                            err[0] ? err : "unknown error");
-            runtime_command_set_message(result, "Sage skill deactivated.");
-        } else if (!strncmp(arg, "status", 6) &&
-                   (arg[6] == '\0' || arg[6] == ' ' || arg[6] == '\t')) {
-            bool loaded = rt->worker.sage_prompt != NULL;
-            runtime_command_set_message(result, "Sage skill is %s.",
-                                        loaded ? "active" : "inactive");
-            runtime_command_set_data_json(result, "{\"loaded\":%s}",
-                                          loaded ? "true" : "false");
-        } else {
-            return runtime_command_fail(result, 400,
-                                        "usage: /sage-pol start|stop|status");
-        }
+    case AGENT_SLASH_ETHIC:
+        if (runtime_apply_legacy_skill_command(
+                rt, "ethic", parsed.arg, result) != 0)
+            return -1;
         break;
-    }
 
-    case AGENT_SLASH_SAGE: {
-        char *arg = parsed.arg;
-        while (*arg == ' ' || *arg == '\t') arg++;
-        if (!strncmp(arg, "start", 5) &&
-            (arg[5] == '\0' || arg[5] == ' ' || arg[5] == '\t')) {
-            char rerr[256] = {0};
-            char *content = agent_read_sage_skill(rerr, sizeof(rerr));
-            if (!content)
-                return runtime_command_fail(result, 404, "%s", rerr);
-            free(rt->worker.sage_prompt);
-            rt->worker.sage_prompt = content;
-            if (!runtime_command_save_if_dirty(rt, result)) return -1;
-            if (runtime_rebuild_current_system_prompt(rt, rerr, sizeof(rerr)) != 0)
-                return runtime_command_fail(result, 500, "session reset failed: %s",
-                                            rerr[0] ? rerr : "unknown error");
-            runtime_command_set_message(result, "Sage skill activated.");
-        } else if (!strncmp(arg, "stop", 4) &&
-                   (arg[4] == '\0' || arg[4] == ' ' || arg[4] == '\t')) {
-            if (!rt->worker.sage_prompt)
-                return runtime_command_fail(result, 400,
-                                            "Sage skill is not active.");
-            free(rt->worker.sage_prompt);
-            rt->worker.sage_prompt = NULL;
-            if (!runtime_command_save_if_dirty(rt, result)) return -1;
-            if (runtime_rebuild_current_system_prompt(rt, err, sizeof(err)) != 0)
-                return runtime_command_fail(result, 500, "session reset failed: %s",
-                                            err[0] ? err : "unknown error");
-            runtime_command_set_message(result, "Sage skill deactivated.");
-        } else if (!strncmp(arg, "status", 6) &&
-                   (arg[6] == '\0' || arg[6] == ' ' || arg[6] == '\t')) {
-            bool loaded = rt->worker.sage_prompt != NULL;
-            runtime_command_set_message(result, "Sage skill is %s.",
-                                        loaded ? "active" : "inactive");
-            runtime_command_set_data_json(result, "{\"loaded\":%s}",
-                                          loaded ? "true" : "false");
-        } else {
-            return runtime_command_fail(result, 400,
-                                        "usage: /sage start|stop|status");
-        }
+    case AGENT_SLASH_STRUCTURE:
+        if (runtime_apply_legacy_skill_command(
+                rt, "structure", parsed.arg, result) != 0)
+            return -1;
         break;
-    }
+
+    case AGENT_SLASH_SAGE_POL:
+    case AGENT_SLASH_SAGE:
+        if (runtime_apply_legacy_skill_command(
+                rt, "sage", parsed.arg, result) != 0)
+            return -1;
+        break;
+
+    case AGENT_SLASH_LEAN:
+        /* preflight is a Lean-only verb: it asks the Node side about the
+         * runtime rather than touching the policy, so it cannot go through the
+         * generic start|stop|status skill parser. */
+        if (parsed.arg[0] && !strcmp(parsed.arg, "preflight")) {
+            if (runtime_command_lean_preflight(rt, result) != 0) return -1;
+            break;
+        }
+        if (runtime_apply_legacy_skill_command(
+                rt, "lean", parsed.arg, result) != 0)
+            return -1;
+        break;
 
     case AGENT_SLASH_NEW:
         if (!runtime_command_save_if_dirty(rt, result)) return -1;

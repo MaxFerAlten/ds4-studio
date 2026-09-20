@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { DEFAULT_CONFIG, REQUEST_DEFAULTS } from "./defaultConfig.mjs";
 import { mergeResearchConfig, validateResearchConfig } from "./research/researchConfig.mjs";
 import { AGENT_TOOL_NAMES } from "./agentToolCatalog.mjs";
+import { LEGACY_SEMANTIC_ENV_KEYS, normalizeLegacySemanticEnv } from "./semanticConfig.mjs";
 
 export { buildDs4Args } from "./commandBuilder.mjs";
 
@@ -93,6 +94,10 @@ async function readJsonIfExists(configPath) {
 }
 
 export function mergeConfig(input = {}) {
+  // Old files still carry the six Lean/Sage switches as server.env strings.
+  // Migrating here means load, save and the API request merge all see the same
+  // typed shape.
+  input = normalizeLegacySemanticEnv(input);
   const serverInput = input.server || {};
   const serverEnvInput =
     serverInput.env && typeof serverInput.env === "object" && !Array.isArray(serverInput.env)
@@ -164,6 +169,42 @@ export function mergeConfig(input = {}) {
         ? input.contextWiki
         : {})
     },
+    lean: (() => {
+      const inputLean =
+        input.lean && typeof input.lean === "object" && !Array.isArray(input.lean)
+          ? input.lean
+          : {};
+      const inputOrchestration =
+        inputLean.orchestration && typeof inputLean.orchestration === "object" &&
+        !Array.isArray(inputLean.orchestration)
+          ? inputLean.orchestration
+          : {};
+      return {
+        ...DEFAULT_CONFIG.lean,
+        ...inputLean,
+        // Merged per-key: a file that overrides only maxAttempts must not drop
+        // the rest of the budget onto undefined.
+        orchestration: { ...DEFAULT_CONFIG.lean.orchestration, ...inputOrchestration }
+      };
+    })(),
+    sage: (() => {
+      const inputSage =
+        input.sage && typeof input.sage === "object" && !Array.isArray(input.sage)
+          ? input.sage
+          : {};
+      const inputOrchestration =
+        inputSage.orchestration && typeof inputSage.orchestration === "object" &&
+        !Array.isArray(inputSage.orchestration)
+          ? inputSage.orchestration
+          : {};
+      return {
+        ...DEFAULT_CONFIG.sage,
+        ...inputSage,
+        // Merged per-key, like lean: overriding one phase budget must not drop
+        // the others onto undefined.
+        orchestration: { ...DEFAULT_CONFIG.sage.orchestration, ...inputOrchestration }
+      };
+    })(),
     agno: (() => {
       const inputAgno =
         input.agno && typeof input.agno === "object" && !Array.isArray(input.agno)
@@ -193,8 +234,75 @@ export function mergeConfig(input = {}) {
           ...inputAgnoTools
         }
       };
+    })(),
+    // Without this block the whole `agent` key was dropped on every merge, so
+    // DEFAULT_CONFIG.agent.nativeChatTimeoutMs never reached the server and the
+    // native-stream watchdog in index.mjs armed with Infinity, i.e. never.
+    // epistemic merges per-key like lean.orchestration below it: a partial
+    // update that flips `mode` must not wipe its sibling limits.
+    agent: (() => {
+      const inputAgent = isPlainObject(input.agent) ? input.agent : {};
+      const inputEpistemic = isPlainObject(inputAgent.epistemic) ? inputAgent.epistemic : {};
+      return {
+        ...DEFAULT_CONFIG.agent,
+        ...inputAgent,
+        epistemic: {
+          ...DEFAULT_CONFIG.agent.epistemic,
+          ...inputEpistemic
+        }
+      };
     })()
   };
+}
+
+/**
+ * Merge an API request body over the config currently in memory.
+ *
+ * Every nested block a partial update can touch is merged per-key, otherwise a
+ * UI panel that posts one field wipes its siblings. mergeConfig() has the last
+ * word so an API save normalizes exactly like load and save do.
+ *
+ * @param {object} current - the config in memory.
+ * @param {object} [body] - the request body.
+ */
+export function mergeRequestOverConfig(current, body = {}) {
+  const base = isPlainObject(current) ? current : {};
+  const patch = isPlainObject(body) ? body : {};
+  const block = (key) => ({ ...base[key], ...(isPlainObject(patch[key]) ? patch[key] : {}) });
+  return mergeConfig({
+    ...base,
+    ...patch,
+    server: {
+      ...base.server,
+      ...(isPlainObject(patch.server) ? patch.server : {}),
+      env: { ...base.server?.env, ...(isPlainObject(patch.server?.env) ? patch.server.env : {}) }
+    },
+    control: block("control"),
+    history: block("history"),
+    wrapper: block("wrapper"),
+    contextWiki: block("contextWiki"),
+    lean: {
+      ...block("lean"),
+      orchestration: {
+        ...base.lean?.orchestration,
+        ...(isPlainObject(patch.lean?.orchestration) ? patch.lean.orchestration : {})
+      }
+    },
+    sage: {
+      ...block("sage"),
+      orchestration: {
+        ...base.sage?.orchestration,
+        ...(isPlainObject(patch.sage?.orchestration) ? patch.sage.orchestration : {})
+      }
+    },
+    agent: {
+      ...block("agent"),
+      epistemic: {
+        ...base.agent?.epistemic,
+        ...(isPlainObject(patch.agent?.epistemic) ? patch.agent.epistemic : {})
+      }
+    }
+  });
 }
 
 function validateCallDebug(callDebug = {}) {
@@ -328,7 +436,7 @@ function validateOptionalEnvTokens(env, key, label, min, max) {
 }
 
 export function validateConfig(config) {
-  const errors = { control: {}, history: {}, server: {}, wrapper: {}, requestDefaults: {}, research: {}, evolution: {}, callDebug: {}, pageAgent: {}, agno: {} };
+  const errors = { control: {}, history: {}, server: {}, wrapper: {}, requestDefaults: {}, research: {}, evolution: {}, callDebug: {}, pageAgent: {}, agno: {}, lean: {}, sage: {}, contextWiki: {}, agent: {} };
   if (!validatePort(config.control.port)) errors.control.port = "must be between 1 and 65535";
   if (!validatePort(config.server.port)) errors.server.port = "must be between 1 and 65535";
   if (!config.control.host) errors.control.host = "is required";
@@ -387,6 +495,12 @@ export function validateConfig(config) {
     errors.server.env = "must be an object";
   } else {
     for (const [key, value] of Object.entries(config.server.env)) {
+      // A valid legacy switch is migrated away by normalizeLegacySemanticEnv;
+      // whatever is still here is a value it could not parse.
+      if (LEGACY_SEMANTIC_ENV_KEYS.has(key)) {
+        errors.server.env = `${key} must be configured through the typed Lean/Sage fields`;
+        break;
+      }
       if (!SERVER_ENV_KEYS.has(key) && !DS4_ENV_KEY.test(key)) {
         errors.server.env = `unsupported env key: ${key}`;
         break;
@@ -547,6 +661,147 @@ export function validateConfig(config) {
   if (typeof pa.allowExternalDomains !== "boolean") errors.pageAgent.allowExternalDomains = "must be boolean";
   if (!Array.isArray(pa.allowedOrigins) || pa.allowedOrigins.some(o => typeof o !== "string")) errors.pageAgent.allowedOrigins = "must be an array of strings";
   if (typeof pa.auditDir !== "string" || !pa.auditDir.trim()) errors.pageAgent.auditDir = "is required";
+  // Lean validation. This is the file layer of the env > config JSON > default
+  // precedence the control plane applies in index.mjs; machine-specific paths
+  // (runtimeRoot, runsRoot) deliberately stay out of the JSON schema.
+  const lean = config.lean || {};
+  if (typeof lean.enabled !== "boolean") errors.lean.enabled = "must be boolean";
+  if (typeof lean.policyAuto !== "boolean") errors.lean.policyAuto = "must be boolean";
+  if (lean.defaultProfile !== "core" && lean.defaultProfile !== "mathlib") {
+    errors.lean.defaultProfile = "must be 'core' or 'mathlib'";
+  }
+  // Orchestration budget: shape only. The range clamp lives in
+  // resolveLeanOrchestrationConfig, which is also the env layer.
+  const leanOrchestration = lean.orchestration || {};
+  if (typeof leanOrchestration !== "object" || Array.isArray(leanOrchestration)) {
+    errors.lean.orchestration = "must be an object";
+  } else {
+    for (const key of ["maxAttempts", "maxSameFailure", "maxPrematureFinalizations", "maxWallClockMs"]) {
+      const value = leanOrchestration[key];
+      if (value !== undefined && !Number.isInteger(value)) {
+        errors.lean.orchestration = `${key} must be an integer`;
+      }
+    }
+    for (const key of ["enabled", "prompt"]) {
+      const value = leanOrchestration[key];
+      if (value !== undefined && typeof value !== "boolean") {
+        errors.lean.orchestration = `${key} must be boolean`;
+      }
+    }
+  }
+  // Sage orchestration budget: shape only, like lean. The ranges and the
+  // "phase budgets must fit the call ceiling" rule live in
+  // resolveSageOrchestrationConfig, which is also the env layer.
+  const sage = config.sage || {};
+  if (sage.policyAuto !== undefined && typeof sage.policyAuto !== "boolean") {
+    errors.sage.policyAuto = "must be boolean";
+  }
+  const sageOrchestration = sage.orchestration || {};
+  if (typeof sageOrchestration !== "object" || Array.isArray(sageOrchestration)) {
+    errors.sage.orchestration = "must be an object";
+  } else {
+    for (const key of [
+      "maxComputeAttempts",
+      "maxRepairAttempts",
+      "maxValidationAttempts",
+      "maxPlotAttempts",
+      "maxPrematureFinalizations",
+      "maxSameFailure",
+      "maxWallClockMs",
+      "maxTotalToolCalls"
+    ]) {
+      const value = sageOrchestration[key];
+      if (value !== undefined && !Number.isInteger(value)) {
+        errors.sage.orchestration = `${key} must be an integer`;
+      }
+    }
+    for (const key of ["enabled", "prompt"]) {
+      const value = sageOrchestration[key];
+      if (value !== undefined && typeof value !== "boolean") {
+        errors.sage.orchestration = `${key} must be boolean`;
+      }
+    }
+  }
+  // ContextWiki: the nine knobs are typed JSON now, so the JSON layer has to
+  // reject what readContextConfig would otherwise have to guess about. Only
+  // positivity and soft <= hard, i.e. exactly what the runtime already applies.
+  const contextWiki = config.contextWiki || {};
+  if (typeof contextWiki !== "object" || Array.isArray(contextWiki)) {
+    errors.contextWiki.contextWiki = "must be an object";
+  } else {
+    for (const key of ["enabled", "previewOnly", "deltaRequired", "telemetry"]) {
+      const value = contextWiki[key];
+      if (value !== undefined && typeof value !== "boolean") {
+        errors.contextWiki[key] = "must be boolean";
+      }
+    }
+    for (const key of ["softTokens", "hardTokens", "maxGrowthPct", "maxEvidence", "maxLedgerEvents"]) {
+      const value = contextWiki[key];
+      if (value !== undefined && !isPositiveInt(value)) {
+        errors.contextWiki[key] = "must be a positive integer";
+      }
+    }
+    if (
+      isPositiveInt(contextWiki.softTokens) &&
+      isPositiveInt(contextWiki.hardTokens) &&
+      Number(contextWiki.softTokens) > Number(contextWiki.hardTokens)
+    ) {
+      errors.contextWiki.softTokens = "must not exceed hardTokens";
+    }
+  }
+  {
+    // index.mjs reads config.agent?.nativeChatTimeoutMs and treats 0 (and a
+    // missing value) as "no deadline", so 0 stays legal and only a value that
+    // would arm a nonsense timer is rejected. NaN or a negative number would
+    // reach setTimeout and fire immediately, killing every native stream.
+    //
+    // The upper bound is 7200000, not the 600000 the Quantum Fix plan §23.4
+    // suggests: a live Cauchy proof turn was still generating after 900s, so a
+    // 10-minute ceiling would make a legitimate long proof unconfigurable.
+    const nativeChatTimeoutMs = config.agent?.nativeChatTimeoutMs;
+    if (
+      nativeChatTimeoutMs !== 0 &&
+      (!Number.isInteger(nativeChatTimeoutMs) ||
+        nativeChatTimeoutMs < 1000 ||
+        nativeChatTimeoutMs > 7_200_000)
+    ) {
+      errors.agent.nativeChatTimeoutMs = "must be 0 (disabled) or between 1000 and 7200000";
+    }
+
+    const ep = config.agent?.epistemic;
+    if (!isPlainObject(ep)) {
+      errors.agent.epistemic = "must be an object";
+    } else {
+      for (const key of [
+        "enabled",
+        "withholdOutput",
+        "verifyCitations",
+        "verifyMath",
+        "verifyExecutionClaims",
+        "verifyChallenges",
+        "strictRepair",
+        "persistSessionClaims"
+      ]) {
+        if (typeof ep[key] !== "boolean") errors.agent[`epistemic.${key}`] = "must be boolean";
+      }
+      if (!["off", "shadow", "block"].includes(ep.mode)) {
+        errors.agent["epistemic.mode"] = "must be 'off', 'shadow' or 'block'";
+      }
+      const range = (key, min, max) => {
+        const value = ep[key];
+        if (!Number.isInteger(value) || value < min || value > max) {
+          errors.agent[`epistemic.${key}`] = `must be an integer between ${min} and ${max}`;
+        }
+      };
+      range("maxClaimsPerTurn", 1, 256);
+      range("maxVerifierCallsPerTurn", 0, 128);
+      range("maxRepairRounds", 0, 8);
+      // blockSeverity is the threshold at or above which the gate blocks, so 0
+      // means "block everything" and 5 means "block nothing below the top
+      // class". Both ends are meaningful; neither is a disabled sentinel.
+      range("blockSeverity", 0, 5);
+    }
+  }
   const ok =
     Object.keys(errors.control).length === 0 &&
     Object.keys(errors.history).length === 0 &&
@@ -558,7 +813,11 @@ export function validateConfig(config) {
     Object.keys(errors.callDebug).length === 0 &&
     Object.keys(errors.toolBlobs).length === 0 &&
     Object.keys(errors.pageAgent).length === 0 &&
-    Object.keys(errors.agno).length === 0;
+    Object.keys(errors.agno).length === 0 &&
+    Object.keys(errors.lean).length === 0 &&
+    Object.keys(errors.sage).length === 0 &&
+    Object.keys(errors.contextWiki).length === 0 &&
+    Object.keys(errors.agent).length === 0;
   return { ok, errors };
 }
 

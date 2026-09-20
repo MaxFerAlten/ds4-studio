@@ -6,6 +6,7 @@ import {
   analyzeChunkPlan,
   estimateAgentMessagesTokens,
   maxAgentTotalTokens,
+  agentBudgetEnabled,
   maxAnalyzeChunks,
   readPositiveIntEnv
 } from "./costLimits.mjs";
@@ -70,4 +71,18 @@ test("flags agent token budget by estimate or backend totals", () => {
   );
   assert.equal(overUsage.exceeded, true);
   assert.equal(overUsage.reason, "backend_usage");
+});
+
+test("the agent token budget is off unless asked for", () => {
+  // A cumulative-spend cap is meaningless for local inference and used to stop
+  // legitimate work; re-arming it is opt-in, for endpoints that bill.
+  assert.equal(maxAgentTotalTokens({}), Infinity);
+  assert.equal(agentBudgetEnabled({}), false);
+  assert.equal(agentBudgetStatus([{ role: "user", content: "x".repeat(4_000_000) }],
+                                 { total_tokens: 50_000_000 },
+                                 maxAgentTotalTokens({})).exceeded, false);
+
+  assert.equal(agentBudgetEnabled({ DS4_AGENT_MAX_TOTAL_TOKENS: "4096" }), true);
+  assert.equal(agentBudgetStatus([], { total_tokens: 5000 },
+                                 maxAgentTotalTokens({ DS4_AGENT_MAX_TOTAL_TOKENS: "4096" })).exceeded, true);
 });

@@ -1,0 +1,242 @@
+# Makefile.studio - DS4 Studio build. The upstream Makefile is included, never
+# edited. This file is an overlay_file of ds4-overlay's studio-app-layer feature
+# and only exists inside a composed shadow tree:
+#
+#   ds4-overlay/scripts/overlayctl.py compose
+#   make -C <shadow> -f Makefile.overlay overlay-strix-halo-wrapper
+#
+# (`GPU_BACKEND=rocm` does not exist: it falls through to the CUDA rule and
+# dies on a missing nvcc. ROCm is selected by Makefile.overlay's overrides.)
+#
+# Layering:
+#
+#   ds4_agent.c / ds4_server.c      antirez upstream, pristine (and stays so in
+#        |                          the shadow: the engine binaries build from it)
+#        |  copied to studio/, then patches/studio/*.patch, strict
+#        v
+#   <shadow>/studio/ds4_*.c         patched at compose time
+#        v
+#   ds4_*_runtime.c                 base adapter (textual include)
+#        v
+#   studio/ds4_*_ext.c              Studio policy / decorator
+#        v
+#   ds4_wrapper                     Studio entry point
+#
+# Studio's edits used to be applied here, at make time, by a second tool
+# (studio/studio_overlay.py over .ops files). They are now ordinary overlay
+# patches, applied once by the same fail-closed applier as the engine's.
+
+STUDIO_DIR       := studio
+
+# Studio-edited copies, placed and patched by the compose step. The shadow's
+# own ds4_agent.c / ds4_server.c stay upstream's: Makefile.overlay builds
+# ds4-agent and ds4-server from them.
+STUDIO_AGENT_SRC  := $(STUDIO_DIR)/ds4_agent.c
+STUDIO_SERVER_SRC := $(STUDIO_DIR)/ds4_server.c
+
+# Outside a composed shadow ds4_agent.c is antirez's pristine file, and this
+# makefile would build a wrapper with none of Studio's 148 edits -- linking
+# fine, and silently wrong. Refuse instead.
+ifeq ($(wildcard ../compose.json),)
+$(error Makefile.studio builds only inside a composed ds4-overlay shadow tree \
+  (run ds4-overlay/scripts/overlayctl.py compose, then make in the shadow))
+endif
+ifneq ($(shell test -f $(STUDIO_AGENT_SRC) && ! test -L $(STUDIO_AGENT_SRC) && echo ok),ok)
+$(error $(STUDIO_AGENT_SRC) is missing: the studio-app-layer feature is not \
+  applied, so the wrapper would lack Studio's edits)
+endif
+
+include Makefile
+
+# -I. matters because the Studio sources compile from studio/ while still
+# including the project headers by their bare names; -Istudio finds the
+# extension layer's headers.
+CFLAGS += -I. -I$(STUDIO_DIR)
+
+.PHONY: clean-studio wrapper-status test-studio
+
+# -----------------------------------------------------------------------------
+# Studio object sets.
+# -----------------------------------------------------------------------------
+BUF_OBJS := buf.o
+AGENT_CUSTOM_OBJS := ds4_agent_protocol_guard.o ds4_agent_epistemic.o \
+                     ds4_agent_skill_registry.o ds4_crawl_client.o \
+                     ds4_crawl_grounding.o ds4_context_blob.o \
+                     ds4_tool_compress.o $(BUF_OBJS)
+STUDIO_EXT_OBJS := ds4_server_ext.o ds4_agent_ext.o
+WRAPPER_OBJS := ds4_wrapper.o ds4_wrapper_config.o ds4_wrapper_state.o \
+                ds4_wrapper_http.o ds4_wrapper_metrics.o \
+                ds4_server_runtime.o ds4_agent_runtime.o $(STUDIO_EXT_OBJS) \
+                ds4_agent_session_store.o $(AGENT_CUSTOM_OBJS) \
+                ds4_help.o ds4_prompt_prefix.o ds4_gpu_args.o ds4_web.o \
+                ds4_kvstore.o linenoise.o rax.o
+
+# The wrapper is an optional Studio subsystem: some snapshots do not carry the
+# runtime layer at all, and aggregate GPU targets must not fail merely because
+# an optional delta is absent.
+WRAPPER_REQUIRED_FILES := \
+    ds4_wrapper.c ds4_wrapper.h \
+    ds4_wrapper_config.c ds4_wrapper_config.h \
+    ds4_wrapper_state.c ds4_wrapper_state.h \
+    ds4_wrapper_http.c ds4_wrapper_http.h \
+    ds4_wrapper_metrics.c ds4_wrapper_metrics.h \
+    ds4_server_runtime.c ds4_server_runtime.h \
+    ds4_agent_runtime.c ds4_agent_runtime.h \
+    ds4_agent_session_store.c ds4_agent_session_store.h \
+    $(STUDIO_DIR)/ds4_server_ext.c $(STUDIO_DIR)/ds4_server_ext.h \
+    $(STUDIO_DIR)/ds4_agent_ext.c $(STUDIO_DIR)/ds4_agent_ext.h
+WRAPPER_MISSING_FILES := $(filter-out $(wildcard $(WRAPPER_REQUIRED_FILES)),$(WRAPPER_REQUIRED_FILES))
+WRAPPER_TARGET := $(if $(strip $(WRAPPER_MISSING_FILES)),,ds4-wrapper)
+
+wrapper-status:
+	@if [ -z "$(strip $(WRAPPER_MISSING_FILES))" ]; then \
+		echo "ds4-wrapper: available"; \
+	else \
+		echo "ds4-wrapper: unavailable in this source snapshot"; \
+		echo "missing: $(WRAPPER_MISSING_FILES)"; \
+	fi
+
+# -----------------------------------------------------------------------------
+# Generated orchestration policy headers. The JSON files stay the source of
+# truth so native and Node orchestration cannot silently drift.
+# -----------------------------------------------------------------------------
+generated/lean_orchestration_policy.h: config/lean-orchestration-policy.json scripts/generate-lean-orchestration-policy.mjs
+	node scripts/generate-lean-orchestration-policy.mjs
+
+generated/sage_orchestration_policy.h: config/sage-orchestration-policy.json scripts/generate-sage-orchestration-policy.mjs
+	node scripts/generate-sage-orchestration-policy.mjs
+
+generated/lean_contract_policy.h generated/lean-contract-policy.json: config/lean-contract-policy.json scripts/generate-lean-contract-policy.mjs
+	node scripts/generate-lean-contract-policy.mjs
+
+generated/agent_loop_policy.h generated/agent-loop-policy.json: config/agent-loop-policy.json scripts/generate-agent-loop-policy.mjs
+	node scripts/generate-agent-loop-policy.mjs
+
+ORCH_POLICY_HEADERS := generated/lean_orchestration_policy.h \
+                       generated/sage_orchestration_policy.h \
+                       generated/lean_contract_policy.h generated/lean-contract-policy.json \
+                       generated/agent_loop_policy.h generated/agent-loop-policy.json
+
+# -----------------------------------------------------------------------------
+# Studio integration objects.
+# -----------------------------------------------------------------------------
+buf.o: buf.c buf.h
+	$(CC) $(CFLAGS) -c -o $@ buf.c
+
+ds4_crawl_client.o: ds4_crawl_client.c ds4_crawl_client.h
+	$(CC) $(CFLAGS) -c -o $@ ds4_crawl_client.c
+
+ds4_crawl_grounding.o: ds4_crawl_grounding.c ds4_crawl_grounding.h
+	$(CC) $(CFLAGS) -c -o $@ ds4_crawl_grounding.c
+
+ds4_agent_protocol_guard.o: ds4_agent_protocol_guard.c ds4_agent_protocol_guard.h buf.h ds4_context_blob.h $(ORCH_POLICY_HEADERS)
+	$(CC) $(CFLAGS) -c -o $@ ds4_agent_protocol_guard.c
+
+ds4_agent_epistemic.o: ds4_agent_epistemic.c ds4_agent_epistemic.h
+	$(CC) $(CFLAGS) -c -o $@ ds4_agent_epistemic.c
+
+ds4_agent_skill_registry.o: ds4_agent_skill_registry.c ds4_agent_skill_registry.h ds4_kvstore.h
+	$(CC) $(CFLAGS) -c -o $@ ds4_agent_skill_registry.c
+
+ds4_context_blob.o: ds4_context_blob.c ds4_context_blob.h
+	$(CC) $(CFLAGS) -c -o $@ ds4_context_blob.c
+
+ds4_tool_compress.o: ds4_tool_compress.c ds4_tool_compress.h ds4_context_blob.h
+	$(CC) $(CFLAGS) -c -o $@ ds4_tool_compress.c
+
+# -----------------------------------------------------------------------------
+# Extension (decorator) layer. Depends only on the runtime headers, so it does
+# not pay for the monolith rebuild.
+# -----------------------------------------------------------------------------
+ds4_server_ext.o: $(STUDIO_DIR)/ds4_server_ext.c $(STUDIO_DIR)/ds4_server_ext.h ds4_server_runtime.h ds4_wrapper.h
+	$(CC) $(CFLAGS) -c -o $@ $(STUDIO_DIR)/ds4_server_ext.c
+
+ds4_agent_ext.o: $(STUDIO_DIR)/ds4_agent_ext.c $(STUDIO_DIR)/ds4_agent_ext.h ds4_agent_runtime.h ds4_wrapper.h
+	$(CC) $(CFLAGS) -c -o $@ $(STUDIO_DIR)/ds4_agent_ext.c
+
+# -----------------------------------------------------------------------------
+# Wrapper objects.
+# -----------------------------------------------------------------------------
+ds4_wrapper.o: ds4_wrapper.c ds4_wrapper.h ds4_wrapper_config.h ds4_wrapper_state.h ds4_wrapper_http.h $(STUDIO_DIR)/ds4_server_ext.h $(STUDIO_DIR)/ds4_agent_ext.h
+	$(CC) $(CFLAGS) -c -o $@ ds4_wrapper.c
+
+ds4_wrapper_config.o: ds4_wrapper_config.c ds4_wrapper_config.h
+	$(CC) $(CFLAGS) -c -o $@ ds4_wrapper_config.c
+
+ds4_wrapper_state.o: ds4_wrapper_state.c ds4_wrapper_state.h ds4_wrapper.h ds4_wrapper_config.h ds4_agent_session_store.h $(STUDIO_DIR)/ds4_agent_ext.h
+	$(CC) $(CFLAGS) -c -o $@ ds4_wrapper_state.c
+
+ds4_wrapper_http.o: ds4_wrapper_http.c ds4_wrapper_http.h ds4_wrapper_metrics.h ds4_wrapper_state.h $(STUDIO_DIR)/ds4_server_ext.h $(STUDIO_DIR)/ds4_agent_ext.h
+	$(CC) $(CFLAGS) -c -o $@ ds4_wrapper_http.c
+
+ds4_wrapper_metrics.o: ds4_wrapper_metrics.c ds4_wrapper_metrics.h ds4_default_skills.h $(STUDIO_DIR)/ds4_server_ext.h $(STUDIO_DIR)/ds4_agent_ext.h
+	$(CC) $(CFLAGS) -c -o $@ ds4_wrapper_metrics.c
+
+ds4_agent_session_store.o: ds4_agent_session_store.c ds4_agent_session_store.h ds4.h ds4_kvstore.h
+	$(CC) $(CFLAGS) -c -o $@ ds4_agent_session_store.c
+
+# -----------------------------------------------------------------------------
+# Runtime objects. These textually include the (overlaid) upstream monolith, so
+# the generated source is an explicit prerequisite: a changed upstream must
+# rebuild the runtime, which the upstream Makefile has no way to know.
+# -----------------------------------------------------------------------------
+ds4_server_runtime.o: ds4_server_runtime.c ds4_server_runtime.h ds4_wrapper.h ds4.h ds4_kvstore.h ds4_default_skills.h $(STUDIO_SERVER_SRC) $(STUDIO_DIR)/ds4_upstream_compat.h
+	$(CC) $(CFLAGS) -Wno-unused-function -DDS4_SERVER_UPSTREAM_SRC='"$(STUDIO_SERVER_SRC)"' -c -o $@ ds4_server_runtime.c
+
+ds4_agent_runtime.o: ds4_agent_runtime.c ds4_agent_runtime.h ds4_wrapper.h ds4_agent_session_store.h ds4_agent_skill_registry.h ds4_agent_protocol_guard.h ds4_agent_epistemic.h ds4.h ds4_ssd.h ds4_distributed.h ds4_tp.h ds4_help.h ds4_prompt_prefix.h ds4_kvstore.h ds4_web.h ds4_crawl_client.h ds4_crawl_grounding.h ds4_context_blob.h ds4_tool_compress.h ds4_default_skills.h $(STUDIO_AGENT_SRC) $(STUDIO_DIR)/ds4_upstream_compat.h $(ORCH_POLICY_HEADERS)
+	$(CC) $(CFLAGS) -Wno-unused-function -DDS4_AGENT_UPSTREAM_SRC='"$(STUDIO_AGENT_SRC)"' -c -o $@ ds4_agent_runtime.c
+
+# -----------------------------------------------------------------------------
+# Standalone binaries built from the overlaid sources rather than raw upstream.
+# These recipes deliberately override the upstream ones (make warns; that is the
+# intended signal that Studio is redirecting the source).
+# -----------------------------------------------------------------------------
+ds4_agent.o: $(STUDIO_AGENT_SRC) ds4.h ds4_ssd.h ds4_distributed.h ds4_tp.h ds4_help.h ds4_prompt_prefix.h ds4_kvstore.h ds4_web.h ds4_agent_epistemic.h ds4_agent_skill_registry.h ds4_context_blob.h ds4_tool_compress.h ds4_crawl_client.h ds4_crawl_grounding.h linenoise.h $(ORCH_POLICY_HEADERS)
+	$(CC) $(CFLAGS) -Wno-unused-function -c -o $@ $(STUDIO_AGENT_SRC)
+
+ds4_agent_cpu.o: $(STUDIO_AGENT_SRC) ds4.h ds4_ssd.h ds4_distributed.h ds4_help.h ds4_prompt_prefix.h ds4_kvstore.h ds4_web.h ds4_agent_epistemic.h ds4_agent_skill_registry.h ds4_context_blob.h ds4_tool_compress.h ds4_crawl_client.h ds4_crawl_grounding.h linenoise.h $(ORCH_POLICY_HEADERS)
+	$(CC) $(CFLAGS) -Wno-unused-function -DDS4_NO_GPU -c -o $@ $(STUDIO_AGENT_SRC)
+
+ds4_server.o: $(STUDIO_SERVER_SRC) ds4.h ds4_ssd.h ds4_distributed.h ds4_help.h ds4_kvstore.h rax.h buf.h
+	$(CC) $(CFLAGS) -c -o $@ $(STUDIO_SERVER_SRC)
+
+ds4_server_cpu.o: $(STUDIO_SERVER_SRC) ds4.h ds4_ssd.h ds4_distributed.h ds4_help.h ds4_kvstore.h rax.h buf.h
+	$(CC) $(CFLAGS) -DDS4_NO_GPU -c -o $@ $(STUDIO_SERVER_SRC)
+
+# -----------------------------------------------------------------------------
+# Extra link prerequisites. The non-Darwin recipes upstream link with $^, so
+# adding prerequisites is enough - no recipe override, no warning.
+# -----------------------------------------------------------------------------
+ds4-server ds4-eval ds4_test: $(BUF_OBJS)
+ds4-agent: $(AGENT_CUSTOM_OBJS)
+ds4: ds4_crawl_client.o ds4_crawl_grounding.o
+ds4_agent_test: $(AGENT_CUSTOM_OBJS) ds4_gpu_args.o
+
+ds4-wrapper: $(WRAPPER_OBJS) $(CORE_OBJS)
+	$(DS4_LINK) -o $@ $^ $(DS4_LINK_LIBS)
+
+# -----------------------------------------------------------------------------
+# Studio tests.
+# -----------------------------------------------------------------------------
+tests/ds4_agent_runtime_skill_test.o: tests/ds4_agent_runtime_skill_test.c ds4_agent_runtime.c ds4_agent_runtime.h $(STUDIO_AGENT_SRC) ds4_wrapper.h $(ORCH_POLICY_HEADERS)
+	$(CC) $(CFLAGS) -Wno-unused-function -DDS4_AGENT_UPSTREAM_SRC='"$(STUDIO_AGENT_SRC)"' -c -o $@ tests/ds4_agent_runtime_skill_test.c
+
+tests/ds4_agent_runtime_skill_test: tests/ds4_agent_runtime_skill_test.o $(AGENT_CUSTOM_OBJS) ds4_help.o ds4_prompt_prefix.o ds4_gpu_args_cpu.o ds4_web.o ds4_kvstore.o linenoise.o $(CPU_CORE_OBJS)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+
+tests/ds4_crawl_grounding_test: tests/ds4_crawl_grounding_test.c ds4_crawl_grounding.c ds4_crawl_grounding.h
+	$(CC) $(CFLAGS) -I. -o $@ tests/ds4_crawl_grounding_test.c ds4_crawl_grounding.c
+
+tests/ds4_agent_epistemic_test: tests/ds4_agent_epistemic_test.c ds4_agent_epistemic.c ds4_agent_epistemic.h
+	$(CC) $(CFLAGS) -I. -o $@ tests/ds4_agent_epistemic_test.c ds4_agent_epistemic.c
+
+# The architectural test: upstream pristine + every overlay anchor resolving.
+# Anchors are resolved by the compose that produced this tree; a strict patch
+# that no longer matches upstream stops the compose before make ever runs.
+test-studio:
+	./tests/test_upstream_compat.sh
+
+clean-studio:
+	rm -f $(STUDIO_EXT_OBJS) $(WRAPPER_OBJS) ds4-wrapper
+	rm -f tests/ds4_agent_runtime_skill_test tests/ds4_agent_runtime_skill_test.o
+	rm -f tests/ds4_crawl_grounding_test tests/ds4_agent_epistemic_test

@@ -1,0 +1,79 @@
+id = "studio-app-layer"
+enabled = true
+owner = "studio"
+description = """
+DS4 Studio's application layer: the agent, server and wrapper edits that turn
+antirez's ds4 into DS4 Studio, plus the extension sources and the build file.
+
+This used to live apart, in ds4/studio/, with its own format and applier:
+148 .ops edits applied at make time by studio/studio_overlay.py into
+build/studio/ds4_*.c. Two overlays for one rule ("upstream is never touched"),
+two patch formats, two appliers -- and ds4/studio/ was untracked, so the 750 KB
+of agent edits had no history at all.
+
+The two appliers did the same thing: resolve every anchor against the pristine
+file, refuse on 0 or >1 matches, then splice once. So the edits are now
+ordinary shadow patches here. Migration was checked, not assumed:
+
+  - the patches were generated from the files studio_overlay.py produced, and
+    applying them to pristine upstream gives byte-identical output
+    (ds4_agent.c sha256 e5e4e803..., ds4_server.c bc4eac51..., the same files
+    the running build was compiling);
+  - studio_overlay.py required every anchor to be unique in the whole file.
+    `diff -u` context would have lost that for one hunk (ds4_agent.c:1170 sits
+    in a repeated block), so scripts/make_patch.py grows each hunk's context
+    until it is unique, and `strict = true` below makes the applier refuse
+    anything that is not -- including after a future `git pull`.
+
+To change a Studio edit: edit studio/ds4_agent.c in a composed shadow, then
+    scripts/make_patch.py <upstream>/ds4_agent.c <shadow>/src/studio/ds4_agent.c \\
+        --name studio/ds4_agent.c > patches/studio/studio__ds4_agent.c.patch
+That replaces studio_overlay.py's extract. There is no replacement for its
+fuzzy `reanchor`/`remerge`: re-deriving by hand is the policy here.
+"""
+
+[upstream]
+reviewed_sha = "8db1d1d155cb0400a86a86b9c62d0defb3a6148b"
+
+# `from`: patch a copy at studio/, never the upstream-named file. ds4-server and
+# ds4-agent build from ds4_server.c / ds4_agent.c through Makefile.overlay and
+# stay antirez's binaries; only the wrapper compiles the Studio-edited copies.
+# That separation existed before (build/studio/ was a generated copy) and
+# patching in place would have silently ended it.
+[[shadow_patch]]
+from = "ds4_agent.c"
+file = "studio/ds4_agent.c"
+patch = "patches/studio/studio__ds4_agent.c.patch"
+strict = true
+
+[[shadow_patch]]
+from = "ds4_server.c"
+file = "studio/ds4_server.c"
+patch = "patches/studio/studio__ds4_server.c.patch"
+strict = true
+
+# The build file only exists in a composed shadow: outside one, ds4_agent.c is
+# upstream's and the wrapper would link without any of the edits above.
+[[overlay_file]]
+source = "src/studio/Makefile.studio"
+target = "Makefile.studio"
+
+[[overlay_file]]
+source = "src/studio/ds4_agent_ext.c"
+target = "studio/ds4_agent_ext.c"
+
+[[overlay_file]]
+source = "src/studio/ds4_agent_ext.h"
+target = "studio/ds4_agent_ext.h"
+
+[[overlay_file]]
+source = "src/studio/ds4_server_ext.c"
+target = "studio/ds4_server_ext.c"
+
+[[overlay_file]]
+source = "src/studio/ds4_server_ext.h"
+target = "studio/ds4_server_ext.h"
+
+[[overlay_file]]
+source = "src/studio/ds4_upstream_compat.h"
+target = "studio/ds4_upstream_compat.h"

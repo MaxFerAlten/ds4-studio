@@ -727,3 +727,109 @@ test("CERTIFICATION: end-to-end — full conversation round-trip", () => {
   assert.match(rawMd, /2>\/dev\/null/, "raw: redirect preserved");
   assert.match(rawMd, /\$find/, "raw: dollar sign preserved");
 });
+
+// ============================================================================
+// UTF8-001 §43/§44/§133/§134/§271/§272 — Lean source survives the export
+// ============================================================================
+//
+// The regression showed `variable (f g : ℝ → ℝ)` reaching the transcript as
+// U+FFFD runs. The corruption was upstream of this module, but the export is
+// the last place the verified bytes can still be lost, so it is pinned here
+// too rather than assumed innocent (§257).
+
+const LEAN_UNICODE_SOURCE =
+  "import Mathlib.Analysis.Calculus.Deriv.MeanValue\n" +
+  "open Set\n" +
+  "variable (f g : ℝ → ℝ) {a b : ℝ} (hab : a < b)\n" +
+  "  (hf_diff : DifferentiableOn ℝ f (Ioo a b))\n" +
+  "theorem cauchy_mean_value :\n" +
+  "    ∃ c ∈ Ioo a b, deriv f c * (g b - g a) = deriv g c * (f b - f a) := by\n" +
+  "  sorry_free_proof\n" +
+  "-- continuità, derivabilità, ², ✓, 🚩\n";
+
+function leanConversation() {
+  return [
+    { role: "user", content: "dimostra il teorema di Cauchy con Lean 4" },
+    {
+      role: "assistant",
+      content: "",
+      tool_calls: [
+        {
+          id: "lean-1",
+          name: "lean_check",
+          arguments: { code: LEAN_UNICODE_SOURCE, profile: "mathlib" }
+        }
+      ]
+    },
+    {
+      role: "assistant",
+      content: `STATO: VERIFIED\n\n\`\`\`lean\n${LEAN_UNICODE_SOURCE}\`\`\``
+    }
+  ];
+}
+
+test("UTF8-001 export preserves Lean tool arguments byte for byte", () => {
+  const markdown = exportConversationMarkdown(leanConversation());
+
+  assert.match(markdown, /ℝ → ℝ/);
+  assert.match(markdown, /∃ c ∈ Ioo a b/);
+  assert.match(markdown, /DifferentiableOn ℝ/);
+  assert.match(markdown, /continuità, derivabilità, ², ✓, 🚩/);
+  assert.doesNotMatch(markdown, /�/);
+});
+
+test("UTF8-001 raw export preserves Lean tool arguments byte for byte", () => {
+  const markdown = exportConversationMarkdownRaw(leanConversation());
+
+  assert.match(markdown, /ℝ → ℝ/);
+  assert.match(markdown, /∃ c ∈ Ioo a b/);
+  assert.doesNotMatch(markdown, /�/);
+});
+
+test("UTF8-001 the exported tool-call JSON round-trips to the exact source", () => {
+  // §272 — extracting the fenced JSON and parsing it must yield the same
+  // string that went in, not a normalised or escaped approximation.
+  const markdown = exportConversationMarkdown(leanConversation());
+  const fence = markdown.match(/```json\n([\s\S]*?)\n```/);
+  assert.ok(fence, "expected a json fence for the tool call");
+  const parsed = JSON.parse(fence[1]);
+  assert.equal(parsed.code, LEAN_UNICODE_SOURCE);
+  assert.equal(parsed.profile, "mathlib");
+});
+
+test("UTF8-001 the exported lean fence is byte-identical to the verified source", () => {
+  // §242/§270 — the final answer's code fence is what the user copies.
+  const markdown = exportConversationMarkdown(leanConversation());
+  const fence = markdown.match(/```lean\n([\s\S]*?)```/);
+  assert.ok(fence, "expected a lean fence for the final source");
+  assert.equal(fence[1], LEAN_UNICODE_SOURCE);
+});
+
+test("UTF8-001 math normalization leaves Lean code fences alone", () => {
+  // §271 — normalizeObsidianMath() runs on Obsidian exports; it must not
+  // reach inside a lean fence.
+  const markdown = exportConversationMarkdown(leanConversation(), {
+    mode: "obsidian"
+  });
+  assert.match(markdown, /ℝ → ℝ/);
+  assert.doesNotMatch(markdown, /�/);
+});
+
+test("UTF8-001 the exported markdown strict-decodes as UTF-8", () => {
+  // §134 — write/read the bytes the way the history does.
+  const markdown = exportConversationMarkdown(leanConversation());
+  const bytes = Buffer.from(markdown, "utf8");
+  const decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  assert.equal(decoded, markdown);
+  assert.equal(decoded.includes("�"), false);
+});
+
+test("UTF8-001 export round-trips Lean Unicode back through the parser", () => {
+  // §93 — even though parsed messages are flagged as archive, the bytes must
+  // survive the round trip.
+  const markdown = exportConversationMarkdown(leanConversation());
+  const parsed = parseConversationMarkdown(markdown);
+  const joined = parsed.map((m) => m.content).join("\n");
+  assert.match(joined, /ℝ → ℝ/);
+  assert.doesNotMatch(joined, /�/);
+});

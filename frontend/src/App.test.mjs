@@ -75,6 +75,34 @@ test("agent mode transition is visible and blocks chat until initialization comp
   assert.match(block, /finally\s*\{\s*setAgentTransitionBusy\(false\)/);
 });
 
+test("native and legacy /lean commands are intercepted before model inference", async () => {
+  const source = await readFile(new URL("./App.jsx", import.meta.url), "utf8");
+  const start = source.indexOf("const agentInput = parseAgentInput(text, agentMode);");
+  const end = source.indexOf("// Run a web search when webSearchMode is enabled.", start);
+  const block = source.slice(start, end);
+
+  // The parser result is dispatched to the native control plane and returns
+  // before any model payload is built — /lean never reaches the completion.
+  assert.match(block, /agentInput\.type === "lean" && agentInput\.action === "inactive"/);
+  assert.match(block, /return callNativeAgentCommand\(agentInput\.command\)/);
+  assert.doesNotMatch(block, /sendAgentMessage\(text/);
+});
+
+test("native command busy 409 is never treated as success", async () => {
+  const source = await readFile(new URL("./App.jsx", import.meta.url), "utf8");
+  const start = source.indexOf("async function callNativeAgentCommand");
+  const end = source.indexOf("async function callAgentStatus", start);
+  const block = source.slice(start, end);
+
+  // Priming re-arm (success-only side effect) goes through the shared
+  // predicate, which is ok-gated and unit-tested in agentPriming.test.mjs; a
+  // 409 busy payload is surfaced as a visible agentNotice instead of being
+  // swallowed.
+  assert.match(block, /nativeCommandRearmsPriming\(\{ ok: res\.ok, payload, command \}\)/);
+  assert.match(block, /nativeCommandRearmsPriming\([\s\S]*?agentPrimingPendingRef\.current = true/);
+  assert.match(block, /formatNativeAgentNotice\(command, payload, res\.status\)/);
+});
+
 // ── Data constants ───────────────────────────────────────────────────────
 
 test("STARTUP_GROUPS has expected structure", () => {

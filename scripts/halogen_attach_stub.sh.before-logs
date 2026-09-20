@@ -1,0 +1,7 @@
+#!/bin/sh
+# ds4-ui spawns server.binary unconditionally at boot (index.mjs: manager.start()).
+# Halogen Flash Server runs on its own, so there is nothing for the UI to launch:
+# this stub ignores the ds4 argv and stays alive, which keeps the process manager
+# reporting "running" while readiness is decided by the HTTP health check against
+# the real backend (wrapper.enabled=false -> GET /v1/models).
+exec sleep infinity

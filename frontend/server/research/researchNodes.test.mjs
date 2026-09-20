@@ -55,7 +55,9 @@ test("backgroundInvestigatorNode builds sources from the RAG index", async () =>
 
 test("backgroundInvestigatorNode yields zero sources without RAG or web", async () => {
   const ctx = makeCtx({ rag: null });
-  assert.deepEqual(await backgroundInvestigatorNode(ctx), { sourceCount: 0, webEnabled: false });
+  // pinnedCount reports how many URLs the request itself named and were read.
+  assert.deepEqual(await backgroundInvestigatorNode(ctx),
+                   { sourceCount: 0, webEnabled: false, pinnedCount: 0 });
   assert.deepEqual(ctx.state.sources, []);
 });
 

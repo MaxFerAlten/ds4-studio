@@ -1,0 +1,73 @@
+id = "model-span-bounds"
+enabled = true
+owner = "downstream"
+description = """
+Keep accelerator model-span access inside the registered mapping, and tear the
+engine down in an order that does not unmap memory the GPU still holds.
+
+Captured from the upstream worktree on 2026-09-16: the three edits were written
+by hand on 2026-09-15 at 23:47-23:48, are not present in any commit on any
+branch (`git log --all -S cuda_model_span_fits` finds nothing), and were
+blocking every compose because the overlay contract requires a clean upstream.
+They are preserved here rather than discarded, which is what the contract is
+for. Authorship is the repo owner's, not this toolchain's.
+
+Three coherent parts:
+
+1. ds4.c - ds4_engine_close() ran weights_free / vocab_free / model_close
+   BEFORE ds4_gpu_cleanup(), so the accelerator could still be holding views
+   into a mapping the host had already torn down. The fix moves every host
+   free below the GPU cleanup block, and hoists ds4_threads_shutdown() to the
+   top so no worker can touch the model while it is being released.
+
+2. ds4_cuda.cu - cuda_model_range_ptr() trusted the caller's offset/bytes
+   against the model map. A span that runs past the registered region now
+   returns NULL instead of a pointer into unregistered memory.
+
+3. rocm/ds4_rocm_runtime.cuh - the same guard on the ROCm copy of
+   cuda_model_range_ptr(), which has its own implementation.
+
+NOT independently verified by this toolchain: the reasoning above is read off
+the diff. The changes compile and the ordering argument is sound, but no test
+here proves the use-after-unmap they prevent. Treat the retire_probe as the
+signal that upstream has adopted an equivalent guard, not as proof this one
+was needed.
+"""
+
+[upstream]
+reviewed_sha = "bc93ed05cada3c81bd6b9cf00a297a5e13b15eea"
+
+[[anchors]]
+file = "ds4.c"
+kind = "exact"
+text = "void ds4_engine_close(ds4_engine *e) {"
+count = 1
+
+[[anchors]]
+file = "ds4_cuda.cu"
+kind = "exact"
+text = "static const char *cuda_model_range_ptr(const void *model_map, uint64_t offset, uint64_t bytes, const char *what) {"
+count = 1
+
+[[anchors]]
+file = "rocm/ds4_rocm_runtime.cuh"
+kind = "exact"
+text = "static const char *cuda_model_range_ptr(const void *model_map, uint64_t offset, uint64_t bytes, const char *what) {"
+count = 1
+
+[[shadow_patch]]
+file = "ds4.c"
+patch = "patches/core/model-span-bounds__ds4.c.patch"
+
+[[shadow_patch]]
+file = "ds4_cuda.cu"
+patch = "patches/core/model-span-bounds__ds4_cuda.cu.patch"
+
+[[shadow_patch]]
+file = "rocm/ds4_rocm_runtime.cuh"
+patch = "patches/core/model-span-bounds__rocm_ds4_rocm_runtime.cuh.patch"
+
+[[retire_probe]]
+kind = "symbol"
+file = "ds4_cuda.cu"
+text = "cuda_model_span_fits"

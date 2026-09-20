@@ -1,0 +1,82 @@
+id = "rocm-qwen4-enable"
+enabled = true
+owner = "overlay"
+description = """
+Let a ROCm build reach the Qwen3.8 Flash Next GPU path at all.
+
+Upstream f3967519 ("Add optimized CUDA inference for Qwen3.8 Flash Next" plus
+four optimisation commits) added ds4_qwen4_cuda.cuh, 2104 lines, and opened the
+engine gate to DS4_BACKEND_CUDA:
+
+    #ifdef DS4_HAS_QWEN4_GPU
+        e->backend == DS4_BACKEND_METAL || e->backend == DS4_BACKEND_CUDA ||
+    #endif
+
+but the macro itself still excludes ROCm at ds4.c:53, exactly as
+DS4_HAS_DEEPSEEK41_GPU does two lines above:
+
+    #if !defined(DS4_NO_GPU) && !defined(DS4_ROCM_BUILD)
+
+This patch removes that exclusion for ROCm and nothing else.
+
+WHAT THIS DOES NOT DO: it does not port anything. It only stops the engine
+refusing before the kernels are ever reached, so the build tells us how much of
+the CUDA implementation compiles under HIP. Treat a successful build as a
+measurement, not as working inference.
+
+Known risk, unaudited at the time of writing: ds4_qwen4_cuda.cuh contains 7
+__shfl and 3 __syncwarp uses. CUDA warps are 32 lanes, AMD wavefronts are 64.
+A kernel that assumes 32 does not crash on ROCm, it returns wrong numbers.
+Every one of those sites has to be checked before any output is believed.
+The rocwmma path already used by rocm/ds4_rocm_attention.cuh covers the 9 wmma
+uses; there is no cub, thrust or cooperative_groups to worry about.
+
+Verification available: upstream ships tests/test_qwen4_kernels.c,
+tests/test_qwen4_prefill.c and tests/test_qwen4_logit_dump.py, and commit
+f74d4109 is literally "Check Qwen CUDA split attention against CPU references".
+The CPU path runs on this machine (ds4 --cpu --first-token-test completes), so
+there is a numerical oracle to check against.
+"""
+
+[upstream]
+reviewed_sha = "f396751952bffe7c144aac1fe13c17645e341895"
+
+[[anchors]]
+file = "ds4.c"
+kind = "exact"
+text = "#define DS4_HAS_QWEN4_GPU 1"
+count = 1
+
+[[anchors]]
+file = "ds4_rocm.cu"
+kind = "exact"
+text = '#include "rocm/ds4_rocm_deepseek4_vision.cuh"'
+count = 1
+
+[[shadow_patch]]
+file = "ds4.c"
+patch = "patches/core/rocm-qwen4-enable.patch"
+
+[[overlay_file]]
+source = "src/rocm/ds4_rocm_qwen4_compat.cuh"
+target = "rocm/ds4_rocm_qwen4_compat.cuh"
+
+[[anchors]]
+file = "ds4_qwen4_cuda.cuh"
+kind = "exact"
+# 'namespace qwen4_cuda {' appears twice: the file reopens the namespace.
+text = '#include "ds4_qwen4_vision.h"'
+count = 1
+
+[[shadow_patch]]
+file = "ds4_rocm.cu"
+patch = "patches/core/rocm-qwen4-enable__ds4_rocm.cu.patch"
+
+[[shadow_patch]]
+file = "ds4_qwen4_cuda.cuh"
+patch = "patches/core/rocm-qwen4-enable__ds4_qwen4_cuda.cuh.patch"
+
+# No retire_probe: "upstream granted ROCm the macro" is a two-line condition
+# (the guard immediately above the define) that this single-symbol probe cannot
+# express, and a probe that is merely plausible is worse than none. Re-check by
+# hand when ds4.c:53 changes.

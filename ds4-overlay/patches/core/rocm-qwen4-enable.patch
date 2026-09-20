@@ -1,0 +1,31 @@
+diff --git a/ds4.c b/ds4.c
+--- a/ds4.c
++++ b/ds4.c
+@@ -53,9 +53,21 @@
+-#if !defined(DS4_NO_GPU) && !defined(DS4_ROCM_BUILD)
+-#define DS4_HAS_QWEN4_GPU 1
+-#ifdef __APPLE__
+-#define DS4_HAS_QWEN4_METAL 1
+-#endif
+-#endif
++/* overlay rocm-qwen4-enable: upstream ships CUDA inference for Qwen3.8 Flash
++ * Next in ds4_qwen4_cuda.cuh and opens the engine gate to DS4_BACKEND_CUDA,
++ * but keeps ROCm out of the macro because it has no ROCm Qwen backend. This
++ * flip only lets the engine REACH that path; it ports nothing. Note that
++ * DS4_HAS_QWEN4_METAL stays Apple-only: this grants the CUDA branch of the
++ * gate, not the Metal one.
++ *
++ * No leading context on purpose: rocm-deepseek41-enable rewrites the two
++ * lines above this block, so any context taken from them stops matching once
++ * that patch has applied. The six lines below are unique on their own -- the
++ * only other copy of this guard is the DeepSeek one that patch has already
++ * changed. */
++#if !defined(DS4_NO_GPU)
++#define DS4_HAS_QWEN4_GPU 1
++#ifdef __APPLE__
++#define DS4_HAS_QWEN4_METAL 1
++#endif
++#endif
+ #ifdef DS4_ROCM_BUILD
+ #include "ds4_linux_memory.h"
+ #endif

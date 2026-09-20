@@ -5,6 +5,11 @@ export const RESEARCH_DEFAULTS = Object.freeze({
   stateDir: "data/research",
   ragEnabled: true,
   searchEnabled: false,
+  // Read URLs the request itself names. Declared here since the start and
+  // consulted nowhere, so a URL written into a prompt was only ever search
+  // text; backgroundInvestigatorNode now honours it. Ships false like
+  // searchEnabled: Phase 2 is offline-deterministic out of the box (CERT 7),
+  // and an install that wants the network turns both on in its config.
   webFetchEnabled: false,
   researcherCount: 3,
   maxSteps: 12,
@@ -15,6 +20,9 @@ export const RESEARCH_DEFAULTS = Object.freeze({
     enabled: true,
     maxAttempts: 2
   }),
+  // QF-19 §41 — checks that a cited passage supports the sentence citing it.
+  // Off by default: it costs a model call per binding.
+  citationEntailment: Object.freeze({ enabled: false, maxChecks: 12 }),
   authorVerification: Object.freeze({
     enabled: true,
     maxAuthors: 10
@@ -132,6 +140,10 @@ export function mergeResearchConfig(input = {}) {
     ...RESEARCH_DEFAULTS,
     ...src,
     reflection: { ...RESEARCH_DEFAULTS.reflection, ...plainObject(src.reflection) },
+    citationEntailment: {
+      ...RESEARCH_DEFAULTS.citationEntailment,
+      ...plainObject(src.citationEntailment)
+    },
     authorVerification: {
       ...RESEARCH_DEFAULTS.authorVerification,
       ...plainObject(src.authorVerification)

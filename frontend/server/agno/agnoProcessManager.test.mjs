@@ -32,6 +32,44 @@ describe("createAgnoProcessManager", () => {
     toolBridgeToken: "z".repeat(43),
   };
 
+  it("spawns without the parent credentials", () => {
+    const restore = {
+      TAVILY_API_KEY: process.env.TAVILY_API_KEY,
+      SERPAPI_KEY: process.env.SERPAPI_KEY,
+      GEMINI_API_KEY: process.env.GEMINI_API_KEY,
+      OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+      DS4_EVOLUTION_WRITE_TOKEN: process.env.DS4_EVOLUTION_WRITE_TOKEN,
+    };
+    for (const key of Object.keys(restore)) process.env[key] = `test-${key}`;
+    try {
+      const pm = createAgnoProcessManager({
+        projectRoot: PROJECT_ROOT,
+        config,
+        tokens,
+        resolvedModel: "deepseek-v4-flash",
+        resolvedServiceDir: path.join(PROJECT_ROOT, "agno_service"),
+        resolvedDbFile: path.join(PROJECT_ROOT, "data/agno/agno.db"),
+        ownerId: "test-owner-id",
+      });
+      const env = pm.resolveEnv();
+      // The three tokens the server generates for this service must survive.
+      assert(env.DS4_AGNO_SERVICE_TOKEN === tokens.serviceToken);
+      assert(env.DS4_AGNO_MODEL_GATEWAY_TOKEN === tokens.modelGatewayToken);
+      assert(env.DS4_AGNO_TOOL_BRIDGE_TOKEN === tokens.toolBridgeToken);
+      for (const key of Object.keys(restore)) {
+        assert(env[key] === undefined, `env leaked ${key}`);
+      }
+      // The toolchain basics still come through.
+      if (process.env.PATH) assert(env.PATH === process.env.PATH);
+      if (process.env.HOME) assert(env.HOME === process.env.HOME);
+    } finally {
+      for (const [key, value] of Object.entries(restore)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
   it("creates a Ds4ProcessManager with correct build command", () => {
     const pm = createAgnoProcessManager({
       projectRoot: PROJECT_ROOT,

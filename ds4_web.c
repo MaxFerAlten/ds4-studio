@@ -45,7 +45,6 @@ struct ds4_web {
     bool browser_allowed;
     ds4_web_confirm_fn confirm;
     void *confirm_privdata;
-    bool skip_confirm;
     ds4_web_log_fn log;
     void *log_privdata;
     ds4_web_cancel_fn cancel;
@@ -1058,22 +1057,19 @@ static bool web_spawn_chrome(ds4_web *web, char *err, size_t err_len) {
                    "--disable-sync", "--use-mock-keychain", "--password-store=basic",
                    "--mute-audio", "about:blank", (char *)NULL);
         } else {
-            const char *headless_flag = web->skip_confirm ? "--headless=new" : "";
-            execlp(exe, exe, port_arg, headless_flag, "--remote-allow-origins=*",
+            execlp(exe, exe, port_arg, "--remote-allow-origins=*",
                    profile_arg, "--no-first-run", "--no-default-browser-check",
                    "--disable-sync", "--use-mock-keychain", "--password-store=basic",
                    "--mute-audio", "about:blank", (char *)NULL);
         }
 #else
         if (geteuid() == 0) {
-            const char *headless_flag = web->skip_confirm ? "--headless=new" : "";
-            execlp(exe, exe, port_arg, headless_flag, "--remote-allow-origins=*",
+            execlp(exe, exe, port_arg, "--remote-allow-origins=*",
                    profile_arg, "--no-first-run", "--no-default-browser-check",
                    "--disable-sync", "--password-store=basic", "--no-sandbox",
                    "--mute-audio", "about:blank", (char *)NULL);
         } else {
-            const char *headless_flag = web->skip_confirm ? "--headless=new" : "";
-            execlp(exe, exe, port_arg, headless_flag, "--remote-allow-origins=*",
+            execlp(exe, exe, port_arg, "--remote-allow-origins=*",
                    profile_arg, "--no-first-run", "--no-default-browser-check",
                    "--disable-sync", "--password-store=basic",
                    "--mute-audio", "about:blank", (char *)NULL);
@@ -1114,13 +1110,12 @@ static bool web_ensure_browser(ds4_web *web, char *err, size_t err_len) {
         web->chrome_pid = 0;
     }
     if (!web->browser_allowed) {
-        if (!web->confirm && !web->skip_confirm) {
+        if (!web->confirm) {
             web_set_err(err, err_len,
                         "starting a visible Chrome browser requires interactive approval");
             return false;
         }
-        if (!web->skip_confirm &&
-            !web->confirm(web->confirm_privdata,
+        if (!web->confirm(web->confirm_privdata,
                           "The web tool wants to start a visible Chrome browser. Allow? (y/n) ",
                           err, err_len))
         {
@@ -1149,6 +1144,46 @@ static char *web_browser_ws_url(ds4_web *web, char *err, size_t err_len) {
     return ws;
 }
 
+/* Count page-type CDP targets. Once the last tab is closed a visible Chrome
+   has no window left, and a windowless Chrome rejects Target.createTarget
+   requests that ask for a background tab in the (now absent) window. */
+static int web_page_target_count(ds4_web *web) {
+    char err[160] = {0};
+    char *body = web_http_request("GET", web->port, "/json/list", err, sizeof(err));
+    if (!body) return -1;
+    int n = 0;
+    const char *p = body;
+    while ((p = strstr(p, "\"type\"")) != NULL) {
+        p += 6;
+        while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+        if (*p++ != ':') continue;
+        while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+        if (strncmp(p, "\"page\"", 6) == 0) n++;
+    }
+    free(body);
+    return n;
+}
+
+/* Fallback target creation over plain HTTP. PUT /json/new works even when
+   Chrome has no window, which is exactly when Target.createTarget fails.
+   The verb must be PUT: modern Chrome answers GET /json/new with 405. */
+static char *web_create_target_http(ds4_web *web, const char *url,
+                                    char *err, size_t err_len) {
+    char *enc = web_url_encode(url);
+    web_buf path = {0};
+    web_buf_puts(&path, "/json/new?");
+    web_buf_puts(&path, (enc && enc[0]) ? enc : "about%3Ablank");
+    free(enc);
+    char *path_s = web_buf_take(&path);
+    char *body = web_http_request("PUT", web->port, path_s, err, err_len);
+    free(path_s);
+    if (!body) return NULL;
+    char *id = web_json_get_string(body, "id");
+    free(body);
+    if (!id) web_set_err(err, err_len, "PUT /json/new returned no target id");
+    return id;
+}
+
 static bool web_open_tab(ds4_web *web, const char *url, web_tab *tab,
                          char *err, size_t err_len) {
     memset(tab, 0, sizeof(*tab));
@@ -1173,14 +1208,33 @@ static bool web_open_tab(ds4_web *web, const char *url, web_tab *tab,
                               params_s, err, err_len);
     free(params_s);
     web_ws_close(&browser);
-    if (!resp) return false;
 
-    tab->id = web_json_get_string(resp, "targetId");
-    free(resp);
+    if (resp) {
+        tab->id = web_json_get_string(resp, "targetId");
+        if (!tab->id) {
+            char *why = web_json_get_string(resp, "message");
+            web_log(web, why ? why : "Target.createTarget returned no target id");
+            free(why);
+        }
+        free(resp);
+    }
+
+    /* A windowless Chrome refuses Target.createTarget with newWindow:false,
+       which is the state we land in the moment a previous tab is closed.
+       Recover through the HTTP endpoint instead of failing the request. */
     if (!tab->id) {
-        web_tab_free(tab);
-        web_set_err(err, err_len, "Chrome did not return a page target id");
-        return false;
+        char herr[160] = {0};
+        tab->id = web_create_target_http(web, url, herr, sizeof(herr));
+        if (!tab->id) {
+            web_tab_free(tab);
+            if (herr[0])
+                web_set_err(err, err_len,
+                            "Chrome did not return a page target id (%s)", herr);
+            else
+                web_set_err(err, err_len, "Chrome did not return a page target id");
+            return false;
+        }
+        web_log(web, "recovered Chrome target creation over HTTP");
     }
 
     char ws_url[PATH_MAX + 128];
@@ -1192,6 +1246,16 @@ static bool web_open_tab(ds4_web *web, const char *url, web_tab *tab,
 
 static void web_close_tab(ds4_web *web, const web_tab *tab) {
     if (!web || !tab || !tab->id || !tab->id[0]) return;
+
+    /* Never leave Chrome with zero page targets: that means no window, and a
+       windowless browser is what breaks the next Target.createTarget. Keeping
+       one tab alive is enough to hold the window open. */
+    int remaining = web_page_target_count(web);
+    if (remaining >= 0 && remaining <= 1) {
+        web_log(web, "keeping last Chrome page target open");
+        return;
+    }
+
     char *enc = web_url_encode(tab->id);
     web_buf path = {0};
     web_buf_puts(&path, "/json/close/");
@@ -1319,14 +1383,6 @@ static char *web_run_page_js(ds4_web *web, const char *url, const char *js,
         web_tab_free(&tab);
         return NULL;
     }
-    /* Wait for JS rendering (e.g. Google AI Overview) before extracting content */
-    if (!web_sleep_ms(web, 3000)) {
-        web_set_err(err, err_len, "interrupted");
-        web_ws_close(&ws);
-        web_close_tab(web, &tab);
-        web_tab_free(&tab);
-        return NULL;
-    }
     char *out = web_cdp_eval_string(&ws, js, err, err_len);
     web_ws_close(&ws);
     web_close_tab(web, &tab);
@@ -1348,7 +1404,6 @@ ds4_web *ds4_web_create(const ds4_web_config *cfg) {
     if (cfg) {
         web->confirm = cfg->confirm;
         web->confirm_privdata = cfg->confirm_privdata;
-        web->skip_confirm = cfg->skip_confirm;
         web->log = cfg->log;
         web->log_privdata = cfg->log_privdata;
         web->cancel = cfg->cancel;

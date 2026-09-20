@@ -124,22 +124,38 @@ describe("createAgentUiProcessManager", () => {
   });
 
   it("nessun segreto nell'env", async () => {
+    // buildEnv() is only the delta; what matters is the environment actually
+    // handed to spawn(), which used to be the whole of process.env.
     const dir = await makeReadyFixture();
+    const restore = {
+      TAVILY_API_KEY: process.env.TAVILY_API_KEY,
+      DS4_EVOLUTION_WRITE_TOKEN: process.env.DS4_EVOLUTION_WRITE_TOKEN
+    };
+    process.env.TAVILY_API_KEY = "test-tavily";
+    process.env.DS4_EVOLUTION_WRITE_TOKEN = "test-evolution";
     try {
       const pm = createAgentUiProcessManager({ config: CONFIG, runtimeDir: dir, expectedCommit: EXPECTED_COMMIT });
-      const env = pm.buildEnv();
+      const env = pm.resolveEnv();
       const secrets = [
         "DS4_AGNO_SERVICE_TOKEN",
         "DS4_AGNO_MODEL_GATEWAY_TOKEN",
         "OPENAI_API_KEY",
         "TAVILY_API_KEY",
         "SERPAPI_KEY",
+        "DS4_EVOLUTION_WRITE_TOKEN",
         "NEXT_PUBLIC_OS_SECURITY_KEY"
       ];
       for (const secret of secrets) {
         assert.strictEqual(env[secret], undefined, `env leaked ${secret}`);
       }
+      assert.strictEqual(env.PATH, process.env.PATH);
+      assert.strictEqual(env.NODE_ENV, "production");
+      assert.strictEqual(env.NEXT_TELEMETRY_DISABLED, "1");
     } finally {
+      for (const [key, value] of Object.entries(restore)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
       await fs.rm(dir, { recursive: true, force: true });
     }
   });

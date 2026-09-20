@@ -1,4 +1,4 @@
-import { Ds4ProcessManager } from "../processManager.mjs";
+import { Ds4ProcessManager, pickEnv, SAFE_SIDECAR_ENV_KEYS } from "../processManager.mjs";
 import { agentUiUrl, assertAgentUiBuildReady } from "./agnoUiConfig.mjs";
 
 async function readLimitedText(response, limit = 4096) {
@@ -30,9 +30,15 @@ export function createAgentUiProcessManager({ config, runtimeDir, expectedCommit
     }
   };
 
+  // Agent UI is a Next.js sidecar: it needs the toolchain, never the research
+  // or Evolution credentials frontend/.env loads into this process.
+  const buildBaseEnv = () =>
+    pickEnv(process.env, [...SAFE_SIDECAR_ENV_KEYS, "NODE_OPTIONS", "PNPM_HOME", "COREPACK_HOME"]);
+
   const manager = new Ds4ProcessManager({
     buildCommand,
     buildEnv,
+    buildBaseEnv,
     healthCheck,
     cwd: runtimeDir
   });
@@ -46,6 +52,7 @@ export function createAgentUiProcessManager({ config, runtimeDir, expectedCommit
     cwd: runtimeDir,
     resolveCommand: () => manager.resolveCommand(),
     buildEnv,
+    resolveEnv: () => manager.resolveEnv(),
     setOverrideCommand: (argv) => manager.setOverrideCommand(argv),
     healthCheck,
     status: publicStatus,

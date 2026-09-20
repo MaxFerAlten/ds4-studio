@@ -1,0 +1,15 @@
+diff --git a/ds4_rocm_unavailable.cu b/ds4_rocm_unavailable.cu
+--- a/ds4_rocm_unavailable.cu
++++ b/ds4_rocm_unavailable.cu
+@@ -37,3 +37,11 @@
+ 
+ extern "C" uint64_t ds4_gpu_tp_big_gate_kick(...) { return 0; }
+ ROCM_UNAVAILABLE_INT(ds4_gpu_tp_big_gate_wait)
++
++/* overlay rocm-deepseek41: tensor parallelism has no ROCm implementation, and
++ * the V4.1 support gate refuses any TP configuration before these can run.
++ * They exist so the V4.1 code paths link on ROCm. ds4_gpu_tp_failed() reports
++ * failure so that anything reaching it stops rather than proceeding blind. */
++ROCM_UNAVAILABLE_INT(ds4_gpu_tp_init)
++extern "C" void ds4_gpu_tp_shutdown(void) { }
++extern "C" int ds4_gpu_tp_failed(void) { return 1; }

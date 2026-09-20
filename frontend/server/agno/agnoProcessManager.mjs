@@ -1,5 +1,5 @@
 import path from "node:path";
-import { Ds4ProcessManager } from "../processManager.mjs";
+import { Ds4ProcessManager, pickEnv, SAFE_SIDECAR_ENV_KEYS } from "../processManager.mjs";
 import { agentUiAllowedOrigins } from "./agnoUiConfig.mjs";
 
 export function loopbackOrigin(host, port) {
@@ -95,9 +95,15 @@ export function createAgnoProcessManager({
     }
   };
 
+  // The Agno service gets its own generated tokens through buildEnv(); it has
+  // no business inheriting the research or Evolution credentials this process
+  // loaded from frontend/.env.
+  const buildBaseEnv = () => pickEnv(process.env, SAFE_SIDECAR_ENV_KEYS);
+
   return new Ds4ProcessManager({
     buildCommand,
     buildEnv,
+    buildBaseEnv,
     healthCheck,
     cwd: resolvedServiceDir,
   });

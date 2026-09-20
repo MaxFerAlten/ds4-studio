@@ -33,4 +33,11 @@ char *ds4_context_blob_read_range(const char *base_dir,
 
 bool ds4_context_blob_id_valid(const char *id);
 
+/* Lowercase hex SHA-256 of a buffer, NUL-terminated (65 bytes out).
+ *
+ * The blob store's own digest, exported rather than reimplemented: the Lean
+ * orchestrator needs the source hash the Node side computes, and a second
+ * SHA-256 in the tree is a second thing that can disagree. */
+void ds4_sha256_hex(const void *data, size_t len, char hex[65]);
+
 #endif /* DS4_CONTEXT_BLOB_H */

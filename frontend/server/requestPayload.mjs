@@ -1,4 +1,4 @@
-import { REQUEST_DEFAULTS } from "./defaultConfig.mjs";
+import { REQUEST_DEFAULTS } from "./requestDefaults.mjs";
 
 export const AUTO_MAX_TOKENS = "auto";
 

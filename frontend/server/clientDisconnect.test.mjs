@@ -6,7 +6,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { EventEmitter } from "node:events";
-import { abortOnClientDisconnect } from "./clientDisconnect.mjs";
+import {
+  abortOnClientDisconnect,
+  armBackendCancelOnDisconnect
+} from "./clientDisconnect.mjs";
 
 function makeReqRes() {
   const req = new EventEmitter();
@@ -61,4 +64,39 @@ test("cleanup removes listeners so later events are inert", () => {
   assert.equal(signal.aborted, false);
   assert.equal(res.listenerCount("close"), 0);
   assert.equal(req.listenerCount("aborted"), 0);
+});
+
+test("armed backend cancellation fires once on a real disconnect", () => {
+  const controller = new AbortController();
+  let calls = 0;
+  const disarm = armBackendCancelOnDisconnect(controller.signal, () => {
+    calls++;
+  });
+
+  controller.abort();
+  controller.abort();
+  assert.equal(calls, 1);
+  disarm();
+});
+
+test("disarming backend cancellation protects a completed request", () => {
+  const controller = new AbortController();
+  let calls = 0;
+  const disarm = armBackendCancelOnDisconnect(controller.signal, () => {
+    calls++;
+  });
+
+  disarm();
+  controller.abort();
+  assert.equal(calls, 0);
+});
+
+test("arming after disconnect cancels immediately", () => {
+  const controller = new AbortController();
+  controller.abort();
+  let calls = 0;
+  armBackendCancelOnDisconnect(controller.signal, () => {
+    calls++;
+  });
+  assert.equal(calls, 1);
 });

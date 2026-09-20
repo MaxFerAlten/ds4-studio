@@ -1,0 +1,42 @@
+id = "rocm-vision-alpha-precision"
+enabled = true
+owner = "overlay"
+description = """
+Compute the visual-attention alpha as 1.0f/sqrtf(head_dim) instead of
+rsqrtf(head_dim).
+
+This is a BUILD FIX, not a tuning preference. Under ROCm 7.2.4, rsqrtf is
+declared __device__-only, so calling it from ds4_gpu_attention_visual_mixed_
+batch_heads_tensor() - a __host__ function - fails to compile:
+
+    ./rocm/ds4_rocm_deepseek4_vision.cuh:239:25: error: no matching function
+        for call to 'rsqrtf'
+    note: candidate function not viable: call to __device__ function from
+        __host__ function
+
+The host-side replacement is also the more accurate of the two: rsqrtf is a
+fast reciprocal-square-root approximation, 1.0f/sqrtf is a correctly-rounded
+divide of a correctly-rounded root. alpha is computed once per call and handed
+to cublasSgemmStridedBatched, so the cost is irrelevant.
+
+Provenance: carried in the upstream worktree, extracted here so upstream can
+stay pristine. Retire it if upstream ever stops calling rsqrtf from host code.
+"""
+
+[upstream]
+reviewed_sha = "9139e2ae58a41503968a500f36f75895c1ba63fc"
+
+[[anchors]]
+file = "rocm/ds4_rocm_deepseek4_vision.cuh"
+kind = "exact"
+text = "extern \"C\" int ds4_gpu_attention_visual_mixed_batch_heads_tensor("
+count = 1
+
+[[shadow_patch]]
+file = "rocm/ds4_rocm_deepseek4_vision.cuh"
+patch = "patches/gpu/rocm-vision-alpha-precision.patch"
+
+[[retire_probe]]
+kind = "symbol"
+file = "rocm/ds4_rocm_deepseek4_vision.cuh"
+text = "rsqrtf((float)head_dim)"

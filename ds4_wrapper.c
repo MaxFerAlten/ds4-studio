@@ -2,8 +2,8 @@
 #include "ds4_wrapper_config.h"
 #include "ds4_wrapper_state.h"
 #include "ds4_wrapper_http.h"
-#include "ds4_server_runtime.h"
-#include "ds4_agent_runtime.h"
+#include "ds4_server_ext.h"
+#include "ds4_agent_ext.h"
 
 #include <time.h>
 #include <signal.h>
@@ -66,7 +66,20 @@ int main(int argc, char **argv) {
     /* Parse configuration */
     ds4_wrapper_config cfg = ds4_wrapper_parse_options(argc, argv);
 
-    /* Open engine (once) */
+    /* Open engine (once).
+     *
+     * Keep the wrapper aligned with the current ds4-server startup path.
+     * The engine must know the real context size and the number of resident
+     * sessions before model placement so ROCm/UMA memory budgeting leaves
+     * enough headroom for the mandatory session graph/KV allocations.
+     *
+     * Wrapper mode is intentionally mutual-exclusive: server and agent never
+     * own resident sessions concurrently, so reserve exactly one session. */
+    cfg.engine.context_size = cfg.ctx_size;
+    cfg.engine.placement_ctx_hint = cfg.ctx_size;
+    cfg.engine.placement_session_count_hint = 1;
+    cfg.engine.share_session_prefill_workspace = false;
+
     ds4_engine *engine = NULL;
     if (ds4_engine_open(&engine, &cfg.engine) != 0) {
         fprintf(stderr, "ds4-wrapper: failed to open engine\n");
@@ -88,13 +101,19 @@ int main(int argc, char **argv) {
     srv_opt.enable_cors = true;
     srv_opt.disable_exact_dsml_tool_replay = false;
     srv_opt.tool_memory_max_ids = cfg.tool_memory_max_ids;
+    srv_opt.model_path = cfg.engine.model_path;
     srv_opt.kv_disk_dir = cfg.kv_disk_dir;
     srv_opt.kv_disk_space_mb = cfg.kv_disk_space_mb;
     srv_opt.kv_reject_different_quant = cfg.kv_reject_different_quant;
     srv_opt.kv_options = cfg.kv_options;
 
-    if (ds4_server_runtime_init(&w.server_rt, &w, &srv_opt) != 0) {
-        fprintf(stderr, "ds4-wrapper: failed to initialize server runtime\n");
+    ds4_server_ext_options srv_ext_opt;
+    memset(&srv_ext_opt, 0, sizeof(srv_ext_opt));
+    srv_ext_opt.enable_usage_timing = true;
+    srv_ext_opt.enable_cache_metrics = true;
+
+    if (ds4_server_ext_init(&w.server_ext, &w, &srv_opt, &srv_ext_opt) != 0) {
+        fprintf(stderr, "ds4-wrapper: failed to initialize server extension\n");
         ds4_wrapper_close(&w);
         ds4_engine_close(engine);
         return 1;
@@ -104,7 +123,7 @@ int main(int argc, char **argv) {
     char err[256];
     if (ds4_wrapper_startup_session(&w, cfg.startup_mode, err, sizeof(err)) != 0) {
         fprintf(stderr, "ds4-wrapper: session startup failed: %s\n", err);
-        ds4_server_runtime_free(w.server_rt);
+        ds4_server_ext_free(w.server_ext);
         ds4_wrapper_close(&w);
         ds4_engine_close(engine);
         return 1;
@@ -116,7 +135,7 @@ int main(int argc, char **argv) {
     /* Start HTTP server */
     if (ds4_wrapper_http_start(&w, &cfg) != 0) {
         fprintf(stderr, "ds4-wrapper: failed to start HTTP server\n");
-        ds4_server_runtime_free(w.server_rt);
+        ds4_server_ext_free(w.server_ext);
         ds4_wrapper_close(&w);
         ds4_engine_close(engine);
         return 1;
@@ -131,24 +150,38 @@ int main(int argc, char **argv) {
 
     /* Cleanup and exit */
     ds4_wrapper_http_stop(&w);
-    ds4_agent_runtime_free(w.agent_rt);
-    ds4_server_runtime_free(w.server_rt);
+    ds4_agent_ext_free(w.agent_ext);
+    ds4_server_ext_free(w.server_ext);
     ds4_wrapper_close(&w);
     ds4_engine_close(engine);
 
     return 0;
 }
 
-int ds4_wrapper_ensure_agent_rt(ds4_wrapper *w, char *err, size_t err_len) {
-    if (w->agent_rt) return 0;
+int ds4_wrapper_ensure_agent_ext(ds4_wrapper *w, char *err, size_t err_len) {
+    if (w->agent_ext) return 0;
 
     ds4_agent_runtime_options opt;
     memset(&opt, 0, sizeof(opt));
     opt.system_prompt = w->agent_system_prompt;
     opt.n_predict = w->agent_n_predict;
+    /* --agent-allow-browser stopped here. The flag reached w->agent_allow_browser
+     * (ds4_wrapper_state.c) but was never copied into opt, so the memset above
+     * left it false and ds4_agent_runtime.c denied every web-approval request.
+     * google_search and visit_page then failed with "browser disabled: start the
+     * wrapper with --agent-allow-browser" -- which the operator had already done. */
+    opt.allow_browser = w->agent_allow_browser;
 
-    if (ds4_agent_runtime_init(&w->agent_rt, w, &opt) != 0) {
-        snprintf(err, err_len, "failed to initialize agent runtime");
+    ds4_agent_ext_options ext_opt;
+    memset(&ext_opt, 0, sizeof(ext_opt));
+    ext_opt.enable_usage_metrics = true;
+
+    err[0] = '\0';
+    if (ds4_agent_ext_init(&w->agent_ext, w, &opt, &ext_opt, err, err_len) != 0) {
+        if (!err[0]) snprintf(err, err_len, "failed to initialize agent extension");
+        /* Callers answer HTTP; the operator reads this log. Before, a failed
+         * agent start left no trace here at all. */
+        fprintf(stderr, "ds4-wrapper: agent init failed: %s\n", err);
         return -1;
     }
     return 0;

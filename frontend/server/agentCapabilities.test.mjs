@@ -4,7 +4,7 @@ import { getAgentCapabilities, capabilitiesPromptSection } from "./agentCapabili
 
 test("getAgentCapabilities reflects config", () => {
   const caps = getAgentCapabilities({ crawl: { host: "127.0.0.1", port: 8800 }, research: { search: { enabled: true } } });
-  assert.deepEqual(caps, { webSearch: true, crawl: true, sage: true, history: true, researchSearch: true, pageAgent: false, pageAgentMcp: false });
+  assert.deepEqual(caps, { webSearch: true, crawl: true, sage: true, history: true, researchSearch: true, lean: false, pageAgent: false, pageAgentMcp: false });
 });
 
 test("crawl false without a configured host; research false when disabled", () => {

@@ -1,0 +1,34 @@
+# overlay.toml - global manifest for the DS4 detachable overlay.
+#
+# Upstream is a read-only input. Everything downstream lives here and is
+# re-applied into a shadow tree at build time; nothing is ever written back.
+
+[overlay]
+name = "ds4-overlay"
+description = "Detachable ROCm / Strix Halo overlay for antirez/ds4."
+
+[paths]
+upstream   = ".."
+downstream = "../ds4-v41-rocm"   # optional reference fork
+# Outside the repository: the overlay is embedded in upstream, and compose
+# refuses a shadow anywhere inside upstream.
+build      = "../../new-ds4-studio-build"
+
+[policy]
+# Every one of these is load-bearing; relaxing any of them silently
+# reintroduces the problem the overlay exists to solve.
+fuzzy_patching      = false   # no --3way, no --reject, no patch --fuzz
+hardlink_shadow     = false   # a hardlink writes through into upstream
+write_upstream      = false
+read_temp_dir       = false   # temp/ is outside the contract entirely
+anchors_must_be_exact = true
+
+[verify]
+upstream_clean = "scripts/verify_upstream_clean.py"
+anchors        = "scripts/verify_anchors.py"
+compose        = "scripts/compose_shadow.py"
+control        = "scripts/overlayctl.py"
+
+[tests]
+immutability = "tests/test_upstream_immutable.sh"
+compose      = "tests/test_compose_shadow.sh"

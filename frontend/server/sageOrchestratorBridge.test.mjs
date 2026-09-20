@@ -34,29 +34,30 @@ function validPayload() {
 }
 
 test("feature flag requires an available orchestrator module", async () => {
-  const previous = process.env.DS4_SAGE_ORCHESTRATION_V2;
-  process.env.DS4_SAGE_ORCHESTRATION_V2 = "true";
+  const previous = process.env.DS4_SAGE_AUTONOMOUS_ORCHESTRATION;
+  process.env.DS4_SAGE_AUTONOMOUS_ORCHESTRATION = "true";
   const tmp = await mkdtemp(path.join(os.tmpdir(), "sage-v2-missing-"));
   try {
     assert.equal(sageV2Enabled(), true);
     assert.equal(sageV2Enabled({ modulePath: path.join(tmp, "missing.py") }), false);
   } finally {
-    if (previous === undefined) delete process.env.DS4_SAGE_ORCHESTRATION_V2;
-    else process.env.DS4_SAGE_ORCHESTRATION_V2 = previous;
+    if (previous === undefined) delete process.env.DS4_SAGE_AUTONOMOUS_ORCHESTRATION;
+    else process.env.DS4_SAGE_AUTONOMOUS_ORCHESTRATION = previous;
     await rm(tmp, { recursive: true, force: true });
   }
 });
 
 test("readiness fails when the feature is disabled", async () => {
-  const previous = process.env.DS4_SAGE_ORCHESTRATION_V2;
-  delete process.env.DS4_SAGE_ORCHESTRATION_V2;
+  const previous = process.env.DS4_SAGE_AUTONOMOUS_ORCHESTRATION;
+  process.env.DS4_SAGE_AUTONOMOUS_ORCHESTRATION = "0";
   try {
     assert.deepEqual(await sageV2Readiness(), {
       ready: false,
       code: "SAGE_ORCHESTRATOR_UNAVAILABLE"
     });
   } finally {
-    if (previous !== undefined) process.env.DS4_SAGE_ORCHESTRATION_V2 = previous;
+    if (previous === undefined) delete process.env.DS4_SAGE_AUTONOMOUS_ORCHESTRATION;
+    else process.env.DS4_SAGE_AUTONOMOUS_ORCHESTRATION = previous;
   }
 });
 
@@ -155,3 +156,57 @@ test("policy revision mismatch fails before orchestration", async () => {
 });
 
 
+
+test("il bridge passa il contesto di orchestrazione al Python", async () => {
+  let seen = null;
+  await runSageOrchestrator(
+    { code: "studio di funzione", task_type: "function_study", phase: "repair" },
+    {
+      bridgeRunner: async ({ input }) => {
+        seen = input;
+        return { exitCode: 1, stdout: "", stderr: "", timedOut: false };
+      }
+    }
+  );
+
+  assert.equal(seen.task_type, "function_study");
+  assert.equal(seen.phase, "repair");
+  assert.deepEqual(seen.required_artifacts, [
+    "function_plot",
+    "first_derivative_plot",
+    "second_derivative_plot"
+  ]);
+});
+
+test("un task non grafico non chiede artefatti", async () => {
+  let seen = null;
+  await runSageOrchestrator(
+    { code: "1+1", task_type: "evaluate", phase: "compute" },
+    {
+      bridgeRunner: async ({ input }) => {
+        seen = input;
+        return { exitCode: 1, stdout: "", stderr: "", timedOut: false };
+      }
+    }
+  );
+
+  assert.deepEqual(seen.required_artifacts, []);
+});
+
+test("lo script Python conserva il kind di ogni artefatto", async () => {
+  let script = "";
+  await runSageOrchestrator(
+    { code: "studio", task_type: "function_study", phase: "compute" },
+    {
+      bridgeRunner: async (payload) => {
+        script = payload.script;
+        return { exitCode: 1, stdout: "", stderr: "", timedOut: false };
+      }
+    }
+  );
+
+  assert.match(script, /for item in \(response\.artifacts or \[\]\)/);
+  assert.match(script, /"kind": item\.get\("kind"\)/);
+  // plot_ok non deve piu' essere un requisito incondizionato.
+  assert.match(script, /plot_ok if needs_plots else True/);
+});

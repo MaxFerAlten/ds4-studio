@@ -1,0 +1,52 @@
+diff --git a/ds4.c b/ds4.c
+--- a/ds4.c
++++ b/ds4.c
+@@ -48,13 +48,24 @@
+ #include "ds4_engram.h"
+ #include "ds4_tp.h"
+-#if !defined(DS4_NO_GPU) && !defined(DS4_ROCM_BUILD)
+-#define DS4_HAS_DEEPSEEK41_GPU 1
+-#endif
+-#if !defined(DS4_NO_GPU) && !defined(DS4_ROCM_BUILD)
+-#define DS4_HAS_QWEN4_GPU 1
+-#ifdef __APPLE__
+-#define DS4_HAS_QWEN4_METAL 1
+-#endif
+-#endif
++/* overlay rocm-deepseek41: ROCm implements the V4.1 GPU entry points through
++ * rocm/ds4_rocm_v41.cuh, so it qualifies here too.  Upstream excludes ROCm
++ * because upstream ships no ROCm V4.1 backend of its own. */
++#if !defined(DS4_NO_GPU)
++#define DS4_HAS_DEEPSEEK41_GPU 1
++#endif
++/* The fork gates its V4.1 GPU paths on DS4_HAVE_V41_GPU and upstream has no
++ * such macro, so every #if using it silently evaluated to 0 and compiled the
++ * ROCm streaming blocks out with no diagnostic. */
++#if !defined(DS4_NO_GPU) && (defined(__APPLE__) || defined(DS4_ROCM_BUILD))
++#define DS4_HAVE_V41_GPU 1
++#else
++#define DS4_HAVE_V41_GPU 0
++#endif
++#if !defined(DS4_NO_GPU) && !defined(DS4_ROCM_BUILD)
++#define DS4_HAS_QWEN4_GPU 1
++#ifdef __APPLE__
++#define DS4_HAS_QWEN4_METAL 1
++#endif
++#endif
+ #ifdef DS4_ROCM_BUILD
+ #include "ds4_linux_memory.h"
+@@ -70224,6 +70224,14 @@
+         const bool supported = (e->backend == DS4_BACKEND_METAL ||
+ #if defined(DS4_HAS_DEEPSEEK41_GPU) && !defined(__APPLE__)
+                 (e->backend == DS4_BACKEND_CUDA && !opt->cuda_tensor_parallel &&
++#ifdef DS4_ROCM_BUILD
++                 /* overlay rocm-deepseek41: the ROCm V4.1 path streams experts
++                  * from SSD; the quality / preload / full-layer variants have no
++                  * ROCm implementation, so refuse them rather than mis-run. */
++                 (!opt->ssd_streaming ||
++                  (!opt->quality && !opt->ssd_streaming_preload_experts &&
++                   !opt->ssd_streaming_full_layers)) &&
++#endif
+                  (!gpu_cfg || gpu_cfg->n_gpus <= 1)) ||
+ #endif
+                  false) &&

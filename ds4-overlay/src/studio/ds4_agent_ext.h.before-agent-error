@@ -1,0 +1,70 @@
+/* ds4_agent_ext.h - DS4 Studio policy decorator over ds4_agent_runtime.
+ *
+ *     wrapper -> ds4_agent_ext -> ds4_agent_runtime -> upstream ds4_agent.c
+ *
+ * See ds4_server_ext.h for the boundary rule.
+ */
+#ifndef DS4_AGENT_EXT_H
+#define DS4_AGENT_EXT_H
+
+#include "ds4_agent_runtime.h"
+
+#include <stdbool.h>
+#include <stdint.h>
+
+typedef struct ds4_agent_ext ds4_agent_ext;
+
+typedef struct {
+    bool enable_usage_metrics;  /* count turns, tool calls, errors */
+    bool enable_loop_guard;     /* trip after N consecutive errored turns */
+    int  loop_guard_max_errors; /* 0 => built-in default */
+} ds4_agent_ext_options;
+
+typedef struct {
+    uint64_t turns;
+    uint64_t turns_failed;
+    uint64_t interrupts;
+    uint64_t consecutive_errors;
+    uint64_t loop_guard_trips;
+    double last_turn_sec;
+    double total_turn_sec;
+} ds4_agent_ext_metrics;
+
+int ds4_agent_ext_init(ds4_agent_ext **out,
+                       ds4_wrapper *wrapper,
+                       const ds4_agent_runtime_options *base_opt,
+                       const ds4_agent_ext_options *ext_opt);
+
+void ds4_agent_ext_free(ds4_agent_ext *ext);
+
+/* See ds4_server_ext_base(): escape hatch for unmigrated call sites. */
+ds4_agent_runtime *ds4_agent_ext_base(ds4_agent_ext *ext);
+
+int ds4_agent_ext_chat(ds4_agent_ext *ext,
+                       const char *user_text,
+                       ds4_agent_event_cb cb,
+                       void *ud,
+                       char *err,
+                       size_t err_len);
+
+void ds4_agent_ext_interrupt(ds4_agent_ext *ext);
+
+int ds4_agent_ext_save(ds4_agent_ext *ext, char *sha_out, size_t sha_len);
+int ds4_agent_ext_list(ds4_agent_ext *ext, char **json_out);
+int ds4_agent_ext_switch(ds4_agent_ext *ext, const char *sha, char *err, size_t err_len);
+int ds4_agent_ext_strip(ds4_agent_ext *ext, const char *sha, char *err, size_t err_len);
+int ds4_agent_ext_new(ds4_agent_ext *ext, char *err, size_t err_len);
+int ds4_agent_ext_compact(ds4_agent_ext *ext, char *err, size_t err_len);
+
+int ds4_agent_ext_command(ds4_agent_ext *ext, const char *command,
+                          ds4_agent_command_result *result);
+
+void ds4_agent_ext_get_compression_metrics(ds4_agent_ext *ext,
+                                           ds4_agent_compression_metrics *out);
+
+void ds4_agent_ext_get_default_skills_status(ds4_agent_ext *ext,
+                                             ds4_default_skills_status *out);
+
+void ds4_agent_ext_get_metrics(ds4_agent_ext *ext, ds4_agent_ext_metrics *out);
+
+#endif

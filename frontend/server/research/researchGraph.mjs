@@ -2,6 +2,7 @@ import { renderPrompt } from "./researchPrompts.mjs";
 import { RESEARCH_ROLE_OPTIONS } from "./researchModelClient.mjs";
 import { formatCitations, isCitableSource } from "./researchSources.mjs";
 import { verifyCitedAuthors } from "./authorVerification.mjs";
+import { stripUnsupportedCitations, verifyCitationBindings } from "./citationEntailment.mjs";
 import {
   backgroundInvestigatorNode,
   parallelExecutorNode,
@@ -93,9 +94,36 @@ export async function reporterNode(ctx) {
     systemPrompt,
     userPrompt: ctx.state.query,
     signal: ctx.signal,
-    onDelta: ({ content }) => ctx.emit("report_delta", { content }, "reporter")
+    onDelta: ({ content }) => ctx.emit("report_delta", { content }, "reporter"),
+    ...RESEARCH_ROLE_OPTIONS.reporter
   });
-  const formatted = formatCitations(out.content, sources);
+  // QF-19 §41 — entailment runs here, before publication and before
+  // formatCitations, which stays deterministic id integrity and never becomes
+  // a verifier. A binding the source refutes or is silent on loses its id; one
+  // that could not be checked keeps it.
+  let reportMarkdown = out.content;
+  let entailment = null;
+  if (ctx.config.citationEntailment?.enabled) {
+    try {
+      entailment = await verifyCitationBindings({
+        markdown: reportMarkdown,
+        sources,
+        client: ctx.client,
+        maxChecks: ctx.config.citationEntailment.maxChecks,
+        signal: ctx.signal
+      });
+      const stripped = stripUnsupportedCitations(reportMarkdown, entailment.findings);
+      reportMarkdown = stripped.markdown;
+      entailment = { ...entailment, removed: stripped.removed };
+      if (entailment.checked) ctx.emit("citations_verified", entailment, "reporter");
+    } catch (err) {
+      // Nothing was established, so nothing is withdrawn: the report is left
+      // exactly as written rather than downgraded on a failure to check.
+      entailment = { error: String(err?.message ?? err), checked: 0 };
+    }
+  }
+
+  const formatted = formatCitations(reportMarkdown, sources);
   ctx.state.finalReport = formatted.markdown;
   ctx.emit(
     "report_completed",
@@ -103,7 +131,8 @@ export async function reporterNode(ctx) {
       report: formatted.markdown,
       citedIds: formatted.citedIds,
       missingIds: formatted.missingIds,
-      nonCitableIds: formatted.nonCitableIds
+      nonCitableIds: formatted.nonCitableIds,
+      entailment
     },
     "reporter"
   );
@@ -111,7 +140,8 @@ export async function reporterNode(ctx) {
     length: formatted.markdown.length,
     citedIds: formatted.citedIds,
     missingIds: formatted.missingIds,
-    nonCitableIds: formatted.nonCitableIds
+    nonCitableIds: formatted.nonCitableIds,
+    entailment
   };
 }
 

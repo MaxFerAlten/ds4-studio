@@ -1,0 +1,28 @@
+id = "cuda-mmq-v41"
+enabled = true
+owner = "overlay"
+description = "MMQ tier additions used by the V4.1 quantised paths."
+
+[upstream]
+# Recorded when the patchset was last re-derived; not a constraint.
+reviewed_sha = "9139e2ae58a41503968a500f36f75895c1ba63fc"
+
+[[anchors]]
+file = "cuda/mmq/mmq.cuh"
+kind = "exact"
+text = "    const char * x; ggml_type type_x; const int * y; const int32_t * ids_dst; const int32_t * expert_bounds; float * dst;"
+count = 1
+
+[[anchors]]
+file = "cuda/mmq/ds4_mmq.cu"
+kind = "exact"
+text = "    /* The materialized path stream-frees gate/up Q8_1 before allocating the"
+count = 1
+
+[[shadow_patch]]
+file = "cuda/mmq/mmq.cuh"
+patch = "patches/cuda/cuda-mmq-v41__cuda__mmq__mmq.cuh.patch"
+
+[[shadow_patch]]
+file = "cuda/mmq/ds4_mmq.cu"
+patch = "patches/cuda/cuda-mmq-v41__cuda__mmq__ds4_mmq.cu.patch"

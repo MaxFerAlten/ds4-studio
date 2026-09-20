@@ -1,6 +1,6 @@
 #include "ds4_wrapper_state.h"
 #include "ds4_agent_session_store.h"
-#include "ds4_agent_runtime.h"
+#include "ds4_agent_ext.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -217,7 +217,7 @@ int ds4_wrapper_switch_mode(ds4_wrapper *w, ds4_wrap_mode target, char *err, siz
 
     if (w->busy) {
         /* Interrupt the running request and wait for it to finish. */
-        if (w->agent_rt) ds4_agent_runtime_interrupt(w->agent_rt);
+        if (w->agent_ext) ds4_agent_ext_interrupt(w->agent_ext);
         while (w->busy)
             pthread_cond_wait(&w->cv, &w->mu);
     }

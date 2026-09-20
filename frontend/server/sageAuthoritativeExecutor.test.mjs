@@ -104,16 +104,23 @@ test("authoritative executor rejects a missing raw executor", async () => {
 });
 
 test("authoritative executor normalizes bridge exceptions", async () => {
+  const logs = [];
   const result = await executeAuthoritativeSage({ code: "1+1" }, {
     rawExecutor: async () => legacyRaw(),
     sageV2EnabledFn: () => true,
     bridgeExecutor: async () => {
-      throw new Error("private traceback");
-    }
+      const error = new Error("private traceback");
+      error.code = "ETIMEDOUT";
+      throw error;
+    },
+    logger: { error: (entry) => logs.push(entry) }
   });
   assert.equal(result.isError, true);
   assert.equal(result.publishable, false);
   assert.doesNotMatch(result.content, /private traceback/);
+  assert.equal(result.orchestration.code, "SAGE_BRIDGE_TIMEOUT");
+  assert.equal(result.orchestration.retryable, true);
+  assert.equal(logs[0].code, "SAGE_BRIDGE_TIMEOUT");
 });
 
 test("authoritative executor does not mutate args", async () => {

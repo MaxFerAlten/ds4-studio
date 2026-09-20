@@ -3,6 +3,7 @@
 // the session RAG index (ctx.rag) and the source layer.
 
 import { renderPrompt } from "./researchPrompts.mjs";
+import { tryReadPage } from "./pageReader.mjs";
 import { RESEARCH_ROLE_OPTIONS } from "./researchModelClient.mjs";
 import { buildIndex, chunkDocument, multiQuerySearch, searchChunks } from "./researchRag.mjs";
 import {
@@ -17,6 +18,7 @@ import {
 const SNIPPET_CHARS = 1200;
 // A retrieved passage is richer than a snippet; allow more chars for it.
 const RELEVANT_CHARS = 1600;
+const MAX_PINNED_URLS = 4;
 
 function sourcesForPrompt(sources) {
   return sources.map((s) => ({
@@ -30,11 +32,77 @@ function sourcesForPrompt(sources) {
 // Gather evidence: local RAG over uploaded documents PLUS, when web search is
 // enabled, live web sources. Both are folded into the unified source list,
 // which assigns the citation ids. No LLM call here (spec §11.3).
+// URLs the user typed into the request. Only the original query is scanned:
+// the rewriter's queries are model-written, and fetching an address a model
+// invented is a request this machine makes on the model's say-so, not the
+// user's.
+export function explicitUrlsIn(query) {
+  const out = [];
+  const seen = new Set();
+  for (const raw of String(query || "").match(/https?:\/\/[^\s<>"'`\]),]+/gi) || []) {
+    const url = raw.replace(/[.,;:!?)]+$/, "");
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch {
+      continue;
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") continue;
+    const key = parsed.href;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(key);
+  }
+  return out;
+}
+
+// Read the URLs the request names, as sources in their own right.
+//
+// The pipeline only ever had two source origins: uploaded files and web SEARCH.
+// A URL in the prompt was therefore swallowed as search text -- asking for
+// https://example.org/articles-peer produced the query
+// "example.org <topic>" and the page itself was never opened.
+async function pinnedSourcesFrom(ctx) {
+  if (ctx.config.webFetchEnabled === false) return [];
+  const urls = explicitUrlsIn(ctx.state.query);
+  if (!urls.length) return [];
+
+  const read = ctx.readPage || tryReadPage;
+  const out = [];
+  for (const url of urls.slice(0, MAX_PINNED_URLS)) {
+    const page = await read(url, {
+      signal: ctx.signal,
+      maxChars: ctx.config.maxCharsPerPage,
+      timeoutMs: ctx.config.timeoutMs
+    });
+    if (!page || !page.content) {
+      ctx.emit?.("search_provider_warning", { provider: "requested-url", url, error: "could not be read" });
+      continue;
+    }
+    out.push({
+      kind: "web",
+      title: page.title || url,
+      url,
+      text: page.content,
+      snippet: String(page.content).slice(0, 400),
+      provider: "requested-url",
+      sourceType: "web",
+      // The user named this one. It outranks anything a search engine guessed.
+      pinned: true,
+      score: Number.POSITIVE_INFINITY
+    });
+  }
+  return out;
+}
+
 export async function backgroundInvestigatorNode(ctx) {
   // Always include the original query alongside the rewrites so retrieval does
   // not depend solely on the rewriter's phrasing.
   const queries = [...new Set([ctx.state.query, ...(ctx.state.optimizedQueries || [])])].filter(Boolean);
   const raw = [];
+
+  // First, so a later duplicate from search cannot displace the pinned copy.
+  raw.push(...await pinnedSourcesFrom(ctx));
 
   if (ctx.rag && ctx.rag.index) {
     const fused = multiQuerySearch(ctx.rag.index, queries, { topK: ctx.config.maxSourcesPerQuery });
@@ -69,7 +137,8 @@ export async function backgroundInvestigatorNode(ctx) {
 
   ctx.state.sources = dedupeSources(normalizeSources(raw));
   for (const s of ctx.state.sources) ctx.emit("source_found", { source: s });
-  return { sourceCount: ctx.state.sources.length, webEnabled };
+  const pinnedCount = ctx.state.sources.filter((s) => s.pinned).length;
+  return { sourceCount: ctx.state.sources.length, webEnabled, pinnedCount };
 }
 
 // Lazily build (and cache on ctx) a BM25 index over every source's full content,
@@ -99,6 +168,12 @@ export function relevantSourcesFor(ctx, step) {
     const hits = searchChunks(index, query, { topK: limit * 3 });
     const byId = new Map(sources.map((s) => [s.id, s]));
     const picked = new Map(); // sourceId -> { ...source, relevantText }
+    // A URL the user named holds its slot before BM25 spends any. Ranking it
+    // like a search result means a page asked for by name can place ninth out
+    // of eight and never reach the researcher at all.
+    for (const src of sources) {
+      if (src.pinned && picked.size < limit) picked.set(src.id, { ...src, relevantText: "" });
+    }
     for (const hit of hits) {
       const src = byId.get(hit.chunk.docId);
       if (!src) continue;
@@ -110,10 +185,17 @@ export function relevantSourcesFor(ctx, step) {
       }
     }
     if (picked.size) {
-      return [...picked.values()].map((s) => ({ ...s, relevantText: s.relevantText.slice(0, RELEVANT_CHARS) }));
+      return [...picked.values()].map((s) => ({
+        ...s,
+        // A pinned page no passage matched still goes in, on its opening text:
+        // it was requested, so "nothing scored" is not a reason to drop it.
+        relevantText: (s.relevantText || String(s.content || "")).slice(0, RELEVANT_CHARS)
+      }));
     }
   }
-  return rankSources(query, sources).slice(0, limit);
+  const pinned = sources.filter((s) => s.pinned);
+  const rest = rankSources(query, sources.filter((s) => !s.pinned));
+  return [...pinned, ...rest].slice(0, limit);
 }
 
 // Run one researcher over a single step against its relevant sources.

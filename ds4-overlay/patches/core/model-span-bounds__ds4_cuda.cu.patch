@@ -1,0 +1,33 @@
+diff --git a/ds4_cuda.cu b/ds4_cuda.cu
+index 3543459d..f2db7400 100644
+--- a/ds4_cuda.cu
++++ b/ds4_cuda.cu
+@@ -739,22 +739,28 @@ static void *cuda_tmp_alloc_on(int logical_tier, uint64_t bytes, const char *wha
+     ctx->scratch_bytes = (size_t)bytes;
+     return p;
+ }
+ 
+ static int cuda_attention_score_buffer_fits(uint32_t n_comp) {
+     return n_comp <= DS4_CUDA_ATTENTION_SCORE_CAP - DS4_CUDA_ATTENTION_RAW_SCORE_CAP;
+ }
+ 
++static bool cuda_model_span_fits(uint64_t size, uint64_t offset, uint64_t bytes) {
++    return offset <= size && bytes <= size - offset;
++}
++
+ static const char *cuda_model_ptr(const void *model_map, uint64_t offset) {
+     if (model_map == g_model_host_base && g_model_device_base) return g_model_device_base + offset;
+     return (const char *)model_map + offset;
+ }
+ 
+ static const char *cuda_model_range_ptr(const void *model_map, uint64_t offset, uint64_t bytes, const char *what) {
++    if (model_map == g_model_host_base &&
++        !cuda_model_span_fits(g_model_registered_size, offset, bytes)) return NULL;
+     if (bytes == 0) return cuda_model_ptr(model_map, offset);
+     const uint64_t end = offset + bytes;
+     if (end < offset) return NULL;
+     auto exact = g_model_range_by_offset.find(offset);
+     if (exact != g_model_range_by_offset.end()) {
+         const cuda_model_range &r = g_model_ranges[exact->second];
+         if (r.host_base == model_map && bytes <= r.bytes) return r.device_ptr;
+     }

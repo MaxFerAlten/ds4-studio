@@ -1,0 +1,420 @@
+{
+  "selectedProfile": "ds4-profile-p1-strict-quality",
+  "control": {
+    "host": "127.0.0.1",
+    "port": "5173"
+  },
+  "history": {
+    "enabled": true,
+    "dir": "/home/tendermachine/workspace_ds4studio/history"
+  },
+  "server": {
+    "binary": "./ds4-wrapper",
+    "model": "/mnt/crucial_ai/modelli/ds4-rocm/DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix.gguf",
+    "mtp": "",
+    "mtpDraft": 1,
+    "mtpMargin": 3,
+    "ctx": 550000,
+    "tokens": 8192,
+    "threads": 0,
+    "backend": "auto",
+    "quality": false,
+    "warmWeights": false,
+    "host": "127.0.0.1",
+    "port": 8002,
+    "maxQueuedJobs": 8,
+    "env": {
+      "DS4_SKILL_AUTO": "1",
+      "DS4_METAL_PREFILL_CHUNK": "8192",
+      "DS4_CUDA_Q8_F16_CACHE_MB": "11264",
+      "DS4_CUDA_Q8_F16_CACHE_RESERVE_MB": "512",
+      "DS4_CUDA_WEIGHT_ARENA_CHUNK_MB": "1024",
+      "DS4_CUDA_COPY_MODEL_CHUNKED": "1",
+      "DS4_CUDA_DIRECT_MODEL": "",
+      "DS4_CUDA_NO_FD_CACHE": "",
+      "DS4_CUDA_MOE_PROFILE": "",
+      "DS4_METAL_GRAPH_PREFILL_PROFILE": "",
+      "DS4_CUDA_MOE_NO_EXPERT_TILES": "",
+      "DS4_CUDA_MOE_TILE4": "",
+      "DS4_CUDA_MOE_WRITE_GATE_UP": "",
+      "DS4_CUDA_MOE_NO_P2": "",
+      "DS4_CUDA_MOE_ATOMIC_DOWN": "",
+      "DS4_CUDA_MOE_NO_ATOMIC_DOWN": "",
+      "DS4_CUDA_MOE_GATE_ROW512": "",
+      "DS4_CUDA_MOE_GATE_ROW2048": "",
+      "DS4_CUDA_MOE_GATE_ROW256": "",
+      "DS4_CUDA_MOE_GATE_ROW128": "",
+      "DS4_CUDA_MOE_NO_GATE_ROW2048": "",
+      "DS4_CUDA_MOE_NO_GATE_ROW256": "",
+      "DS4_CUDA_MOE_NO_GATE_ROW128": "",
+      "DS4_CUDA_MOE_NO_DOWN_TILE16": "",
+      "DS4_CUDA_MOE_NO_DECODE_LUT_GATE": "",
+      "DS4_CUDA_MOE_DOWN_ROW512": "",
+      "DS4_CUDA_MOE_DOWN_ROW1024": "",
+      "DS4_CUDA_MOE_DOWN_ROW2048": "",
+      "DS4_CUDA_MOE_DOWN_ROW256": "",
+      "DS4_CUDA_MOE_NO_DOWN_ROW128": "",
+      "DS4_CUDA_MOE_NO_DOWN_ROW64": "",
+      "DS4_CUDA_MOE_NO_DIRECT_DOWN_SUM6": "",
+      "DS4_CUDA_MOE_DOWN_ROW128": "",
+      "DS4_CUDA_MOE_DOWN_ROW64": "",
+      "DS4_CUDA_MOE_NO_DOWN_ROW2048": "",
+      "DS4_CUDA_MOE_NO_DOWN_ROW256": ""
+    },
+    "trace": "",
+    "dirSteeringFile": "",
+    "dirSteeringFfn": "",
+    "dirSteeringAttn": "",
+    "kvDiskDir": "",
+    "kvDiskSpaceMb": 4096,
+    "kvCacheMinTokens": 512,
+    "kvCacheColdMaxTokens": 30000,
+    "kvCacheContinuedIntervalTokens": 10000,
+    "kvCacheBoundaryTrimTokens": 32,
+    "kvCacheBoundaryAlignTokens": 2048,
+    "kvCacheRejectDifferentQuant": false,
+    "disableExactDsmlToolReplay": false,
+    "toolMemoryMaxIds": 100000
+  },
+  "wrapper": {
+    "enabled": true,
+    "binary": "./ds4-wrapper",
+    "startupMode": "server",
+    "freezeOnSwitch": true,
+    "freeInactiveSession": true,
+    "mutualExclusive": true,
+    "agentEnabledAtStartup": false,
+    "ramFreezeMaxMb": 4096,
+    "modeSwitchTimeoutMs": 120000
+  },
+  "research": {
+    "enabled": true,
+    "maxPlanIterations": 3,
+    "autoAcceptPlan": false,
+    "stateDir": "data/research",
+    "ragEnabled": true,
+    "searchEnabled": false,
+    "webFetchEnabled": false,
+    "researcherCount": 3,
+    "maxSteps": 12,
+    "maxSourcesPerQuery": 8,
+    "maxContextChars": 120000,
+    "exportEnabled": true,
+    "reflection": {
+      "enabled": true,
+      "maxAttempts": 2
+    },
+    "citationEntailment": {
+      "enabled": false,
+      "maxChecks": 12
+    },
+    "authorVerification": {
+      "enabled": true,
+      "maxAuthors": 10
+    },
+    "engine": "local",
+    "gemini": {
+      "model": "deep-research-preview-04-2026",
+      "apiKeyEnv": "GEMINI_API_KEY",
+      "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
+      "tools": [
+        "google_search",
+        "url_context",
+        "code_execution"
+      ],
+      "collaborativePlanning": true,
+      "thinkingSummaries": true,
+      "timeoutMs": 3600000,
+      "apiKey": ""
+    },
+    "prism": {
+      "cliPath": "/home/tendermachine/.local/bin/prism-pp-cli",
+      "cliPathEnv": "PRISM_CLI_PATH",
+      "cookiesEnv": "PRISM_COOKIES",
+      "reasoningEffort": "medium",
+      "projectId": "",
+      "userId": "",
+      "timeoutMs": 3600000,
+      "pollIntervalMs": 3000
+    },
+    "search": {
+      "enabled": true,
+      "maxResultsPerQuery": 8,
+      "maxSourcesTotal": 30,
+      "maxFetchedPages": 8,
+      "maxCharsPerPage": 12000,
+      "timeoutMs": 12000,
+      "retryCount": 2,
+      "retryDelayMs": 500,
+      "enablePageReader": true,
+      "enableDirectFetchFallback": true,
+      "providers": {
+        "wikipedia": {
+          "enabled": true,
+          "endpoint": "https://en.wikipedia.org/w/api.php",
+          "restEndpoint": "https://en.wikipedia.org/api/rest_v1/page/summary"
+        },
+        "arxiv": {
+          "enabled": true,
+          "endpoint": "https://export.arxiv.org/api/query"
+        },
+        "cnr": {
+          "enabled": true,
+          "endpoint": "https://publications.cnr.it/api/v1/search"
+        },
+        "openalex": {
+          "enabled": true,
+          "endpoint": "https://api.openalex.org"
+        },
+        "worldbank": {
+          "enabled": true,
+          "endpoint": "https://api.worldbank.org/v2"
+        },
+        "tavily": {
+          "enabled": true,
+          "apiKeyEnv": "TAVILY_API_KEY",
+          "endpoint": "https://api.tavily.com/search",
+          "apiKey": ""
+        },
+        "serpapi": {
+          "enabled": true,
+          "apiKeyEnv": "SERPAPI_KEY",
+          "engine": "google",
+          "endpoint": "https://serpapi.com/search.json",
+          "apiKey": ""
+        },
+        "googlescholar": {
+          "enabled": true,
+          "apiKeyEnv": "SERPAPI_KEY",
+          "endpoint": "https://serpapi.com/search.json",
+          "engine": "google_scholar",
+          "apiKey": ""
+        },
+        "scrapingbee": {
+          "enabled": true,
+          "apiKeyEnv": "SCRAPINGBEE_API_KEY",
+          "endpoint": "https://app.scrapingbee.com/api/v1/store/google",
+          "apiKey": ""
+        },
+        "opentripmap": {
+          "enabled": false,
+          "apiKeyEnv": "OPENTRIPMAP_API_KEY",
+          "endpoint": "https://api.opentripmap.com/0.1/en/places",
+          "apiKey": ""
+        },
+        "tripadvisor": {
+          "enabled": false,
+          "apiKeyEnv": "TRIPADVISOR_API_KEY",
+          "endpoint": "https://api.content.tripadvisor.com/api/v1/location/search",
+          "apiKey": ""
+        },
+        "aliyun": {
+          "enabled": false,
+          "apiKeyEnv": "ALIYUN_AI_SEARCH_API_KEY",
+          "endpoint": "",
+          "apiKey": ""
+        },
+        "baidu": {
+          "enabled": false,
+          "apiKeyEnv": "BAIDU_SEARCH_API_KEY",
+          "endpoint": "",
+          "apiKey": ""
+        },
+        "jina": {
+          "enabled": true,
+          "apiKeyEnv": "JINA_API_KEY",
+          "endpoint": "https://r.jina.ai/",
+          "apiKey": ""
+        }
+      },
+      "cache": {
+        "enabled": true,
+        "dir": "data/research/cache",
+        "defaultTtlMs": 86400000,
+        "freshQueryTtlMs": 900000
+      },
+      "rateLimits": {
+        "default": {
+          "perMinute": 30,
+          "concurrent": 2
+        }
+      }
+    },
+    "model": {
+      "temperature": 0,
+      "top_p": 1,
+      "max_tokens": 8192
+    }
+  },
+  "lean": {
+    "enabled": true,
+    "policyAuto": false,
+    "defaultProfile": "core",
+    "orchestration": {
+      "enabled": true,
+      "prompt": true,
+      "maxAttempts": 6,
+      "maxSameFailure": 2,
+      "maxPrematureFinalizations": 3,
+      "maxWallClockMs": 360000
+    }
+  },
+  "sage": {
+    "policyAuto": false,
+    "orchestration": {
+      "enabled": true,
+      "prompt": true,
+      "maxComputeAttempts": 1,
+      "maxRepairAttempts": 4,
+      "maxValidationAttempts": 5,
+      "maxPlotAttempts": 2,
+      "maxPrematureFinalizations": 3,
+      "maxSameFailure": 2,
+      "maxWallClockMs": 480000,
+      "maxTotalToolCalls": 12
+    }
+  },
+  "evolution": {
+    "enabled": true,
+    "maxLevel": "D",
+    "stateDir": "/mnt/crucial_ai/COPARATOR/ds4-studio-evolution-state",
+    "workDir": "/mnt/crucial_ai/COPARATOR/ds4-studio-evolution-workspaces",
+    "model": "deepseek-v4-flash",
+    "modelBaseUrl": "http://127.0.0.1:8002",
+    "modelTimeoutMs": 120000,
+    "maxPacketBytes": 128000,
+    "maxArtifactReadBytes": 200000,
+    "maxFeedbackContextBytes": 64000,
+    "writeTokenEnv": "DS4_EVOLUTION_WRITE_TOKEN"
+  },
+  "toolBlobs": {
+    "dir": "data/tool-blobs",
+    "compressEnabled": true
+  },
+  "crawl": {
+    "host": "127.0.0.1",
+    "port": 9090
+  },
+  "callDebug": {
+    "enabled": true,
+    "dir": "data/call-debug",
+    "maxEntries": 200,
+    "maxBodyChars": 4000,
+    "maxFileBytes": 5000000,
+    "excludePaths": [
+      "/api/wrapper/status",
+      "/api/server/metrics"
+    ]
+  },
+  "pageAgent": {
+    "enabled": false,
+    "clientUiEnabled": true,
+    "serverBrowserEnabled": false,
+    "mcpEnabled": false,
+    "model": "deepseek-v4-flash",
+    "baseURL": "http://127.0.0.1:8080/v1",
+    "apiKey": "not-needed",
+    "language": "it-IT",
+    "maxSteps": 20,
+    "actionTimeoutMs": 120000,
+    "requireConfirmation": true,
+    "experimentalScriptExecutionTool": false,
+    "allowExternalDomains": false,
+    "allowedOrigins": [
+      "http://127.0.0.1:5173",
+      "http://localhost:5173"
+    ],
+    "auditDir": "data/pageagent-runs"
+  },
+  "contextWiki": {
+    "enabled": false,
+    "previewOnly": true,
+    "softTokens": 1500,
+    "hardTokens": 3000,
+    "maxGrowthPct": 25,
+    "maxEvidence": 10,
+    "deltaRequired": true,
+    "telemetry": true,
+    "maxLedgerEvents": 5000
+  },
+  "agno": {
+    "enabled": true,
+    "autoStart": true,
+    "host": "127.0.0.1",
+    "port": 7777,
+    "serviceDir": "agno_service",
+    "python": "",
+    "model": "",
+    "dbFile": "data/agno/agno.db",
+    "startupTimeoutMs": 30000,
+    "shutdownTimeoutMs": 5000,
+    "serviceRequestTimeoutMs": 3600000,
+    "modelQueueWaitTimeoutMs": 3600000,
+    "maxInflightModelCalls": 1,
+    "maxQueuedModelCalls": 8,
+    "telemetry": false,
+    "tracing": false,
+    "scheduler": false,
+    "mcpEnabled": false,
+    "uiEnabled": true,
+    "agentUi": {
+      "enabled": true,
+      "autoStart": false,
+      "host": "127.0.0.1",
+      "port": 3000,
+      "runtimeDir": ".runtime/agno-agent-ui",
+      "openMode": "new-tab",
+      "telemetry": false
+    },
+    "tools": {
+      "enabled": true,
+      "profile": "safe",
+      "allowedTools": [],
+      "deniedTools": [],
+      "requestTimeoutMs": 120000,
+      "maxInflight": 1,
+      "maxQueued": 8,
+      "maxHistoryMessages": 64,
+      "maxHistoryBytes": 65536,
+      "maxRequestBytes": 262144,
+      "maxResponseBytes": 262144,
+      "auditEnabled": true,
+      "auditDir": "data/agno/tool-audit"
+    }
+  },
+  "agent": {
+    "nativeChatTimeoutMs": 180000,
+    "epistemic": {
+      "enabled": true,
+      "mode": "shadow",
+      "withholdOutput": true,
+      "maxClaimsPerTurn": 64,
+      "maxVerifierCallsPerTurn": 24,
+      "maxRepairRounds": 2,
+      "blockSeverity": 4,
+      "verifyCitations": true,
+      "verifyMath": true,
+      "verifyExecutionClaims": true,
+      "verifyChallenges": true,
+      "strictRepair": true,
+      "persistSessionClaims": true
+    }
+  },
+  "requestDefaults": {
+    "endpoint": "/v1/chat/completions",
+    "model": "deepseek-v4-flash",
+    "system": "",
+    "max_tokens": "auto",
+    "max_tokens_safety_cap": 32768,
+    "context_margin": 1024,
+    "temperature": 0,
+    "top_p": 1,
+    "top_k": 0,
+    "min_p": 0,
+    "seed": 42,
+    "stream": true,
+    "thinking": false,
+    "reasoning_effort": "high",
+    "stop": ""
+  }
+}

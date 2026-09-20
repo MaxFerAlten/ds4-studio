@@ -1,7 +1,20 @@
 import { approxTokenCount } from "./fileIngestion.mjs";
 
 export const DEFAULT_MAX_ANALYZE_CHUNKS = 64;
-export const DEFAULT_MAX_AGENT_TOTAL_TOKENS = 120000;
+// Unlimited by default. This was a flat 120000, which is a cumulative sum of
+// prompt+completion across agent rounds -- not a context size. Because the loop
+// resends the whole conversation every round, the sum grows quadratically and
+// the cap fired on legitimate work long before any model ran out of context
+// (Halogen advertises 262144, more than twice the old cap).
+//
+// Removing it does not leave the loop unbounded: AGENT_MAX_ITERATIONS (25) and
+// the AgentLoopGuard terminators (no-progress, repeated action, protocol
+// failure, degenerate generation) already stop it, and with no history trimming
+// the backend's own context limit is the final wall.
+//
+// The mechanism stays for the case it was actually built for: an endpoint that
+// bills per token. Set DS4_AGENT_MAX_TOTAL_TOKENS to re-arm it.
+export const DEFAULT_MAX_AGENT_TOTAL_TOKENS = Infinity;
 
 export function readPositiveIntEnv(env, key, fallback) {
   const raw = env?.[key];
@@ -16,6 +29,10 @@ export function maxAnalyzeChunks(env = process.env) {
 
 export function maxAgentTotalTokens(env = process.env) {
   return readPositiveIntEnv(env, "DS4_AGENT_MAX_TOTAL_TOKENS", DEFAULT_MAX_AGENT_TOTAL_TOKENS);
+}
+
+export function agentBudgetEnabled(env = process.env) {
+  return Number.isFinite(maxAgentTotalTokens(env));
 }
 
 export function analyzeChunkPlan(chunks, maxChunks = DEFAULT_MAX_ANALYZE_CHUNKS) {

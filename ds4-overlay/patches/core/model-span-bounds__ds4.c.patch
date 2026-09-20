@@ -1,0 +1,63 @@
+diff --git a/ds4.c b/ds4.c
+--- a/ds4.c
++++ b/ds4.c
+@@ -72604,28 +72604,35 @@
+ 
+ void ds4_engine_close(ds4_engine *e) {
+-    if (!e) return;
+-    ds4_engine_tp_unbind(e);
+-    ds4_expert_profile_close();
+-    weights_free(&e->weights);
+-    vocab_free(&e->vocab);
+-    ds4_threads_shutdown();
+-    if (e->mtp_model.map) model_close(&e->mtp_model);
+-    if (e->vision_model.map) model_close(&e->vision_model);
+-    model_close(&e->model);
+-#ifndef DS4_NO_GPU
+-#ifdef DS4_HAS_QWEN4_GPU
+-    qwen4_state_pool_free(e);
+-    if (e->qwen4_shared_workspace) {
+-        qwen4_graph_free(e->qwen4_shared_workspace);
+-        free(e->qwen4_shared_workspace);
+-        e->qwen4_shared_workspace = NULL;
+-    }
+-#endif
+-    if (e->shared_prefill_workspace_ready) {
+-        metal_graph_free_prefill_workspace(&e->shared_prefill_workspace);
+-        e->shared_prefill_workspace_ready = false;
+-    }
+-    ds4_gpu_cleanup();
+-#endif
++    if (!e) return;
++    /* overlay model-span-bounds: shut the workers down before anything they
++     * could still be reading is released. */
++    ds4_threads_shutdown();
++    ds4_engine_tp_unbind(e);
++    ds4_expert_profile_close();
++#ifndef DS4_NO_GPU
++#ifdef DS4_HAS_QWEN4_GPU
++    qwen4_state_pool_free(e);
++    if (e->qwen4_shared_workspace) {
++        qwen4_graph_free(e->qwen4_shared_workspace);
++        free(e->qwen4_shared_workspace);
++        e->qwen4_shared_workspace = NULL;
++    }
++#endif
++    if (e->shared_prefill_workspace_ready) {
++        metal_graph_free_prefill_workspace(&e->shared_prefill_workspace);
++        e->shared_prefill_workspace_ready = false;
++    }
++    ds4_gpu_cleanup();
++#endif
++    /* Host memory is released only after the accelerator has finished with it.
++     * Upstream frees the weights, the vocab and the model mappings first, so
++     * the GPU teardown above -- including the Qwen4 state pool and shared
++     * workspace added upstream after this feature was written -- could still
++     * hold views into memory the host had already unmapped. */
++    weights_free(&e->weights);
++    vocab_free(&e->vocab);
++    if (e->mtp_model.map) model_close(&e->mtp_model);
++    if (e->vision_model.map) model_close(&e->vision_model);
++    model_close(&e->model);
+     ds4_ssd_memory_lock_release(&e->simulated_memory);
+     ds4_release_instance_lock();

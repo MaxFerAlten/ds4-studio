@@ -2,9 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   BUSY_RETRY_DEFAULTS,
+  GENERATION_BUSY_RETRY_DEFAULTS,
+  busyRetryOptionsForRequest,
   busyRetryDelay,
   fetchWithBusyRetry,
-  isBusyConflict
+  isBusyConflict,
+  isGenerationRequest
 } from "./backendRetry.mjs";
 
 function jsonResponse(status, body) {
@@ -21,6 +24,28 @@ test("isBusyConflict only matches transient busy 409s", () => {
   assert.equal(isBusyConflict(200, "wrapper is busy"), false);
   assert.equal(isBusyConflict(503, "busy"), false);
   assert.equal(isBusyConflict(409, ""), false);
+});
+
+test("generation requests get a retry window longer than one ROCm prefill chunk", () => {
+  assert.equal(isGenerationRequest("POST", "/v1/chat/completions"), true);
+  assert.equal(isGenerationRequest("POST", "/v1/responses?beta=1"), true);
+  assert.equal(isGenerationRequest("GET", "/v1/chat/completions"), false);
+  assert.equal(isGenerationRequest("POST", "/v1/token-count"), false);
+  assert.equal(
+    busyRetryOptionsForRequest("POST", "/v1/chat/completions"),
+    GENERATION_BUSY_RETRY_DEFAULTS
+  );
+  assert.equal(
+    busyRetryOptionsForRequest("POST", "/v1/token-count"),
+    BUSY_RETRY_DEFAULTS
+  );
+
+  const retryWindowMs = Array.from(
+    { length: GENERATION_BUSY_RETRY_DEFAULTS.maxRetries },
+    (_, attempt) => busyRetryDelay(attempt, GENERATION_BUSY_RETRY_DEFAULTS)
+  ).reduce((total, delay) => total + delay, 0);
+  assert.ok(retryWindowMs >= 120_000, `retry window was only ${retryWindowMs}ms`);
+  assert.ok(retryWindowMs < 130_000, `retry window grew to ${retryWindowMs}ms`);
 });
 
 test("busyRetryDelay grows exponentially up to the ceiling", () => {

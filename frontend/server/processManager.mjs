@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { LaunchCalibrator } from "./launchCalibration.mjs";
 
 const STOP_TIMEOUT_MS = 5000;
 const MAX_LOG_LINES = 500;
@@ -12,17 +13,72 @@ export function compactEnv(env = {}) {
   );
 }
 
+/**
+ * The parent environment a sidecar actually needs: toolchain lookup, locale,
+ * temp dirs, TLS trust and proxies. Nothing that could be a credential.
+ * The main DS4 backend deliberately does not use this — see index.mjs.
+ */
+export const SAFE_SIDECAR_ENV_KEYS = Object.freeze([
+  "PATH",
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "TZ",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "XDG_CONFIG_HOME",
+  "XDG_CACHE_HOME",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "REQUESTS_CA_BUNDLE",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "no_proxy"
+]);
+
+/**
+ * Copy only the listed keys, only when present. Emptiness is compactEnv's job.
+ *
+ * @param {object} [env] - source environment; never mutated.
+ * @param {string[]} [keys] - allowlist.
+ */
+export function pickEnv(env = process.env, keys = []) {
+  const out = {};
+  for (const key of keys) {
+    if (env && Object.prototype.hasOwnProperty.call(env, key)) out[key] = env[key];
+  }
+  return out;
+}
+
 export class Ds4ProcessManager extends EventEmitter {
-  constructor({ buildCommand, buildEnv = () => ({}), healthCheck, cwd = process.cwd() }) {
+  // buildBaseEnv defaults to the full parent environment so the DS4 backend and
+  // any call site that has not opted in keep their current behaviour; a sidecar
+  // passes an allowlist instead.
+  constructor({
+    buildCommand,
+    buildEnv = () => ({}),
+    buildBaseEnv = () => process.env,
+    healthCheck,
+    cwd = process.cwd()
+  }) {
     super();
     this.buildCommand = buildCommand;
     this.buildEnv = buildEnv;
+    this.buildBaseEnv = buildBaseEnv;
     this.healthCheck = healthCheck;
     this.cwd = cwd;
     this.child = null;
     this.currentCommand = [];
     this.overrideCommand = null;
     this.logs = [];
+    this.calibrator = new LaunchCalibrator();
     this.lastExit = null;
     this.healthy = false;
   }
@@ -36,6 +92,14 @@ export class Ds4ProcessManager extends EventEmitter {
       throw new Error("override command must be a non-empty argv array");
     }
     this.overrideCommand = argv.map(String);
+  }
+
+  /** The environment actually handed to spawn(). */
+  resolveEnv() {
+    return {
+      ...compactEnv(this.buildBaseEnv()),
+      ...compactEnv(this.buildEnv())
+    };
   }
 
   resolveCommand() {
@@ -52,6 +116,9 @@ export class Ds4ProcessManager extends EventEmitter {
       const entry = { time: new Date().toISOString(), stream, message };
       this.logs.push(entry);
       if (this.logs.length > MAX_LOG_LINES) this.logs.shift();
+      // What this launch actually cost, for the startup model picker. Never
+      // allowed to throw: telemetry must not be able to kill a backend.
+      try { this.calibrator.observe(message); } catch { /* ignore */ }
       this.emit("log", entry);
     }
   }
@@ -68,10 +135,7 @@ export class Ds4ProcessManager extends EventEmitter {
     const child = spawn(command, args, {
       cwd: this.cwd,
       stdio: ["ignore", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        ...compactEnv(this.buildEnv())
-      }
+      env: this.resolveEnv()
     });
     this.child = child;
     child.stdout.on("data", (chunk) => this.appendLog("stdout", chunk));

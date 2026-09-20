@@ -7,9 +7,14 @@ export function buildDs4Args(config) {
   const s = config.server;
   const args = [];
   pushValue(args, "--model", s.model);
+  pushValue(args, "--vision", s.vision);
   pushValue(args, "--mtp", s.mtp);
   pushValue(args, "--mtp-draft", s.mtpDraft);
   pushValue(args, "--mtp-margin", s.mtpMargin);
+  if (s.dspark) args.push("--dspark");
+  if (s.dsparkStrict) args.push("--dspark-strict");
+  pushValue(args, "--dspark-confidence", s.dsparkConfidence);
+  if (s.mtpExactSampling) args.push("--mtp-exact-sampling");
   pushValue(args, "--ctx", s.ctx);
   pushValue(args, "--tokens", s.tokens);
   if (Number(s.threads) > 0) pushValue(args, "--threads", s.threads);
@@ -18,6 +23,18 @@ export function buildDs4Args(config) {
   if (s.backend === "cpu") args.push("--cpu");
   if (s.quality) args.push("--quality");
   if (s.warmWeights) args.push("--warm-weights");
+  // DeepSeek V4.1 does not fit resident at a large context: without SSD
+  // streaming the engine refuses to start ("needs 167.26 GiB before the expert
+  // cache; safe budget 106.31 GiB"). Only emitted when configured, so existing
+  // profiles are unaffected.
+  if (s.ssdStreaming) args.push("--ssd-streaming");
+  if (s.ssdStreamingCold) args.push("--ssd-streaming-cold");
+  pushValue(args, "--ssd-streaming-cache-experts", s.ssdStreamingCacheExperts);
+  if (Number(s.ssdStreamingFullLayers) > 0)
+    pushValue(args, "--ssd-streaming-full-layers", s.ssdStreamingFullLayers);
+  if (Number(s.ssdStreamingPreloadExperts) > 0)
+    pushValue(args, "--ssd-streaming-preload-experts", s.ssdStreamingPreloadExperts);
+  pushValue(args, "--power", s.power);
   pushValue(args, "--host", s.host);
   pushValue(args, "--port", s.port);
   pushValue(args, "--max-queued-jobs", s.maxQueuedJobs);
@@ -44,9 +61,14 @@ export function buildDs4WrapperArgs(config) {
   const args = [];
   // Server-like options
   pushValue(args, "--model", s.model);
+  pushValue(args, "--vision", s.vision);
   pushValue(args, "--mtp", s.mtp);
   pushValue(args, "--mtp-draft", s.mtpDraft);
   pushValue(args, "--mtp-margin", s.mtpMargin);
+  if (s.dspark) args.push("--dspark");
+  if (s.dsparkStrict) args.push("--dspark-strict");
+  pushValue(args, "--dspark-confidence", s.dsparkConfidence);
+  if (s.mtpExactSampling) args.push("--mtp-exact-sampling");
   pushValue(args, "--ctx", s.ctx);
   pushValue(args, "--tokens", s.tokens);
   if (Number(s.threads) > 0) pushValue(args, "--threads", s.threads);
@@ -55,6 +77,16 @@ export function buildDs4WrapperArgs(config) {
   if (s.backend === "cpu") args.push("--cpu");
   if (s.quality) args.push("--quality");
   if (s.warmWeights) args.push("--warm-weights");
+  // Same SSD-streaming passthrough as buildDs4Args: V4.1 refuses to start at a
+  // large context without it ("needs 167.26 GiB ... Use --ssd-streaming").
+  if (s.ssdStreaming) args.push("--ssd-streaming");
+  if (s.ssdStreamingCold) args.push("--ssd-streaming-cold");
+  pushValue(args, "--ssd-streaming-cache-experts", s.ssdStreamingCacheExperts);
+  if (Number(s.ssdStreamingFullLayers) > 0)
+    pushValue(args, "--ssd-streaming-full-layers", s.ssdStreamingFullLayers);
+  if (Number(s.ssdStreamingPreloadExperts) > 0)
+    pushValue(args, "--ssd-streaming-preload-experts", s.ssdStreamingPreloadExperts);
+  pushValue(args, "--power", s.power);
   pushValue(args, "--host", s.host);
   pushValue(args, "--port", s.port);
   pushValue(args, "--max-queued-jobs", "1"); // wrapper mutual-exclusive mode
@@ -76,6 +108,11 @@ export function buildDs4WrapperArgs(config) {
   if (w.freezeOnSwitch) args.push("--freeze-on-switch");
   if (w.freeInactiveSession) args.push("--free-inactive-session");
   pushValue(args, "--ram-freeze-max-mb", w.ramFreezeMaxMb);
+  // Without this the agent's google_search/visit_page block: ds4_web.c asks for
+  // consent to start a visible Chrome, ds4_agent_runtime answers with
+  // opt.allow_browser, and the wrapper defaults it to false. The tool then
+  // fails with no way for the UI to grant it, which reads as "search is broken".
+  if (w.agentAllowBrowser) args.push("--agent-allow-browser");
   return { command: w.binary, args };
 }
 

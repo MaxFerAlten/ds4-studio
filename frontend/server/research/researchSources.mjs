@@ -34,7 +34,19 @@ export function normalizeSource(raw = {}, seq = 1) {
     // retrieve real passages — not just the short provider snippet.
     content: String(raw.content || raw.text || snippet || "").slice(0, 12000),
     authors: Array.isArray(raw.authors) ? raw.authors : [],
-    chunks: Array.isArray(raw.chunks) ? raw.chunks : []
+    // Bibliographic identity travels with the source or it cannot be checked
+    // later: a citation rendered from title and authors alone has nothing an
+    // identity resolver can resolve (QF-08 §30.3). Absent means null, never a
+    // value derived from one of the others.
+    doi: raw.doi || null,
+    arxivId: raw.arxivId || null,
+    openAlexId: raw.openAlexId || null,
+    publishedAt: raw.publishedAt || null,
+    chunks: Array.isArray(raw.chunks) ? raw.chunks : [],
+    // Named by the user in the request, rather than found by a search engine.
+    // This field is the whole reason such a source outranks the others, and the
+    // allowlist above silently dropped it.
+    pinned: Boolean(raw.pinned)
   };
   const quality = classifySource(source);
   return {

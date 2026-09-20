@@ -2053,6 +2053,35 @@ pre {
   margin-top: 2px;
 }
 
+/* Lean 4 panel */
+.lean-panel {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.lean-panel .status-pill {
+  font-size: 0.85rem;
+}
+.lean-toolbar {
+  display: flex;
+  gap: 8px;
+}
+.lean-detail {
+  font-size: 0.8rem;
+  color: #8ba0c0;
+}
+.lean-profile {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.8rem;
+  color: #eef2f5;
+}
+.lean-metrics {
+  font-size: 0.75rem;
+  color: #8ba0c0;
+}
+
 /* PageAgent panel */
 .pageagent-panel {
   padding: 12px;
@@ -2305,6 +2334,41 @@ pre {
   line-height: 1.4;
 }
 
+/* Stopping the service is destructive-ish and sits next to a launch button,
+   so it reads as a caution action rather than another way to start things. */
+.agno-stop-service-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 4px 9px;
+  border: 1px solid #6d4b4b;
+  border-radius: 6px;
+  background: #241a1a;
+  color: #e6b9b9;
+  font-size: 0.74rem;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.agno-stop-service-button:hover:not(:disabled) {
+  border-color: #a06a6a;
+  background: #2f2020;
+  color: #ffffff;
+}
+
+.agno-stop-service-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.agno-stop-service-button:focus-visible {
+  outline: 2px solid #e08a8a;
+  outline-offset: 2px;
+}
+
 .agno-native-ui-button {
   display: inline-flex;
   align-items: center;
@@ -2497,3 +2561,182 @@ pre {
   font-weight: 600;
   text-transform: uppercase;
 }
+
+/* Lean history panel — per-session log of lean_check calls */
+.lean-history-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.lean-history-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+}
+
+.lean-history-count {
+  font-size: 0.78rem;
+  color: #8899aa;
+  margin-left: auto;
+}
+
+.lean-history-entry {
+  border: 1px solid #2d3947;
+  border-radius: 6px;
+  background: #0f151c;
+  padding: 8px 12px;
+  font-size: 0.82rem;
+}
+
+.lean-history-entry-error {
+  border-color: #5a2d2d;
+  background: #140b0b;
+}
+
+.lean-history-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: monospace;
+}
+
+.lean-history-icon {
+  width: 18px;
+  text-align: center;
+  font-weight: bold;
+}
+
+.lean-history-entry-error .lean-history-icon {
+  color: #eb5757;
+}
+
+.lean-history-status {
+  font-weight: 600;
+  color: #c8ddf0;
+  min-width: 60px;
+}
+
+.lean-history-profile {
+  color: #8899aa;
+  font-size: 0.72rem;
+  padding: 1px 6px;
+  border: 1px solid #33485d;
+  border-radius: 4px;
+}
+
+.lean-history-time {
+  margin-left: auto;
+  color: #667788;
+  font-size: 0.68rem;
+}
+
+.lean-history-source details,
+.lean-history-diagnostics details {
+  margin-top: 6px;
+}
+
+.lean-history-source summary,
+.lean-history-diagnostics summary {
+  cursor: pointer;
+  color: #99bbdd;
+  font-size: 0.78rem;
+  padding: 2px 0;
+}
+
+.lean-code-block {
+  background: #080c12;
+  border: 1px solid #1a2535;
+  border-radius: 4px;
+  padding: 8px;
+  overflow-x: auto;
+  font-size: 0.75rem;
+  line-height: 1.3;
+  max-height: 200px;
+}
+
+.lean-history-summary {
+  margin-top: 4px;
+  color: #ccddee;
+  font-size: 0.76rem;
+}
+
+.lean-diag-list {
+  margin: 4px 0;
+  padding-left: 16px;
+  list-style: none;
+}
+
+.lean-diag-item {
+  padding: 3px 0;
+  color: #ffaa66;
+  font-size: 0.74rem;
+  font-family: monospace;
+}
+
+/* Lean proof activity — the badge is the contract: VERIFIED only after a
+   checked run, NOT VERIFIED for every terminal state that is not one. */
+.lean-proof-activity {
+  border: 1px solid #2a3a5a;
+  border-radius: 8px;
+  background: #0e1420;
+  margin: 8px 0;
+  padding: 8px 10px;
+  font-size: 0.9em;
+}
+
+.lean-proof-activity.ok { border-color: #2a5a3a; }
+.lean-proof-activity.warn { border-color: #5a4a2a; }
+.lean-proof-activity.bad { border-color: #5a2a2a; }
+
+.lean-proof-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.lean-proof-title {
+  font-weight: 600;
+  opacity: 0.85;
+}
+
+.lean-proof-state { opacity: 0.8; }
+
+.lean-proof-badge {
+  margin-left: auto;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 0.85em;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.lean-proof-badge.ok { background: #1d4a2e; color: #b8f0cc; }
+.lean-proof-badge.bad { background: #4a1d1d; color: #f0c0c0; }
+
+.lean-proof-detail,
+.lean-proof-summary,
+.lean-proof-reason {
+  margin-top: 4px;
+  opacity: 0.75;
+}
+
+.lean-proof-reason { font-family: monospace; font-size: 0.9em; }
+
+.lean-proof-attempts {
+  margin: 6px 0 0;
+  padding-left: 0;
+  list-style: none;
+}
+
+.lean-proof-attempt {
+  display: flex;
+  gap: 8px;
+  opacity: 0.7;
+}
+
+.lean-attempt-index { font-family: monospace; }

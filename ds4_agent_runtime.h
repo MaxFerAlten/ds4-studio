@@ -43,16 +43,21 @@ typedef struct {
 
 typedef struct {
     bool ok;
+    bool changed;
     int http_status;
     bool switch_to_server;
     char command[16];
+    char error_code[64];
     char *message;
     char *data_json;
 } ds4_agent_command_result;
 
+/* On failure err holds the reason, e.g. the worker's own startup error. */
 int ds4_agent_runtime_init(ds4_agent_runtime **out,
                            ds4_wrapper *wrapper,
-                           const ds4_agent_runtime_options *opt);
+                           const ds4_agent_runtime_options *opt,
+                           char *err,
+                           size_t err_len);
 
 void ds4_agent_runtime_free(ds4_agent_runtime *rt);
 

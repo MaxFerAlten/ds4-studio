@@ -14,6 +14,24 @@ export function abstractInvertedIndexToText(index) {
   return positions.filter((w) => w !== undefined).join(" ");
 }
 
+/** OpenAlex carries authors under authorships; anything else is not an author. */
+export function authorsFromWork(w) {
+  if (!Array.isArray(w?.authorships)) return [];
+  return w.authorships.map((a) => a?.author?.display_name).filter(Boolean);
+}
+
+/** The bibliographic record shape the identity resolver consumes. */
+function openAlexRecord(w) {
+  return {
+    source: "openalex",
+    openAlexId: w?.id || null,
+    doi: w?.doi || null,
+    title: w?.title || w?.display_name || null,
+    authors: authorsFromWork(w),
+    publishedAt: w?.publication_date || null
+  };
+}
+
 export class OpenAlexProvider extends BaseSearchProvider {
   name() {
     return "openalex";
@@ -44,6 +62,9 @@ export class OpenAlexProvider extends BaseSearchProvider {
         url,
         snippet: abstract.slice(0, 400),
         content: abstract,
+        openAlexId: w.id || null,
+        doi: w.doi || null,
+        authors: authorsFromWork(w),
         publishedAt: w.publication_date || null,
         score: typeof w.relevance_score === "number" ? w.relevance_score : 0,
         providerRank: i + 1,
@@ -54,5 +75,26 @@ export class OpenAlexProvider extends BaseSearchProvider {
       };
     });
     return { provider: "openalex", query, results, warnings: [] };
+  }
+
+  /**
+   * Resolve one canonical DOI to the record it actually names.
+   *
+   * OpenAlex answers /works/doi:... with the single work or a 404. A 404 is a
+   * meaningful answer — the DOI names nothing — so it comes back as null rather
+   * than as an exception, which callers cannot distinguish from a network fault.
+   */
+  async lookup(doi, { signal, timeoutMs } = {}) {
+    const id = String(doi || "").trim();
+    if (!id) return null;
+    const api = this.config.endpoint || DEFAULT_API;
+    const res = await this.fetchImpl(`${api}/works/doi:${encodeURIComponent(id)}`, {
+      signal: timeoutSignal(signal, timeoutMs),
+      headers: { "User-Agent": "ds4-studio-research/1.0" }
+    });
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error(`openalex lookup HTTP ${res.status}`);
+    const work = await res.json();
+    return work?.id || work?.doi ? openAlexRecord(work) : null;
   }
 }

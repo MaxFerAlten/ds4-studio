@@ -35,16 +35,16 @@ async function withTmpDir(prefix, fn) {
 
 async function withStructuredSage(fn) {
   const previous = process.env.DS4_SAGE_STRUCTURED_RESULT;
-  const previousAuthoritative = process.env.DS4_SAGE_AUTHORITATIVE_LOOP;
+  const previousAuthoritative = process.env.DS4_SAGE_AUTONOMOUS_ORCHESTRATION;
   process.env.DS4_SAGE_STRUCTURED_RESULT = "1";
-  process.env.DS4_SAGE_AUTHORITATIVE_LOOP = "0";
+  process.env.DS4_SAGE_AUTONOMOUS_ORCHESTRATION = "0";
   try {
     return await fn();
   } finally {
     if (previous === undefined) delete process.env.DS4_SAGE_STRUCTURED_RESULT;
     else process.env.DS4_SAGE_STRUCTURED_RESULT = previous;
-    if (previousAuthoritative === undefined) delete process.env.DS4_SAGE_AUTHORITATIVE_LOOP;
-    else process.env.DS4_SAGE_AUTHORITATIVE_LOOP = previousAuthoritative;
+    if (previousAuthoritative === undefined) delete process.env.DS4_SAGE_AUTONOMOUS_ORCHESTRATION;
+    else process.env.DS4_SAGE_AUTONOMOUS_ORCHESTRATION = previousAuthoritative;
   }
 }
 

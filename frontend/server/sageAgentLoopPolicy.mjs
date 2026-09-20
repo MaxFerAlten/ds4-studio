@@ -13,8 +13,20 @@ export function sageToolBlockDecision(toolCalls = []) {
   return { allowed: true };
 }
 
+/**
+ * Block a final answer while the Sage workflow still owes a phase.
+ *
+ * The condition is mustContinue(), not !canFinalize(): a run that ended on an
+ * infrastructure block or an exhausted budget is terminal, and the model must be
+ * allowed to publish NOT_PUBLISHABLE instead of being blocked forever.
+ */
 export function guardSageFinalization(tracker) {
   if (!tracker?.snapshot().runId || tracker.canFinalize()) {
+    return { blocked: false };
+  }
+  // A terminal run that already received its NOT_PUBLISHABLE notice may speak:
+  // blocking it again would hang the turn on a run that can never become ready.
+  if (tracker.isTerminal?.() && tracker.terminalNoticeDelivered) {
     return { blocked: false };
   }
   return { blocked: true, ...tracker.recordPrematureFinalization() };

@@ -138,6 +138,17 @@ export function createSageActivity(input = {}) {
     status: "idle",
     attempts: 0,
     repairCount: 0,
+    // Orchestration counters (§17.1). The card reports what the runtime
+    // decided; it never derives a phase or a revision on its own.
+    candidateRevision: 0,
+    validatedRevision: null,
+    computeCount: 0,
+    validationCount: 0,
+    plotCount: 0,
+    requiredNextPhase: null,
+    failureClass: null,
+    strategyChangeRequired: false,
+    missingArtifactKinds: [],
     validationPassed: null,
     steps: stepTemplates(taskType),
     corrections: [],
@@ -200,6 +211,23 @@ export function applySageStatus(activity, event = {}) {
       corrections.length,
       Number(event.repairCount) || 0
     ),
+    // Counters only ever grow within a run, so a status event that arrives out
+    // of order cannot walk the card backwards.
+    candidateRevision: Math.max(current.candidateRevision || 0, Number(event.candidateRevision) || 0),
+    validatedRevision: Number.isFinite(Number(event.validatedRevision))
+      ? Number(event.validatedRevision)
+      : current.validatedRevision,
+    computeCount: Math.max(current.computeCount || 0, Number(event.computeCount) || 0),
+    validationCount: Math.max(current.validationCount || 0, Number(event.validationCount) || 0),
+    plotCount: Math.max(current.plotCount || 0, Number(event.plotCount) || 0),
+    requiredNextPhase: event.requiredNextPhase ?? current.requiredNextPhase,
+    failureClass: event.failureClass ?? current.failureClass,
+    strategyChangeRequired: typeof event.strategyChangeRequired === "boolean"
+      ? event.strategyChangeRequired
+      : current.strategyChangeRequired,
+    missingArtifactKinds: Array.isArray(event.missingArtifactKinds)
+      ? [...event.missingArtifactKinds]
+      : current.missingArtifactKinds,
     validationPassed: typeof event.validationPassed === "boolean"
       ? event.validationPassed
       : current.validationPassed,

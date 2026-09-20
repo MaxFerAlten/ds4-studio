@@ -103,16 +103,25 @@ test("compute succeeds but cannot publish before validate", async () => {
   assert.ok(result.sageResult.publication.reasonCodes.includes("SAGE_PUBLICATION_PHASE_INVALID"));
 });
 
-test("compute followed by a premature answer is blocked once", async () => {
+test("compute followed by a premature answer keeps being redirected to validate", async () => {
   const tracker = new SageTurnTracker();
   tracker.begin({ runId: "run-e2e", taskType: "evaluate" });
   recordGatewayResult(tracker, "compute", await executePhase("compute"));
 
-  const first = guardSageFinalization(tracker);
-  const second = guardSageFinalization(tracker);
-  assert.equal(first.retryAllowed, true);
-  assert.equal(second.retryAllowed, false);
-  assert.equal(tracker.snapshot().failureCode, "SAGE_FINALIZATION_BLOCKED");
+  for (let episode = 1; episode <= tracker.config.maxPrematureFinalizations; episode += 1) {
+    const blocked = guardSageFinalization(tracker);
+    assert.equal(blocked.blocked, true, `episodio ${episode}`);
+    assert.equal(blocked.retryAllowed, true, `episodio ${episode} chiuso troppo presto`);
+    assert.match(blocked.guidance, /nextPhase=validate/);
+  }
+
+  const exhausted = guardSageFinalization(tracker);
+  assert.equal(exhausted.retryAllowed, false);
+  assert.match(exhausted.guidance, /SAGE_TERMINAL_NOT_PUBLISHABLE/);
+  assert.equal(
+    tracker.snapshot().failureCode,
+    "SAGE_PREMATURE_FINALIZATION_BUDGET_EXHAUSTED"
+  );
 });
 
 test("a model PASS claim cannot replace runtime validation", async () => {

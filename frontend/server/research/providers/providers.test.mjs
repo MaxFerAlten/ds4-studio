@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { WikipediaProvider, OpenAlexProvider, abstractInvertedIndexToText, TavilyProvider, JinaReaderProvider } from "./providers.mjs";
+import { WikipediaProvider, OpenAlexProvider, abstractInvertedIndexToText, authorsFromWork, TavilyProvider, JinaReaderProvider } from "./providers.mjs";
 
 function json(body, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -69,6 +69,63 @@ test("openalex: maps works to paper sources", async () => {
   assert.equal(out.results[0].url, "https://doi.org/10.1/x");
   assert.match(out.results[0].content, /quantum decoding/);
   assert.equal(out.results[0].raw.citedByCount, 5);
+});
+
+test("openalex: carries bibliographic identity on every result", async () => {
+  const provider = new OpenAlexProvider({
+    fetchImpl: async () =>
+      json({
+        results: [
+          {
+            id: "https://openalex.org/W123",
+            title: "Quantum decoding",
+            doi: "https://doi.org/10.1/x",
+            publication_date: "2025-01-01",
+            authorships: [
+              { author: { display_name: "A. Rossi" } },
+              { author: { display_name: "B. Bianchi" } },
+              { author: {} }
+            ]
+          }
+        ]
+      })
+  });
+  const out = await provider.search("quantum decoding", { maxResults: 1 });
+  assert.equal(out.results[0].openAlexId, "https://openalex.org/W123");
+  assert.equal(out.results[0].doi, "https://doi.org/10.1/x");
+  assert.deepEqual(out.results[0].authors, ["A. Rossi", "B. Bianchi"]);
+
+  assert.deepEqual(authorsFromWork({}), []);
+  assert.deepEqual(authorsFromWork({ authorships: "nope" }), []);
+});
+
+test("openalex: lookup resolves a DOI and reports 404 as no record", async () => {
+  let calledUrl = null;
+  const provider = new OpenAlexProvider({
+    fetchImpl: async (url) => {
+      calledUrl = url;
+      return json({
+        id: "https://openalex.org/W123",
+        display_name: "Quantum decoding",
+        doi: "https://doi.org/10.1/x",
+        publication_date: "2025-01-01",
+        authorships: [{ author: { display_name: "A. Rossi" } }]
+      });
+    }
+  });
+  const record = await provider.lookup("10.1/x");
+  assert.match(calledUrl, /works\/doi:/);
+  assert.equal(record.source, "openalex");
+  assert.equal(record.title, "Quantum decoding");
+  assert.deepEqual(record.authors, ["A. Rossi"]);
+
+  // A 404 is an answer — the DOI names nothing — and must not look like a
+  // network fault to the caller.
+  const missing = new OpenAlexProvider({ fetchImpl: async () => json({}, 404) });
+  assert.equal(await missing.lookup("10.1/nope"), null);
+  assert.equal(await missing.lookup(""), null);
+  const broken = new OpenAlexProvider({ fetchImpl: async () => json({}, 500) });
+  await assert.rejects(() => broken.lookup("10.1/x"), /lookup HTTP 500/);
 });
 
 test("tavily: requires a key and normalizes results", async () => {

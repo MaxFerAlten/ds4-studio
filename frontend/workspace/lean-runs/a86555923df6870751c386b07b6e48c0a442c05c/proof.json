@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "proofs": {
+    "proof-a86555923df6-1787259416-3": [
+      {
+        "runId": "lean-a86555923df6-5-5",
+        "attempt": 1,
+        "status": "failed",
+        "sourceSha256": "665f2da6728f9282912c33d454399e2e18ed49026c03366f549357cdcebe068f",
+        "at": "2026-08-20T20:56:59.204Z"
+      },
+      {
+        "runId": "lean-a86555923df6-6-6",
+        "attempt": 2,
+        "status": "failed",
+        "sourceSha256": "7d30843f676812e1024ba4b73bb3582f50c5fc930fddcb50814bf27c14f1db52",
+        "at": "2026-08-20T20:58:16.246Z"
+      },
+      {
+        "runId": "lean-a86555923df6-7-7",
+        "attempt": 3,
+        "status": "checked",
+        "sourceSha256": "d0798207e89703581428717d9c1fd819c1ffaf124e0f465876d267f0e0bea00d",
+        "at": "2026-08-20T20:58:50.161Z"
+      }
+    ]
+  }
+}

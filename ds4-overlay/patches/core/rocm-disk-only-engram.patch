@@ -1,0 +1,52 @@
+diff --git a/ds4.c b/ds4.c
+--- a/ds4.c
++++ b/ds4.c
+@@ -2752,4 +2752,34 @@
+     }
+ }
+ 
++/* ---- overlay: rocm-disk-only-engram ---------------------------------------
++ * Upstream recognises an Engram table by name alone.  On ROCm the tables live
++ * outside the weight mapping on purpose, so that name check is also what
++ * grants an exemption from the mapping bounds check - and a name is not enough
++ * evidence to hand out that exemption: a malformed descriptor merely called
++ * blk.1.engram_embd.weight would inherit it.  Validate the descriptor instead:
++ * right architecture, right row encoding, right shape, and in bounds against
++ * the FILE rather than against the mapping. */
++static int model_engram_table_index(const ds4_tensor *t) {
++    return ds4_streq(t->name, "blk.1.engram_embd.weight") ? 0 :
++           ds4_streq(t->name, "blk.14.engram_embd.weight") ? 1 : -1;
++}
++
++static DS4_MAYBE_UNUSED bool model_tensor_is_disk_only_engram(
++        const ds4_model *m, const ds4_tensor *t) {
++    if (m->file_size <= m->size || t->abs_offset < m->size ||
++        model_engram_table_index(t) < 0 || t->type != DS4_TENSOR_I8 ||
++        t->ndim != 2 || t->dim[0] != DS4_ENGRAM_ROW_BYTES ||
++        !t->dim[1] || t->dim[1] > UINT32_MAX ||
++        t->bytes != t->dim[1] * DS4_ENGRAM_ROW_BYTES ||
++        t->abs_offset > m->file_size || t->bytes > m->file_size - t->abs_offset)
++        return false;
++    ds4_str arch = {0}, encoding = {0};
++    return model_get_string(m, "general.architecture", &arch) &&
++           ds4_streq(arch, "deepseek41") &&
++           model_get_string(m, "deepseek41.engram.encoding", &encoding) &&
++           ds4_streq(encoding, "e4m3_e8m0_32_row264");
++}
++/* -------------------------------------------------------------------------- */
++
+ /* Engram is deliberately outside the weight mapping, not merely absent from
+@@ -3386,8 +3386,13 @@
+         if (t->bytes == 0) continue;
+         if (t == m->ngram_tensor) continue;
++#ifdef DS4_ROCM_BUILD
++        /* overlay rocm-disk-only-engram: validated exemption, see helper. */
++        if (model_tensor_is_disk_only_engram(m, t)) continue;
++#else
+         if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_DEEPSEEK41 &&
+             (ds4_streq(t->name, "blk.1.engram_embd.weight") ||
+              ds4_streq(t->name, "blk.14.engram_embd.weight"))) continue;
++#endif
+         if (t->abs_offset > m->size || t->bytes > m->size - t->abs_offset) {
+             free(spans);
+             return false;

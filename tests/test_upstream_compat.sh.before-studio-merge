@@ -1,0 +1,45 @@
+#!/bin/sh
+# test_upstream_compat.sh - the DS4 Studio architectural test.
+#
+# Two invariants:
+#   1. upstream files are pristine  -> `git diff` on them is empty
+#   2. every Studio overlay anchor still resolves against that pristine upstream
+#
+# If both hold, `git pull` needs no hand re-adaptation.
+
+set -e
+cd "$(dirname "$0")/.."
+
+UPSTREAM="ds4_agent.c ds4_server.c Makefile"
+fail=0
+
+echo "== upstream purity =="
+for f in $UPSTREAM; do
+    if [ -n "$(git diff --name-only -- "$f")" ] || \
+       [ -n "$(git diff --cached --name-only -- "$f")" ]; then
+        echo "FAIL $f is modified; Studio changes belong in studio/, not upstream"
+        git --no-pager diff --stat -- "$f" | sed 's/^/     /'
+        fail=1
+    else
+        echo "ok   $f pristine"
+    fi
+done
+
+echo
+echo "== overlay anchors =="
+for ops in studio/overlay/*.ops; do
+    [ -e "$ops" ] || continue
+    src=$(basename "$ops" .ops).c
+    if python3 studio/studio_overlay.py verify "$ops" --src "$src"; then
+        echo "ok   $ops"
+    else
+        fail=1
+    fi
+done
+
+echo
+if [ "$fail" -ne 0 ]; then
+    echo "test_upstream_compat: FAIL"
+    exit 1
+fi
+echo "test_upstream_compat: PASS"
