@@ -183,3 +183,51 @@ test("llama.cpp-style timings feed the same panel as ds4's", () => {
   assert.equal(normalizeUsageTiming({ usage: { prompt_tokens: 1 } }).timing, undefined);
   assert.equal(normalizeUsageTiming({}), null);
 });
+
+// The agent stream is normalized server-side (server/index.mjs) rather than in
+// the browser, so a Halogen chunk has to survive that hop with timing intact.
+// Captured from a live halogen-flash-server 0.11.4 stream: the final chunk
+// carries usage and timings together.
+test("maps a Halogen agent chunk to a generation rate", () => {
+  const chunk = {
+    choices: [],
+    usage: { prompt_tokens: 53, completion_tokens: 20, total_tokens: 73 },
+    timings: {
+      prompt_n: 53,
+      predicted_n: 20,
+      prompt_ms: 614.6,
+      predicted_ms: 703.9,
+      cache_n: 12
+    }
+  };
+
+  const usage = normalizeUsageTiming(chunk);
+  assert.equal(usage.timing.decode_tokens, 20);
+  assert.equal(usage.timing.decode_sec, 0.7039);
+  assert.equal(usage.prompt_tokens_details.cached_tokens, 12);
+
+  const stats = streamStatsFromTiming({
+    requestStartMs: 1000,
+    firstTokenMs: 2000,
+    promptTokens: usage.prompt_tokens,
+    promptTokensDetails: usage.prompt_tokens_details,
+    completionTokens: usage.completion_tokens,
+    prefillSeconds: usage.timing.prefill_sec,
+    generationSeconds: usage.timing.decode_sec,
+    generationTokens: usage.timing.decode_tokens,
+    generationSource: "agent",
+    stream: true
+  });
+
+  assert.equal(stats.genTps.toFixed(2), "28.41");
+  assert.equal(stats.genSource, "agent");
+  // The cached prefix splits the two prefill figures, which read alike whenever
+  // the cached-token detail is missing.
+  assert.notEqual(stats.prefillTps, stats.prefillWithCacheTps);
+});
+
+// An intermediate chunk carries timings with usage still null; folding it in
+// early would report a rate before the run is over.
+test("ignores a chunk that has timings but no usage yet", () => {
+  assert.equal(normalizeUsageTiming({ usage: null, timings: { predicted_ms: 500 } }), null);
+});

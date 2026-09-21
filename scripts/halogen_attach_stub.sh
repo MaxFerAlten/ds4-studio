@@ -11,7 +11,7 @@
 #
 # Override the containers with DS4_ENDPOINT_LOG_CONTAINERS (space separated).
 
-CONTAINERS="${DS4_ENDPOINT_LOG_CONTAINERS:-halogen-flash-server_engine_1 halogen-flash-server_api_1}"
+CONTAINERS="${DS4_ENDPOINT_LOG_CONTAINERS:-halogen-flash-server_api_1 halogen-flash-server_engine_1}"
 
 # The frontend polls ds4-only endpoints every couple of seconds. On an endpoint
 # they 404 forever, and the access lines bury the throughput lines that are the
@@ -24,6 +24,66 @@ idle() {
     echo "endpoint-logs: idling (no container logs to follow)"
     exec sleep infinity
 }
+
+container_lifecycle() {
+    action="$1"
+    command -v podman >/dev/null 2>&1 || {
+        echo "endpoint-logs: podman is required to $action Halogen" >&2
+        return 1
+    }
+
+    pending=""
+    for c in $CONTAINERS; do
+        if ! podman container exists "$c" 2>/dev/null; then
+            echo "endpoint-logs: no container named $c" >&2
+            return 1
+        fi
+        running="$(podman inspect --format '{{.State.Running}}' "$c")"
+        if { [ "$action" = "start" ] && [ "$running" != "true" ]; } ||
+           { [ "$action" = "stop" ] && [ "$running" = "true" ]; }; then
+            pending="$pending $c"
+        fi
+    done
+
+    [ -n "$pending" ] || return 0
+    # Container names cannot contain spaces; intentional word splitting keeps
+    # both names in one idempotent podman start/stop command.
+    podman "$action" $pending
+}
+
+halogen_configured() {
+    config="$1"
+    [ -f "$config" ] && command -v node >/dev/null 2>&1 || return 1
+    node -e '
+      const fs = require("fs");
+      try {
+        const cfg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+        const server = cfg?.server || {};
+        const urls = [server.attach?.baseUrl,
+          ...(Array.isArray(server.endpoints) ? server.endpoints.map(e => e?.baseUrl) : [])];
+        const isHalogen = value => {
+          try {
+            const endpoint = new URL(value);
+            return endpoint.protocol === "http:" &&
+              (endpoint.hostname === "127.0.0.1" || endpoint.hostname === "localhost") &&
+              endpoint.port === "8731";
+          } catch { return false; }
+        };
+        process.exit(urls.some(isHalogen) ? 0 : 1);
+      } catch { process.exit(1); }
+    ' "$config" 2>/dev/null
+}
+
+case "${1:-logs}" in
+    start|stop)
+        container_lifecycle "$1"
+        exit $?
+        ;;
+    configured)
+        halogen_configured "${2:-}"
+        exit $?
+        ;;
+esac
 
 command -v podman >/dev/null 2>&1 || idle
 

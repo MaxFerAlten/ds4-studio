@@ -16,35 +16,11 @@ export function estimateTokenCount(text) {
  * Prefill still had a browser-side fallback (time to first token), which is why
  * only the generation figure went missing -- and why "effettivo" and "con cache"
  * showed the same number, there being no cached-token detail either.
+ *
+ * The agent stream needs the same mapping before the browser sees it, so the
+ * implementation is shared with the Node server.
  */
-export function normalizeUsageTiming(payload) {
-  const usage = payload?.usage;
-  if (!usage || typeof usage !== "object") return null;
-  if (usage.timing) return usage;
-
-  const t = payload.timings;
-  if (!t || typeof t !== "object") return usage;
-
-  const seconds = (ms) => {
-    const value = Number(ms);
-    return Number.isFinite(value) && value > 0 ? value / 1000 : undefined;
-  };
-  const timing = {};
-  const prefill = seconds(t.prompt_ms);
-  const decode = seconds(t.predicted_ms);
-  if (prefill !== undefined) timing.prefill_sec = prefill;
-  if (decode !== undefined) timing.decode_sec = decode;
-  if (Number(t.predicted_n) > 0) timing.decode_tokens = Number(t.predicted_n);
-  if (!Object.keys(timing).length) return usage;
-
-  const out = { ...usage, timing };
-  // cache_n is the prompt prefix served from cache, which is what splits
-  // "prefill effettivo" from "prefill con cache".
-  if (Number(t.cache_n) > 0 && !out.prompt_tokens_details) {
-    out.prompt_tokens_details = { cached_tokens: Number(t.cache_n) };
-  }
-  return out;
-}
+export { normalizeUsageTiming } from "../shared/usageTiming.mjs";
 
 export function streamStatsFromTiming({
   requestStartMs,
