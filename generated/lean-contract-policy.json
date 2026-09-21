@@ -1,0 +1,22 @@
+{
+  "policy": {
+    "schemaVersion": 1,
+    "requestContract": "lean_check_request_v1",
+    "resultContract": "lean_result_v1",
+    "executionMode": "check",
+    "proofPolicy": "typecheck",
+    "sandboxRequired": true,
+    "verifiedStatus": "checked",
+    "requiresExitCodeZero": true,
+    "requiresNoTimeout": true,
+    "requiresNoCancellation": true,
+    "requiresSourceIdentity": true,
+    "requiresTargetStatementIdentity": true,
+    "targetIdentityAlgorithm": "lean-target-statement-v1",
+    "inspectRequiredBeforeCheck": false,
+    "proofTaskMode": "proof",
+    "utilityTaskMode": "utility",
+    "orchestrationContractVersion": 2
+  },
+  "revision": "d071a74193e231fe827d6387841f9e23749a0492bd56a3e2c2e9c77a4900e40b"
+}

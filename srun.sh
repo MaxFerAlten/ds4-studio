@@ -343,6 +343,9 @@ if [[ $# -gt 0 && "$1" == "stop" ]]; then
   shift
   stop_all_ds4
   stop_launch_ports
+  if "$ROOT_DIR/scripts/halogen_attach_stub.sh" configured "$CONFIG_PATH"; then
+    "$ROOT_DIR/scripts/halogen_attach_stub.sh" stop
+  fi
   exit 0
 fi
 
@@ -648,6 +651,13 @@ ensure_backend() {
 }
 
 configure_rocm_runtime
+
+# Halogen must be reachable before the tuning picker probes its /v1/models.
+if "$ROOT_DIR/scripts/halogen_attach_stub.sh" configured "$CONFIG_PATH"; then
+  echo "srun.sh: ensuring Halogen containers are running"
+  "$ROOT_DIR/scripts/halogen_attach_stub.sh" start
+fi
+
 run_tuning_gui
 
 if ! command -v node >/dev/null 2>&1; then

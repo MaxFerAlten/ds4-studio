@@ -4,6 +4,7 @@ import { createServer as createViteServer } from "vite";
 import { parseCommandLine, buildDs4WrapperArgs } from "./commandBuilder.mjs";
 import { buildDs4Args, loadConfig, mergeRequestOverConfig, redactConfigSecrets, saveConfig, validateConfig } from "./config.mjs";
 import { DEFAULT_CONFIG, REQUEST_DEFAULTS } from "./defaultConfig.mjs";
+import { normalizeUsageTiming } from "../shared/usageTiming.mjs";
 import { buildServerLaunchConfig, prepareServerLaunchPaths } from "./serverLaunchConfig.mjs";
 import {
   deleteAllConversationHistory,
@@ -3020,9 +3021,13 @@ const authoritativeSageChat = compactSageChat &&
           let event;
           try { event = JSON.parse(raw); } catch { continue; }
 
-          if (event.usage) {
-            const totals = agentSession.recordUsage(event.usage);
-            writeAgentSse("agent_usage", { ...event.usage, totals });
+          // llama.cpp-shaped backends put timing in a sibling `timings` block,
+          // which stops here unless it is folded into usage: the browser only
+          // reads `usage.timing`, so gen t/s would read n/a for the agent.
+          const usage = normalizeUsageTiming(event);
+          if (usage) {
+            const totals = agentSession.recordUsage(usage);
+            writeAgentSse("agent_usage", { ...usage, totals });
             const budgetStatus = agentBudgetStatus(fullMessages, totals, agentTokenBudget);
             if (budgetStatus.exceeded) {
               throw new Error(formatAgentBudgetError(budgetStatus));
