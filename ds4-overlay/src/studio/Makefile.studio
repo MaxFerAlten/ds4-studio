@@ -99,18 +99,27 @@ wrapper-status:
 # -----------------------------------------------------------------------------
 # Generated orchestration policy headers. The JSON files stay the source of
 # truth so native and Node orchestration cannot silently drift.
+#
+# In the overlay shadow these scripts are symlinks to upstream. node resolves a
+# symlinked entry point to its real path, so import.meta.url is the upstream
+# path while argv[1] is the shadow one, and the "am I being run directly?"
+# guard in the generators sees two different paths and writes nothing - a
+# silent no-op make reads as success, leaving the compile to die on a header it
+# believes it just built. Hand node the real path so both agree.
 # -----------------------------------------------------------------------------
+NODE_GEN = node "$$(readlink -f $(1))"
+
 generated/lean_orchestration_policy.h: config/lean-orchestration-policy.json scripts/generate-lean-orchestration-policy.mjs
-	node scripts/generate-lean-orchestration-policy.mjs
+	$(call NODE_GEN,scripts/generate-lean-orchestration-policy.mjs)
 
 generated/sage_orchestration_policy.h: config/sage-orchestration-policy.json scripts/generate-sage-orchestration-policy.mjs
-	node scripts/generate-sage-orchestration-policy.mjs
+	$(call NODE_GEN,scripts/generate-sage-orchestration-policy.mjs)
 
 generated/lean_contract_policy.h generated/lean-contract-policy.json: config/lean-contract-policy.json scripts/generate-lean-contract-policy.mjs
-	node scripts/generate-lean-contract-policy.mjs
+	$(call NODE_GEN,scripts/generate-lean-contract-policy.mjs)
 
 generated/agent_loop_policy.h generated/agent-loop-policy.json: config/agent-loop-policy.json scripts/generate-agent-loop-policy.mjs
-	node scripts/generate-agent-loop-policy.mjs
+	$(call NODE_GEN,scripts/generate-agent-loop-policy.mjs)
 
 ORCH_POLICY_HEADERS := generated/lean_orchestration_policy.h \
                        generated/sage_orchestration_policy.h \

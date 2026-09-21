@@ -1,11 +1,13 @@
 #!/bin/sh
 # test_compose_shadow.sh - end-to-end composer contract.
 #
-# Asserts the four properties the whole design rests on:
+# Asserts the five properties the whole design rests on:
 #   1. a shadow composes from a pristine upstream;
 #   2. patch targets are REAL COPIES, never sharing an inode with upstream;
 #   3. upstream is byte-identical afterwards;
-#   4. a broken anchor STOPS the compose - it is never patched approximately.
+#   4. a broken anchor STOPS the compose - it is never patched approximately;
+#   5. generated/ is a live view of upstream, so build outputs written after
+#      the compose are still visible to the compiler.
 
 set -e
 OVERLAY="$(cd "$(dirname "$0")/.." && pwd)"
@@ -84,6 +86,24 @@ else
     else
         bad "compose failed but not with ANCHOR_FAIL:"; sed 's/^/     /' "$WORK/broken.log"
     fi
+fi
+
+say ""
+say "== 5. generated/ is a live view of upstream's build outputs =="
+# The policy-header generators are run by make from inside the shadow, but node
+# resolves their symlinked path back to upstream and writes there. A per-file
+# mirror taken at compose time cannot show that: on a clean tree there is
+# nothing to mirror yet, and the compile dies on a header make just built.
+if [ -L "$SHADOW/generated" ] && [ -d "$SHADOW/generated" ]; then
+    printf 'probe\n' >"$CLONE/generated/probe.h"
+    if [ -f "$SHADOW/generated/probe.h" ]; then
+        say "ok   build output written after the compose is visible"
+    else
+        bad "generated/ in the shadow does not follow upstream"
+    fi
+    rm -f "$CLONE/generated/probe.h"
+else
+    bad "shadow has no generated/ link (clean upstream has no generated/ yet)"
 fi
 
 say ""

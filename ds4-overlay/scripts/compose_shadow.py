@@ -30,7 +30,10 @@ import exact_patch  # noqa: E402
 # (plan section 2, invariant 10), build outputs and editor/tool scratch.
 EXCLUDE_DIRS = {".git", "temp", "tmp", ".build", "build", "__pycache__",
                 ".serena", ".codex", ".tokensave", ".claude", "node_modules",
-                "gguf", ".venv", "venv", "ds4-overlay"}
+                "gguf", ".venv", "venv", "ds4-overlay", "generated"}
+
+# generated/ is mirrored as one directory symlink instead (see link_generated).
+GENERATED_DIR = "generated"
 EXCLUDE_EXTS = {".o", ".a", ".so", ".dylib", ".pyc", ".gguf", ".orig",
                 ".rej", ".bak", ".buk", ".swp"}
 EXCLUDE_NAMES = {".DS_Store"}
@@ -171,6 +174,19 @@ def compose(upstream, overlay, out, only=None, keep=False):
         else:
             os.symlink(src, dst)            # read-only by convention + guard
             n_link += 1
+
+    # generated/ holds build outputs, not sources: Makefile.studio builds the
+    # orchestration policy headers from config/*.json by running scripts/*.mjs
+    # from inside the shadow. node resolves those symlinked scripts back to
+    # their real path, so they always write into upstream's generated/ - which
+    # the Node frontend reads from too. Mirroring that directory file by file
+    # only works when it already exists at compose time; on a clean tree it
+    # does not, and the compile dies on a header make has just written. One
+    # directory symlink is a live view instead, whenever the files appear.
+    os.makedirs(os.path.join(upstream, GENERATED_DIR), exist_ok=True)
+    gen_dst = os.path.join(out, GENERATED_DIR)
+    if not os.path.lexists(gen_dst):
+        os.symlink(os.path.join(upstream, GENERATED_DIR), gen_dst)
 
     # Overlay-owned sources land after upstream so a feature can add files
     # without any patch at all (level L0).
