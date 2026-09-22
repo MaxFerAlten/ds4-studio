@@ -455,6 +455,17 @@ def probe_endpoint(base_url: str, timeout: float = 4.0) -> list[str]:
     return [str(m["id"]) for m in data if isinstance(m, dict) and m.get("id")]
 
 
+def managed_halogen_model(endpoint: Endpoint) -> str:
+    """Configured model usable before the launcher starts local Halogen."""
+    try:
+        host, port = endpoint_target(endpoint.base_url)
+    except ValueError:
+        return ""
+    if host not in ("127.0.0.1", "localhost") or port != 8731:
+        return ""
+    return endpoint.model.strip()
+
+
 def apply_endpoint(config: dict[str, Any], endpoint: Endpoint, model_id: str) -> None:
     host, port = endpoint_target(endpoint.base_url)
     server = config.setdefault("server", {})
@@ -915,9 +926,18 @@ class ModelPickerDialog:
         try:
             models = probe_endpoint(endpoint.base_url)
         except Exception as err:
-            self.ep_model["values"] = []
-            self.set_detail(f"{endpoint.label}\n\nUNREACHABLE\n\n{err}\n\n"
-                            f"Start the server, or remove it from server.endpoints.")
+            offline_model = managed_halogen_model(endpoint)
+            self.ep_model["values"] = [offline_model] if offline_model else []
+            self.ep_model_var.set(offline_model)
+            if offline_model:
+                self.set_detail(
+                    f"{endpoint.label}\n\nOFFLINE\n\n{err}\n\n"
+                    f"Configured model: {offline_model}\n"
+                    "Confirm this selection and DS4 Studio will start Halogen."
+                )
+            else:
+                self.set_detail(f"{endpoint.label}\n\nUNREACHABLE\n\n{err}\n\n"
+                                f"Start the server, or remove it from server.endpoints.")
             return
         self.ep_model["values"] = models
         wanted = endpoint.model or str(get_path_or(self.config, "server.attach.model", "") or "")
@@ -982,6 +1002,8 @@ class ModelPickerDialog:
         row = self.selected_row()
         if isinstance(row, Endpoint):
             model_id = self.ep_model_var.get().strip()
+            if not model_id:
+                model_id = managed_halogen_model(row)
             if not model_id:
                 # The combobox is empty when the preview probe failed. Probe
                 # again here rather than repeating "unreachable or advertises
@@ -1265,6 +1287,15 @@ def self_check() -> int:
             pass
         else:
             raise AssertionError("accepted an unrepresentable base URL: %s" % bad)
+
+    # Local managed Halogen is selectable while offline; unrelated endpoints
+    # must still pass their live /v1/models probe.
+    assert managed_halogen_model(
+        Endpoint("Halogen", "http://127.0.0.1:8731/v1", "halogen-qwen3.8-flash-next")
+    ) == "halogen-qwen3.8-flash-next"
+    assert managed_halogen_model(
+        Endpoint("Remote", "http://box.lan:8731/v1", "remote-model")
+    ) == ""
 
     # attach round trip must restore the local backend verbatim
     local = {"server": {"binary": "./ds4-server", "host": "127.0.0.1", "port": 8002},

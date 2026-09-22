@@ -116,6 +116,88 @@ export function HistoryPanel({
             {historyTab === "lean4" && config?.lean?.enabled ? (
               <LeanHistoryPanel />
             ) : null}
+            {historyTab === "chat" || historyTab === "agent" ? (
+              <>
+                <div className="history-section-header">
+                  <strong>{activeConversationHistoryLabel}</strong>
+                </div>
+                {historyTab === "agent" && historySessions.length > 0 && !historyMetadataAvailable ? (
+                  <div className="status-pill warn">
+                    Agent history is enabled, but the live history endpoint is not returning metadata yet.
+                  </div>
+                ) : null}
+                <label className="setting-row">
+                  <input
+                    type="checkbox"
+                    checked={Boolean((historyDraft || historyConfig).enabled)}
+                    onChange={(event) => updateHistoryDraft("enabled", event.target.checked)}
+                  />
+                  <span>Keep chat history</span>
+                </label>
+                <label className="field full" data-tooltip="Server-side directory where Markdown history files are stored.">
+                  <span>History folder</span>
+                  <input
+                    value={(historyDraft || historyConfig).dir || ""}
+                    placeholder="/home/tendermachine/workspace_ds4studio/history"
+                    onChange={(event) => updateHistoryDraft("dir", event.target.value)}
+                  />
+                </label>
+                <div className="button-row">
+                  <button type="button" onClick={saveHistorySettings} disabled={historyBusy}>
+                    Save history settings
+                  </button>
+                  <button type="button" onClick={() => refreshHistorySessions()} disabled={historyListBusy}>
+                    Refresh sessions
+                  </button>
+                  <button
+                    type="button"
+                    onClick={deleteAllHistorySessions}
+                    disabled={historyListBusy || !historySessions.length}
+                    title="Delete every session file in the history folder"
+                  >
+                    Delete all
+                  </button>
+                </div>
+                {historyStatus ? <div className="status-pill">{historyStatus}</div> : null}
+                <div className="history-session-list">
+                  {historyListBusy ? <div className="status-pill">Loading sessions...</div> : null}
+                  {!historyListBusy && !activeConversationHistorySessions.length ? (
+                    <div className="status-pill warn">
+                      No saved {historyTab === "agent" ? "agent sessions" : "chat sessions"}
+                    </div>
+                  ) : null}
+                  {activeConversationHistorySessions.map((session) => (
+                    <div
+                      className="history-session-row"
+                      key={session.fileName}
+                    >
+                      <button
+                        type="button"
+                        className="history-session"
+                        onClick={() => loadHistorySession(session.fileName)}
+                        title={session.fileName}
+                      >
+                        <strong>{session.title}</strong>
+                        <span>{session.fileName}</span>
+                        <small>
+                          {session.metadata?.agentMode ? "Agent mode · " : ""}
+                          {session.messages} messages · {(session.size / 1024).toFixed(1)} KB
+                        </small>
+                      </button>
+                      <button
+                        type="button"
+                        className="history-session-delete"
+                        onClick={() => deleteHistorySession(session.fileName)}
+                        title={`Delete ${session.fileName}`}
+                        disabled={historyListBusy}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : null}
           </div>
   );
 }

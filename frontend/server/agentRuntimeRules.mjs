@@ -43,6 +43,21 @@ export function agentEpistemicRulesSection() {
   ].join("\n");
 }
 
+/** Tell the agent which configured model id this session actually sends. */
+export function agentRuntimeIdentitySection(model) {
+  const modelId = String(model ?? "")
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 256);
+  if (!modelId) return null;
+  return [
+    "Runtime identity:",
+    `- This agent session sends model requests with configured identifier ${JSON.stringify(modelId)}.`,
+    "- If asked which model is running, report that identifier exactly. It is routing metadata: do not infer unlisted weights, architecture, parameter count, or provider from it."
+  ].join("\n");
+}
+
 /**
  * Optional addendum (§13): governs the compact session memory capsule. Only
  * joined into the system prompt when the ContextWiki feature is enabled, so the

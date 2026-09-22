@@ -28,6 +28,33 @@ test("manager records command and captures child output", async () => {
   assert.equal(manager.status().running, false);
 });
 
+test("startup retries a transient health-check connection reset", async () => {
+  let checks = 0;
+  const manager = new Ds4ProcessManager({
+    buildCommand: () => ({
+      command: process.execPath,
+      args: ["-e", "setTimeout(() => {}, 2000)"]
+    }),
+    healthCheck: async () => {
+      checks += 1;
+      if (checks === 1) {
+        const error = new Error("read ECONNRESET");
+        error.code = "ECONNRESET";
+        throw error;
+      }
+      return true;
+    }
+  });
+  try {
+    const status = await manager.start();
+    assert.equal(status.running, true);
+    assert.equal(status.healthy, true);
+    assert.equal(checks, 2);
+  } finally {
+    await manager.stop();
+  }
+});
+
 test("restart replaces the child process", async () => {
   const manager = new Ds4ProcessManager({
     buildCommand: () => ({

@@ -1,9 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import {
   agentCoreRulesSection,
   agentContextMemorySection,
-  agentEpistemicRulesSection
+  agentEpistemicRulesSection,
+  agentRuntimeIdentitySection
 } from "./agentRuntimeRules.mjs";
 
 test("core rules state the evidence/synthesis/no-invention/cite principles concisely", () => {
@@ -50,4 +52,24 @@ test("epistemic rules preserve status until evidence authorizes promotion", () =
   assert.match(text, /Expected output is not observed output/);
   assert.match(text, /preserve uncertainty explicitly/);
   assert.equal(text.split("\n").length, 8);
+});
+
+test("runtime identity reports the configured model id without inventing implementation details", () => {
+  const text = agentRuntimeIdentitySection("halogen-qwen3.8-flash-next");
+  assert.match(text, /configured identifier "halogen-qwen3\.8-flash-next"/);
+  assert.match(text, /report that identifier exactly/);
+  assert.match(text, /do not infer unlisted weights, architecture, parameter count, or provider/);
+});
+
+test("runtime identity keeps request-controlled model ids on one bounded line", () => {
+  const text = agentRuntimeIdentitySection(`model\n${"x".repeat(400)}`);
+  assert.equal(text.split("\n").length, 3);
+  assert.ok(text.length < 700);
+  assert.equal(agentRuntimeIdentitySection(""), null);
+});
+
+test("agent production prompt receives the same model id used by the request payload", async () => {
+  const source = await readFile(new URL("./index.mjs", import.meta.url), "utf8");
+  assert.match(source, /const agentModelId = buildChatPayload\(reqParams, \[\]\)\.model/);
+  assert.match(source, /agentRuntimeIdentitySection\(agentModelId\)/);
 });

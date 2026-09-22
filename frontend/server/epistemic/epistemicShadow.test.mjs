@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { SEVERITY } from "./epistemicContracts.mjs";
-import { buildEpistemicShadowTrace } from "./epistemicShadow.mjs";
+import { buildEpistemicShadowTrace, observeEpistemicShadow } from "./epistemicShadow.mjs";
 import { createEpistemicTurn, evaluateEpistemicTurn, withholdsOutput } from "./epistemicTurn.mjs";
 
 const SHADOW = Object.freeze({ enabled: true, mode: "shadow", blockSeverity: 4 });
@@ -60,4 +60,21 @@ test("a clean shadow trace has no invented failure", () => {
   assert.equal(trace.failureCode, null);
   assert.deepEqual(trace.failureCodes, []);
   assert.equal(trace.severity, SEVERITY.NONE);
+});
+
+test("shadow observation reports a decision without blocking publication", async () => {
+  let resolveEvaluation;
+  const evaluation = new Promise((resolve) => {
+    resolveEvaluation = resolve;
+  });
+  const observed = [];
+
+  observeEpistemicShadow(evaluation, {
+    onDecision: (decision) => observed.push(decision)
+  });
+
+  assert.deepEqual(observed, []);
+  resolveEvaluation({ code: "EPISTEMIC_CLEAN" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(observed, [{ code: "EPISTEMIC_CLEAN" }]);
 });

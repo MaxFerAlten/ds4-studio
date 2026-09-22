@@ -51,6 +51,18 @@ container_lifecycle() {
     podman "$action" $pending
 }
 
+halogen_running() {
+    command -v podman >/dev/null 2>&1 || return 1
+    for c in $CONTAINERS; do
+        podman container exists "$c" 2>/dev/null || return 1
+    done
+    for c in $CONTAINERS; do
+        running="$(podman inspect --format '{{.State.Running}}' "$c" 2>/dev/null)" || return 1
+        [ "$running" = "true" ] && return 0
+    done
+    return 1
+}
+
 halogen_configured() {
     config="$1"
     [ -f "$config" ] && command -v node >/dev/null 2>&1 || return 1
@@ -69,7 +81,37 @@ halogen_configured() {
               endpoint.port === "8731";
           } catch { return false; }
         };
-        process.exit(urls.some(isHalogen) ? 0 : 1);
+        const legacy = String(server.binary || "").endsWith("halogen_attach_stub.sh") &&
+          (server.host === "127.0.0.1" || server.host === "localhost") &&
+          Number(server.port) === 8731;
+        process.exit(urls.some(isHalogen) || legacy ? 0 : 1);
+      } catch { process.exit(1); }
+    ' "$config" 2>/dev/null
+}
+
+halogen_selected() {
+    config="$1"
+    [ -f "$config" ] && command -v node >/dev/null 2>&1 || return 1
+    node -e '
+      const fs = require("fs");
+      try {
+        const cfg = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+        const server = cfg?.server || {};
+        const attach = server.attach || {};
+        let attached = false;
+        try {
+          const endpoint = new URL(attach.baseUrl);
+          attached = attach.mode === "endpoint" &&
+            endpoint.protocol === "http:" &&
+            (endpoint.hostname === "127.0.0.1" || endpoint.hostname === "localhost") &&
+            endpoint.port === "8731";
+        } catch {}
+        const legacy = !attach.mode &&
+          String(server.binary || "").endsWith("halogen_attach_stub.sh") &&
+          (server.host === "127.0.0.1" || server.host === "localhost") &&
+          Number(server.port) === 8731;
+        const selected = attached || legacy;
+        process.exit(selected ? 0 : 1);
       } catch { process.exit(1); }
     ' "$config" 2>/dev/null
 }
@@ -79,8 +121,16 @@ case "${1:-logs}" in
         container_lifecycle "$1"
         exit $?
         ;;
+    running)
+        halogen_running
+        exit $?
+        ;;
     configured)
         halogen_configured "${2:-}"
+        exit $?
+        ;;
+    selected)
+        halogen_selected "${2:-}"
         exit $?
         ;;
 esac

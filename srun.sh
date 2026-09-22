@@ -652,13 +652,19 @@ ensure_backend() {
 
 configure_rocm_runtime
 
-# Halogen must be reachable before the tuning picker probes its /v1/models.
-if "$ROOT_DIR/scripts/halogen_attach_stub.sh" configured "$CONFIG_PATH"; then
-  echo "srun.sh: ensuring Halogen containers are running"
-  "$ROOT_DIR/scripts/halogen_attach_stub.sh" start
-fi
-
 run_tuning_gui
+
+# Halogen is a selectable backend, not a prerequisite for the picker. The
+# picker can use its configured model id while it is offline; only the backend
+# that the user confirmed is started. Conversely, selecting anything else
+# leaves no DS4-managed Halogen containers running from an earlier launch.
+if "$ROOT_DIR/scripts/halogen_attach_stub.sh" selected "$CONFIG_PATH"; then
+  echo "srun.sh: Halogen selected; starting Halogen containers"
+  "$ROOT_DIR/scripts/halogen_attach_stub.sh" start
+elif "$ROOT_DIR/scripts/halogen_attach_stub.sh" running; then
+  echo "srun.sh: Halogen not selected; stopping active Halogen containers"
+  "$ROOT_DIR/scripts/halogen_attach_stub.sh" stop
+fi
 
 if ! command -v node >/dev/null 2>&1; then
   echo "srun.sh: node is required" >&2

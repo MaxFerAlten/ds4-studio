@@ -127,7 +127,8 @@ import { autonomyPromptSection } from "./agentAutonomy.mjs";
 import {
   agentCoreRulesSection,
   agentContextMemorySection,
-  agentEpistemicRulesSection
+  agentEpistemicRulesSection,
+  agentRuntimeIdentitySection
 } from "./agentRuntimeRules.mjs";
 import { createHeadroomHandlers } from "./headroomControl.mjs";
 import {
@@ -145,6 +146,8 @@ import { createLeanTaskSpec } from "./lean/leanTaskSpec.mjs";
 import { AuthoritativeOutputBuffer } from "./authoritativeOutputBuffer.mjs";
 import { createEpistemicTurn, evaluateEpistemicTurn, withholdsOutput } from "./epistemic/epistemicTurn.mjs";
 import { EpistemicSourceContext } from "./epistemic/epistemicSourceContext.mjs";
+import { EpistemicSessionLedger } from "./epistemic/epistemicSessionLedger.mjs";
+import { observeEpistemicShadow } from "./epistemic/epistemicShadow.mjs";
 import { applyChallenges, extractChallenges } from "./epistemic/epistemicChallengeExtractor.mjs";
 import { REPAIR_NEXT, evaluateRepairTransition } from "./epistemic/epistemicRepairPolicy.mjs";
 import { createEpistemicTelemetry } from "./epistemic/epistemicTelemetry.mjs";
@@ -408,6 +411,9 @@ function createEpistemicStructuredClient() {
   return new StructuredModelClient({
     baseUrl,
     model,
+    modelConfig: {
+      think: false
+    },
     errorPrefix: "epistemic model"
   });
 }
@@ -1417,6 +1423,16 @@ app.get("/api/server/status", asyncHandler(async (_req, res) => {
 }));
 
 app.get("/api/server/metrics", asyncHandler(async (_req, res) => {
+  // /api/server/metrics is ds4-server's own endpoint. An OpenAI-compatible
+  // endpoint answers 404 in its own error shape, which says nothing about why:
+  // name the reason instead of forwarding the confusion.
+  if (config.server?.attach?.mode === "endpoint") {
+    res.status(501).json({
+      error: "Server metrics are a ds4-server feature and are not available " +
+        `while attached to an endpoint (${config.server.attach.baseUrl || "unknown"}).`
+    });
+    return;
+  }
   const upstream = await fetch(`${backendBase()}/api/server/metrics`, { signal: AbortSignal.timeout(1000) });
   const text = await upstream.text();
   res.status(upstream.status);
@@ -2456,6 +2472,54 @@ app.post("/api/pageagent/enable", asyncHandler(async (req, res) => {
  * Streams SSE events: agent_status, agent_text, agent_reasoning,
  * agent_tool_call, agent_tool_result, agent_usage, agent_done, agent_error.
  */
+// Runs the epistemic evaluation under a deadline. The inner controller is
+// chained to the caller's signal so a client disconnect still cuts it short,
+// and resolves to null on timeout: the caller treats that as "no decision".
+const EPISTEMIC_TIMEOUT_MS_DEFAULT = 45000;
+
+async function evaluateEpistemicTurnBounded({
+  turn,
+  options,
+  signal,
+  timeoutMs = EPISTEMIC_TIMEOUT_MS_DEFAULT,
+  onTimeout
+}) {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    return evaluateEpistemicTurn(turn, { ...options, signal });
+  }
+
+  const inner = new AbortController();
+  const abortInner = () => inner.abort();
+  signal?.addEventListener("abort", abortInner, { once: true });
+
+  let timer = null;
+  let timedOut = false;
+  try {
+    const decision = await Promise.race([
+      evaluateEpistemicTurn(turn, { ...options, signal: inner.signal }),
+      new Promise((resolve) => {
+        timer = setTimeout(() => {
+          timedOut = true;
+          inner.abort();
+          resolve(null);
+        }, timeoutMs);
+      })
+    ]);
+    if (timedOut) onTimeout?.(timeoutMs);
+    return timedOut ? null : decision;
+  } catch (err) {
+    // An abort we caused is the timeout, not a failure to report upwards.
+    if (timedOut) {
+      onTimeout?.(timeoutMs);
+      return null;
+    }
+    throw err;
+  } finally {
+    if (timer) clearTimeout(timer);
+    signal?.removeEventListener("abort", abortInner);
+  }
+}
+
 app.post("/api/agent/chat", asyncHandler(async (req, res) => {
   if (wrapperEnabled()) {
     const { message } = req.body;
@@ -2601,6 +2665,7 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
   // ContextWiki (§8/§9/§13): read config once per turn. When disabled (default),
   // the context memory rules are omitted so the base system prompt is unchanged.
   const contextConfig = runtimeConfig.contextWiki;
+  const agentModelId = buildChatPayload(reqParams, []).model;
 
   let fullMessages = agentSession.messages();
   if (!fullMessages.length) {
@@ -2613,6 +2678,7 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
       autonomyPromptSection(),
       agentCoreRulesSection(),
       agentEpistemicRulesSection(),
+      agentRuntimeIdentitySection(agentModelId),
       contextConfig.enabled ? agentContextMemorySection() : null
     ].filter(Boolean).join("\n\n");
     fullMessages = [
@@ -2671,10 +2737,16 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
       sageWorkdir: sageSessionDir(fileWorkspace.root, sessionKey)
     });
   const persistEpistemicClaims = runtimeConfig.agent.epistemic.persistSessionClaims === true;
+  const epistemicShadowMode = epistemicTurn.enabled && runtimeConfig.agent.epistemic.mode === "shadow";
   const priorEpistemicClaims = persistEpistemicClaims
     ? agentSession.epistemic.acceptedClaims()
     : [];
-  if (persistEpistemicClaims) agentSession.epistemic.beginTurn();
+  const epistemicSessionTurn = persistEpistemicClaims
+    ? agentSession.epistemic.beginTurn()
+    : null;
+  const epistemicEvaluationLedger = epistemicShadowMode && persistEpistemicClaims
+    ? EpistemicSessionLedger.fromJSON(agentSession.epistemic.toJSON())
+    : agentSession.epistemic;
   for (const prior of priorEpistemicClaims) {
     try {
       epistemicTurn.ledger.importSnapshotClaim(prior);
@@ -2716,6 +2788,17 @@ app.post("/api/agent/chat", asyncHandler(async (req, res) => {
   function writeAgentSse(event, data) {
     if (res.writableEnded) return;
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  }
+
+  // Opt-in per request (/debug start in the composer sets the header), so a
+  // normal run pays nothing and no server-wide flag can be left switched on.
+  const agentDebug = req.get("X-Agent-Debug") === "1";
+  const epistemicTimeoutMs = Number(
+    runtimeConfig.agent?.epistemic?.timeoutMs ?? EPISTEMIC_TIMEOUT_MS_DEFAULT
+  );
+  function writeAgentDebug(stage, data) {
+    if (!agentDebug) return;
+    writeAgentSse("agent_debug", { stage, ...data });
   }
 
 const compactSageChat = process.env.DS4_SAGE_COMPACT_CHAT !== "0" &&
@@ -2857,6 +2940,12 @@ const authoritativeSageChat = compactSageChat &&
             : await compressToolResultForModel("crawl", rawResult, toolBlobStore);
           if (result.compressed) {
             agentSession.loopGuard.recordCompressedObservation();
+            writeAgentDebug("compressed", {
+              tool: "crawl",
+              blobId: result.compression?.blobId,
+              originalBytes: result.compression?.originalBytes,
+              compressedBytes: result.compression?.compressedBytes
+            });
           }
           writeAgentSse("agent_tool_result", { id: c.id, name: "crawl", content: result.content, isError: result.isError, guarded: false });
           fullMessages.push({ role: "tool", tool_call_id: c.id, content: result.content });
@@ -3131,6 +3220,13 @@ const authoritativeSageChat = compactSageChat &&
       }
 
       const isFinalResponse = !toolCalls.length || finishReason !== "tool_calls";
+      writeAgentDebug("turn", {
+        finishReason,
+        isFinalResponse,
+        toolCalls: toolCalls.map((tc) => tc.name),
+        contentLength: assistantContent.length,
+        observationFlowPending: agentSession.loopGuard.requiresStructuredObservation()
+      });
       if (isFinalResponse) {
         const snapshotBeforeGuard = sageTracker.snapshot();
         const finalization = guardSageFinalization(sageTracker);
@@ -3226,7 +3322,9 @@ const authoritativeSageChat = compactSageChat &&
         });
         continue;
       }
-      const intentDecision = agentSession.loopGuard.checkAssistantText(assistantContent);
+      const intentDecision = agentSession.loopGuard.checkAssistantText(assistantContent, {
+        isFinalResponse
+      });
       if (intentDecision?.warn) {
         writeAgentSse("agent_warning", {
           type: intentDecision.type,
@@ -3234,6 +3332,20 @@ const authoritativeSageChat = compactSageChat &&
         });
       }
       if (intentDecision?.block) {
+        writeAgentDebug("guard_block", {
+          guard: intentDecision.type,
+          isFinalResponse,
+          finishReason,
+          toolCalls: toolCalls.length,
+          contentLength: assistantContent.length,
+          contentHead: assistantContent.slice(0, 300),
+          markers: {
+            observation: assistantContent.indexOf("[OBSERVATION]"),
+            compressed: assistantContent.indexOf("[COMPRESSED]"),
+            target: assistantContent.indexOf("[TARGET_SELECTED]"),
+            verdict: assistantContent.indexOf("[VERDICT]")
+          }
+        });
         writeAgentSse("agent_error", {
           error: `[${intentDecision.type}] ${intentDecision.reason}\n${intentDecision.guidance}`
         });
@@ -3275,42 +3387,98 @@ const authoritativeSageChat = compactSageChat &&
       // the commit, which is the order §36.3 states as an invariant. Inert
       // unless agent.epistemic.enabled; in shadow it reports and lets the turn
       // through, in block it discards the candidate answer and asks again.
-        const epistemicDecision = isFinalResponse
-          ? await evaluateEpistemicTurn(epistemicTurn, {
-              assistantContent,
-              assistantReasoning,
-              client: epistemicClient,
-              executeSage: runtimeConfig.agent.epistemic.verifyMath
-                ? epistemicSageExecutor
-                : null,
-              citationProviders: epistemicCitationProviders,
-              sourceContext: epistemicSourceContext,
-              sessionLedger: agentSession.epistemic,
-              signal: controller.signal
+        // The evaluation runs up to maxVerifierCallsPerTurn model calls and its
+        // only abort signal is the client's. A verifier that stalls therefore
+        // stalled the whole turn: the answer was already streamed, but
+        // agent_done never followed, so the UI sat on a red Stop button
+        // forever. Bound it. Shadow mode is advisory by definition, so a
+        // timeout degrades to "no decision" rather than losing the turn -- but
+        // it says so, because silently unverified is worse than slow.
+        const epistemicEvaluation = isFinalResponse
+          ? evaluateEpistemicTurnBounded({
+              turn: epistemicTurn,
+              options: {
+                assistantContent,
+                assistantReasoning,
+                client: epistemicClient,
+                executeSage: runtimeConfig.agent.epistemic.verifyMath
+                  ? epistemicSageExecutor
+                  : null,
+                citationProviders: epistemicCitationProviders,
+                sourceContext: epistemicSourceContext,
+                sessionLedger: epistemicEvaluationLedger
+              },
+              signal: controller.signal,
+              timeoutMs: epistemicTimeoutMs,
+              onTimeout: (ms) => {
+                writeAgentDebug("epistemic_timeout", { timeoutMs: ms });
+                if (epistemicShadowMode) {
+                  console.warn("EPISTEMIC_TIMEOUT", JSON.stringify({ timeoutMs: ms, sessionKey }));
+                } else {
+                  writeAgentSse("agent_warning", {
+                    type: "EPISTEMIC_TIMEOUT",
+                    warning:
+                      `Epistemic verification exceeded ${ms}ms and was abandoned. ` +
+                      `The answer is unverified.`
+                  });
+                }
+              }
             })
           : null;
-    if (persistEpistemicClaims && epistemicDecision) {
-      // REM-005: stage the bounded history so challenge/rejection events
-      // survive the turn boundary into the session event map.
-      agentSession.epistemic.stageClaims(epistemicTurn.ledger.allClaims(), {
-        history: epistemicTurn.ledger.historySnapshot()
-      });
-    }
-    if (epistemicDecision) {
-      const epistemicAuditEvent = epistemicTelemetry.record({
-        mode: runtimeConfig.agent.epistemic.mode,
-        decision: epistemicDecision,
-        claims: epistemicTurn.ledger.allClaims(),
-        extraction: epistemicDecision.extraction,
-        promotions: epistemicDecision.promotions,
-        sessionRepromotionBlocks: epistemicDecision.verifierSummary?.sessionBlocks ?? 0
-      });
-      console.info("EPISTEMIC_AUDIT", JSON.stringify(epistemicAuditEvent));
-    }
-    if (epistemicDecision?.shadowTrace) {
-          console.info("EPISTEMIC_SHADOW", JSON.stringify(epistemicDecision.shadowTrace));
+        const epistemicDecision = epistemicEvaluation
+          ? (epistemicShadowMode ? null : await epistemicEvaluation)
+          : null;
+        const stageEpistemicClaims = (decision) => {
+          if (!persistEpistemicClaims || !decision) return;
+          // REM-005: stage the bounded history so challenge/rejection events
+          // survive the turn boundary into the session event map.
+          agentSession.epistemic.stageClaims(epistemicTurn.ledger.allClaims(), {
+            history: epistemicTurn.ledger.historySnapshot()
+          });
+        };
+        const recordEpistemicDecision = (decision) => {
+          if (!decision) return;
+          const epistemicAuditEvent = epistemicTelemetry.record({
+            mode: runtimeConfig.agent.epistemic.mode,
+            decision,
+            claims: epistemicTurn.ledger.allClaims(),
+            extraction: decision.extraction,
+            promotions: decision.promotions,
+            sessionRepromotionBlocks: decision.verifierSummary?.sessionBlocks ?? 0
+          });
+          console.info("EPISTEMIC_AUDIT", JSON.stringify(epistemicAuditEvent));
+          if (decision.shadowTrace) {
+            console.info("EPISTEMIC_SHADOW", JSON.stringify(decision.shadowTrace));
+          }
+        };
+        if (epistemicShadowMode && epistemicEvaluation) {
+          const committedRevision = epistemicTurn.revision + 1;
+          observeEpistemicShadow(epistemicEvaluation, {
+            onDecision: (decision) => {
+              if (!decision) return;
+              const sameTurn =
+                agentSession.state?.revision === committedRevision &&
+                agentSession.epistemic.turn === epistemicSessionTurn;
+              if (sameTurn) {
+                stageEpistemicClaims(decision);
+                if (persistEpistemicClaims) {
+                  agentSession.epistemic.commitClaims(epistemicTurn.ledger.allClaims());
+                }
+              }
+              recordEpistemicDecision(decision);
+            },
+            onError: (error) => {
+              console.warn("EPISTEMIC_SHADOW_ERROR", String(error?.message ?? error));
+            }
+          });
         }
-        if (epistemicDecision && epistemicDecision.code !== "EPISTEMIC_NOT_ACTIVE" && epistemicDecision.code !== "EPISTEMIC_CLEAN") {
+        stageEpistemicClaims(epistemicDecision);
+        recordEpistemicDecision(epistemicDecision);
+        if (
+          epistemicDecision &&
+          epistemicDecision.code !== "EPISTEMIC_NOT_ACTIVE" &&
+          epistemicDecision.code !== "EPISTEMIC_CLEAN"
+        ) {
         writeAgentSse("agent_warning", {
           type: epistemicDecision.code,
           warning: epistemicDecision.guidance || epistemicDecision.code,
@@ -3888,6 +4056,12 @@ const authoritativeSageChat = compactSageChat &&
           );
           if (result.compressed) {
             agentSession.loopGuard.recordCompressedObservation();
+            writeAgentDebug("compressed", {
+              tool: tc.name,
+              blobId: result.compression?.blobId,
+              originalBytes: result.compression?.originalBytes,
+              compressedBytes: result.compression?.compressedBytes
+            });
           }
         }
 
