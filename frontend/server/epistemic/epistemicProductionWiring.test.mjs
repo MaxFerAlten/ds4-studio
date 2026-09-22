@@ -19,7 +19,8 @@ import { SEVERITY } from "./epistemicContracts.mjs";
 const source = await readFile(new URL("../index.mjs", import.meta.url), "utf8");
 
 test("the production caller passes every epistemic verification dependency", () => {
-  const position = source.indexOf("evaluateEpistemicTurn(epistemicTurn");
+  const evaluationPosition = source.indexOf("const epistemicEvaluation");
+  const position = source.indexOf("evaluateEpistemicTurn", evaluationPosition);
   assert.ok(position >= 0);
   const call = source.slice(position, position + 1400);
   for (const field of [
@@ -39,6 +40,8 @@ test("the production caller passes every epistemic verification dependency", () 
       `missing production dependency ${field}`
     );
   }
+  assert.match(call, /epistemicShadowMode\s*\?\s*null\s*:\s*await epistemicEvaluation/);
+  assert.match(source, /observeEpistemicShadow\s*\(/);
 });
 
 test("the epistemic model client reuses the active backend and loaded model", () => {
@@ -48,6 +51,7 @@ test("the epistemic model client reuses the active backend and loaded model", ()
   assert.match(factory, /backendBase\s*\(\s*\)/);
   assert.match(factory, /activeRequestDefaults\.model/);
   assert.match(factory, /new StructuredModelClient/);
+  assert.match(factory, /think:\s*false/);
 });
 
 test("the Sage adapter returns executeTool's structured result unchanged", () => {
@@ -97,7 +101,7 @@ test("production records compact epistemic telemetry for every decision", () => 
   );
   assert.ok(position >= 0);
   const record = source.slice(position, position + 900);
-  assert.match(record, /decision:\s*epistemicDecision/);
+  assert.match(record, /\bdecision\s*,/);
   assert.match(record, /claims:\s*epistemicTurn\.ledger\.allClaims\(\)/);
   assert.match(record, /sessionRepromotionBlocks/);
 });

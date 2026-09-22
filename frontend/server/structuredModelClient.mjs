@@ -91,6 +91,8 @@ export class StructuredModelClient {
   }
 
   buildPayload({ systemPrompt, userPrompt, maxTokens, temperature, stream, think, reasoningEffort }) {
+    const resolvedThink = think ?? this.modelConfig.think;
+    const resolvedReasoningEffort = reasoningEffort ?? this.modelConfig.reasoning_effort;
     const messages = [];
     if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
     messages.push({ role: "user", content: userPrompt });
@@ -102,9 +104,9 @@ export class StructuredModelClient {
       top_p: this.modelConfig.top_p,
       stream: Boolean(stream)
     };
-    if (think !== undefined) payload.think = Boolean(think);
-    if (payload.think && reasoningEffort) payload.reasoning_effort = reasoningEffort;
-    if (think === false) {
+    if (resolvedThink !== undefined) payload.think = Boolean(resolvedThink);
+    if (payload.think && resolvedReasoningEffort) payload.reasoning_effort = resolvedReasoningEffort;
+    if (resolvedThink === false) {
       // `think` is ds4's own field. An OpenAI-compatible endpoint drops it in
       // silence and keeps thinking at its default effort, and with the budget
       // covering reasoning those tokens come out of this role's maxTokens.

@@ -295,3 +295,36 @@ test("a well-formed round clears the streak but not the turn total", () => {
   assert.equal(next.strategyChangeRequired, false);
   assert.equal(next.sameFailureCount, 1);
 });
+
+// A compressed observation offers retrieve_context_blob as the next step. A
+// model that takes it replies with tool_calls and no content (Halogen/Qwen3
+// return content: null outright), which is deferral, not a broken contract.
+test("defers the observation flow across a tool-call turn", () => {
+  const guard = new AgentLoopGuard();
+  guard.recordCompressedObservation();
+
+  const deferred = guard.checkAssistantText("", { isFinalResponse: false });
+  assert.equal(deferred, undefined);
+  // Still owed: the requirement must survive the tool call, not be consumed.
+  assert.equal(guard.requiresStructuredObservation(), true);
+
+  const structured = [
+    "[OBSERVATION] the blob holds the full listing.",
+    "[COMPRESSED] the relevant files sit under frontend/server.",
+    "[TARGET_SELECTED] frontend/server/index.mjs",
+    "[VERDICT] GO"
+  ].join("\n");
+  assert.equal(guard.checkAssistantText(structured), undefined);
+  assert.equal(guard.requiresStructuredObservation(), false);
+});
+
+// Deferral must not become an escape hatch: prose that skips the format still
+// fails, on the turn where the model actually spoke.
+test("still blocks prose that skips the observation flow after a tool call", () => {
+  const guard = new AgentLoopGuard();
+  guard.recordCompressedObservation();
+  assert.equal(guard.checkAssistantText("", { isFinalResponse: false }), undefined);
+
+  const block = guard.checkAssistantText("I will keep reading more files.");
+  assert.equal(block?.type, "STOP_MISSING_OBSERVATION_FLOW");
+});

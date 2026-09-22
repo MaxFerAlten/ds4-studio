@@ -3,6 +3,14 @@
 import { FAILURE_SEVERITY, SEVERITY } from "./epistemicContracts.mjs";
 import { scanDeterministicEpistemicFailures } from "./epistemicDeterministicPolicy.mjs";
 
+/** Run advisory shadow work without making publication await its result. */
+export function observeEpistemicShadow(evaluation, { onDecision, onError } = {}) {
+  void Promise.resolve(evaluation).then(
+    (decision) => onDecision?.(decision),
+    (error) => onError?.(error)
+  );
+}
+
 function compactClaim(claim) {
   return Object.freeze({
     id: claim?.id ?? null,

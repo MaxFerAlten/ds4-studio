@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { formatNativeAgentNotice, parseAgentInput } from "./utils.mjs";
+import { formatNativeAgentNotice, parseAgentInput, formatDebugFrames } from "./utils.mjs";
 
 test("parses agent control commands independently of agent mode", () => {
   assert.deepEqual(parseAgentInput("/agent start", false), {
@@ -253,4 +253,48 @@ test("parses /pageagent off", () => {
     action: "set",
     enabled: false
   });
+});
+
+test("/debug toggles locally and never reaches the model", () => {
+  assert.deepEqual(parseAgentInput("/debug start", true), {
+    type: "debug", action: "set", enabled: true
+  });
+  assert.deepEqual(parseAgentInput("/debug stop", true), {
+    type: "debug", action: "set", enabled: false
+  });
+  assert.deepEqual(parseAgentInput("/debug status", true), {
+    type: "debug", action: "status"
+  });
+  // Same outside Agent Mode: the toggle is a client concern, not a native command.
+  assert.deepEqual(parseAgentInput("/debug start", false), {
+    type: "debug", action: "set", enabled: true
+  });
+});
+
+test("formatDebugFrames renders a turn with its compression and guard block", () => {
+  const out = formatDebugFrames([
+    { stage: "turn", finishReason: "tool_calls", isFinalResponse: false, toolCalls: ["read_file"], contentLength: 0 },
+    { stage: "compressed", tool: "read_file", blobId: "blob_7f3a", originalBytes: 48210, compressedBytes: 812 },
+    {
+      stage: "guard_block",
+      guard: "STOP_MISSING_OBSERVATION_FLOW",
+      isFinalResponse: true,
+      finishReason: "stop",
+      toolCalls: 0,
+      contentLength: 42,
+      markers: { observation: 0, compressed: -1, target: -1, verdict: -1 }
+    }
+  ]);
+  assert.match(out, /turn 1/);
+  assert.match(out, /finish_reason\s+: tool_calls/);
+  assert.match(out, /tool_calls\s+: 1 \(read_file\)/);
+  assert.match(out, /compressed\s+: read_file 48210B -> 812B \(blob_7f3a\)/);
+  assert.match(out, /GUARD BLOCK\s+: STOP_MISSING_OBSERVATION_FLOW/);
+  assert.match(out, /COMPRESSED=-1/);
+  assert.ok(out.startsWith("\n\n```"));
+});
+
+test("formatDebugFrames stays silent with nothing to report", () => {
+  assert.equal(formatDebugFrames([]), "");
+  assert.equal(formatDebugFrames(undefined), "");
 });

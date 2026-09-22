@@ -28,6 +28,25 @@ test("structured model client builds a deterministic non-streaming payload", asy
   assert.equal(result.attempts, 1);
 });
 
+test("structured model client applies non-thinking model defaults", async () => {
+  let request;
+  const client = new StructuredModelClient({
+    baseUrl: "http://model.test",
+    modelConfig: { think: false },
+    fetchImpl: async (_url, options) => {
+      request = JSON.parse(options.body);
+      return jsonResponse({ choices: [{ message: { content: "{}" } }] });
+    }
+  });
+
+  await client.completeRole({ roleName: "extractor", userPrompt: "input", json: true });
+
+  assert.equal(request.max_tokens, 8192);
+  assert.equal(request.think, false);
+  assert.equal(request.enable_thinking, false);
+  assert.equal(request.reasoning_effort, "none");
+});
+
 test("structured JSON extraction and the single repair are bounded", async () => {
   assert.deepEqual(extractStructuredJson("```json\n{\"ok\":true}\n```"), { ok: true });
   let calls = 0;

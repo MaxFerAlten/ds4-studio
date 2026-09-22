@@ -4,7 +4,7 @@ import { Play, Power, RefreshCw, Terminal } from "lucide-react";
 import { commandLineFromConfig } from "../server/commandBuilder.mjs";
 import { REQUEST_DEFAULTS } from "../server/requestDefaults.mjs";
 import { buildChatPayload, isAutoMaxTokens } from "../server/requestPayload.mjs";
-import { backendHealthLabel, backendStartupDetail, streamFailureNotice, formatNativeAgentNotice, parseAgentInput, withAgentPriming, commandRebuildsSessionKeepingContext, historyHasPersistableAssistant, sessionHasAgentMetadata, sessionsExposeMetadata, clearStoredExportIncludeReasoning, readStoredExportDir, readStoredExportIncludeReasoning, writeStoredExportDir, writeStoredExportIncludeReasoning, createDeltaBatcher, documentIsVisible, clearCallDebug, fetchCallDebug, nativeCommandRearmsPriming } from "./utils.mjs";
+import { backendHealthLabel, backendStartupDetail, streamFailureNotice, formatNativeAgentNotice, parseAgentInput, withAgentPriming, commandRebuildsSessionKeepingContext, historyHasPersistableAssistant, sessionHasAgentMetadata, sessionsExposeMetadata, clearStoredExportIncludeReasoning, readStoredExportDir, readStoredExportIncludeReasoning, writeStoredExportDir, writeStoredExportIncludeReasoning, createDeltaBatcher, documentIsVisible, formatDebugFrames, clearCallDebug, fetchCallDebug, nativeCommandRearmsPriming } from "./utils.mjs";
 import {
   exportConversationMarkdown,
   exportConversationMarkdownRaw,
@@ -39,10 +39,32 @@ import {
   updateLiveStats
 } from "./throughputStats.mjs";
 
+// Studio reports `error` as a string, OpenAI-compatible endpoints as an object
+// ({error:{message,type,...}}). Passing the object straight to Error() renders
+// it "[object Object]", which is how a plain 404 reached the UI as noise.
+function errorText(data, res) {
+  const err = data?.error;
+  if (err && typeof err === "object") {
+    return err.message || err.code || err.type || JSON.stringify(err);
+  }
+  // ds4-wrapper answers {error:"conflict", message:"<why>"}: the code alone
+  // reads as a bare word in the UI, so lead with the sentence and keep the code.
+  const code = typeof err === "string" ? err.trim() : "";
+  const message = typeof data?.message === "string" ? data.message.trim() : "";
+  if (message && code && message !== code) return `${message} (${code})`;
+  return message || code || `HTTP ${res.status}`;
+}
+
 async function jsonFetch(url, options) {
   const res = await fetch(url, options);
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || data.message || `HTTP ${res.status}`);
+  if (!res.ok) {
+    const error = new Error(errorText(data, res));
+    // Callers that can act on the status (409 means "busy", not "broken")
+    // need it: the message alone cannot be told apart from a real failure.
+    error.status = res.status;
+    throw error;
+  }
   return data;
 }
 
@@ -252,6 +274,10 @@ export default function App() {
   const [agentStatus, setAgentStatus] = useState(null);
   const [compressionMetrics, setCompressionMetrics] = useState(null);
   const [headroomEnabled, setHeadroomEnabled] = useState(false);
+  const [debugEnabled, setDebugEnabled] = useState(false);
+  // Debug frames stream in before the assistant message they describe is
+  // finished, so they are collected per turn and attached when it closes.
+  const debugFramesRef = useRef([]);
   const [webSearchMode, setWebSearchMode] = useState(false);
   const [pageAgentMode, setPageAgentMode] = useState(false);
   const [searchStrategy, setSearchStrategy] = useState("F");
@@ -351,6 +377,31 @@ export default function App() {
     return data;
   }
 
+  // The wrapper serves one mode at a time (mutualExclusive) and answers 409
+  // while it is in another one -- "wrong mode: active=agent required=server".
+  // That holds for as long as Agent mode is on, not just during a turn, so the
+  // panel must not imply it will clear by itself. Keep the last reading rather
+  // than blanking the panel on every poll.
+  function handleMetricsError(err) {
+    if (err?.status === 409) {
+      // Two different 409s. "wrong mode" lasts as long as Agent mode does and
+      // the reader has to act on it. "busy"/"switching" is one poll losing a
+      // race with another wrapper call and is gone by the next tick: reporting
+      // it turns a 3-second poll into a flickering error banner, and whichever
+      // poll happens to lose last leaves its message on screen. Skip those and
+      // keep the last good reading.
+      if (/wrong mode/i.test(err.message || "")) {
+        setMetricsError(
+          "Server metrics need the wrapper in server mode; it is serving Agent mode." +
+          " Leave Agent mode to read them."
+        );
+      }
+      return;
+    }
+    setServerMetrics(null);
+    setMetricsError(err?.message || String(err));
+  }
+
   async function refreshServerMetrics() {
     const data = await jsonFetch("/api/server/metrics");
     setServerMetrics(data);
@@ -438,10 +489,7 @@ export default function App() {
     refreshStatus({ syncConfig: true })
       .then((data) => {
         if (data?.running && data?.healthy) {
-          return refreshServerMetrics().catch((err) => {
-            setServerMetrics(null);
-            setMetricsError(err.message);
-          });
+          return refreshServerMetrics().catch(handleMetricsError);
         }
         return null;
       })
@@ -462,10 +510,7 @@ export default function App() {
       refreshStatus()
         .then((data) => {
           if (data?.running && data?.healthy) {
-            return refreshServerMetrics().catch((err) => {
-              setServerMetrics(null);
-              setMetricsError(err.message);
-            });
+            return refreshServerMetrics().catch(handleMetricsError);
           }
           setServerMetrics(null);
           return null;
@@ -1925,7 +1970,13 @@ export default function App() {
 
       const res = await fetch("/api/agent/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...AGENT_HEADERS },
+        headers: {
+          "Content-Type": "application/json",
+          ...AGENT_HEADERS,
+          // Per-request rather than server state: two tabs can disagree, and a
+          // stuck flag cannot outlive the run that set it.
+          ...(debugEnabled ? { "X-Agent-Debug": "1" } : {})
+        },
         body: JSON.stringify(payload),
         signal: controller.signal
       });
@@ -2080,9 +2131,14 @@ export default function App() {
               generationSource: "agent",
               stream: true
             }));
+          } else if (event === "agent_debug") {
+            debugFramesRef.current = [...debugFramesRef.current, data];
           } else if (event === "agent_error") {
             deltaBatcher.flush();
-            setMessages(appendTransientNotice(`Agent Error: ${data.error}`));
+            setMessages(appendTransientNotice(
+              `Agent Error: ${data.error}${formatDebugFrames(debugFramesRef.current)}`
+            ));
+            debugFramesRef.current = [];
             setGenerationBusy(false);
           } else if (event === "agent_done") {
             deltaBatcher.flush();
@@ -2095,6 +2151,11 @@ export default function App() {
               }
               return next;
             });
+            if (debugFramesRef.current.length) {
+              const frames = formatDebugFrames(debugFramesRef.current);
+              debugFramesRef.current = [];
+              setMessages(appendTransientNotice(frames.trimStart()));
+            }
             setGenerationBusy(false);
           }
         }
@@ -2202,6 +2263,17 @@ export default function App() {
       }
       if (agentInput.type === "headroom") {
         return callHeadroomControl(agentInput);
+      }
+      if (agentInput.type === "debug") {
+        const enabled = agentInput.action === "status" ? debugEnabled : agentInput.enabled;
+        if (agentInput.action === "set") setDebugEnabled(agentInput.enabled);
+        setMessages(appendTransientNotice(
+          `Debug ${enabled ? "on" : "off"}.${enabled
+            ? " Agent turns carry a debug frame: finish reason, tool calls, guard decisions," +
+              " compression. Agent mode only -- plain chat turns produce no frame."
+            : ""}`
+        ));
+        return;
       }
       if (agentInput.type === "webSearch") {
         return callWebSearch(agentInput.query);

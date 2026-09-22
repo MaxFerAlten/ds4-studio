@@ -271,6 +271,14 @@ export function parseAgentInput(text, agentMode) {
     if (action === "stop") return { type: "headroom", action: "set", enabled: false };
   }
 
+  const debug = trimmed.match(/^\/debug\s+(start|stop|status)\s*$/i);
+  if (debug) {
+    const action = debug[1].toLowerCase();
+    if (action === "status") return { type: "debug", action: "status" };
+    if (action === "start") return { type: "debug", action: "set", enabled: true };
+    if (action === "stop") return { type: "debug", action: "set", enabled: false };
+  }
+
   const webSearchCmd = trimmed.match(/^\/web_search\s+(.+)$/i);
   if (webSearchCmd) {
     return { type: "webSearch", query: webSearchCmd[1].trim() };
@@ -462,4 +470,42 @@ export function commandRebuildsSessionKeepingContext(command) {
     /^\/skill\s+[a-z0-9][a-z0-9_-]{0,63}\s+(start|stop)\s*$/.test(normalized);
   return genericSkillToggle ||
     /^\/(metacognition|soul|ethic|sage-pol|sage|lean)\s+(start|stop)\b/.test(normalized);
+}
+
+// Renders the agent_debug frames a run produced into one fenced block. Fenced
+// rather than a <details> element so it survives the Markdown renderer intact
+// and can be copied straight out of the chat into a bug report.
+export function formatDebugFrames(frames) {
+  if (!Array.isArray(frames) || !frames.length) return "";
+  const lines = [];
+  let turn = 0;
+  for (const frame of frames) {
+    if (frame?.stage === "turn") {
+      turn += 1;
+      const tools = frame.toolCalls?.length ? frame.toolCalls.join(", ") : "none";
+      lines.push(`turn ${turn}`);
+      lines.push(`  finish_reason   : ${frame.finishReason ?? "?"}`);
+      lines.push(`  isFinalResponse : ${frame.isFinalResponse}`);
+      lines.push(`  tool_calls      : ${frame.toolCalls?.length ?? 0} (${tools})`);
+      lines.push(`  content         : ${frame.contentLength ?? 0} chars`);
+      if (frame.observationFlowPending) {
+        lines.push("  observation     : structured synthesis still owed");
+      }
+    } else if (frame?.stage === "compressed") {
+      const from = frame.originalBytes ?? "?";
+      const to = frame.compressedBytes ?? "?";
+      lines.push(`  compressed      : ${frame.tool} ${from}B -> ${to}B (${frame.blobId ?? "no blob"})`);
+    } else if (frame?.stage === "guard_block") {
+      lines.push(`  GUARD BLOCK     : ${frame.guard}`);
+      lines.push(`    isFinalResponse: ${frame.isFinalResponse}  finish_reason: ${frame.finishReason ?? "?"}`);
+      lines.push(`    tool_calls     : ${frame.toolCalls ?? 0}  content: ${frame.contentLength ?? 0} chars`);
+      const m = frame.markers || {};
+      // -1 means the marker never appeared; the order of the others is what the
+      // guard actually checks, so print positions rather than a bare pass/fail.
+      lines.push(`    markers        : OBSERVATION=${m.observation} COMPRESSED=${m.compressed} TARGET=${m.target} VERDICT=${m.verdict}`);
+      if (frame.contentHead) lines.push(`    content head   : ${JSON.stringify(frame.contentHead)}`);
+    }
+  }
+  if (!lines.length) return "";
+  return `\n\n\`\`\`\ndebug\n${lines.join("\n")}\n\`\`\``;
 }

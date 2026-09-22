@@ -162,7 +162,15 @@ export class Ds4ProcessManager extends EventEmitter {
     for (let i = 0; i < 20; i++) {
       await new Promise((r) => setTimeout(r, 500));
       if (!this.child || this.child !== child) return this.status();
-      if (await this.healthCheck()) {
+      let healthy = false;
+      try {
+        healthy = await this.healthCheck();
+      } catch {
+        // A backend that is binding its socket or loading a model may accept
+        // the connection and immediately reset it. That is "not ready yet",
+        // not a reason to abandon the remaining startup probes.
+      }
+      if (healthy) {
         if (this.child === child) this.healthy = true;
         return this.status();
       }

@@ -293,12 +293,18 @@ export class AgentLoopGuard {
     return this.observationFlowRequired;
   }
 
-  _checkObservationFlow(text) {
+  _checkObservationFlow(text, { isFinalResponse = true } = {}) {
     if (!this.observationFlowRequired) return undefined;
     if (hasStructuredSynthesis(text)) {
       this.observationFlowRequired = false;
       return undefined;
     }
+    // A tool call is deferral, not a failure to synthesize: the compressed
+    // payload itself offers retrieve_context_blob as the next step, and a model
+    // that takes it answers with tool_calls and no content at all. Stay armed
+    // and judge the prose turn that follows. Unbounded deferral is already the
+    // tool-round ceiling's job, not this guard's.
+    if (!isFinalResponse) return undefined;
 
     const decision = this._applyMode({
       block: true,
@@ -326,8 +332,8 @@ export class AgentLoopGuard {
     }, this.loopMode);
   }
 
-  checkAssistantText(text) {
-    const observationDecision = this._checkObservationFlow(text);
+  checkAssistantText(text, options = {}) {
+    const observationDecision = this._checkObservationFlow(text, options);
     if (observationDecision) return observationDecision;
 
     const ambiguityDecision = this.checkAmbiguity(text);
