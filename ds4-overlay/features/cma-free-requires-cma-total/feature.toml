@@ -1,0 +1,79 @@
+id = "cma-free-requires-cma-total"
+enabled = true
+owner = "overlay"
+description = """
+Exclude CmaFree from the usable-host-memory budget only when a CMA area
+actually exists, and never exclude more than CmaTotal.
+
+Upstream subtracts CmaFree from MemAvailable unconditionally, on the correct
+premise that CMA pages cannot back pinned GPU allocations. On this machine
+(Strix Halo, kernel 7.2.0-070200rc2, amdgpu.gttsize=126976) /proc/meminfo
+reports:
+
+    CmaTotal:              0 kB
+    CmaFree:         9059980 kB
+
+CmaTotal is zero - there is no CMA area - yet CmaFree carries 8.64 GiB of
+stale bookkeeping. Subtracting it removes memory that is ordinary, pinnable
+and present, and ds4_rocm_allocation_fits() then refuses live allocations:
+
+    ds4: ROCm allocation refused: 774.34 MiB requested, 2.65 GiB usable
+         after excluding CMA, 2 GiB OS reserve
+    ds4: ROCm model arena alloc failed for tensor-span:136
+    ds4: accelerator failed to prepare model tensor span 136
+
+The arithmetic at that point: MemAvailable ~11.3 GiB with 80 GiB of model
+already resident, minus the 8.64 GiB phantom leaves 2.65 GiB, minus the 2 GiB
+OS reserve leaves a 665 MiB budget against a 774 MiB request. The margin is
+thin enough that the failure only appears once the model is large enough to
+push MemAvailable down - which is why a smaller model still loads.
+
+The fix keeps upstream's premise and only bounds it by the evidence: skip the
+subtraction when CmaTotal is present and zero, and clamp CmaFree to CmaTotal
+when it exceeds it. A kernel that reports no CmaTotal line at all is left on
+upstream's conservative path.
+
+Also patches tests/test_linux_memory.c, whose CmaTotal-zero case asserted the
+70 kB result and so pinned the bug in place. It now asserts 100 kB, plus a
+real-CMA case and a clamp case.
+
+Retire it if upstream ever reads CmaTotal itself.
+"""
+
+[upstream]
+reviewed_sha = "7b4f863"
+
+[[anchors]]
+file = "ds4_linux_memory.h"
+kind = "exact"
+text = "    *bytes = available > cma ? available - cma : 0;"
+count = 1
+
+[[anchors]]
+file = "ds4_linux_memory.h"
+kind = "exact"
+text = "        } else if (sscanf(line, \"CmaFree: %llu kB\", &kib) == 1) {"
+count = 1
+
+[[anchors]]
+file = "tests/test_linux_memory.c"
+kind = "exact"
+text = "    memory_case(\"CmaTotal: 0 kB\\nCmaFree: 30 kB\\nMemAvailable: 100 kB\\n\","
+count = 1
+
+[[shadow_patch]]
+file = "ds4_linux_memory.h"
+patch = "patches/core/cma-free-requires-cma-total__ds4_linux_memory.h.patch"
+
+[[shadow_patch]]
+file = "tests/test_linux_memory.c"
+patch = "patches/core/cma-free-requires-cma-total__tests__test_linux_memory.c.patch"
+
+[[test]]
+command = "make -f Makefile.overlay test-linux-memory"
+required = true
+
+[[retire_probe]]
+kind = "symbol"
+file = "ds4_linux_memory.h"
+text = "CmaTotal"
