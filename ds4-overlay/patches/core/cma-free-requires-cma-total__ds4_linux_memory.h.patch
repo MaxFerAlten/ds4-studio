@@ -1,0 +1,33 @@
+diff --git a/ds4_linux_memory.h b/ds4_linux_memory.h
+index 87d54d7..4765053 100644
+--- a/ds4_linux_memory.h
++++ b/ds4_linux_memory.h
+@@ -8,8 +8,8 @@
+ /* CMA pages can back movable allocations, but not ordinary pinned GPU pages. */
+ static inline bool ds4_linux_nonmovable_memory_parse(FILE *fp, uint64_t *bytes) {
+     char line[256];
+-    uint64_t available = 0, cma = 0;
+-    bool found = false;
++    uint64_t available = 0, cma = 0, cma_total = 0;
++    bool found = false, cma_total_found = false;
+     while (fgets(line, sizeof(line), fp)) {
+         unsigned long long kib;
+         if (sscanf(line, "MemAvailable: %llu kB", &kib) == 1) {
+@@ -19,9 +19,17 @@ static inline bool ds4_linux_nonmovable_memory_parse(FILE *fp, uint64_t *bytes)
+         } else if (sscanf(line, "CmaFree: %llu kB", &kib) == 1) {
+             if (kib > UINT64_MAX / 1024u) return false;
+             cma = (uint64_t)kib * 1024u;
++        } else if (sscanf(line, "CmaTotal: %llu kB", &kib) == 1) {
++            if (kib > UINT64_MAX / 1024u) return false;
++            cma_total = (uint64_t)kib * 1024u;
++            cma_total_found = true;
+         }
+     }
+     if (!found || ferror(fp)) return false;
++    /* CmaTotal 0 means there is no CMA area at all: CmaFree is then stale
++     * bookkeeping, and excluding it hides ordinary pinnable memory. */
++    if (cma_total_found && cma_total == 0) cma = 0;
++    else if (cma_total_found && cma > cma_total) cma = cma_total;
+     *bytes = available > cma ? available - cma : 0;
+     return true;
+ }

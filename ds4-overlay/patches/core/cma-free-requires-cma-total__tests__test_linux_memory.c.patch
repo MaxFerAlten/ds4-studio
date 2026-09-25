@@ -1,0 +1,19 @@
+diff --git a/tests/test_linux_memory.c b/tests/test_linux_memory.c
+index 9f93f8d..5e2735b 100644
+--- a/tests/test_linux_memory.c
++++ b/tests/test_linux_memory.c
+@@ -16,8 +16,14 @@ static void memory_case(const char *text, bool valid, uint64_t expected) {
+ int main(void) {
+     memory_case("MemAvailable: 100 kB\n", true, 100 * 1024);
+     memory_case("MemAvailable: 100 kB\nCmaFree: 30 kB\n", true, 70 * 1024);
++    /* CmaTotal 0 means no CMA area: CmaFree is bogus and must not be excluded. */
+     memory_case("CmaTotal: 0 kB\nCmaFree: 30 kB\nMemAvailable: 100 kB\n",
++                true, 100 * 1024);
++    memory_case("CmaTotal: 40 kB\nCmaFree: 30 kB\nMemAvailable: 100 kB\n",
+                 true, 70 * 1024);
++    /* CmaFree above CmaTotal is clamped to the real area size. */
++    memory_case("CmaTotal: 20 kB\nCmaFree: 30 kB\nMemAvailable: 100 kB\n",
++                true, 80 * 1024);
+     memory_case("MemAvailable: 10 kB\nCmaFree: 30 kB\n", true, 0);
+     memory_case("MemAvailable: 0 kB\n", true, 0);
+     memory_case("CmaFree: 30 kB\n", false, 0);
