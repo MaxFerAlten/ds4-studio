@@ -350,6 +350,11 @@ function buildMarker(info, body) {
     "  [COMPRESSED] <= 10 lines",
     "  [TARGET_SELECTED] the single next thing to read, if any",
     "  [VERDICT] GO / STOP / RETEST",
+    // The block is a checkpoint, not the answer. Without saying so the model
+    // wrote it with no tool call and the turn ended on it every time.
+    "this is an intermediate checkpoint: with GO or RETEST, call the tool for",
+    "TARGET_SELECTED in the same reply. The final answer to the user is a",
+    "normal prose report, without these markers.",
     "",
     body || ""
   ];

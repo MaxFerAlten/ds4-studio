@@ -1,0 +1,7 @@
+reset
+open EFA-001 general "claim under test"
+finalize
+add EFA-001 for static
+publish
+finalize
+publish

@@ -1,0 +1,12 @@
+Internal ds4-agent context compaction request. This is not a user request.
+Write a durable task-state summary of the conversation so far. Preserve only facts that matter for continuing the work:
+- user goals, constraints, and preferences
+- files inspected or edited
+- commands run and important results
+- decisions, rejected approaches, known bugs, and pending next steps
+- reloadable bulky data with exact paths/ranges/commands when available
+
+Do not invent facts. Do not include generic narration. Do not include raw file contents unless they were essential to a conclusion.
+Do not solve unfinished tasks, calculate new results, or finish incomplete code in the summary. Record the user's requirements and what actually happened, leaving unfinished work pending.
+After the summary, stop. Do not continue the user task, do not call tools, and do not output thinking tags or DSML markup.
+Output only the compact summary.

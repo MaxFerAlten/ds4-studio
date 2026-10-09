@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { evaluateLeanFinalCandidate } from "./authoritativeFinalizationGate.mjs";
+import {
+  evaluateLeanFinalCandidate,
+  leanVerificationEvidence
+} from "./authoritativeFinalizationGate.mjs";
 
 const VERIFIED_SOURCE = "theorem reconciled : True := by\n  trivial\n";
 
@@ -170,6 +173,29 @@ test("UTF8-001 Lean Unicode source is published normally", () => {
 
   assert.equal(decision.allowed, true);
   assert.equal(decision.code, "LEAN_VERIFIED");
+});
+
+test("final verification evidence separates checked from verified and reports unknown type evidence", () => {
+  const leanSnapshot = snapshot();
+  const decision = evaluateLeanFinalCandidate({
+    assistantContent: `STATO: VERIFIED\n\n\`\`\`lean\n${VERIFIED_SOURCE}\`\`\``,
+    leanSnapshot,
+    verifiedSource: VERIFIED_SOURCE
+  });
+  const result = leanVerificationEvidence(leanSnapshot, decision);
+  assert.equal(result.leanStatus, "checked");
+  assert.equal(result.taskStatus, "verified");
+  assert.equal(result.evidence.targetStatementMatch, true);
+  assert.equal(result.evidence.profileMatch, true);
+  assert.equal(result.evidence.targetElaboratedTypeMatch, null);
+
+  const notVerified = leanVerificationEvidence(
+    snapshot({ verified: false }),
+    { code: "LEAN_FINALIZATION_BLOCKED" }
+  );
+  assert.equal(notVerified.taskStatus, "not_verified");
+  assert.equal(notVerified.leanStatus, null);
+  assert.equal(notVerified.evidence.retainedPublishedSourceMatch, null);
 });
 
 test("UTF8-001 U+FFFD in the retained source blocks publication", () => {

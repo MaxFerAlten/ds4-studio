@@ -1,0 +1,17 @@
+reset
+open EFA-001 concurrency "claim under test"
+add EFA-001 for static
+mark EFA-001 control_flow done
+mark EFA-001 caller done
+mark EFA-001 counterevidence done
+mark EFA-001 reachability done
+mark EFA-001 dynamic unknown
+reach EFA-001 proven
+verdict EFA-001 confirmed high true
+mark EFA-001 wrapper done
+add EFA-001 against static
+reach EFA-001 not_reachable
+verdict EFA-001 confirmed high true
+verdict EFA-001 disproved none false
+verdict EFA-001 disproved high false
+finalize

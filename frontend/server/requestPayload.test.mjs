@@ -76,3 +76,10 @@ test("resolveAutoMaxTokens uses REQUEST_DEFAULTS when settings are blank", () =>
   const max = resolveAutoMaxTokens({ context_length: 1000000, prompt_tokens: 0 }, {});
   assert.equal(max, REQUEST_DEFAULTS.max_tokens_safety_cap);
 });
+
+test("payloadModel is the model buildChatPayload sends", async () => {
+  const { payloadModel } = await import("./requestPayload.mjs");
+  for (const request of [{}, { model: "qwen3.8-flash-next-vitronia" }]) {
+    assert.equal(payloadModel(request), buildChatPayload(request, []).model);
+  }
+});

@@ -8,5 +8,15 @@
   "repeatedActionTerminal": 4,
   "noProgressTerminal": 3,
   "degenerateGenerationTerminal": 4,
-  "finalizationOnlyMaxModelRounds": 1
+  "finalizationOnlyMaxModelRounds": 1,
+  "maxAgentIterations": 40,
+  "maxCheckpointNudges": 3,
+  "systemPromptReminderTokens": 50000,
+  "reminderToolBurstTokens": 20000,
+  "compactSoftPercent": 85,
+  "compactMinFreeTokens": 8192,
+  "compactTailDivisor": 10,
+  "compactTailCapTokens": 50000,
+  "compactSummaryMaxTokens": 4096,
+  "evidenceMaxRepairRounds": 2
 }

@@ -1,0 +1,27 @@
+{
+  "name": "04-file-echo-blocked",
+  "backend": {
+    "propsNctx": 32768,
+    "tokenCounts": [100],
+    "turns": [
+      {
+        "content": "buf.c: memcpy without bounds check, fix before release.\nbuf.c: memcpy without bounds check, fix before shipping.\nbuf.c: memcpy without a bounds check, fix before launch.\nbuf.c: memcpy lacks a bounds check, fix before rollout.\nbuf.c: memcpy missing bounds check, fix before release.",
+        "finish": "stop"
+      },
+      {
+        "content": "buf.c: memcpy lacks a bounds check. buf.h: declares the buffer struct. buf.c: the tokenizer reads tokens here. buf.h: token type enum lives here. buf.c: free() pairing for the token buffer.",
+        "finish": "stop"
+      }
+    ]
+  },
+  "requests": [
+    "Summarize what you found in buf.c.",
+    "Now summarize again with different findings."
+  ],
+  "expect": [
+    { "event": "agent_error", "dataContains": { "error": "STOP_REPEATED_FILE_ECHO" } },
+    { "event": "agent_done", "data": { "finish_reason": "loop_guard" } },
+    { "event": "agent_text", "dataContains": { "content": "tokenizer" } },
+    { "event": "agent_done", "data": { "finish_reason": "stop" } }
+  ]
+}

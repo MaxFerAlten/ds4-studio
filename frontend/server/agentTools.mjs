@@ -436,7 +436,9 @@ export async function executeTool(name, args = {}, options = {}) {
       case "bash":
         return await toolBash(args, options);
       case "read":
-        return await toolRead(args, options);
+        return noteMoreState(options, await toolRead(args, options));
+      case "more": // WP11: C agent_tool_more (shadow ds4_agent.c:6983-6989)
+        return noteMoreState(options, await toolMore(args, options));
       case "write":
         return await toolWrite(args, options);
       case "edit":
@@ -450,8 +452,10 @@ export async function executeTool(name, args = {}, options = {}) {
         const executor = options.authoritativeSageExecutor ?? executeAuthoritativeSage;
         return await executor(args, { ...options, rawExecutor: toolSage });
       }
+      case "google_search": // C-side names, same arguments (shadow ds4_agent.c:1346-1347)
       case "web_search":
         return await toolWebSearch(args, options);
+      case "visit_page": // C-side name, same arguments (shadow 1347, 8641)
       case "web_read":
         return await toolWebRead(args, options);
       case "crawl":
@@ -699,6 +703,39 @@ async function toolRead(args, options) {
       byte_truncated: truncated
     }
   };
+}
+
+// ---------------------------------------------------------------------------
+// more (WP11: C agent_tool_more, shadow ds4_agent.c:6983-6989)
+// ---------------------------------------------------------------------------
+
+// JS counterpart of the worker fields more_path/more_next_line/more_valid.
+// The caller owns the object (agentSession.more) so the cursor is per session
+// and survives turns; without it (plain API calls) the state is not tracked.
+function noteMoreState(options, result) {
+  const state = options.moreState;
+  if (!state) return result;
+  const raw = result && !result.isError ? result.raw : null;
+  if (raw && raw.next_offset && raw.path) {
+    state.path = raw.path;
+    state.nextLine = raw.next_offset;
+    state.valid = true;
+  } else {
+    // C clears on a complete read and on failure (set_more path).
+    state.path = "";
+    state.nextLine = 0;
+    state.valid = false;
+  }
+  return result;
+}
+
+async function toolMore(args, options) {
+  const state = options.moreState;
+  if (!state || !state.valid || !state.path) {
+    return { content: "Tool error: no previous output to continue", isError: true };
+  }
+  const count = Number(args.count) > 0 ? Number(args.count) : DEFAULT_MAX_LINES;
+  return toolRead({ path: state.path, start_line: state.nextLine, max_lines: count }, options);
 }
 
 // ---------------------------------------------------------------------------

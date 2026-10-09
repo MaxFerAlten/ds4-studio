@@ -250,8 +250,9 @@ test("JS agent compresses tool results and activates observation flow before exp
   assert.match(source, /const rawResult = await executeTool\(tc\.name, tc\.arguments, opts\)/);
   assert.match(
     source,
-    /compressToolResultForModel\(\s*tc\.name,\s*rawResult,\s*toolBlobStore\s*\)/
+    /compressAgentToolResult\(tc\.name,\s*rawResult\)/
   );
+  assert.match(source, /compressionMetrics\.recordRetrieve\(!rawResult\?\.isError\)/);
   assert.match(source, /if \(result\.compressed\) \{\s*agentSession\.loopGuard\.recordCompressedObservation\(\)/);
 });
 
@@ -260,11 +261,11 @@ test("JS agent compresses crawl results before SSE and model context exposure", 
 
   assert.match(
     source,
-    /const rawResult = await executeTool\("crawl",[\s\S]*?compressToolResultForModel\(\s*"crawl",\s*rawResult,\s*toolBlobStore\s*\)/
+    /const rawResult = await executeTool\("crawl",[\s\S]*?compressAgentToolResult\("crawl",\s*rawResult\)/
   );
   assert.match(
     source,
-    /compressToolResultForModel\(\s*"crawl",[\s\S]*?writeAgentSse\("agent_tool_result", \{[^}]*content: result\.content[\s\S]*?fullMessages\.push\(\{ role: "tool", tool_call_id: c\.id, content: result\.content \}\)/
+    /compressAgentToolResult\("crawl",\s*rawResult\)[\s\S]*?writeAgentSse\("agent_tool_result", \{[^}]*content: result\.content[\s\S]*?fullMessages\.push\(\{ role: "tool", tool_call_id: c\.id, content: result\.content \}\)/
   );
 });
 

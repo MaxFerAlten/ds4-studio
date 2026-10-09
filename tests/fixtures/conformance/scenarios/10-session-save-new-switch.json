@@ -1,0 +1,68 @@
+{
+  "name": "10-session-save-new-switch",
+  "backend": {
+    "tokenCounts": [100],
+    "turns": [
+      {
+        "content": "Noted: Zephyr-42.",
+        "finish": "stop"
+      },
+      {
+        "content": "Fresh turn.",
+        "finish": "stop"
+      }
+    ]
+  },
+  "requests": [
+    "Remember the token Zephyr-42.",
+    "/save",
+    "/new",
+    "Say fresh.",
+    "/switch 00000000"
+  ],
+  "expect": [
+    {
+      "event": "agent_text",
+      "dataContains": {
+        "content": "Saved session"
+      }
+    },
+    {
+      "event": "agent_text",
+      "dataContains": {
+        "content": "New session started."
+      }
+    },
+    {
+      "event": "agent_text",
+      "dataContains": {
+        "content": "Fresh turn."
+      }
+    },
+    {
+      "event": "agent_done",
+      "data": {
+        "finish_reason": "command"
+      }
+    },
+    {
+      "event": "agent_done",
+      "data": {
+        "finish_reason": "stop"
+      }
+    },
+    {
+      "event": "agent_done",
+      "data": {
+        "finish_reason": "error"
+      }
+    }
+  ],
+  "expectRequest": [
+    {
+      "index": 1,
+      "role": "user",
+      "messagesContain": "Say fresh."
+    }
+  ]
+}

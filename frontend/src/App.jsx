@@ -459,7 +459,7 @@ export default function App() {
       await refreshStatus({ syncConfig: true });
       await refreshProfiles();
       setProfileNotice(data?.backendRestartRequired
-        ? "Profilo salvato. Riavvia il backend (ds4-server) per applicare i parametri server."
+        ? "Selezione salvata. Riavvia il backend per applicare modello e motore agente."
         : "Profilo salvato.");
     } catch (err) {
       setProfileNotice(`Errore: ${err.message}`);
@@ -518,8 +518,10 @@ export default function App() {
         .catch((err) => setError(err.message));
       /* Fetch compression metrics periodically when agent is active. */
       jsonFetch("/api/agent/compression-metrics")
-        .then((data) => setCompressionMetrics(data))
-        .catch(() => {});
+        .then((data) => setCompressionMetrics({ ...data, refreshError: null }))
+        .catch((err) => setCompressionMetrics((prev) => prev?.ok
+          ? { ...prev, refreshError: err.message }
+          : { ok: false, error: err.message }));
     }, 3000);
     const rocmTimer = setInterval(
       () => {

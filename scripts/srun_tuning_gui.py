@@ -121,6 +121,10 @@ FIELDS: list[Field] = [
     Field("wrapper.enabled", "Enable wrapper backend (server/agent switch)", "bool", "Wrapper"),
     Field("wrapper.binary", "Wrapper binary", "string", "Wrapper"),
     Field("wrapper.startupMode", "Startup mode", "startup_mode", "Wrapper"),
+    # WP13: which agent loop answers /api/agent/chat. native keeps the C
+    # agent (default); js runs the JS loop against the wrapper in server
+    # mode. Changing this key is the only switch (convergenza.loop.md §16).
+    Field("agent.engine", "Agent engine", "agent_engine", "Wrapper"),
     Field("wrapper.freezeOnSwitch", "Freeze on switch", "bool", "Wrapper"),
     Field("wrapper.freeInactiveSession", "Free inactive session", "bool", "Wrapper"),
     Field("wrapper.ramFreezeMaxMb", "RAM freeze max MiB", "nonnegative_int", "Wrapper"),
@@ -231,7 +235,7 @@ KIND_FALLBACK = {
     "bool": False, "env_toggle": False, "env_flag": "",
     "positive_int": 0, "nonnegative_int": 0, "port": 0, "env_int": 0,
     "float": 0.0, "optional_float": "", "auto_or_positive_int": "auto",
-    "backend": "auto", "startup_mode": "server",
+    "backend": "auto", "startup_mode": "server", "agent_engine": "native",
 }
 
 
@@ -395,6 +399,12 @@ def get_path_or(config: dict[str, Any], dotted: str, default: Any = None) -> Any
 
 
 ATTACH_STUB = "./scripts/halogen_attach_stub.sh"
+# Loopback ports of the backends srun.sh starts on demand, and the stub that
+# follows each one's logs. Must match the stubs' own port checks.
+MANAGED_ENDPOINTS = {
+    8731: ("Halogen", ATTACH_STUB),
+    8732: ("Vitronia", "./scripts/vitronia_attach_stub.sh"),
+}
 
 # Sampling keys an endpoint may override, and that apply_local must put back.
 SAMPLING_KEYS = ("temperature", "top_p", "top_k", "min_p", "seed",
@@ -455,13 +465,20 @@ def probe_endpoint(base_url: str, timeout: float = 4.0) -> list[str]:
     return [str(m["id"]) for m in data if isinstance(m, dict) and m.get("id")]
 
 
-def managed_halogen_model(endpoint: Endpoint) -> str:
-    """Configured model usable before the launcher starts local Halogen."""
+def managed_backend(endpoint: Endpoint) -> tuple[str, str] | None:
+    """(name, stub) when srun.sh starts this endpoint itself, else None."""
     try:
         host, port = endpoint_target(endpoint.base_url)
     except ValueError:
-        return ""
-    if host not in ("127.0.0.1", "localhost") or port != 8731:
+        return None
+    if host not in ("127.0.0.1", "localhost"):
+        return None
+    return MANAGED_ENDPOINTS.get(port)
+
+
+def managed_endpoint_model(endpoint: Endpoint) -> str:
+    """Configured model usable before the launcher starts a managed backend."""
+    if managed_backend(endpoint) is None:
         return ""
     return endpoint.model.strip()
 
@@ -485,6 +502,9 @@ def apply_endpoint(config: dict[str, Any], endpoint: Endpoint, model_id: str) ->
             "wrapperEnabled": bool((config.get("wrapper") or {}).get("enabled")),
             "requestDefaults": {k: v for k, v in (config.get("requestDefaults") or {}).items()
                                 if k in SAMPLING_KEYS},
+            # apply_endpoint overwrites requestDefaults.model with the
+            # endpoint's id; without this the local engine kept receiving it.
+            "model": (config.get("requestDefaults") or {}).get("model"),
         }}
     attach.update(mode="endpoint", name=endpoint.name,
                   baseUrl=endpoint.base_url, model=model_id)
@@ -493,7 +513,8 @@ def apply_endpoint(config: dict[str, Any], endpoint: Endpoint, model_id: str) ->
     server["port"] = port
     # index.mjs spawns server.binary unconditionally at boot; there is nothing
     # to launch here, so the stub stands in and stays alive.
-    server["binary"] = ATTACH_STUB
+    managed = managed_backend(endpoint)
+    server["binary"] = managed[1] if managed else ATTACH_STUB
     # Readiness then falls back from /api/wrapper/status to GET /v1/models.
     config.setdefault("wrapper", {})["enabled"] = False
     defaults = config.setdefault("requestDefaults", {})
@@ -517,6 +538,11 @@ def apply_local(config: dict[str, Any]) -> None:
             config.setdefault("wrapper", {})["enabled"] = bool(saved["wrapperEnabled"])
         for key, value in (saved.get("requestDefaults") or {}).items():
             config.setdefault("requestDefaults", {})[key] = value
+        defaults = config.setdefault("requestDefaults", {})
+        if saved.get("model"):
+            defaults["model"] = saved["model"]
+        elif defaults.get("model") == attach.get("model"):
+            defaults.pop("model", None)
     server["attach"] = {"mode": "local"}
 
 
@@ -926,14 +952,15 @@ class ModelPickerDialog:
         try:
             models = probe_endpoint(endpoint.base_url)
         except Exception as err:
-            offline_model = managed_halogen_model(endpoint)
+            offline_model = managed_endpoint_model(endpoint)
             self.ep_model["values"] = [offline_model] if offline_model else []
             self.ep_model_var.set(offline_model)
             if offline_model:
                 self.set_detail(
                     f"{endpoint.label}\n\nOFFLINE\n\n{err}\n\n"
                     f"Configured model: {offline_model}\n"
-                    "Confirm this selection and DS4 Studio will start Halogen."
+                    "Confirm this selection and DS4 Studio will start "
+                    f"{managed_backend(endpoint)[0]}."
                 )
             else:
                 self.set_detail(f"{endpoint.label}\n\nUNREACHABLE\n\n{err}\n\n"
@@ -1003,7 +1030,7 @@ class ModelPickerDialog:
         if isinstance(row, Endpoint):
             model_id = self.ep_model_var.get().strip()
             if not model_id:
-                model_id = managed_halogen_model(row)
+                model_id = managed_endpoint_model(row)
             if not model_id:
                 # The combobox is empty when the preview probe failed. Probe
                 # again here rather than repeating "unreachable or advertises
@@ -1133,6 +1160,9 @@ class TuningDialog:
         elif field.kind == "startup_mode":
             var = tk.StringVar(value=str(value))
             widget = ttk.Combobox(parent, textvariable=var, values=["server", "agent"], state="readonly")
+        elif field.kind == "agent_engine":
+            var = tk.StringVar(value=str(value))
+            widget = ttk.Combobox(parent, textvariable=var, values=["native", "js"], state="readonly")
         elif field.kind == "env_flag":
             var = tk.StringVar(value=str(value))
             widget = ttk.Combobox(parent, textvariable=var, values=["", "1"], state="readonly")
@@ -1288,12 +1318,19 @@ def self_check() -> int:
         else:
             raise AssertionError("accepted an unrepresentable base URL: %s" % bad)
 
-    # Local managed Halogen is selectable while offline; unrelated endpoints
-    # must still pass their live /v1/models probe.
-    assert managed_halogen_model(
+    # Local managed Halogen/Vitronia are selectable while offline; unrelated
+    # endpoints must still pass their live /v1/models probe.
+    assert managed_endpoint_model(
         Endpoint("Halogen", "http://127.0.0.1:8731/v1", "halogen-qwen3.8-flash-next")
     ) == "halogen-qwen3.8-flash-next"
-    assert managed_halogen_model(
+    assert managed_endpoint_model(
+        Endpoint("Vitronia", "http://127.0.0.1:8732/v1", "qwen3.8-flash-next-vitronia")
+    ) == "qwen3.8-flash-next-vitronia"
+    vit = {"server": {"binary": "./ds4-server", "host": "127.0.0.1", "port": 8002}}
+    apply_endpoint(vit, Endpoint("Vitronia", "http://127.0.0.1:8732/v1"),
+                   "qwen3.8-flash-next-vitronia")
+    assert vit["server"]["binary"] == "./scripts/vitronia_attach_stub.sh"
+    assert managed_endpoint_model(
         Endpoint("Remote", "http://box.lan:8731/v1", "remote-model")
     ) == ""
 
@@ -1325,6 +1362,13 @@ def self_check() -> int:
     assert cfg["server"]["port"] == 8002                # not the endpoint's port
     assert cfg["server"]["host"] == "127.0.0.1"
     assert cfg["server"]["attach"] == {"mode": "local"}
+
+    # WP13: the agent engine selector must exist, default to native, and
+    # read back the value from a config that already carries it.
+    eng = FIELD_BY_PATH["agent.engine"]
+    assert eng.kind == "agent_engine" and eng.tab == "Wrapper"
+    assert field_value({}, eng) == "native"
+    assert field_value({"agent": {"engine": "js"}}, eng) == "js"
 
     print("srun_tuning_gui: self-check ok")
     return 0

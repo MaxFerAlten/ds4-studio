@@ -164,22 +164,32 @@ function isSagePolicyMessage(message) {
     String(message.content || "").includes(SAGE_POLICY_BEGIN);
 }
 
+function removeSagePolicy(content) {
+  return String(content || "")
+    .replace(/\n?<!-- ds4-sage-policy:start -->[\s\S]*?<!-- ds4-sage-policy:end -->\n?/g, "")
+    .trimEnd();
+}
+
 export function applySagePolicyToMessages(
   messages,
   { enabled = sageState.enabled, prompt = sageState.policyPrompt } = {}
 ) {
-  const clean = (Array.isArray(messages) ? messages : []).filter(
-    (message) => !isSagePolicyMessage(message)
+  const clean = (Array.isArray(messages) ? messages : []).map((message) =>
+    isSagePolicyMessage(message)
+      ? { ...message, content: removeSagePolicy(message.content) }
+      : message
   );
   if (!enabled || typeof prompt !== "string" || !prompt.trim()) return clean;
 
-  const policyMessage = {
-    role: "system",
-    content: `${SAGE_POLICY_BEGIN}\n${prompt.trim()}\n${SAGE_POLICY_END}`
-  };
+  const policy = `${SAGE_POLICY_BEGIN}\n${prompt.trim()}\n${SAGE_POLICY_END}`;
   const firstSystem = clean.findIndex((message) => message?.role === "system");
-  const insertAt = firstSystem >= 0 ? firstSystem + 1 : 0;
-  return [...clean.slice(0, insertAt), policyMessage, ...clean.slice(insertAt)];
+  if (firstSystem < 0) return [{ role: "system", content: policy }, ...clean];
+  const system = clean[firstSystem];
+  clean[firstSystem] = {
+    ...system,
+    content: `${String(system.content || "").trimEnd()}\n\n${policy}`
+  };
+  return clean;
 }
 
 export function syncSageStateFromNativeCommand(

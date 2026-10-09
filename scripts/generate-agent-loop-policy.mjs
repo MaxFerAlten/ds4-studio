@@ -33,6 +33,19 @@ const MACROS = {
   degenerateGenerationTerminal: "DS4_AGENT_DEGENERATE_GENERATION_TERMINAL",
   finalizationOnlyMaxModelRounds:
     "DS4_AGENT_FINALIZATION_ONLY_MAX_MODEL_ROUNDS",
+  // Loop-convergence limits shared with the Node loop (convergenza.loop.md D3).
+  // The C values these mirror live in studio/ds4_agent.c; the parity test in
+  // frontend/server/agentLoopPolicy.test.mjs fails if the two drift apart.
+  maxAgentIterations: "DS4_AGENT_MAX_AGENT_ITERATIONS",
+  maxCheckpointNudges: "DS4_AGENT_MAX_CHECKPOINT_NUDGES",
+  systemPromptReminderTokens: "DS4_AGENT_SYSTEM_PROMPT_REMINDER_TOKENS",
+  reminderToolBurstTokens: "DS4_AGENT_REMINDER_TOOL_BURST_TOKENS",
+  compactSoftPercent: "DS4_AGENT_COMPACT_SOFT_PERCENT",
+  compactMinFreeTokens: "DS4_AGENT_COMPACT_MIN_FREE_TOKENS",
+  compactTailDivisor: "DS4_AGENT_COMPACT_TAIL_DIVISOR",
+  compactTailCapTokens: "DS4_AGENT_COMPACT_TAIL_CAP_TOKENS",
+  compactSummaryMaxTokens: "DS4_AGENT_COMPACT_SUMMARY_MAX_TOKENS",
+  evidenceMaxRepairRounds: "DS4_AGENT_EVIDENCE_MAX_REPAIR_ROUNDS",
 };
 
 export function validateAgentLoopPolicy(policy) {
@@ -73,6 +86,14 @@ export function validateAgentLoopPolicy(policy) {
   if (policy.maxToolRoundsHard < policy.protocolTotalFailureTerminal) {
     throw new Error(
       "maxToolRoundsHard must be >= protocolTotalFailureTerminal",
+    );
+  }
+  // Compaction is a soft ceiling, not a coin toss: under 50 % the loop would
+  // rewrite its own context every few rounds, at 100 % it would never run
+  // before the hard budget error the compaction exists to avoid.
+  if (policy.compactSoftPercent < 50 || policy.compactSoftPercent > 99) {
+    throw new Error(
+      `compactSoftPercent must be between 50 and 99, got ${policy.compactSoftPercent}`,
     );
   }
   return policy;

@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { DEFAULT_CONFIG, REQUEST_DEFAULTS } from "./defaultConfig.mjs";
 import { mergeResearchConfig, validateResearchConfig } from "./research/researchConfig.mjs";
 import { AGENT_TOOL_NAMES } from "./agentToolCatalog.mjs";
+import { AGENT_ENGINES } from "./agentEngine.mjs";
 import { LEGACY_SEMANTIC_ENV_KEYS, normalizeLegacySemanticEnv } from "./semanticConfig.mjs";
 
 export { buildDs4Args } from "./commandBuilder.mjs";
@@ -758,6 +759,13 @@ export function validateConfig(config) {
     // The upper bound is 7200000, not the 600000 the Quantum Fix plan §23.4
     // suggests: a live Cauchy proof turn was still generating after 900s, so a
     // 10-minute ceiling would make a legitimate long proof unconfigurable.
+    // WP1 (convergenza.loop.md): which agent loop serves Agent Mode.  An
+    // unknown value is rejected rather than coerced, because a silent fallback
+    // here would route the session to the loop the operator did not ask for.
+    if (!AGENT_ENGINES.includes(config.agent?.engine)) {
+      errors.agent.engine = "must be 'native' or 'js'";
+    }
+
     const nativeChatTimeoutMs = config.agent?.nativeChatTimeoutMs;
     if (
       nativeChatTimeoutMs !== 0 &&

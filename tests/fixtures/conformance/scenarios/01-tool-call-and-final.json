@@ -1,0 +1,19 @@
+{
+  "name": "01-tool-call-and-final",
+  "backend": {
+    "propsNctx": 32768,
+    "tokenCounts": [100],
+    "turns": [
+      { "toolCalls": [{ "id": "c1", "name": "read", "arguments": { "path": "frontend/package.json", "start_line": 1, "max_lines": 5 } }], "finish": "tool_calls" },
+      { "content": "The package name field is ds4-ui.", "finish": "stop" }
+    ]
+  },
+  "requests": ["Read frontend/package.json and tell me the name field."],
+  "expect": [
+    { "event": "agent_tool_call", "data": { "name": "read" } },
+    { "event": "agent_tool_result", "data": { "name": "read", "isError": false } },
+    { "event": "agent_text", "dataContains": { "content": "ds4-ui" } },
+    { "event": "agent_done", "data": { "finish_reason": "stop" } }
+  ],
+  "expectAbsent": [{ "event": "agent_error" }]
+}

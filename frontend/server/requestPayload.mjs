@@ -87,11 +87,16 @@ export function requestThinkingEnabled(request = {}) {
   return Boolean(REQUEST_DEFAULTS.thinking);
 }
 
+// The model a turn talks to; side calls on the same turn must use the same id.
+export function payloadModel(request = {}) {
+  return request.model || REQUEST_DEFAULTS.model;
+}
+
 export function buildChatPayload(request = {}, messages = []) {
   const stream = Boolean(request.stream);
   const thinking = requestThinkingEnabled(request);
   const payload = {
-    model: request.model || REQUEST_DEFAULTS.model,
+    model: payloadModel(request),
     messages,
     temperature: Number(request.temperature ?? REQUEST_DEFAULTS.temperature),
     top_p: Number(request.top_p ?? REQUEST_DEFAULTS.top_p),

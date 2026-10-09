@@ -109,9 +109,10 @@ test("Sage policy activation loads the skill and injects one scoped system messa
     { role: "user", content: "calcola" }
   ]);
   const twice = applySagePolicyToMessages(once);
-  assert.equal(twice.length, 3);
+  assert.equal(twice.length, 2);
   assert.equal(twice.filter((message) => /ds4-sage-policy:start/.test(message.content)).length, 1);
-  assert.match(twice[1].content, /Only verified editorial output/);
+  assert.equal(twice.filter((message) => message.role === "system").length, 1);
+  assert.match(twice[0].content, /Only verified editorial output/);
 
   deactivateSagePolicy();
   assert.equal(sagePolicyIsActive(), false);
@@ -120,6 +121,12 @@ test("Sage policy activation loads the skill and injects one scoped system messa
     { role: "system", content: "base" },
     { role: "user", content: "calcola" }
   ]);
+
+  const withoutSystem = applySagePolicyToMessages([
+    { role: "user", content: "calcola" }
+  ], { enabled: true, prompt: "Verified editorial output." });
+  assert.equal(withoutSystem[0].role, "system");
+  assert.equal(withoutSystem.filter((message) => message.role === "system").length, 1);
 });
 
 test("successful native sage policy commands synchronize tool and prompt state", () => {

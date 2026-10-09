@@ -20,16 +20,11 @@ test("parses agent control commands independently of agent mode", () => {
 test("parses every direct native command while agent mode is active", () => {
   const commands = [
     "/help",
-    "/save",
-    "/compact",
-    "/list",
-    "/switch abc",
     "/del abc",
     "/strip abc",
     "/history",
     "/history 10",
     "/power 80",
-    "/new",
     "/quit",
     "/exit",
     "/crawl start https://example.com"
@@ -39,6 +34,12 @@ test("parses every direct native command while agent mode is active", () => {
       type: "native",
       command
     });
+  }
+});
+
+test("leaves JS-loop session commands to the agent chat route", () => {
+  for (const command of ["/compact", "/compact now", "/save", "/list", "/switch abc", "/new"]) {
+    assert.equal(parseAgentInput(command, true), null, command);
   }
 });
 

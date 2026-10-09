@@ -49,7 +49,10 @@ test("the epistemic model client reuses the active backend and loaded model", ()
   assert.ok(position >= 0);
   const factory = source.slice(position, position + 600);
   assert.match(factory, /backendBase\s*\(\s*\)/);
-  assert.match(factory, /activeRequestDefaults\.model/);
+  // The model comes from the turn, by the same rule as the agent's own
+  // payload (WP16: DS4 got the endpoint's stale id from requestDefaults).
+  assert.match(factory, /payloadModel\(/);
+  assert.match(source, /createEpistemicStructuredClient\(reqParams\)/);
   assert.match(factory, /new StructuredModelClient/);
   assert.match(factory, /think:\s*false/);
 });
@@ -112,7 +115,11 @@ test("REM-007/008: index.mjs imports and invokes the shared repair transition", 
   assert.match(source, /evaluateRepairTransition[\s\S]{0,40}from\s*["']\.\/epistemic\/epistemicRepairPolicy\.mjs["']/);
   const position = source.indexOf("evaluateRepairTransition({");
   assert.ok(position >= 0, "the production blocked path calls evaluateRepairTransition");
-  const block = source.slice(position, position + 1800);
+  // WP10: the composed repair round (epistemic guidance first, evidence
+  // guidance second, evidence terminal on an exhausted Evidence budget)
+  // lengthened the same block; the invariant — these markers live in the
+  // blocked path — is unchanged.
+  const block = source.slice(position, position + 2600);
   assert.match(block, /repairState\.policy/);
   assert.match(block, /finish_reason:\s*["']epistemic_blocked["']/);
   assert.match(block, /beginRepair\s*\(\s*\)/);

@@ -146,6 +146,16 @@ export function ChatPanel({
             Agno
           </button>
         ) : null}
+        <button
+          type="button"
+          className="research-toggle opendots-toggle"
+          onClick={() => window.location.assign("/agui-poc.html")}
+          disabled={agentMode || generationBusy}
+          title="Apri la nuova interfaccia OpenDots"
+          data-agent-id="chat-opendots-toggle"
+        >
+          OpenDots
+        </button>
         {agentMode && (
           <div className="agent-badge" data-agent-id="chat-agent-badge" title={`Agent Mode Active - Iteration ${agentStatus?.iteration || 0} · Pony ${agentStatus?.ponyMode || "off"} · Headroom ${headroomEnabled ? "on" : "off"} · GitNexus ${agentStatus?.gitnexusEnabled ? "on" : "off"}`}>
             <div className="agent-indicator"></div>

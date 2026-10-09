@@ -1,0 +1,6 @@
+reset
+open EFA-001 general "claim under test"
+verdict EFA-001 conditional medium true
+verdict EFA-001 conditional high true
+verdict EFA-001 conditional critical true
+digest

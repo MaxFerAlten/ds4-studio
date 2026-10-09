@@ -1,0 +1,153 @@
+{
+  "name": "07-reminder-tool-burst",
+  "backend": {
+    "propsNctx": 32768,
+    "tokenCounts": [
+      100
+    ],
+    "turns": [
+      {
+        "toolCalls": [
+          {
+            "id": "r1",
+            "name": "read",
+            "arguments": {
+              "path": "tests/fixtures/conformance/big-read.txt",
+              "start_line": 1,
+              "max_lines": 200
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "r2",
+            "name": "read",
+            "arguments": {
+              "path": "tests/fixtures/conformance/big-read-2.txt",
+              "start_line": 1,
+              "max_lines": 200
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "r3",
+            "name": "read",
+            "arguments": {
+              "path": "tests/fixtures/conformance/big-read.txt",
+              "start_line": 250,
+              "max_lines": 200
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "r4",
+            "name": "read",
+            "arguments": {
+              "path": "tests/fixtures/conformance/big-read-2.txt",
+              "start_line": 250,
+              "max_lines": 200
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "r5",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 1000,
+              "max_lines": 400
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "r6",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 2000,
+              "max_lines": 400
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "r7",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 3000,
+              "max_lines": 400
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "content": "Burst handled.",
+        "finish": "stop"
+      }
+    ]
+  },
+  "requests": [
+    "Read two disjoint windows of each big fixture file, then say Burst handled."
+  ],
+  "expect": [
+    {
+      "event": "agent_text",
+      "dataContains": {
+        "content": "Burst handled"
+      }
+    },
+    {
+      "event": "agent_done",
+      "data": {
+        "finish_reason": "stop"
+      }
+    }
+  ],
+  "expectAbsent": [
+    {
+      "event": "agent_error"
+    },
+    {
+      "event": "agent_tool_result",
+      "dataContains": {
+        "content": "read blocked"
+      }
+    }
+  ],
+  "expectRequest": [
+    {
+      "index": 7,
+      "role": "user",
+      "messagesContain": "- Bash commands containing 'lean', 'lake', or 'elan' as the main executable are blocked."
+    }
+  ],
+  "env": {
+    "DS4_AGENT_RAW_DOC_CHARS_LIMIT": "1000000",
+    "DS4_AGENT_READ_BATCH_LIMIT": "10",
+    "DS4_AGENT_DOC_READ_BATCH_LIMIT": "10"
+  }
+}

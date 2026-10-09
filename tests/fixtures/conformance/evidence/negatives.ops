@@ -1,0 +1,15 @@
+reset
+verdict EFA-009 confirmed low true
+add EFA-009 for static
+open BUG-1 general x
+open EFA-01 general x
+open EFA-001 general ""
+open EFA-001 general x
+open EFA-001 general x
+mark EFA-001 caller not_applicable ""
+mark EFA-001 counterevidence not_applicable "nothing to search"
+markbit EFA-001 3 done
+verdict EFA-001 conditional critical true
+reset
+fill
+open EFA-999 general c

@@ -83,9 +83,8 @@ export function ProfilePanel({ profiles, status, profileBusy, selectProfile, pro
   return (
     <div className="profile-panel">
       <p className="profile-help">
-        I profili impostano sia i parametri server (ctx, KV cache, port, ...) che i default di richiesta
-        (temperature, thinking, max_tokens, ...). Le modifiche ai parametri server richiedono il riavvio del
-        backend ds4-server.
+        I profili DS4 locali selezionano wrapper C; gli endpoint compatibili selezionano il loop JS.
+        La scelta aggiorna modello, backend e motore agente. Riavvia il backend per applicarla.
       </p>
       <div className="profile-list">
         {profiles.length === 0 ? (
@@ -257,7 +256,22 @@ function bytesLabel(value) {
 }
 
 export function CompressionPanel({ metrics }) {
-  if (!metrics || !metrics.ok) return null;
+  if (!metrics) {
+    return (
+      <div className="compression-panel">
+        <h2>Tool Output Compression</h2>
+        <p role="status">Caricamento metriche Headroom…</p>
+      </div>
+    );
+  }
+  if (!metrics.ok) {
+    return (
+      <div className="compression-panel">
+        <h2>Tool Output Compression</h2>
+        <p role="status">Metriche non disponibili: {metrics.error || "errore sconosciuto"}</p>
+      </div>
+    );
+  }
   const { events, originalBytes, compressedBytes, blobCount, retrieveCount, lastStrategy } = metrics;
   const saving = originalBytes > 0
     ? ((originalBytes - compressedBytes) * 100 / originalBytes).toFixed(1)
@@ -265,9 +279,16 @@ export function CompressionPanel({ metrics }) {
   const ratio = originalBytes > 0
     ? (compressedBytes / originalBytes).toFixed(4)
     : 0;
+  const statusText = metrics.source === "wrapper-native"
+    ? metrics.active ? "Motore agente nativo attivo" : "Motore agente nativo inattivo"
+    : metrics.enabled
+      ? events > 0 ? "Headroom attivo · compressioni registrate" : "Headroom attivo · nessuna compressione ancora"
+      : "Headroom disattivato";
   return (
     <div className="compression-panel">
       <h2>Tool Output Compression</h2>
+      <p role="status">{statusText}{metrics.source ? ` · Origine: ${metrics.source}` : ""}</p>
+      {metrics.refreshError ? <p role="alert">Aggiornamento metriche fallito: {metrics.refreshError}</p> : null}
       <div className="metrics-grid">
         <div className="metric-row plain">
           <span>Events</span>

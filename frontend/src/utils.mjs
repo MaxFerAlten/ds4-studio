@@ -370,6 +370,13 @@ export function parseAgentInput(text, agentMode) {
   }
 
   if (/^\/agent$/i.test(trimmed)) return null;
+  // The JS agent loop owns these (WP8/WP9): its chat route intercepts them on
+  // the JS session, so they must travel as a chat message.  Routed to the
+  // native endpoint they fail without the DS4 wrapper (Vitronia, Halogen).
+  // Same patterns as the server intercept.
+  if (agentMode && (/^\/compact(\s|$)/.test(trimmed) || /^\/(save|list|switch|new)(?:\s+\S+)?$/.test(trimmed))) {
+    return null;
+  }
   if (agentMode && /^\/\S/.test(trimmed)) {
     return { type: "native", command: trimmed };
   }

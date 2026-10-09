@@ -346,6 +346,8 @@ if [[ $# -gt 0 && "$1" == "stop" ]]; then
   if "$ROOT_DIR/scripts/halogen_attach_stub.sh" configured "$CONFIG_PATH"; then
     "$ROOT_DIR/scripts/halogen_attach_stub.sh" stop
   fi
+  # Pid-file based: only ever stops a Vitronia that DS4 itself started.
+  "$ROOT_DIR/scripts/vitronia_attach_stub.sh" stop
   exit 0
 fi
 
@@ -654,16 +656,30 @@ configure_rocm_runtime
 
 run_tuning_gui
 
-# Halogen is a selectable backend, not a prerequisite for the picker. The
-# picker can use its configured model id while it is offline; only the backend
-# that the user confirmed is started. Conversely, selecting anything else
-# leaves no DS4-managed Halogen containers running from an earlier launch.
-if "$ROOT_DIR/scripts/halogen_attach_stub.sh" selected "$CONFIG_PATH"; then
-  echo "srun.sh: Halogen selected; starting Halogen containers"
-  "$ROOT_DIR/scripts/halogen_attach_stub.sh" start
-elif "$ROOT_DIR/scripts/halogen_attach_stub.sh" running; then
+# Halogen and Vitronia are selectable backends, not prerequisites for the
+# picker. The picker can use their configured model id while they are offline;
+# only the backend that the user confirmed is started. Conversely, selecting
+# anything else leaves no DS4-managed Halogen/Vitronia running from an earlier
+# launch. Both want ~90 GiB of unified memory, so the unselected one is stopped
+# before the selected one starts.
+halogen_selected=0
+vitronia_selected=0
+"$ROOT_DIR/scripts/halogen_attach_stub.sh" selected "$CONFIG_PATH" && halogen_selected=1
+"$ROOT_DIR/scripts/vitronia_attach_stub.sh" selected "$CONFIG_PATH" && vitronia_selected=1
+if [[ "$halogen_selected" == "0" ]] && "$ROOT_DIR/scripts/halogen_attach_stub.sh" running; then
   echo "srun.sh: Halogen not selected; stopping active Halogen containers"
   "$ROOT_DIR/scripts/halogen_attach_stub.sh" stop
+fi
+if [[ "$vitronia_selected" == "0" ]] && "$ROOT_DIR/scripts/vitronia_attach_stub.sh" running; then
+  echo "srun.sh: Vitronia not selected; stopping active Vitronia server"
+  "$ROOT_DIR/scripts/vitronia_attach_stub.sh" stop
+fi
+if [[ "$halogen_selected" == "1" ]]; then
+  echo "srun.sh: Halogen selected; starting Halogen containers"
+  "$ROOT_DIR/scripts/halogen_attach_stub.sh" start
+elif [[ "$vitronia_selected" == "1" ]]; then
+  echo "srun.sh: Vitronia selected; starting Vitronia llama-server"
+  "$ROOT_DIR/scripts/vitronia_attach_stub.sh" start
 fi
 
 if ! command -v node >/dev/null 2>&1; then

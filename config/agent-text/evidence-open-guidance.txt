@@ -1,0 +1,5 @@
+Before verdict:
+- inspect the complete relevant control flow;
+- inspect callers/wrappers;
+- search for a mechanism that would make this claim false;
+- do not promote the finding until reachability is known.

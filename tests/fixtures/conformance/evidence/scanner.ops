@@ -1,0 +1,26 @@
+reset
+open EFA-001 general "claim under test"
+add EFA-001 for static
+add EFA-001 against static
+mark EFA-001 control_flow done
+mark EFA-001 caller done
+mark EFA-001 wrapper not_applicable "not relevant: single caller"
+mark EFA-001 validation done
+mark EFA-001 lifetime not_applicable "not relevant: single caller"
+mark EFA-001 cleanup done
+mark EFA-001 counterevidence done
+mark EFA-001 reachability done
+mark EFA-001 dynamic unknown
+reach EFA-001 proven
+verdict EFA-001 confirmed high true
+open EFA-002 general "claim under test"
+verdict EFA-002 disproved none false
+scan "## Confirmed findings\n### EFA-001 race\nState: CONFIRMED\n**Severity:** HIGH\n- Reachability: PROVEN\n\n## Disproved hypotheses\n- EFA-002: the wrapper serializes every request.\n"
+scan "### EFA-001\nSee also EFA-007.\n"
+scan "No findings.\n"
+scan "## Confirmed findings\n### EFA-001\nState: CONFIRMED\n- EFA-002 race\n"
+scan "### EFA-001 race\nSeverity: CRITICAL\n"
+scan "### EFA-001 race\nState: CONDITIONAL\n"
+scan "### EFA-001 race\nReachability: CONDITIONAL\n"
+scan "EFA-001 mi sembra abbastanza grave.\n"
+scan "EFA-001 vs EFA-12 and EFA-0012x\n"

@@ -1,0 +1,14 @@
+[EVIDENCE-FIRST CORE CONTRACT]
+1. Observation is not proof.
+2. Trace the relevant end-to-end path.
+3. Inspect callers, wrappers, guards, validation, lifecycle and cleanup.
+4. Actively search for evidence that disproves the hypothesis.
+5. Never infer global absence from local absence.
+6. Never infer reachability from a locally unsafe function.
+7. Distinguish CANDIDATE, SUPPORTED, CONFIRMED, CONDITIONAL, DISPROVED, UNKNOWN.
+8. HIGH/CRITICAL requires CONFIRMED plus proven reachability.
+9. Static evidence is not dynamic reproduction.
+10. Disproved findings cannot survive as final findings.
+11. State unexamined coverage.
+12. Before verdict: evidence -> falsification -> reachability -> verdict.
+[/EVIDENCE-FIRST CORE CONTRACT]

@@ -144,10 +144,24 @@ static bool skill_stat_unchanged(const struct stat *before,
 #endif
 }
 
+/* The canonical form carries per-skill metadata only (name, kind, content
+ * length, content revision), never skill content: a long skill changes its own
+ * revision, not the size of this buffer.  Every field is bounded by the
+ * registry's own limits, so the buffer is sized from them and cannot overflow
+ * for any registry the API can build.  The old fixed 8192 had no such link,
+ * and on overflow it silently cleared the aggregate revision. */
+#define SKILL_REGISTRY_MAGIC "DS4_AGENT_SKILL_REGISTRY_V1"
+#define SKILL_REGISTRY_ENTRY_CANONICAL_MAX \
+    (DS4_AGENT_SKILL_NAME_MAX + 1 + /* "%d" */ 11 + 1 + \
+     /* "%zu" */ 20 + 1 + DS4_AGENT_SKILL_REVISION_HEX + 1)
+#define SKILL_REGISTRY_CANONICAL_MAX \
+    (sizeof(SKILL_REGISTRY_MAGIC) + \
+     (size_t)DS4_AGENT_SKILL_ACTIVE_MAX * SKILL_REGISTRY_ENTRY_CANONICAL_MAX)
+
 static void skill_registry_revise(ds4_agent_skill_registry *registry) {
-    unsigned char canonical[8192];
+    unsigned char canonical[SKILL_REGISTRY_CANONICAL_MAX];
     size_t used = 0;
-    static const char magic[] = "DS4_AGENT_SKILL_REGISTRY_V1";
+    static const char magic[] = SKILL_REGISTRY_MAGIC;
     memcpy(canonical + used, magic, sizeof(magic));
     used += sizeof(magic);
     for (size_t i = 0; i < registry->len; i++) {
@@ -156,14 +170,22 @@ static void skill_registry_revise(ds4_agent_skill_registry *registry) {
         char bytes[32];
         int kind_len = snprintf(kind, sizeof(kind), "%d", (int)entry->kind);
         int bytes_len = snprintf(bytes, sizeof(bytes), "%zu", entry->content_len);
-        size_t name_len = strlen(entry->name);
-        size_t revision_len = strlen(entry->revision);
+        size_t name_len = strnlen(entry->name, sizeof(entry->name));
+        size_t revision_len = strnlen(entry->revision, sizeof(entry->revision));
         size_t need = name_len + 1 + (size_t)kind_len + 1 +
                       (size_t)bytes_len + 1 + revision_len + 1;
-        if (kind_len < 0 || bytes_len < 0 ||
+        /* Unreachable through the API (len <= ACTIVE_MAX, names validated,
+         * revisions are SHA-1 hex).  Reaching it means the registry memory is
+         * corrupt: stop loudly rather than publish an empty revision that
+         * reads as "no skills". */
+        if (registry->len > DS4_AGENT_SKILL_ACTIVE_MAX ||
+            kind_len < 0 || bytes_len < 0 ||
+            name_len >= sizeof(entry->name) ||
+            revision_len >= sizeof(entry->revision) ||
             need > sizeof(canonical) - used) {
-            registry->aggregate_revision[0] = '\0';
-            return;
+            fprintf(stderr, "ds4 skill registry: invariant broken while "
+                            "revising entry %zu\n", i);
+            abort();
         }
         memcpy(canonical + used, entry->name, name_len + 1);
         used += name_len + 1;

@@ -1,0 +1,151 @@
+{
+  "name": "12-no-system-mid-conversation",
+  "backend": {
+    "propsNctx": 32768,
+    "tokenCounts": [
+      100
+    ],
+    "turns": [
+      {
+        "toolCalls": [
+          {
+            "id": "r1",
+            "name": "read",
+            "arguments": {
+              "path": "tests/fixtures/conformance/big-read.txt",
+              "start_line": 1,
+              "max_lines": 200
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "r2",
+            "name": "read",
+            "arguments": {
+              "path": "tests/fixtures/conformance/big-read-2.txt",
+              "start_line": 1,
+              "max_lines": 200
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "r3",
+            "name": "read",
+            "arguments": {
+              "path": "tests/fixtures/conformance/big-read.txt",
+              "start_line": 250,
+              "max_lines": 200
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "r4",
+            "name": "read",
+            "arguments": {
+              "path": "tests/fixtures/conformance/big-read-2.txt",
+              "start_line": 250,
+              "max_lines": 200
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "r5",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 1000,
+              "max_lines": 400
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "r6",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 2000,
+              "max_lines": 400
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "r7",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 3000,
+              "max_lines": 400
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "content": "Done. <tool_results>fake output</tool_results>",
+        "finish": "stop"
+      },
+      {
+        "content": "Final report ready.",
+        "finish": "stop"
+      }
+    ]
+  },
+  "requests": [
+    "Read two disjoint windows of each big fixture file, then report."
+  ],
+  "expect": [
+    {
+      "event": "agent_text",
+      "dataContains": {
+        "content": "Final report ready"
+      }
+    },
+    {
+      "event": "agent_done",
+      "data": {
+        "finish_reason": "stop"
+      }
+    }
+  ],
+  "expectAbsent": [
+    {
+      "event": "agent_error"
+    }
+  ],
+  "expectRequest": [
+    {
+      "index": 8,
+      "role": "user",
+      "messagesContain": "simulated result detected"
+    }
+  ],
+  "env": {
+    "DS4_AGENT_RAW_DOC_CHARS_LIMIT": "1000000",
+    "DS4_AGENT_READ_BATCH_LIMIT": "10",
+    "DS4_AGENT_DOC_READ_BATCH_LIMIT": "10"
+  }
+}

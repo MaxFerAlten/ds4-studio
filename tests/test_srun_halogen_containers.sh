@@ -122,10 +122,13 @@ source = Path(sys.argv[1]).read_text()
 bootstrap = source.index("\nconfigure_rocm_runtime\n")
 picker = source.index("\nrun_tuning_gui\n", bootstrap)
 selected = source.index('halogen_attach_stub.sh" selected "$CONFIG_PATH"', picker)
-start = source.index('halogen_attach_stub.sh" start', selected)
-running = source.index('halogen_attach_stub.sh" running', start)
+# The unselected managed backend is stopped before the selected one starts:
+# Halogen and Vitronia cannot both hold their weights in memory.
+running = source.index('halogen_attach_stub.sh" running', selected)
 stop = source.index('halogen_attach_stub.sh" stop', running)
-assert bootstrap < picker < selected < start < running < stop
+vitronia_stop = source.index('vitronia_attach_stub.sh" stop', stop)
+start = source.index('halogen_attach_stub.sh" start', vitronia_stop)
+assert bootstrap < picker < selected < running < stop < vitronia_stop < start
 assert 'halogen_attach_stub.sh" start' not in source[bootstrap:picker]
 PY
 

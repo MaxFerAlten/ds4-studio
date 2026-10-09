@@ -392,10 +392,19 @@ static int ds4_server_runtime_run_job(ds4_server_runtime *rt, request *r, int fd
         return 503;
     }
 
-    while (!j.done) {
-        pthread_cond_wait(&j.cv, &j.mu);
-    }
     pthread_mutex_unlock(&j.mu);
+
+    /* Same wait as upstream client_main: poll the socket every 100 ms and cancel
+     * the job when the client is gone.  A bare cond_wait only noticed a
+     * disconnect on the next write, so a non-stream request (nothing written
+     * until the end) kept generating to max_tokens after its client aborted:
+     * measured 193 s busy for a client that left after 8 s.  The poll needs a
+     * nonblocking socket (send_all copes with EAGAIN); the wrapper's HTTP layer
+     * gets its blocking fd back afterwards. */
+    int fd_flags = fcntl(fd, F_GETFL, 0);
+    set_client_socket_nonblocking(fd);
+    wait_for_job_or_disconnect(s, &j);
+    if (fd_flags >= 0) (void)fcntl(fd, F_SETFL, fd_flags);
 
     pthread_mutex_lock(&rt->cancel_mu);
     if (rt->active_job == &j) rt->active_job = NULL;

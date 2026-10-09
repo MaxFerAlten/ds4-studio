@@ -1,0 +1,603 @@
+{
+  "name": "02b-iteration-limit-report-with-file-list",
+  "backend": {
+    "propsNctx": 32768,
+    "tokenCounts": [
+      100
+    ],
+    "turns": [
+      {
+        "toolCalls": [
+          {
+            "id": "c1",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 1,
+              "max_lines": 1
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "c2",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 2,
+              "max_lines": 1
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "c3",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 3,
+              "max_lines": 1
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "c4",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 4,
+              "max_lines": 1
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "c5",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 5,
+              "max_lines": 1
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "c6",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 6,
+              "max_lines": 1
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "c7",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 7,
+              "max_lines": 1
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "c8",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 8,
+              "max_lines": 1
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "c9",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 9,
+              "max_lines": 1
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "c10",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 10,
+              "max_lines": 1
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "c11",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 11,
+              "max_lines": 1
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "c12",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 12,
+              "max_lines": 1
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "c13",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 13,
+              "max_lines": 1
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "c14",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 14,
+              "max_lines": 1
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "c15",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 15,
+              "max_lines": 1
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "c16",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 16,
+              "max_lines": 1
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "c17",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 17,
+              "max_lines": 1
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "c18",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 18,
+              "max_lines": 1
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "c19",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 19,
+              "max_lines": 1
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "c20",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 20,
+              "max_lines": 1
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "c21",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 21,
+              "max_lines": 1
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "c22",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 22,
+              "max_lines": 1
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "c23",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 23,
+              "max_lines": 1
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "c24",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 24,
+              "max_lines": 1
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "c25",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 25,
+              "max_lines": 1
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "c26",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 26,
+              "max_lines": 1
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "c27",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 27,
+              "max_lines": 1
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "c28",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 28,
+              "max_lines": 1
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "c29",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 29,
+              "max_lines": 1
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "c30",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 30,
+              "max_lines": 1
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "c31",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 31,
+              "max_lines": 1
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "c32",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 32,
+              "max_lines": 1
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "c33",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 33,
+              "max_lines": 1
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "c34",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 34,
+              "max_lines": 1
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "c35",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 35,
+              "max_lines": 1
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "c36",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 36,
+              "max_lines": 1
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "c37",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 37,
+              "max_lines": 1
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "c38",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 38,
+              "max_lines": 1
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "c39",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 39,
+              "max_lines": 1
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "c40",
+            "name": "read",
+            "arguments": {
+              "path": "frontend/server/index.mjs",
+              "start_line": 40,
+              "max_lines": 1
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "content": "## Stato\n\n| File | Righe |\n|---|---|\n| frontend/server/mod00.mjs | 100 |\n| frontend/server/mod01.mjs | 101 |\n| frontend/server/mod02.mjs | 102 |\n| frontend/server/mod03.mjs | 103 |\n| frontend/server/mod04.mjs | 104 |\n| frontend/server/mod05.mjs | 105 |\n| frontend/server/mod06.mjs | 106 |\n| frontend/server/mod07.mjs | 107 |\n| frontend/server/mod08.mjs | 108 |\n| frontend/server/mod09.mjs | 109 |\n| frontend/server/mod10.mjs | 110 |\n| frontend/server/mod11.mjs | 111 |\n| frontend/server/mod12.mjs | 112 |\n| frontend/server/mod13.mjs | 113 |\n| frontend/server/mod14.mjs | 114 |\n| frontend/server/mod15.mjs | 115 |\n| frontend/server/mod16.mjs | 116 |\n| frontend/server/mod17.mjs | 117 |\n| frontend/server/mod18.mjs | 118 |\n| frontend/server/mod19.mjs | 119 |\n| frontend/server/mod20.mjs | 120 |\n| frontend/server/mod21.mjs | 121 |\n| frontend/server/mod22.mjs | 122 |\n| frontend/server/mod23.mjs | 123 |\n| frontend/server/mod24.mjs | 124 |\n| frontend/server/mod25.mjs | 125 |\n| frontend/server/mod26.mjs | 126 |\n| frontend/server/mod27.mjs | 127 |\n| frontend/server/mod28.mjs | 128 |\n| frontend/server/mod29.mjs | 129 |\n| frontend/server/mod30.mjs | 130 |\n| frontend/server/mod31.mjs | 131 |\n| frontend/server/mod32.mjs | 132 |\n| frontend/server/mod33.mjs | 133 |\n| frontend/server/mod34.mjs | 134 |\n| frontend/server/mod35.mjs | 135 |\n| frontend/server/mod36.mjs | 136 |\n| frontend/server/mod37.mjs | 137 |\n| frontend/server/mod38.mjs | 138 |\n| frontend/server/mod39.mjs | 139 |\n| frontend/server/mod40.mjs | 140 |\n| frontend/server/mod41.mjs | 141 |\n| frontend/server/mod42.mjs | 142 |\n| frontend/server/mod43.mjs | 143 |\n| frontend/server/mod44.mjs | 144 |\n\nQuale file vuoi approfondire?",
+        "finish": "stop"
+      }
+    ]
+  },
+  "requests": [
+    "Read frontend/server/index.mjs repeatedly until you can answer."
+  ],
+  "expect": [
+    {
+      "event": "agent_warning",
+      "data": {
+        "type": "AGENT_ITERATION_LIMIT"
+      }
+    },
+    {
+      "event": "agent_text",
+      "dataContains": {
+        "content": "Quale file vuoi approfondire"
+      }
+    },
+    {
+      "event": "agent_done",
+      "data": {
+        "finish_reason": "iteration_limit"
+      }
+    }
+  ],
+  "expectAbsent": [
+    {
+      "event": "agent_error"
+    }
+  ]
+}

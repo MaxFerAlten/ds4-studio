@@ -1,0 +1,31 @@
+{
+  "name": "09-skill-evidence-commands",
+  "backend": {
+    "tokenCounts": [100],
+    "turns": []
+  },
+  "requests": [
+    "/skill evidence-first-analysis start",
+    "/skill evidence-first-analysis status",
+    "/skill evidence-first-analysis stop"
+  ],
+  "expect": [
+    {
+      "event": "agent_text",
+      "dataContains": {
+        "content": "evidence-first-analysis"
+      }
+    },
+    {
+      "event": "agent_done",
+      "data": {
+        "finish_reason": "command"
+      }
+    }
+  ],
+  "expectAbsent": [
+    {
+      "event": "agent_error"
+    }
+  ]
+}

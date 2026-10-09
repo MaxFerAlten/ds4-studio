@@ -227,15 +227,18 @@ static epi_command_classification epi_classify_command(const char *command)
                ((quote != 0 && *p != quote) ||
                 (quote == 0 && !isspace((unsigned char)*p) &&
                  *p != ';' && *p != '|' && *p != '&'))) {
-            if (len + 1 < EPI_COMMAND_WORD_LEN) words[count][len++] = *p;
+            if (count < EPI_COMMAND_MAX_WORDS && len + 1 < EPI_COMMAND_WORD_LEN)
+                words[count][len++] = *p;
             p++;
         }
         if (quote != 0 && *p == quote) p++;
+        /* Past the word budget the rest of this segment is argument tail:
+         * keep scanning for the next operator, store nothing.  Classifying a
+         * full batch and starting a new one here used to turn word 33 of an
+         * innocuous command into an "executable" (piano WP17). */
+        if (count == EPI_COMMAND_MAX_WORDS) continue;
         words[count][len] = '\0';
-        if (len > 0 && ++count == EPI_COMMAND_MAX_WORDS) {
-            epi_classify_command_words(words, count, &out);
-            count = 0;
-        }
+        if (len > 0) count++;
     }
     epi_classify_command_words(words, count, &out);
     return out;

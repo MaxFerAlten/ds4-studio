@@ -1,0 +1,24 @@
+{
+  "name": "06-compaction",
+  "backend": {
+    "propsNctx": 32768,
+    "tokenCountsByRequest": [[100], [30000, 100]],
+    "turns": [
+      { "toolCalls": [{ "id": "c1", "name": "read", "arguments": { "path": "tests/fixtures/conformance/big-read.txt", "start_line": 1 } }], "finish": "tool_calls" },
+      { "content": "Logged the file.", "finish": "stop" },
+      { "content": "Summary: earlier work was observed and compressed.", "finish": "stop" },
+      { "content": "Compacted and done.", "finish": "stop" }
+    ]
+  },
+  "requests": [
+    "Read frontend/server/index.mjs so the transcript grows, then say Logged the file.",
+    "Now continue and finish the task."
+  ],
+  "expect": [
+    { "event": "agent_tool_call", "data": { "name": "read" } },
+    { "event": "agent_status", "data": { "mode": "compacting" } },
+    { "event": "agent_text", "dataContains": { "content": "Compacted and done" } },
+    { "event": "agent_done", "data": { "finish_reason": "stop" } }
+  ],
+  "expectAbsent": [{ "event": "agent_error" }]
+}

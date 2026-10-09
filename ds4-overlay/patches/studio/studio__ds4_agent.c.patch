@@ -1,6 +1,6 @@
 --- a/studio/ds4_agent.c
 +++ b/studio/ds4_agent.c
-@@ -1,16 +1,49 @@
+@@ -1,16 +1,50 @@
 +/*
 + * ds4_agent_final.c
 + * Structural merge: ds4_agent.c is the authoritative upstream base;
@@ -22,6 +22,7 @@
 +#include "ds4_agent_skill_registry.h"
 +#include "ds4_agent_protocol_guard.h"
 +#include "ds4_agent_epistemic.h"
++#include "ds4_agent_evidence_guard.h"
  #include "ds4_web.h"
 +#include "ds4_context_blob.h"
 +#include "ds4_tool_compress.h"
@@ -53,7 +54,7 @@
  #include <dirent.h>
  #include <fnmatch.h>
  #include <fcntl.h>
-@@ -33,10 +66,24 @@
+@@ -33,10 +67,24 @@
  #include <sys/wait.h>
  #include <time.h>
  #include <unistd.h>
@@ -78,7 +79,7 @@
  #endif
  
  extern char **environ;
-@@ -91,6 +138,7 @@
+@@ -91,6 +139,7 @@
      const char *chdir_path;
      bool non_interactive;
      bool edit_upto;
@@ -86,7 +87,7 @@
  } agent_config;
  
  typedef enum {
-@@ -112,16 +160,166 @@
+@@ -112,16 +161,166 @@
      double prefill_tps;
      int generated;
      double gen_tps;
@@ -254,7 +255,7 @@
  typedef struct {
      bool enabled;
      bool instructed;
-@@ -167,6 +365,14 @@
+@@ -167,6 +366,14 @@
      int progress_base;
      bool progress_direct;
      double progress_started_at;
@@ -269,7 +270,7 @@
      char *cmd_text;
      agent_status status;
      char *out;
-@@ -183,7 +389,6 @@
+@@ -183,7 +390,6 @@
      char *queued_user_drain_text;
      bool datetime_context_injected;
      agent_hints hints;
@@ -277,7 +278,7 @@
      char more_path[PATH_MAX];
      int more_next_line;
      off_t more_byte_offset;
-@@ -193,6 +398,107 @@
+@@ -193,6 +399,118 @@
      agent_bash_job *bash_jobs;
      int next_bash_job_id;
      bool raw_mode_needs_restore;
@@ -363,6 +364,17 @@
 +     * Reset before generation, written only from tool calls that ran. */
 +    ds4_agent_epistemic_turn epistemic_turn;
 +
++    /* Evidence-First (piano WP14): the findings ledger is session-scoped and
++     * lives here, not in the transcript, so compaction cannot drop it.  Only
++     * the worker thread mutates it; the runtime reads it while the worker is
++     * idle, the same rule as dynamic_skills. */
++    ds4_agent_evidence_state evidence_state;
++    ds4_agent_evidence_turn evidence_turn;
++    /* Set by a session switch: the next user turn re-anchors the contract and
++     * says whether the ledger came back (evidence_restored) or not. */
++    bool evidence_reanchor_pending;
++    bool evidence_restored;
++
 +    /* Lean turn state — reset at start of each new user turn. */
 +    agent_lean_turn_state lean_turn;
 +    int lean_consecutive_rounds;
@@ -385,7 +397,7 @@
  } agent_worker;
  
  static unsigned agent_next_prefill_label(void);
-@@ -205,8 +511,20 @@
+@@ -205,8 +523,20 @@
      size_t total;
  } agent_tail_capture;
  
@@ -406,7 +418,7 @@
      AGENT_MD_PENDING_BACKTICK,
  } agent_markdown_pending;
  
-@@ -255,6 +573,7 @@
+@@ -255,6 +585,7 @@
      size_t utf8_pending_len;
      size_t utf8_pending_need;
      agent_tail_capture *capture;
@@ -414,11 +426,16 @@
  } agent_token_renderer;
  
  typedef struct {
-@@ -396,18 +715,157 @@
+@@ -396,18 +727,162 @@
  static void agent_trace(agent_worker *w, const char *fmt, ...);
  static void agent_trace_text(agent_worker *w, const char *label,
                               const char *text, size_t len);
 +static void agent_publish_system_status(agent_worker *w, const char *msg);
++static bool agent_worker_evidence_skill_loaded(const agent_worker *w);
++static void agent_worker_append_evidence_reanchor(agent_worker *w,
++                                                  ds4_tokens *tokens,
++                                                  const char *why,
++                                                  bool with_digest);
  static bool agent_stream_wants_greedy_sampling(const agent_stream_renderer *sr);
 -static void agent_publish_system_status(agent_worker *w, const char *msg);
 +static int agent_read_default_lines(agent_worker *w);
@@ -575,7 +592,7 @@
  
  static agent_tool_syntax agent_tool_syntax_for_engine(ds4_engine *engine) {
      if (ds4_engine_is_qwen4(engine)) return AGENT_TOOL_SYNTAX_QWEN;
-@@ -454,11 +912,6 @@
+@@ -454,11 +929,6 @@
      return ctx;
  }
  
@@ -587,7 +604,7 @@
  static void agent_sigint_handler(int sig) {
      (void)sig;
      agent_sigint = 1;
-@@ -481,56 +934,790 @@
+@@ -481,56 +951,790 @@
      return p;
  }
  
@@ -1417,7 +1434,7 @@
  }
  
  static void write_all(int fd, const char *p, size_t n) {
-@@ -600,6 +1787,7 @@
+@@ -600,6 +1804,7 @@
      return (int)v;
  }
  
@@ -1425,7 +1442,7 @@
  static bool parse_power_percent(const char *arg, int *out) {
      char *end = NULL;
      long v = strtol(arg, &end, 10);
-@@ -618,6 +1806,238 @@
+@@ -618,6 +1823,238 @@
      }
      *out = v;
      return true;
@@ -1664,7 +1681,7 @@
  }
  
  static bool agent_slash_command_with_args(const char *cmd, const char *name) {
-@@ -641,7 +2061,15 @@
+@@ -641,7 +2078,15 @@
             agent_slash_command_with_args(cmd, "/switch") ||
             agent_slash_command_with_args(cmd, "/del") ||
             agent_slash_command_with_args(cmd, "/strip") ||
@@ -1681,7 +1698,7 @@
  }
  
  static uint64_t parse_u64(const char *s, const char *opt) {
-@@ -1013,23 +2441,88 @@
+@@ -1013,23 +2458,88 @@
      if (!gen->min_p_set) gen->min_p = 0.0f;
  }
  
@@ -1779,7 +1796,7 @@
  
  static const char agent_tools_prompt_intro[] =
      "You are a coding agent running in a local workspace. Use tools for local file and system work. "
-@@ -1044,31 +2537,17 @@
+@@ -1044,31 +2554,17 @@
      "</｜DSML｜tool_calls>\n\n"
      "Tool calls are not allowed inside <think></think>; finish thinking before emitting DSML.\n\n"
      "String parameters use raw text and string=\"true\". Numbers and booleans use JSON text and string=\"false\".\n\n"
@@ -1818,7 +1835,7 @@
      "The old text must match exactly once in the current file; otherwise edit fails for safety.\n"
      "For large replacements, prefer anchored old text: write the first lines, then [upto], then the final lines. "
      "The tool replaces everything from the head through the tail. If the head or tail is ambiguous, the edit fails.\n"
-@@ -1094,13 +2573,19 @@
+@@ -1094,13 +2590,19 @@
      "</｜DSML｜invoke>\n"
      "</｜DSML｜tool_calls>\n"
      "To insert text, use edit with old set to an exact unique anchor and new set to that anchor plus the added text.\n"
@@ -1840,7 +1857,7 @@
      "### Available Tool Schemas\n\n"
      "{\n"
      "  \"type\": \"function\",\n"
-@@ -1139,8 +2624,8 @@
+@@ -1139,8 +2641,8 @@
      "      \"type\": \"object\",\n"
      "      \"properties\": {\n"
      "        \"command\": {\"type\": \"string\"},\n"
@@ -1851,7 +1868,7 @@
      "      },\n"
      "      \"required\": [\"command\"]\n"
      "    }\n"
-@@ -1150,14 +2635,14 @@
+@@ -1150,14 +2652,14 @@
      "  \"type\": \"function\",\n"
      "  \"function\": {\n"
      "    \"name\": \"bash_status\",\n"
@@ -1870,7 +1887,7 @@
      "      \"required\": [\"job\"]\n"
      "    }\n"
      "  }\n"
-@@ -1169,16 +2654,80 @@
+@@ -1169,16 +2671,80 @@
      "    \"description\": \"Terminate a running bash job and report its final output.\",\n"
      "    \"parameters\": {\n"
      "      \"type\": \"object\",\n"
@@ -1954,7 +1971,7 @@
      "  \"type\": \"function\",\n"
      "  \"function\": {\n"
      "    \"name\": \"read\",\n"
-@@ -1187,8 +2736,8 @@
+@@ -1187,8 +2753,8 @@
      "      \"type\": \"object\",\n"
      "      \"properties\": {\n"
      "        \"path\": {\"type\": \"string\"},\n"
@@ -1965,7 +1982,7 @@
      "        \"whole\": {\"type\": \"boolean\"},\n"
      "        \"raw\": {\"type\": \"boolean\"}\n"
      "      },\n"
-@@ -1200,12 +2749,28 @@
+@@ -1200,12 +2766,28 @@
      "  \"type\": \"function\",\n"
      "  \"function\": {\n"
      "    \"name\": \"more\",\n"
@@ -1996,7 +2013,7 @@
      "    }\n"
      "  }\n"
      "}\n\n"
-@@ -1228,7 +2793,7 @@
+@@ -1228,7 +2810,7 @@
      "  \"type\": \"function\",\n"
      "  \"function\": {\n"
      "    \"name\": \"edit\",\n"
@@ -2005,7 +2022,7 @@
      "    \"parameters\": {\n"
      "      \"type\": \"object\",\n"
      "      \"properties\": {\n"
-@@ -1250,10 +2815,10 @@
+@@ -1250,10 +2832,10 @@
      "      \"properties\": {\n"
      "        \"query\": {\"type\": \"string\"},\n"
      "        \"path\": {\"type\": \"string\"},\n"
@@ -2019,7 +2036,7 @@
      "        \"case_sensitive\": {\"type\": \"boolean\"}\n"
      "      },\n"
      "      \"required\": [\"query\"]\n"
-@@ -1273,109 +2838,149 @@
+@@ -1273,109 +2855,149 @@
      "      \"required\": [\"path\"]\n"
      "    }\n"
      "  }\n"
@@ -2248,7 +2265,7 @@
  static const char agent_qwen_tools_prompt_intro[] =
      "You are a coding agent running in a local workspace. Use tools for local file and system work. "
      "Avoid printing large file contents or large code blocks as answers; create or edit files with tools, "
-@@ -1434,14 +3039,21 @@
+@@ -1434,14 +3056,21 @@
      return out;
  }
  
@@ -2273,7 +2290,7 @@
      if (ds4_engine_is_deepseek41(engine)) {
          char *next = agent_dsml41_tools_prompt(prompt);
          free(prompt);
-@@ -1450,44 +3062,23 @@
+@@ -1450,44 +3079,23 @@
      return prompt;
  }
  
@@ -2335,7 +2352,7 @@
  
  static bool agent_parse_hints(const char *arg, bool *enabled) {
      if (!strcmp(arg, "on")) *enabled = true;
-@@ -1496,7 +3087,6 @@
+@@ -1496,7 +3104,6 @@
      return true;
  }
  
@@ -2343,7 +2360,7 @@
  static const char *agent_hints_note(agent_hints *h) {
      const char *note;
      if (h->enabled && !h->instructed) {
-@@ -1533,26 +3123,156 @@
+@@ -1533,26 +3140,156 @@
      pthread_mutex_unlock(&w->mu);
  }
  
@@ -2513,7 +2530,7 @@
      if (agent_syntax_is_xml_tool_call(agent_tool_syntax_for_engine(engine)))
          ds4_chat_append_message(engine, tokens, "system", tools_prompt);
      else {
-@@ -1561,6 +3281,10 @@
+@@ -1561,6 +3298,10 @@
          ds4_tokenize_rendered_chat(engine, tools_prompt, tokens);
      }
      free(tools_prompt);
@@ -2524,7 +2541,7 @@
  
      if (!extra || !extra[0]) return;
      size_t n = strlen(extra);
-@@ -1573,6 +3297,39 @@
+@@ -1573,6 +3314,39 @@
  
  static void agent_worker_note_system_prompt_seen(agent_worker *w) {
      w->last_system_prompt_reminder_at = w->transcript.len;
@@ -2564,7 +2581,7 @@
  }
  
  static void agent_worker_maybe_append_datetime_context(agent_worker *w) {
-@@ -1595,31 +3352,100 @@
+@@ -1595,31 +3369,107 @@
      w->datetime_context_injected = true;
  }
  
@@ -2672,10 +2689,17 @@
 +        agent_trace_text(w, "sage-turn-reminder", sage_reminder,
 +                         strlen(sage_reminder));
 +        free(sage_reminder);
++    }
++    /* Same trigger as the reminder above (token distance or tool burst): no
++     * second threshold, and only the short contract, never the full skill. */
++    if (agent_worker_evidence_skill_loaded(w)) {
++        agent_worker_append_evidence_reanchor(w, &w->transcript,
++                                              "core.reinject", false);
++        w->evidence_turn.core_contract_injected_this_turn = true;
      }
      agent_worker_note_system_prompt_seen(w);
  }
-@@ -1639,12 +3465,16 @@
+@@ -1639,12 +3489,16 @@
   * to the terminal, which keeps linenoise redraws serialized in one place. */
  static void agent_publish(agent_worker *w, const char *s, size_t n) {
      if (!n) return;
@@ -2692,7 +2716,7 @@
              pthread_mutex_unlock(&w->mu);
              return;
          }
-@@ -1728,6 +3558,21 @@
+@@ -1728,6 +3582,21 @@
      fputc('\n', w->trace);
      fflush(w->trace);
      pthread_mutex_unlock(&w->mu);
@@ -2714,7 +2738,7 @@
  }
  
  static void agent_trace_escaped(FILE *fp, const char *s, size_t n) {
-@@ -1920,6 +3765,7 @@
+@@ -1920,6 +3789,7 @@
      }
  }
  
@@ -2722,7 +2746,7 @@
  static bool agent_dsml_open_tag_is(const char *tag, const char *name) {
      char prefix[64];
      snprintf(prefix, sizeof(prefix), "<｜DSML｜%s", name);
-@@ -2008,6 +3854,7 @@
+@@ -2008,6 +3878,7 @@
          return agent_glm_arg_value_close_tail(tail, len, complete);
      return agent_dsml_parameter_close_tail(syntax, tail, len, complete);
  }
@@ -2730,7 +2754,7 @@
  
  static void agent_dsml_update_param_close_prefix(agent_dsml_parser *p) {
      p->param_close_prefix = false;
-@@ -2330,6 +4177,7 @@
+@@ -2330,6 +4201,7 @@
      }
  }
  
@@ -2738,7 +2762,7 @@
  /* Parse as much of the accumulated DSML buffer as possible.  The parser can be
   * called after every streamed byte: incomplete input leaves state unchanged
   * until enough bytes arrive, while malformed completed input switches to
-@@ -2464,8 +4312,9 @@
+@@ -2464,8 +4336,9 @@
   * ============================================================================
   *
   * This renderer handles only the cheap markdown cues that make terminal output
@@ -2750,7 +2774,7 @@
   */
  
  static void agent_tail_capture_append(agent_tail_capture *t,
-@@ -2522,8 +4371,55 @@
+@@ -2522,8 +4395,55 @@
      return out;
  }
  
@@ -2806,7 +2830,7 @@
      else agent_publish(r->worker, s, n);
  }
  
-@@ -2542,6 +4438,106 @@
+@@ -2542,6 +4462,106 @@
      if (c >= 0xe0 && c <= 0xef) return 3;
      if (c >= 0xf0 && c <= 0xf4) return 4;
      return 1;
@@ -2913,7 +2937,7 @@
  }
  
  static bool renderer_has_text_attrs(agent_token_renderer *r) {
-@@ -3366,7 +5362,12 @@
+@@ -3366,7 +5386,12 @@
      r->md_code_line_prefix_color = NULL;
  }
  
@@ -2927,7 +2951,7 @@
  static void renderer_markdown_clear_pending(agent_token_renderer *r) {
      r->md_pending = AGENT_MD_PENDING_NONE;
      r->md_pending_len = 0;
-@@ -3421,6 +5422,7 @@
+@@ -3421,6 +5446,7 @@
      r->md_line_started = false;
  }
  
@@ -2935,7 +2959,7 @@
  static void renderer_markdown_emit_pending_literals(agent_token_renderer *r) {
      renderer_hint_flush_prefix(r);
      renderer_markdown_inline_flush(r, false);
-@@ -3446,9 +5448,13 @@
+@@ -3446,9 +5472,13 @@
      }
  }
  
@@ -2952,7 +2976,7 @@
  static void renderer_markdown_feed(agent_token_renderer *r, char c) {
      if (r->md_fence_info) {
          if (c == '\n') {
-@@ -3462,64 +5468,54 @@
+@@ -3462,64 +5492,54 @@
              unsigned char uc = (unsigned char)c;
              if (r->md_fence_lang_len + 1 < sizeof(r->md_fence_lang) &&
                  (isalnum(uc) || c == '_' || c == '-' || c == '+' || c == '#'))
@@ -3049,7 +3073,7 @@
          return;
      }
      renderer_write_char_raw(r, c);
-@@ -3673,11 +5669,14 @@
+@@ -3673,11 +5693,14 @@
      r->color_open = r->use_color && !reset;
  }
  
@@ -3067,7 +3091,7 @@
      if (n) r->wrote_visible_output = true;
      if (n) r->last_output_newline = s[n - 1] == '\n';
  }
-@@ -3714,6 +5713,10 @@
+@@ -3714,6 +5737,10 @@
          streq_any(param, "timeout_sec", "refresh_sec", NULL, NULL))
          return AGENT_TOOL_PARAM_OFFSET;
      if (streq_any(param, "content", "text", NULL, NULL))
@@ -3078,7 +3102,7 @@
          return AGENT_TOOL_PARAM_CONTENT;
      return AGENT_TOOL_PARAM_NORMAL;
  }
-@@ -3774,6 +5777,7 @@
+@@ -3774,6 +5801,7 @@
      if (!strcmp(name, "search")) return "search ";
      if (!strcmp(name, "google_search")) return "google ";
      if (!strcmp(name, "visit_page")) return "visit ";
@@ -3086,7 +3110,7 @@
      return NULL;
  }
  
-@@ -3783,7 +5787,7 @@
+@@ -3783,7 +5811,7 @@
      if (v->tool_announced && !v->last_output_newline) agent_tool_viz_puts(sr, "\n");
      snprintf(v->tool_name, sizeof(v->tool_name), "%s", name ? name : "tool");
      v->tool_announced = true;
@@ -3095,7 +3119,7 @@
      agent_tool_viz_line_prefix(sr);
      if (v->read_style) {
          renderer_color(sr->renderer, "\x1b[1;37m");
-@@ -3872,6 +5876,12 @@
+@@ -3872,6 +5900,12 @@
          (v->param_kind == AGENT_TOOL_PARAM_DIFF_OLD ||
           v->param_kind == AGENT_TOOL_PARAM_DIFF_NEW ||
           v->param_kind == AGENT_TOOL_PARAM_CONTENT))
@@ -3108,7 +3132,7 @@
          return true;
      return false;
  }
-@@ -4609,8 +6619,6 @@
+@@ -4609,8 +6643,6 @@
      bool truncated;
  } agent_buf;
  
@@ -3117,7 +3141,7 @@
  static void agent_buf_append(agent_buf *b, const char *s, size_t n) {
      if (!n || b->truncated) return;
      const size_t max = b->limit ? b->limit : SIZE_MAX - 1;
-@@ -4670,6 +6678,57 @@
+@@ -4670,6 +6702,57 @@
      agent_buf_puts(&out, p);
      return agent_buf_take(&out);
  }
@@ -3175,7 +3199,7 @@
  
  static bool agent_tokens_equal(const ds4_tokens *a, const ds4_tokens *b) {
      if (!a || !b || a->len != b->len) return false;
-@@ -4754,6 +6813,16 @@
+@@ -4754,6 +6837,16 @@
      memset(m, 0, sizeof(*m));
  }
  
@@ -3192,7 +3216,7 @@
  /* ============================================================================
   * Agent KV Store And Session Persistence
   * ============================================================================
-@@ -4775,19 +6844,6 @@
+@@ -4775,19 +6868,6 @@
   *
   * The DS4 payload stores the exact token sequence and graph state.  The rendered
   * text is retained for listing, history rendering, and stripped-session rebuilds. */
@@ -3212,7 +3236,7 @@
  static bool agent_kv_read_text(FILE *fp, uint32_t text_bytes,
                                 char **text_out, char *err, size_t err_len) {
      /* text_bytes is read from the on-disk header; cap it against the bytes
-@@ -4888,6 +6944,7 @@
+@@ -4888,6 +6968,7 @@
      if (payload_bytes == 0) return true;
      return w && w->cfg && ds4_tp_enabled(&w->cfg->engine.tp);
  }
@@ -3220,7 +3244,7 @@
  
  /* Load a KV file and optionally verify either its session identity or exact
   * rendered text.  sysprompt.kv uses exact text because the file name is fixed;
-@@ -5120,7 +7177,569 @@
+@@ -5120,7 +7201,747 @@
      return ok;
  }
  
@@ -3700,6 +3724,176 @@
 +    return true;
 +}
 +
++/* ---------------------------------------------------------------------------
++ * Evidence-First Analysis (piano esecutivo, WP6-WP16)
++ *
++ * evidence-first-analysis is an ordinary dynamic skill: /skill
++ * evidence-first-analysis start|stop|status loads it through the registry,
++ * which renders the full text into the system prompt like any other skill.
++ * What this section adds is what a prompt cannot provide on its own: the
++ * runtime ledger (ds4_agent_evidence_guard.c) the model updates through the
++ * evidence_guard tool, the Core Contract re-anchored on reminders, after
++ * compaction and after a session switch, and the publication gate that
++ * withholds a final answer until evidence_guard finalize is valid.  Nothing
++ * here is active while the skill is not loaded.
++ * ------------------------------------------------------------------------- */
++static bool agent_worker_evidence_skill_loaded(const agent_worker *w) {
++    return w && ds4_agent_skill_registry_find(&w->dynamic_skills,
++                                              DS4_EVIDENCE_SKILL_NAME) != NULL;
++}
++
++/* SHA-1 of the skill text actually loaded: never derived from a summary. */
++static const char *agent_worker_evidence_policy_revision(const agent_worker *w) {
++    const ds4_agent_skill_entry *entry = w
++        ? ds4_agent_skill_registry_find(&w->dynamic_skills,
++                                        DS4_EVIDENCE_SKILL_NAME)
++        : NULL;
++    return entry ? entry->revision : "";
++}
++
++/* Off unless the skill is loaded, whatever DS4_EVIDENCE_MODE says: the gate
++ * is never imposed on a user who did not choose the skill (11.2).  The value
++ * was validated at startup; one that turns invalid under a running agent
++ * keeps the gate closed instead of opening it. */
++static ds4_evidence_mode agent_worker_evidence_mode(const agent_worker *w) {
++    if (!agent_worker_evidence_skill_loaded(w)) return DS4_EVIDENCE_MODE_OFF;
++    ds4_evidence_mode mode;
++    if (!ds4_evidence_mode_resolve(getenv("DS4_EVIDENCE_MODE"), true,
++                                   &mode, NULL, 0))
++        mode = DS4_EVIDENCE_MODE_BLOCK;
++    return mode;
++}
++
++static const char agent_evidence_runtime_prompt[] =
++    "[EVIDENCE-FIRST RUNTIME]\n"
++    "The runtime keeps the authoritative evidence ledger. Register every "
++    "finding with the evidence_guard tool; your prose never changes the ledger. "
++    "A final answer is withheld from the user until evidence_guard finalize "
++    "has succeeded and no other tool was called after it.\n"
++    "evidence_guard takes string parameters; action selects the operation:\n"
++    "- action=open id=EFA-001 claim=<one sentence> "
++    "[category=general|concurrency|lifetime|cleanup|validation]\n"
++    "- action=add_evidence id side=for|against source location note "
++    "[dynamic=true when it comes from running code]\n"
++    "- action=mark_check id check=control_flow|caller|wrapper|validation|"
++    "lifetime|cleanup|counterevidence|reachability|dynamic "
++    "result=done|not_applicable|unknown note (not_applicable needs a note; "
++    "counterevidence and reachability must be done)\n"
++    "- action=set_reachability id reachability=unknown|conditional|proven|"
++    "not_reachable note\n"
++    "- action=set_verdict id state=candidate|supported|confirmed|conditional|"
++    "disproved|unknown severity=none|hardening|low|medium|high|critical "
++    "include_in_report=true|false\n"
++    "- action=finalize (pre-verdict check of every reported finding)\n"
++    "- action=status\n"
++    "The runtime rejects CONFIRMED without counterevidence, caller, control "
++    "flow and reachability checks, HIGH/CRITICAL without CONFIRMED and proven "
++    "reachability, and any DISPROVED finding in the report. In the report use "
++    "the ledger ids: '### EFA-001 - title' followed by 'State:', 'Severity:' "
++    "and 'Reachability:' lines that match the ledger. With nothing to report, "
++    "call finalize on the empty ledger and say so.\n"
++    "[/EVIDENCE-FIRST RUNTIME]\n";
++
++/* Core Contract (and optionally the ledger digest) as one system message. */
++static char *agent_worker_evidence_reanchor_text(const agent_worker *w,
++                                                 bool with_digest) {
++    agent_buf b = {0};
++    agent_buf_puts(&b, ds4_agent_evidence_core_contract);
++    if (with_digest) {
++        char digest[4096];
++        ds4_agent_evidence_digest(&w->evidence_state, digest, sizeof(digest));
++        agent_buf_puts(&b, digest);
++    }
++    return agent_buf_take(&b);
++}
++
++static void agent_worker_append_evidence_reanchor(agent_worker *w,
++                                                  ds4_tokens *tokens,
++                                                  const char *why,
++                                                  bool with_digest) {
++    char *text = agent_worker_evidence_reanchor_text(w, with_digest);
++    ds4_chat_append_message(w->engine, tokens, "system", text);
++    free(text);
++    w->evidence_state.metrics.reinjections_total++;
++    agent_trace(w, "evidence.%s findings=%zu finalization=%s", why,
++                w->evidence_state.finding_count,
++                ds4_agent_evidence_finalization_valid(&w->evidence_state)
++                    ? "READY" : "NOT_READY");
++}
++
++/* Gate decision for one generated round (10.1 / 20.1).  Only a final answer
++ * owes a verdict: prose in front of a tool call is narration.  Shadow records
++ * the violation and lets the bytes through; off does not look. */
++static bool agent_worker_evidence_check_final(agent_worker *w,
++                                              ds4_evidence_mode mode,
++                                              bool final_candidate,
++                                              const char *text,
++                                              ds4_evidence_validation_result *out) {
++    memset(out, 0, sizeof(*out));
++    out->allowed = true;
++    out->reason_code = EVIDENCE_OK;
++    if (mode == DS4_EVIDENCE_MODE_OFF || !final_candidate) return true;
++    bool ok = ds4_agent_evidence_can_publish(&w->evidence_state, out) &&
++              ds4_agent_evidence_scan_final_text(&w->evidence_state,
++                                                 text ? text : "", out);
++    if (ok) {
++        agent_trace(w, "evidence.finalize.allow sequence=%llu",
++                    (unsigned long long)w->evidence_state.mutation_sequence);
++        return true;
++    }
++    agent_trace(w, "evidence.finalize.block id=%s reason=%s mode=%s",
++                out->finding_id[0] ? out->finding_id : "-",
++                out->reason_code ? out->reason_code : "?",
++                ds4_evidence_mode_name(mode));
++    if (mode == DS4_EVIDENCE_MODE_SHADOW) {
++        w->evidence_state.metrics.shadow_violations_total++;
++        return true;
++    }
++    return false;
++}
++
++/* What the model gets back when its final answer was withheld. */
++static char *agent_worker_evidence_repair_guidance(
++    const ds4_evidence_validation_result *r) {
++    agent_buf b = {0};
++    char line[DS4_EVIDENCE_NOTE_MAX + 160];
++    agent_buf_puts(&b, "EVIDENCE_FINALIZATION_BLOCKED\n");
++    snprintf(line, sizeof(line), "reason=%s\n",
++             r->reason_code ? r->reason_code : "?");
++    agent_buf_puts(&b, line);
++    if (r->finding_id[0]) {
++        snprintf(line, sizeof(line), "finding=%s\n", r->finding_id);
++        agent_buf_puts(&b, line);
++    }
++    if (r->missing_checks) {
++        agent_buf_puts(&b, "missing=");
++        bool first = true;
++        for (uint32_t bit = 1; bit <= DS4_EVIDENCE_CHECK_DYNAMIC_REPRODUCTION; bit <<= 1) {
++            if (!(r->missing_checks & bit)) continue;
++            if (!first) agent_buf_puts(&b, ",");
++            agent_buf_puts(&b, ds4_evidence_check_name(bit));
++            first = false;
++        }
++        agent_buf_puts(&b, "\n");
++    }
++    if (r->detail[0]) {
++        agent_buf_puts(&b, r->detail);
++        agent_buf_puts(&b, "\n");
++    }
++    agent_buf_puts(&b,
++        "Your final answer was withheld; the user has not seen it. Bring the "
++        "ledger in line with evidence_guard (add_evidence, mark_check, "
++        "set_reachability, set_verdict), call evidence_guard finalize, then "
++        "answer again without calling any other tool after finalize. The "
++        "report must use the ledger ids and match its State/Severity/"
++        "Reachability.\n");
++    return agent_buf_take(&b);
++}
++
++static const char agent_evidence_finalization_terminal_status[] =
++    "EVIDENCE_FINALIZATION_TERMINAL: no Evidence-First verdict without a valid "
++    "evidence_guard finalize was published.";
++
 +static char *agent_worker_build_system_text_ex(const agent_worker *w,
 +                                               char *err,
 +                                               size_t err_len) {
@@ -3754,6 +3948,14 @@
 +    }
 +    free(dynamic_block);
 +
++    /* L1 is the skill text the registry just rendered; L2 and the tool
++     * contract ride right behind it, once, and only while it is loaded. */
++    if (agent_worker_evidence_skill_loaded(w)) {
++        if (b.len) agent_buf_puts(&b, "\n\n");
++        agent_buf_puts(&b, ds4_agent_evidence_core_contract);
++        agent_buf_puts(&b, agent_evidence_runtime_prompt);
++    }
++
 +    if (w->sage_prompt) {
 +        if (b.len) agent_buf_puts(&b, "\n\n");
 +        agent_buf_puts(&b, DS4_SAGE_BEGIN);
@@ -3791,7 +3993,7 @@
      ds4_chat_begin(w->engine, out);
      ds4_think_mode think_mode = effective_think_mode(w->cfg);
      if (ds4_engine_is_qwen4(w->engine)) {
-@@ -5129,13 +7748,462 @@
+@@ -5129,13 +7950,462 @@
      } else {
          ds4_chat_append_think_prefix(w->engine, out, think_mode);
      }
@@ -4257,7 +4459,7 @@
      if (isatty(STDOUT_FILENO)) {
          static const char marker[] = "\x1b[33m✦ \x1b[38;5;218m";
          agent_publish(w, marker, sizeof(marker) - 1);
-@@ -5345,9 +8413,9 @@
+@@ -5345,9 +8615,9 @@
   * by Flash and Pro; agent_kv_load_path() checks the model id, so switching
   * model families rebuilds this cache instead of restoring incompatible KV. */
  static bool agent_worker_reset_to_sysprompt(agent_worker *w, char *err, size_t err_len) {
@@ -4269,7 +4471,7 @@
  
      size_t text_len = 0;
      char *text = ds4_kvstore_render_tokens_text(w->engine, &sys, &text_len);
-@@ -5374,6 +8442,7 @@
+@@ -5374,6 +8644,7 @@
          if (w->sysprompt_path)
              agent_publish_system_status(w, "Updating system prompt cache...");
          ds4_tokens_free(&w->transcript);
@@ -4277,7 +4479,7 @@
          ds4_tokens_copy(&w->transcript, &sys);
          if (agent_worker_sync_tokens(w, &w->transcript, true, err, err_len) != 0) {
              free(text);
-@@ -5412,7 +8481,6 @@
+@@ -5412,7 +8683,6 @@
      w->user_activity = false;
      w->session_dirty = false;
      w->status.state = AGENT_WORKER_IDLE;
@@ -4285,7 +4487,7 @@
      w->status.prefill_done = 0;
      w->status.prefill_total = 0;
      w->status.prefill_tps = 0.0;
-@@ -5420,7 +8488,6 @@
+@@ -5420,14 +8690,43 @@
      w->status.gen_tps = 0.0;
      w->status.greedy_sampling = false;
      w->status.error[0] = '\0';
@@ -4293,7 +4495,10 @@
      agent_wake_locked(w);
      pthread_mutex_unlock(&w->mu);
      w->datetime_context_injected = false;
-@@ -5428,6 +8495,33 @@
++    /* A new conversation starts a new analysis. */
++    ds4_agent_evidence_clear(&w->evidence_state);
++    w->evidence_reanchor_pending = false;
+     agent_worker_clear_session_identity(w);
      free(text);
      ds4_tokens_free(&sys);
      return true;
@@ -4327,19 +4532,93 @@
  }
  
  static bool agent_worker_should_stop(agent_worker *w) {
-@@ -5503,11 +8597,6 @@
+@@ -5496,16 +8795,80 @@
+ /* Save the current session under its stable agent identity.  The worker owns
+  * the live KV, so busy /save requests are deferred until a stable append-only
+  * point and then executed by the worker thread. */
++/* Evidence ledger beside the session, as <cache>/<sha>.evidence (WP13).
++ * Versioned text, metadata only; the finalization token is never written, so
++ * a restored session can never come back "finalized". */
++static char *agent_evidence_path_for_sha(const char *dir, const char sha[41]) {
++    size_t len = strlen(dir) + 1 + 40 + strlen(".evidence") + 1;
++    char *path = xmalloc(len);
++    snprintf(path, len, "%s/%.40s.evidence", dir, sha);
++    return path;
++}
++
++static bool agent_worker_save_evidence(agent_worker *w, const char sha[41],
++                                       char *err, size_t err_len) {
++    char *path = agent_evidence_path_for_sha(w->cache_dir, sha);
++    if (!w->evidence_state.finding_count && !agent_worker_evidence_skill_loaded(w)) {
++        unlink(path); /* nothing to keep; drop a stale ledger */
++        free(path);
++        return true;
++    }
++    char *text = NULL;
++    size_t len = 0;
++    if (!ds4_agent_evidence_serialize(&w->evidence_state, &text, &len)) {
++        snprintf(err, err_len, "EVIDENCE_SAVE_FAILED: out of memory");
++        free(path);
++        return false;
++    }
++    size_t tmp_len = strlen(path) + 32;
++    char *tmp = xmalloc(tmp_len);
++    snprintf(tmp, tmp_len, "%s.tmp.%ld", path, (long)getpid());
++    FILE *fp = fopen(tmp, "wb");
++    bool ok = fp && fwrite(text, 1, len, fp) == len && fflush(fp) == 0 &&
++              fsync(fileno(fp)) == 0;
++    if (fp && fclose(fp) != 0) ok = false;
++    if (ok && rename(tmp, path) != 0) ok = false;
++    if (!ok) {
++        snprintf(err, err_len, "EVIDENCE_SAVE_FAILED: %s: %s", path, strerror(errno));
++        unlink(tmp);
++    }
++    free(tmp);
++    free(text);
++    free(path);
++    return ok;
++}
++
++/* Fail closed: whatever happens the state is never finalized afterwards, and
++ * the next turn says whether the ledger came back. */
++static void agent_worker_restore_evidence(agent_worker *w, const char sha[41]) {
++    char *path = agent_evidence_path_for_sha(w->cache_dir, sha);
++    ds4_agent_evidence_clear(&w->evidence_state);
++    w->evidence_restored = false;
++    if (access(path, F_OK) == 0) {
++        char *data = NULL;
++        size_t len = 0;
++        char err[256] = {0};
++        if (agent_read_file_bytes(path, &data, &len, err, sizeof(err)) == 0 &&
++            ds4_agent_evidence_deserialize(data, len, &w->evidence_state,
++                                           err, sizeof(err))) {
++            w->evidence_restored = true;
++        } else {
++            ds4_agent_evidence_clear(&w->evidence_state);
++            agent_trace(w, "evidence.restore.rejected %s", err);
++        }
++        free(data);
++    }
++    w->evidence_reanchor_pending = true;
++    agent_trace(w, "evidence.restore restored=%d findings=%zu",
++                w->evidence_restored, w->evidence_state.finding_count);
++    free(path);
++}
++
+ static bool agent_worker_save_session_now(agent_worker *w, char sha_out[41],
+                                           int *tokens_out,
+                                           char *err, size_t err_len) {
+     if (!agent_worker_has_user_session(w)) {
          snprintf(err, err_len, "nothing to save");
-         return false;
-     }
+-        return false;
+-    }
 -    if (w->image_count) {
 -        snprintf(err, err_len,
 -                 "sessions containing images cannot be saved yet");
--        return false;
--    }
+         return false;
+     }
  
-     const bool text_only = w->transcript.len >= agent_worker_effective_ctx_size(w);
-     if (!text_only &&
-@@ -5535,10 +8624,28 @@
+@@ -5535,10 +8898,29 @@
      agent_session_identity_sha(w->session_title, w->session_created_at, sha);
      char *path = agent_kv_path_for_sha(w->cache_dir, sha);
  
@@ -4363,12 +4642,13 @@
 +        ok = ds4_agent_skill_manifest_commit(
 +            w->cache_dir, sha, &manifest_temp, err, err_len);
 +    }
++    if (ok) ok = agent_worker_save_evidence(w, sha, err, err_len);
 +    if (!ok)
 +        ds4_agent_skill_manifest_abort(&manifest_temp);
      if (ok) {
          memcpy(w->session_sha, sha, sizeof(w->session_sha));
          if (text_only)
-@@ -5681,8 +8788,6 @@
+@@ -5681,8 +9063,6 @@
      return title;
  }
  
@@ -4377,7 +4657,7 @@
  #define AGENT_HISTORY_ASSISTANT_MAX_LINES 80
  #define AGENT_HISTORY_ASSISTANT_MAX_BYTES 12000
  
-@@ -6410,6 +9515,12 @@
+@@ -6410,6 +9790,12 @@
          free(path);
          return false;
      }
@@ -4390,7 +4670,7 @@
      if (sha_out) memcpy(sha_out, sha, 41);
      free(path);
      return true;
-@@ -6545,6 +9656,25 @@
+@@ -6545,6 +9931,25 @@
      if (!agent_worker_find_session(w, prefix, sha, &path, err, err_len))
          return false;
  
@@ -4416,18 +4696,19 @@
      bool stripped = false;
      ds4_kvstore_entry entry = {0};
      if (ds4_kvstore_read_entry_file(path, sha, &entry)) {
-@@ -6561,8 +9691,9 @@
+@@ -6561,8 +9966,10 @@
      bool ok = agent_kv_load_path(w, path, sha, NULL, 0, &loaded, &meta,
                                   err, err_len);
      if (ok) {
 -        agent_worker_images_clear(w);
 +        agent_worker_apply_skill_state(w, &staged_skills);
++        agent_worker_restore_evidence(w, sha);
          ds4_tokens_free(&w->transcript);
 +        agent_worker_clear_tool_spans(w);
          w->transcript = loaded;
          free(w->session_title);
          w->session_title = meta.title ? xstrdup(meta.title) : xstrdup("(no user prompt)");
-@@ -6570,14 +9701,14 @@
+@@ -6570,14 +9977,14 @@
          memcpy(w->session_sha, sha, sizeof(w->session_sha));
          free(w->legacy_session_path_to_delete);
          w->legacy_session_path_to_delete = meta.legacy_identity ? xstrdup(path) : NULL;
@@ -4444,7 +4725,7 @@
          w->status.prefill_tps = 0.0;
          w->status.greedy_sampling = false;
          w->status.error[0] = '\0';
-@@ -6585,11 +9716,21 @@
+@@ -6585,11 +9992,21 @@
          pthread_mutex_unlock(&w->mu);
          printf("switched to session %.8s (%d tokens%s)\n",
                 sha, w->transcript.len, stripped ? ", rebuilt from text" : "");
@@ -4466,7 +4747,7 @@
      agent_kv_session_meta_free(&meta);
      free(path);
      return ok;
-@@ -6608,6 +9749,34 @@
+@@ -6608,6 +10025,34 @@
      if (v < 1.0) v = 1.0;
      if (v > 24.0 * 3600.0) v = 24.0 * 3600.0;
      return (int)v;
@@ -4501,7 +4782,7 @@
  }
  
  static int agent_parse_int_default(const char *s, int def, int min, int max) {
-@@ -6632,11 +9801,7 @@
+@@ -6632,11 +10077,7 @@
  }
  
  #define AGENT_FILE_MAX_BYTES (16*1024*1024)
@@ -4514,7 +4795,7 @@
  #define AGENT_TOOL_RESULT_RESERVE_TOKENS 1024
  #define AGENT_EDIT_UPTO_MIN_PREFIX_BYTES 64
  #define AGENT_EDIT_UPTO_MIN_PREFIX_LINES 2
-@@ -6708,6 +9873,7 @@
+@@ -6708,6 +10149,7 @@
      if (!fp) { int saved = errno; close(fd); errno = saved; }
      return fp;
  }
@@ -4522,7 +4803,7 @@
  
  static int agent_read_file_bytes(const char *path, char **data, size_t *len,
                                   char *err, size_t errlen) {
-@@ -6853,9 +10019,6 @@
+@@ -6853,9 +10295,6 @@
      return AGENT_READ_DEFAULT_LINES_LARGE;
  }
  
@@ -4532,7 +4813,7 @@
  static char *agent_read_range_from(agent_worker *w, const char *path, int start_line,
                                int max_lines, bool whole_file, bool bare,
                                bool set_more, off_t offset, bool mid_line) {
-@@ -6962,6 +10125,22 @@
+@@ -6962,6 +10401,22 @@
      return agent_buf_take(&out);
  }
  
@@ -4555,7 +4836,7 @@
  static char *agent_read_range(agent_worker *w, const char *path, int start_line,
                                int max_lines, bool whole_file, bool bare,
                                bool set_more) {
-@@ -7045,11 +10224,6 @@
+@@ -7045,11 +10500,6 @@
      return agent_buf_take(&out);
  }
  
@@ -4567,7 +4848,7 @@
  static bool agent_same_file_version(const struct stat *a, const struct stat *b) {
  #ifdef __APPLE__
      struct timespec am = a->st_mtimespec, bm = b->st_mtimespec;
-@@ -7097,6 +10271,7 @@
+@@ -7097,6 +10547,7 @@
      errno = saved_errno;
      return rc;
  }
@@ -4575,7 +4856,7 @@
  #endif
  
  /* Commit only complete files. Follow existing symlinks, but refuse hard links:
-@@ -7196,6 +10371,32 @@
+@@ -7196,6 +10647,32 @@
      if (src >= 0) close(src);
      if (temp[0]) unlink(temp);
      return rc;
@@ -4608,7 +4889,7 @@
  }
  
  static void agent_edit_result_append_line(agent_buf *b, const char *data,
-@@ -7495,6 +10696,219 @@
+@@ -7495,6 +10972,219 @@
      return true;
  }
  
@@ -4828,7 +5109,7 @@
  #ifdef DS4_AGENT_TEST
  static int agent_test_failures;
  
-@@ -7507,6 +10921,41 @@
+@@ -7507,6 +11197,41 @@
  
  #define AGENT_TEST_ASSERT(expr) \
      agent_test_assert((expr), #expr, __FILE__, __LINE__)
@@ -4870,7 +5151,7 @@
  
  static void test_agent_edit_upto_tail_newline_is_not_part_of_anchor(void) {
      const char *data =
-@@ -7536,11 +10985,6 @@
+@@ -7536,11 +11261,6 @@
      size_t match_len = 0;
      bool anchored = false;
      char err[128] = {0};
@@ -4882,7 +5163,7 @@
      AGENT_TEST_ASSERT(agent_edit_find_old_span(data, strlen(data), old, true,
                                                &match, &match_len, &anchored,
                                                err, sizeof(err)));
-@@ -8093,8 +11537,6 @@
+@@ -8093,8 +11813,6 @@
      AGENT_TEST_ASSERT(!agent_slash_command_known("/steering"));
  }
  
@@ -4891,7 +5172,7 @@
  static void test_agent_hints_state(void) {
      bool enabled = false;
      AGENT_TEST_ASSERT(agent_parse_hints("on", &enabled) && enabled);
-@@ -8155,32 +11597,2448 @@
+@@ -8155,32 +11873,2772 @@
      free(glm);
  }
  
@@ -6293,6 +6574,324 @@
 +    ds4_agent_skill_registry_free(&w.dynamic_skills);
 +}
 +
++/* ---- Evidence-First worker integration (piano WP21/WP22/WP13) ---------- */
++static char *agent_tool_evidence_guard(agent_worker *w, const agent_tool_call *call);
++static void agent_worker_evidence_note_tool(agent_worker *w, const agent_tool_call *call);
++static char *agent_compact_make_prompt(const char *reason, bool evidence_active);
++
++static void test_evidence_worker_init(agent_worker *w, agent_config *cfg) {
++    memset(w, 0, sizeof(*w));
++    memset(cfg, 0, sizeof(*cfg));
++    cfg->gen.system = "BASE";
++    w->cfg = cfg;
++    ds4_agent_skill_registry_init(&w->dynamic_skills);
++    ds4_agent_evidence_init(&w->evidence_state);
++}
++
++static void test_evidence_worker_load_skill(agent_worker *w, const char *content) {
++    char err[128] = {0};
++    bool changed = false;
++    ds4_agent_skill_entry e =
++        test_agent_skill_entry(DS4_EVIDENCE_SKILL_NAME, content, 'e');
++    ds4_kvstore_sha1_bytes_hex(content, strlen(content), e.revision);
++    AGENT_TEST_ASSERT(ds4_agent_skill_registry_upsert(
++        &w->dynamic_skills, &e, &changed, err, sizeof(err)));
++}
++
++/* Build a call the way the DSML parser would hand it over. */
++static char *test_evidence_call(agent_worker *w, const char *const *kv, int pairs) {
++    agent_tool_arg args[12];
++    AGENT_TEST_ASSERT(pairs <= 12);
++    for (int i = 0; i < pairs; i++) {
++        args[i].name = (char *)kv[2 * i];
++        args[i].value = (char *)kv[2 * i + 1];
++        args[i].is_string = true;
++    }
++    agent_tool_call call = { .name = (char *)"evidence_guard", .args = args,
++                             .argc = pairs, .argcap = pairs };
++    agent_worker_evidence_note_tool(w, &call);
++    return agent_tool_evidence_guard(w, &call);
++}
++
++#define EVIDENCE_CALL(w, ...) test_evidence_call((w), \
++    (const char *const[]){__VA_ARGS__}, \
++    (int)(sizeof((const char *const[]){__VA_ARGS__}) / sizeof(char *) / 2))
++
++static bool test_evidence_result_has(char *out, const char *needle) {
++    bool found = out && strstr(out, needle) != NULL;
++    if (!found) fprintf(stderr, "evidence tool output lacks %s:\n%s\n",
++                        needle, out ? out : "(null)");
++    free(out);
++    return found;
++}
++
++/* WP1 + 25.1: full skill once, delimited, then L2 + tool contract once; all of
++ * it in the system text, before Sage, and absent while the skill is not. */
++static void test_agent_evidence_system_text(void) {
++    agent_worker w;
++    agent_config cfg;
++    test_evidence_worker_init(&w, &cfg);
++    w.sage_prompt = xstrdup("SAGE");
++
++    char *text = agent_worker_build_system_text(&w);
++    AGENT_TEST_ASSERT(text && !strstr(text, "EVIDENCE-FIRST"));
++    free(text);
++
++    test_evidence_worker_load_skill(&w, "# Evidence-First Project Analysis Skill\nfull text\n");
++    text = agent_worker_build_system_text(&w);
++    AGENT_TEST_ASSERT(text != NULL);
++    const char *skill = strstr(text, "[BEGIN DS4 ACTIVE SKILL name=" DS4_EVIDENCE_SKILL_NAME);
++    const char *contract = strstr(text, "[EVIDENCE-FIRST CORE CONTRACT]");
++    const char *runtime = strstr(text, "[EVIDENCE-FIRST RUNTIME]");
++    const char *sage = strstr(text, DS4_SAGE_BEGIN);
++    AGENT_TEST_ASSERT(skill && contract && runtime && sage);
++    AGENT_TEST_ASSERT(skill < contract && contract < runtime && runtime < sage);
++    AGENT_TEST_ASSERT(test_count_substring(
++        text, "[BEGIN DS4 ACTIVE SKILL name=" DS4_EVIDENCE_SKILL_NAME) == 1);
++    AGENT_TEST_ASSERT(test_count_substring(text, "[END DS4 ACTIVE SKILL name="
++                                                 DS4_EVIDENCE_SKILL_NAME "]") == 1);
++    AGENT_TEST_ASSERT(test_count_substring(text, "[EVIDENCE-FIRST CORE CONTRACT]") == 1);
++    AGENT_TEST_ASSERT(test_count_substring(text, "[EVIDENCE-FIRST RUNTIME]") == 1);
++    /* No active tool-call markup rides along with the policy. */
++    AGENT_TEST_ASSERT(!strstr(text, "｜DSML｜") && !strstr(text, "<tool_call>"));
++    char rev_before[41];
++    snprintf(rev_before, sizeof(rev_before), "%s", agent_worker_evidence_policy_revision(&w));
++    AGENT_TEST_ASSERT(strlen(rev_before) == 40);
++    free(text);
++
++    /* A content change is a revision change (policy drift is visible). */
++    test_evidence_worker_load_skill(&w, "# Evidence-First Project Analysis Skill\nrevised\n");
++    AGENT_TEST_ASSERT(strcmp(rev_before, agent_worker_evidence_policy_revision(&w)) != 0);
++
++    free(w.sage_prompt);
++    ds4_agent_skill_registry_free(&w.dynamic_skills);
++}
++
++/* WP7 / WP27: default block only while the skill is loaded; never imposed
++ * otherwise; an invalid value at runtime keeps the gate closed. */
++static void test_agent_evidence_mode(void) {
++    agent_worker w;
++    agent_config cfg;
++    test_evidence_worker_init(&w, &cfg);
++    unsetenv("DS4_EVIDENCE_MODE");
++    AGENT_TEST_ASSERT(agent_worker_evidence_mode(&w) == DS4_EVIDENCE_MODE_OFF);
++    setenv("DS4_EVIDENCE_MODE", "block", 1);
++    AGENT_TEST_ASSERT(agent_worker_evidence_mode(&w) == DS4_EVIDENCE_MODE_OFF);
++    unsetenv("DS4_EVIDENCE_MODE");
++    test_evidence_worker_load_skill(&w, "skill");
++    AGENT_TEST_ASSERT(agent_worker_evidence_mode(&w) == DS4_EVIDENCE_MODE_BLOCK);
++    setenv("DS4_EVIDENCE_MODE", "shadow", 1);
++    AGENT_TEST_ASSERT(agent_worker_evidence_mode(&w) == DS4_EVIDENCE_MODE_SHADOW);
++    setenv("DS4_EVIDENCE_MODE", "strict", 1);
++    AGENT_TEST_ASSERT(agent_worker_evidence_mode(&w) == DS4_EVIDENCE_MODE_BLOCK);
++    unsetenv("DS4_EVIDENCE_MODE");
++    ds4_agent_skill_registry_free(&w.dynamic_skills);
++}
++
++/* WP4/WP5 through the real tool entry point, including invalidation by a
++ * later tool call and the status exemption. */
++static void test_agent_evidence_tool_lifecycle(void) {
++    agent_worker w;
++    agent_config cfg;
++    test_evidence_worker_init(&w, &cfg);
++
++    AGENT_TEST_ASSERT(test_evidence_result_has(
++        EVIDENCE_CALL(&w, "action", "status"), "EVIDENCE_SKILL_INACTIVE"));
++    test_evidence_worker_load_skill(&w, "skill");
++
++    AGENT_TEST_ASSERT(test_evidence_result_has(
++        EVIDENCE_CALL(&w, "action", "open", "id", "EFA-001",
++                      "claim", "callback pair changed without the mutex",
++                      "category", "concurrency"),
++        "EVIDENCE_FINDING_OPENED"));
++    AGENT_TEST_ASSERT(test_evidence_result_has(
++        EVIDENCE_CALL(&w, "action", "add_evidence", "id", "EFA-001", "side", "for",
++                      "source", "file", "location", "x.c:10", "note", "n"),
++        "EVIDENCE_LEDGER_UPDATED"));
++    /* HIGH before falsification: refused with the exact reason. */
++    AGENT_TEST_ASSERT(test_evidence_result_has(
++        EVIDENCE_CALL(&w, "action", "set_verdict", "id", "EFA-001",
++                      "state", "confirmed", "severity", "high",
++                      "include_in_report", "true"),
++        "reason=EVIDENCE_NO_COUNTEREVIDENCE_SEARCH"));
++    AGENT_TEST_ASSERT(test_evidence_result_has(
++        EVIDENCE_CALL(&w, "action", "mark_check", "id", "EFA-001",
++                      "check", "counterevidence", "result", "not_applicable",
++                      "note", "skip"),
++        "EVIDENCE_CHECK_NOT_WAIVABLE"));
++    AGENT_TEST_ASSERT(test_evidence_result_has(
++        EVIDENCE_CALL(&w, "action", "mark_check", "id", "EFA-001",
++                      "check", "vibes", "result", "done"),
++        "EVIDENCE_BAD_ARGUMENT"));
++    static const char *const checks[] = {
++        "control_flow", "caller", "wrapper", "counterevidence", "reachability"};
++    for (size_t i = 0; i < sizeof(checks) / sizeof(checks[0]); i++)
++        AGENT_TEST_ASSERT(test_evidence_result_has(
++            EVIDENCE_CALL(&w, "action", "mark_check", "id", "EFA-001",
++                          "check", checks[i], "result", "done", "note", "read"),
++            "EVIDENCE_LEDGER_UPDATED"));
++    AGENT_TEST_ASSERT(test_evidence_result_has(
++        EVIDENCE_CALL(&w, "action", "mark_check", "id", "EFA-001",
++                      "check", "dynamic", "result", "unknown"),
++        "EVIDENCE_LEDGER_UPDATED"));
++    AGENT_TEST_ASSERT(test_evidence_result_has(
++        EVIDENCE_CALL(&w, "action", "set_reachability", "id", "EFA-001",
++                      "reachability", "proven"),
++        "reach=PROVEN"));
++    AGENT_TEST_ASSERT(test_evidence_result_has(
++        EVIDENCE_CALL(&w, "action", "set_verdict", "id", "EFA-001",
++                      "state", "confirmed", "severity", "high",
++                      "include_in_report", "true"),
++        "state=CONFIRMED severity=HIGH"));
++    AGENT_TEST_ASSERT(test_evidence_result_has(
++        EVIDENCE_CALL(&w, "action", "finalize"), "EVIDENCE_FINALIZATION_READY"));
++    AGENT_TEST_ASSERT(ds4_agent_evidence_finalization_valid(&w.evidence_state));
++
++    /* status is read-only: the finalize survives it. */
++    AGENT_TEST_ASSERT(test_evidence_result_has(
++        EVIDENCE_CALL(&w, "action", "status"), "finalization: READY"));
++    AGENT_TEST_ASSERT(ds4_agent_evidence_finalization_valid(&w.evidence_state));
++
++    /* Any other tool voids it (9.1). */
++    agent_tool_arg path_arg = { .name = (char *)"path", .value = (char *)"x.c" };
++    agent_tool_call read_call = { .name = (char *)"read", .args = &path_arg,
++                                  .argc = 1, .argcap = 1 };
++    agent_worker_evidence_note_tool(&w, &read_call);
++    AGENT_TEST_ASSERT(!ds4_agent_evidence_finalization_valid(&w.evidence_state));
++    AGENT_TEST_ASSERT(w.evidence_turn.tool_used_after_finalize);
++    AGENT_TEST_ASSERT(test_evidence_result_has(
++        EVIDENCE_CALL(&w, "action", "status"), "finalization: STALE"));
++    AGENT_TEST_ASSERT(test_evidence_result_has(
++        EVIDENCE_CALL(&w, "action", "finalize"), "EVIDENCE_FINALIZATION_READY"));
++
++    ds4_agent_skill_registry_free(&w.dynamic_skills);
++}
++
++/* WP6/WP22: withheld without a valid finalize, published with one; prose in
++ * front of a tool call is never held; shadow lets it through but counts it. */
++static void test_agent_evidence_publication_gate(void) {
++    agent_worker w;
++    agent_config cfg;
++    test_evidence_worker_init(&w, &cfg);
++    test_evidence_worker_load_skill(&w, "skill");
++    ds4_evidence_validation_result r;
++
++    const char *report = "Nessun finding confermato.\n";
++    AGENT_TEST_ASSERT(!agent_worker_evidence_check_final(
++        &w, DS4_EVIDENCE_MODE_BLOCK, true, report, &r));
++    AGENT_TEST_ASSERT(!strcmp(r.reason_code, EVIDENCE_NOT_FINALIZED));
++    char *guidance = agent_worker_evidence_repair_guidance(&r);
++    AGENT_TEST_ASSERT(strstr(guidance, "EVIDENCE_FINALIZATION_BLOCKED") &&
++                      strstr(guidance, "reason=EVIDENCE_NOT_FINALIZED") &&
++                      strstr(guidance, "withheld"));
++    free(guidance);
++    AGENT_TEST_ASSERT(agent_worker_evidence_check_final(
++        &w, DS4_EVIDENCE_MODE_BLOCK, false, report, &r));
++    AGENT_TEST_ASSERT(agent_worker_evidence_check_final(
++        &w, DS4_EVIDENCE_MODE_OFF, true, report, &r));
++    AGENT_TEST_ASSERT(agent_worker_evidence_check_final(
++        &w, DS4_EVIDENCE_MODE_SHADOW, true, report, &r));
++    AGENT_TEST_ASSERT(w.evidence_state.metrics.shadow_violations_total == 1);
++
++    /* Empty ledger + explicit finalize: "nothing found" is publishable. */
++    AGENT_TEST_ASSERT(ds4_agent_evidence_finalize(&w.evidence_state, &r));
++    AGENT_TEST_ASSERT(agent_worker_evidence_check_final(
++        &w, DS4_EVIDENCE_MODE_BLOCK, true, report, &r));
++
++    /* A report naming a finding the ledger does not have is not. */
++    AGENT_TEST_ASSERT(!agent_worker_evidence_check_final(
++        &w, DS4_EVIDENCE_MODE_BLOCK, true, "### EFA-004 - race\n", &r));
++    AGENT_TEST_ASSERT(!strcmp(r.reason_code, EVIDENCE_REPORT_UNKNOWN_ID));
++
++    ds4_agent_skill_registry_free(&w.dynamic_skills);
++}
++
++/* WP12: the summary prompt may not resolve findings; the re-anchor text is
++ * built from the ledger and leaves it untouched however often it runs. */
++static void test_agent_evidence_compaction_text(void) {
++    char *with = agent_compact_make_prompt("test", true);
++    char *without = agent_compact_make_prompt("test", false);
++    AGENT_TEST_ASSERT(strstr(with, "Do not invent, promote, downgrade or resolve "
++                                   "Evidence-First findings."));
++    AGENT_TEST_ASSERT(strstr(with, "The runtime ledger remains"));
++    AGENT_TEST_ASSERT(!strstr(without, "Evidence-First"));
++    free(with);
++    free(without);
++
++    agent_worker w;
++    agent_config cfg;
++    test_evidence_worker_init(&w, &cfg);
++    test_evidence_worker_load_skill(&w, "skill");
++    ds4_evidence_validation_result r;
++    AGENT_TEST_ASSERT(ds4_agent_evidence_open(&w.evidence_state, "EFA-001", "c",
++                                              DS4_EVIDENCE_CATEGORY_GENERAL, &r));
++    AGENT_TEST_ASSERT(ds4_agent_evidence_add(&w.evidence_state, "EFA-001",
++                                             DS4_EVIDENCE_FOR, false, &r));
++    AGENT_TEST_ASSERT(ds4_agent_evidence_set_verdict(
++        &w.evidence_state, "EFA-001", DS4_EVIDENCE_FINDING_SUPPORTED,
++        DS4_EVIDENCE_SEVERITY_LOW, true, &r));
++    uint64_t seq = w.evidence_state.mutation_sequence;
++    for (int i = 0; i < 2; i++) { /* two consecutive compactions */
++        char *anchor = agent_worker_evidence_reanchor_text(&w, true);
++        AGENT_TEST_ASSERT(strstr(anchor, "[EVIDENCE-FIRST CORE CONTRACT]"));
++        AGENT_TEST_ASSERT(strstr(anchor, "EFA-001=SUPPORTED"));
++        AGENT_TEST_ASSERT(strstr(anchor, "counterevidence pending"));
++        AGENT_TEST_ASSERT(strstr(anchor, "Finalization: NOT_READY"));
++        free(anchor);
++    }
++    AGENT_TEST_ASSERT(w.evidence_state.mutation_sequence == seq);
++    AGENT_TEST_ASSERT(w.evidence_state.findings[0].state == DS4_EVIDENCE_FINDING_SUPPORTED);
++    AGENT_TEST_ASSERT(!ds4_agent_evidence_finalization_valid(&w.evidence_state));
++    ds4_agent_skill_registry_free(&w.dynamic_skills);
++}
++
++/* WP13: the ledger survives save/switch, never as finalized; a corrupt or
++ * missing sidecar restores nothing and says so on the next turn. */
++static void test_agent_evidence_session_restore(void) {
++    char dir[] = "/tmp/ds4-evidence-session-XXXXXX";
++    AGENT_TEST_ASSERT(mkdtemp(dir) != NULL);
++    agent_worker w;
++    agent_config cfg;
++    test_evidence_worker_init(&w, &cfg);
++    w.cache_dir = xstrdup(dir);
++    test_evidence_worker_load_skill(&w, "skill");
++    const char sha[41] = "0123456789abcdef0123456789abcdef01234567";
++    ds4_evidence_validation_result r;
++    char err[256] = {0};
++
++    AGENT_TEST_ASSERT(ds4_agent_evidence_open(&w.evidence_state, "EFA-001", "c",
++                                              DS4_EVIDENCE_CATEGORY_GENERAL, &r));
++    AGENT_TEST_ASSERT(ds4_agent_evidence_finalize(&w.evidence_state, &r));
++    AGENT_TEST_ASSERT(agent_worker_save_evidence(&w, sha, err, sizeof(err)));
++
++    ds4_agent_evidence_clear(&w.evidence_state);
++    agent_worker_restore_evidence(&w, sha);
++    AGENT_TEST_ASSERT(w.evidence_restored && w.evidence_reanchor_pending);
++    AGENT_TEST_ASSERT(w.evidence_state.finding_count == 1);
++    AGENT_TEST_ASSERT(!ds4_agent_evidence_finalization_valid(&w.evidence_state));
++
++    char *path = agent_evidence_path_for_sha(dir, sha);
++    FILE *fp = fopen(path, "wb");
++    AGENT_TEST_ASSERT(fp != NULL);
++    if (fp) { fputs("DS4_EVIDENCE_STATE_V1\nsequence x\n", fp); fclose(fp); }
++    agent_worker_restore_evidence(&w, sha);
++    AGENT_TEST_ASSERT(!w.evidence_restored && w.evidence_reanchor_pending);
++    AGENT_TEST_ASSERT(w.evidence_state.finding_count == 0);
++
++    /* No skill and no findings: the stale sidecar is removed on save. */
++    ds4_agent_skill_registry_free(&w.dynamic_skills);
++    ds4_agent_skill_registry_init(&w.dynamic_skills);
++    AGENT_TEST_ASSERT(agent_worker_save_evidence(&w, sha, err, sizeof(err)));
++    AGENT_TEST_ASSERT(access(path, F_OK) != 0);
++    agent_worker_restore_evidence(&w, sha);
++    AGENT_TEST_ASSERT(!w.evidence_restored);
++
++    free(path);
++    rmdir(dir);
++    free(w.cache_dir);
++    ds4_agent_skill_registry_free(&w.dynamic_skills);
++}
++
 +static void test_agent_new_default_session_restores_default_skills(void) {
 +    char template[] = "/tmp/ds4-skills-test-XXXXXX";
 +    char *root = mkdtemp(template);
@@ -7300,6 +7899,12 @@
 +    test_agent_default_skills_missing_ethic_is_atomic();
 +    test_agent_system_text_has_one_delimited_policy_block();
 +    test_agent_system_text_orders_dynamic_skills_before_sage();
++    test_agent_evidence_system_text();
++    test_agent_evidence_mode();
++    test_agent_evidence_tool_lifecycle();
++    test_agent_evidence_publication_gate();
++    test_agent_evidence_compaction_text();
++    test_agent_evidence_session_restore();
 +    test_agent_new_default_session_restores_default_skills();
 +    test_agent_default_skills_revision_changes_with_content();
 +    test_agent_sage_native_transitions();
@@ -7363,7 +7968,7 @@
  }
  #endif
  
-@@ -8357,8 +14215,6 @@
+@@ -8357,8 +14815,6 @@
          snprintf(ctx->first_skip, sizeof(ctx->first_skip), "%s: %s", path, why);
  }
  
@@ -7372,7 +7977,7 @@
  static int agent_search_read_line(FILE *fp, char **text) {
      agent_buf line = {0};
      int c;
-@@ -8382,6 +14238,7 @@
+@@ -8382,6 +14838,7 @@
      *text = agent_buf_take(&line);
      return 1;
  }
@@ -7380,7 +7985,7 @@
  
  /* Search one text file and emit matching lines with plain line numbers. */
  static void agent_search_file(agent_search_ctx *ctx, const char *path) {
-@@ -8703,7 +14560,8 @@
+@@ -8703,7 +15160,8 @@
   * Bash commands are tracked jobs, not blocking one-shot calls.  Each job owns a
   * process, a pipe, and a secure /tmp output file.  The first observation is
   * head-biased so headers and early errors are visible; later progress updates
@@ -7390,7 +7995,7 @@
   */
  
  #define AGENT_BASH_HEAD_BYTES (8*1024)
-@@ -8721,6 +14579,7 @@
+@@ -8721,6 +15179,7 @@
      int pipe_fd;
      int tmp_fd;
      char path[PATH_MAX];
@@ -7398,7 +8003,7 @@
      double start_time;
      double end_time;
      double stop_deadline;
-@@ -8728,6 +14587,8 @@
+@@ -8728,6 +15187,8 @@
      size_t bytes;
      int newline_count;
      char last_byte;
@@ -7407,7 +8012,7 @@
      bool observed_once;
      int exit_status;
      bool running;
-@@ -8769,6 +14630,7 @@
+@@ -8769,6 +15230,7 @@
      pthread_mutex_unlock(&job->mu);
  }
  
@@ -7415,7 +8020,7 @@
  static void agent_bash_job_free(agent_bash_job *job) {
      if (!job) return;
      agent_bash_signal(job, SIGKILL);
-@@ -8778,6 +14640,7 @@
+@@ -8778,6 +15240,7 @@
      if (job->pipe_fd >= 0) close(job->pipe_fd);
      if (job->tmp_fd >= 0) close(job->tmp_fd);
      pthread_mutex_destroy(&job->mu);
@@ -7423,7 +8028,7 @@
      free(job);
  }
  
-@@ -8869,8 +14732,9 @@
+@@ -8869,8 +15332,9 @@
      agent_worker_note_terminal_mode_may_have_changed(job->worker);
  }
  
@@ -7435,7 +8040,7 @@
  static void agent_bash_poll(agent_bash_job *job) {
      if (!job || !job->running) return;
      agent_bash_drain(job);
-@@ -8967,6 +14831,7 @@
+@@ -8967,6 +15431,7 @@
      return rc;
  }
  
@@ -7443,7 +8048,7 @@
  /* Spawn a shell command into its own process group so bash_stop/timeout can
   * kill grandchildren created by the shell, not just the /bin/sh wrapper. */
  static agent_bash_job *agent_bash_start(agent_worker *w, const char *cmd,
-@@ -9019,6 +14884,7 @@
+@@ -9019,6 +15484,7 @@
      job->pipe_fd = pipefd[0];
      job->tmp_fd = tmpfd;
      snprintf(job->path, sizeof(job->path), "%s", tmp_path);
@@ -7451,7 +8056,7 @@
      job->start_time = now_sec();
      job->timeout_sec = timeout_sec;
      job->exit_status = -1;
-@@ -9035,6 +14901,16 @@
+@@ -9035,6 +15501,16 @@
      job->next = w->bash_jobs;
      w->bash_jobs = job;
      return job;
@@ -7468,7 +8073,7 @@
  }
  
  /* Read the first max_lines from the output file, with a byte cap to avoid a
-@@ -9117,7 +14993,8 @@
+@@ -9117,7 +15593,8 @@
      return out;
  }
  
@@ -7478,7 +8083,7 @@
  static char *agent_bash_observation(agent_bash_job *job, bool mark_observed, bool *done) {
      pthread_mutex_lock(&job->mu);
      agent_bash_job snapshot = {
-@@ -9170,6 +15047,8 @@
+@@ -9170,6 +15647,8 @@
          char *head = agent_bash_read_head(job, AGENT_BASH_HEAD_LINES,
                                            AGENT_BASH_HEAD_BYTES,
                                            &shown_lines, &byte_limited);
@@ -7487,7 +8092,7 @@
          bool truncated = byte_limited || display_lines > shown_lines;
          if (!job->running && !truncated) {
              agent_buf_puts(&out, "<output>\n");
-@@ -9194,6 +15073,8 @@
+@@ -9194,6 +15673,8 @@
          int tail_lines = job->running ? AGENT_BASH_PROGRESS_TAIL_LINES :
                                          AGENT_BASH_FINAL_TAIL_LINES;
          char *tail = agent_bash_read_tail_lines(job, tail_lines);
@@ -7496,7 +8101,7 @@
          snprintf(line, sizeof(line),
                   "output_path=%s (%zu bytes, %d lines)\n",
                   job->path[0] ? job->path : "<unavailable>",
-@@ -9217,8 +15098,6 @@
+@@ -9217,8 +15698,6 @@
      return agent_buf_take(&out);
  }
  
@@ -7505,7 +8110,7 @@
  static char *agent_terminal_safe_text(const char *text, size_t len) {
      agent_buf out = {0};
      for (size_t i = 0; i < len;) {
-@@ -9272,6 +15151,7 @@
+@@ -9272,6 +15751,7 @@
      }
      return agent_buf_take(&out);
  }
@@ -7513,7 +8118,7 @@
  
  static void agent_bash_publish_observation(agent_worker *w, const char *obs) {
      if (!obs || !obs[0]) return;
-@@ -9331,20 +15211,39 @@
+@@ -9331,20 +15811,39 @@
  static char *agent_bash_job_tool_result(agent_worker *w, agent_bash_job *job,
                                          bool wait, int refresh_sec,
                                          bool stop, bool remove_if_done) {
@@ -7560,7 +8165,7 @@
      return obs;
  }
  
-@@ -9355,11 +15254,6 @@
+@@ -9355,11 +15854,6 @@
  static pid_t agent_tool_pid(const agent_tool_call *call) {
      return (pid_t)agent_parse_int_default(agent_tool_arg_value(call, "pid"), 0, 0, INT_MAX);
  }
@@ -7572,7 +8177,7 @@
  
  static void agent_tool_observation_init(agent_tool_observation *obs) {
      memset(obs, 0, sizeof(*obs));
-@@ -9448,6 +15342,2652 @@
+@@ -9448,25 +15942,2947 @@
      agent_tool_observation_puts(obs, meta);
  }
  
@@ -10225,10 +10830,207 @@
  /* Execute one parsed DSML tool call and return the text that will be appended as
   * the tool-role result.  UI visualization already happened while streaming; this
   * function is only about side effects and the model-visible observation. */
-@@ -9455,18 +17995,97 @@
++static bool agent_tool_flag(const char *value) {
++    return value && (!strcmp(value, "true") || !strcmp(value, "1") ||
++                     !strcmp(value, "yes"));
++}
++
++/* Runtime outcome of a rejected ledger operation: what was refused and why,
++ * never just "false" (8.7). */
++static char *agent_evidence_rejection(const char *head,
++                                      const ds4_evidence_validation_result *r) {
++    char *guidance = agent_worker_evidence_repair_guidance(r);
++    agent_buf b = {0};
++    agent_buf_puts(&b, head);
++    agent_buf_puts(&b, "\n");
++    /* Reuse the reason/finding/missing/detail lines, not the withheld-answer
++     * advice that follows them. */
++    const char *tail = strstr(guidance, "Your final answer was withheld");
++    const char *body = strchr(guidance, '\n');
++    if (body) agent_buf_append(&b, body + 1,
++                               tail ? (size_t)(tail - body - 1)
++                                    : strlen(body + 1));
++    free(guidance);
++    return agent_buf_take(&b);
++}
++
++/* evidence_guard (piano WP4): the only way the ledger changes.  Arguments are
++ * parsed into enums here; anything the module does not recognise is refused
++ * with the value that was wrong. */
++static char *agent_tool_evidence_guard(agent_worker *w,
++                                       const agent_tool_call *call) {
++    if (!agent_worker_evidence_skill_loaded(w))
++        return xstrdup("Tool error: EVIDENCE_SKILL_INACTIVE: evidence_guard needs "
++                       "the evidence-first-analysis skill (/skill "
++                       "evidence-first-analysis start).\n");
++    ds4_agent_evidence_state *st = &w->evidence_state;
++    st->enabled = true;
++    const char *action = agent_tool_arg_value(call, "action");
++    const char *id = agent_tool_arg_value(call, "id");
++    ds4_evidence_validation_result r;
++    memset(&r, 0, sizeof(r));
++    char line[256];
++    bool ok = false;
++
++    if (!action || !action[0])
++        return xstrdup("Tool error: evidence_guard requires action "
++                       "(open, add_evidence, mark_check, set_reachability, "
++                       "set_verdict, finalize, status)\n");
++
++    if (!strcmp(action, "status")) {
++        char *buf = xmalloc(16384);
++        ds4_agent_evidence_status(st, agent_worker_evidence_mode(w),
++                                  agent_worker_evidence_policy_revision(w),
++                                  buf, 16384);
++        return buf;
++    }
++
++    if (!strcmp(action, "finalize")) {
++        if (ds4_agent_evidence_finalize(st, &r)) {
++            agent_trace(w, "evidence.finalize.allow sequence=%llu",
++                        (unsigned long long)st->finalized_sequence);
++            snprintf(line, sizeof(line),
++                     "EVIDENCE_FINALIZATION_READY\nsequence=%llu\n"
++                     "Write the final report now; any other tool call voids "
++                     "this finalize.\n",
++                     (unsigned long long)st->finalized_sequence);
++            return xstrdup(line);
++        }
++        agent_trace(w, "evidence.finalize.block id=%s reason=%s",
++                    r.finding_id[0] ? r.finding_id : "-", r.reason_code);
++        return agent_evidence_rejection("EVIDENCE_FINALIZATION_BLOCKED", &r);
++    }
++
++    if (!strcmp(action, "open")) {
++        ds4_evidence_category category = DS4_EVIDENCE_CATEGORY_GENERAL;
++        const char *cat = agent_tool_arg_value(call, "category");
++        if (cat && cat[0] && !ds4_evidence_category_parse(cat, &category)) {
++            snprintf(line, sizeof(line),
++                     "Tool error: EVIDENCE_BAD_ARGUMENT: unknown category %.64s\n", cat);
++            return xstrdup(line);
++        }
++        ok = ds4_agent_evidence_open(st, id, agent_tool_arg_value(call, "claim"),
++                                     category, &r);
++        if (ok) {
++            agent_trace(w, "evidence.finding.open id=%s category=%s", id,
++                        ds4_evidence_category_name(category));
++            agent_buf b = {0};
++            snprintf(line, sizeof(line), "EVIDENCE_FINDING_OPENED id=%s state=CANDIDATE\n", id);
++            agent_buf_puts(&b, line);
++            agent_buf_puts(&b, "Next required action: collect evidence and attempt falsification.\n");
++            agent_buf_puts(&b, ds4_agent_evidence_open_guidance);
++            return agent_buf_take(&b);
++        }
++    } else if (!strcmp(action, "add_evidence")) {
++        const char *side_text = agent_tool_arg_value(call, "side");
++        ds4_evidence_side side;
++        if (side_text && !strcmp(side_text, "for")) side = DS4_EVIDENCE_FOR;
++        else if (side_text && !strcmp(side_text, "against")) side = DS4_EVIDENCE_AGAINST;
++        else return xstrdup("Tool error: EVIDENCE_BAD_ARGUMENT: side must be for or against\n");
++        ok = ds4_agent_evidence_add(st, id, side,
++                                    agent_tool_flag(agent_tool_arg_value(call, "dynamic")),
++                                    &r);
++    } else if (!strcmp(action, "mark_check")) {
++        uint32_t check = 0;
++        ds4_evidence_check_result result;
++        const char *check_text = agent_tool_arg_value(call, "check");
++        const char *result_text = agent_tool_arg_value(call, "result");
++        if (!ds4_evidence_check_parse(check_text, &check)) {
++            snprintf(line, sizeof(line),
++                     "Tool error: EVIDENCE_BAD_ARGUMENT: unknown check %.64s\n",
++                     check_text ? check_text : "(none)");
++            return xstrdup(line);
++        }
++        if (!ds4_evidence_check_result_parse(result_text, &result)) {
++            snprintf(line, sizeof(line),
++                     "Tool error: EVIDENCE_BAD_ARGUMENT: result must be done, "
++                     "not_applicable or unknown (got %.64s)\n",
++                     result_text ? result_text : "nothing");
++            return xstrdup(line);
++        }
++        ok = ds4_agent_evidence_mark_check(st, id, check, result,
++                                           agent_tool_arg_value(call, "note"), &r);
++    } else if (!strcmp(action, "set_reachability")) {
++        ds4_evidence_reachability reach;
++        const char *reach_text = agent_tool_arg_value(call, "reachability");
++        if (!ds4_evidence_reachability_parse(reach_text, &reach)) {
++            snprintf(line, sizeof(line),
++                     "Tool error: EVIDENCE_BAD_ARGUMENT: unknown reachability %.64s\n",
++                     reach_text ? reach_text : "(none)");
++            return xstrdup(line);
++        }
++        ok = ds4_agent_evidence_set_reachability(st, id, reach, &r);
++    } else if (!strcmp(action, "set_verdict")) {
++        ds4_evidence_finding_state verdict;
++        ds4_evidence_severity severity = DS4_EVIDENCE_SEVERITY_NONE;
++        const char *state_text = agent_tool_arg_value(call, "state");
++        const char *severity_text = agent_tool_arg_value(call, "severity");
++        if (!ds4_evidence_state_parse(state_text, &verdict)) {
++            snprintf(line, sizeof(line),
++                     "Tool error: EVIDENCE_BAD_ARGUMENT: unknown state %.64s\n",
++                     state_text ? state_text : "(none)");
++            return xstrdup(line);
++        }
++        if (severity_text && severity_text[0] &&
++            !ds4_evidence_severity_parse(severity_text, &severity)) {
++            snprintf(line, sizeof(line),
++                     "Tool error: EVIDENCE_BAD_ARGUMENT: unknown severity %.64s\n",
++                     severity_text);
++            return xstrdup(line);
++        }
++        ok = ds4_agent_evidence_set_verdict(
++            st, id, verdict, severity,
++            agent_tool_flag(agent_tool_arg_value(call, "include_in_report")), &r);
++        if (ok)
++            agent_trace(w, "evidence.finding.verdict id=%s state=%s severity=%s",
++                        id, ds4_evidence_state_name(verdict),
++                        ds4_evidence_severity_name(severity));
++    } else {
++        snprintf(line, sizeof(line),
++                 "Tool error: EVIDENCE_BAD_ARGUMENT: unknown action %.64s\n", action);
++        return xstrdup(line);
++    }
++
++    if (!ok) {
++        agent_trace(w, "evidence.finding.reject id=%s action=%s reason=%s",
++                    id ? id : "-", action, r.reason_code ? r.reason_code : "?");
++        return agent_evidence_rejection("EVIDENCE_REJECTED", &r);
++    }
++    agent_trace(w, "evidence.finding.mutate id=%s action=%s sequence=%llu",
++                id ? id : "-", action,
++                (unsigned long long)st->mutation_sequence);
++    const ds4_evidence_finding *f = ds4_agent_evidence_find(st, id);
++    snprintf(line, sizeof(line),
++             "EVIDENCE_LEDGER_UPDATED id=%s state=%s severity=%s reach=%s sequence=%llu\n",
++             id, f ? ds4_evidence_state_name(f->state) : "?",
++             f ? ds4_evidence_severity_name(f->severity) : "?",
++             f ? ds4_evidence_reachability_name(f->reachability) : "?",
++             (unsigned long long)st->mutation_sequence);
++    return xstrdup(line);
++}
++
++/* A finalize vouches for the evidence as it stood; any tool other than
++ * evidence_guard status may change that, so it voids the finalize (9.1). */
++static void agent_worker_evidence_note_tool(agent_worker *w,
++                                            const agent_tool_call *call) {
++    if (!agent_worker_evidence_skill_loaded(w) || !call || !call->name) return;
++    const char *action = agent_tool_arg_value(call, "action");
++    bool status_only = !strcmp(call->name, "evidence_guard") &&
++                       action && !strcmp(action, "status");
++    bool was_valid = ds4_agent_evidence_finalization_valid(&w->evidence_state);
++    ds4_agent_evidence_note_tool_call(&w->evidence_state, &w->evidence_turn,
++                                      status_only);
++    if (was_valid && !ds4_agent_evidence_finalization_valid(&w->evidence_state))
++        agent_trace(w, "evidence.finalize.invalidate tool=%s", call->name);
++}
++
+ static char *agent_execute_tool_call(agent_worker *w, const agent_tool_call *call) {
      agent_buf result = {0};
      if (!call->name) return xstrdup("Tool error: missing tool name\n");
  
++    agent_worker_evidence_note_tool(w, call);
++    if (!strcmp(call->name, "evidence_guard")) return agent_tool_evidence_guard(w, call);
++
 +    /* "Consecutive" only means something if any other tool clears the run. */
 +    if (strcmp(call->name, "lean_check")) w->lean_consecutive_rounds = 0;
 +
@@ -10325,7 +11127,7 @@
          int timeout = agent_parse_timeout(agent_tool_arg_value(call, "timeout_sec"));
          int refresh = agent_parse_int_default(agent_tool_arg_value(call, "refresh_sec"),
                                                60, 1, 3600);
-@@ -9494,10 +18113,9 @@
+@@ -9494,10 +18910,9 @@
              return xstrdup(msg);
          }
          int refresh = agent_parse_int_default(agent_tool_arg_value(call, "refresh_sec"),
@@ -10338,7 +11140,15 @@
          return agent_bash_job_tool_result(w, job, wait, refresh, stop, true);
      }
  
-@@ -9614,7 +18232,6 @@
+@@ -9522,6 +18937,7 @@
+                  calls->v[i].name ? calls->v[i].name : "unknown");
+         agent_tool_observation_puts(&obs, hdr);
+         if (calls->v[i].name && !strcmp(calls->v[i].name, "view_image")) {
++            agent_worker_evidence_note_tool(w, &calls->v[i]);
+             agent_tool_view_image(w, &calls->v[i], &obs);
+             continue;
+         }
+@@ -9614,7 +19030,6 @@
      return true;
  }
  
@@ -10346,7 +11156,7 @@
  static int agent_tool_observation_fits(agent_worker *w,
                                          const agent_tool_observation *obs,
                                          int reserve_tokens,
-@@ -9647,6 +18264,84 @@
+@@ -9647,6 +19062,84 @@
      free(spans);
      return true;
  }
@@ -10431,7 +11241,7 @@
  
  /* If compaction happens while a bash process is still alive, inject a small
   * tool-role reminder into the rebuilt transcript.  Otherwise the summary could
-@@ -9720,7 +18415,9 @@
+@@ -9720,7 +19213,9 @@
      return target;
  }
  
@@ -10442,7 +11252,40 @@
  static int agent_compact_tail_start(agent_worker *w, int bottom, int sys_len) {
      int tail_budget = agent_worker_effective_ctx_size(w) / AGENT_COMPACT_TAIL_DIVISOR;
      if (tail_budget > AGENT_COMPACT_TAIL_CAP_TOKENS)
-@@ -9784,7 +18481,6 @@
+@@ -9741,7 +19236,7 @@
+ /* Build the private prompt used to ask the model for durable state.  The prompt
+  * explicitly forbids tool calls because the result is consumed internally, not
+  * delivered as an assistant turn. */
+-static char *agent_compact_make_prompt(const char *reason) {
++static char *agent_compact_make_prompt(const char *reason, bool evidence_active) {
+     agent_buf b = {0};
+     agent_buf_puts(&b,
+         "Internal ds4-agent context compaction request. This is not a user request.\n"
+@@ -9756,6 +19251,13 @@
+         "Record the user's requirements and what actually happened, leaving unfinished work pending.\n"
+         "After the summary, stop. Do not continue the user task, do not call tools, and do not output thinking tags or DSML markup.\n"
+         "Output only the compact summary.\n");
++    if (evidence_active) {
++        agent_buf_puts(&b,
++            "Do not invent, promote, downgrade or resolve Evidence-First findings.\n"
++            "If Evidence-First analysis is active, preserve only the human-readable\n"
++            "finding IDs and pending work needed to continue. The runtime ledger remains\n"
++            "authoritative.\n");
++    }
+     if (reason && reason[0]) {
+         agent_buf_puts(&b, "\nCompaction reason: ");
+         agent_buf_puts(&b, reason);
+@@ -9773,7 +19275,8 @@
+ }
+ 
+ static int agent_compact_reserve_tokens(agent_worker *w) {
+-    char *text = agent_compact_make_prompt("context pressure before continuing the current task");
++    char *text = agent_compact_make_prompt("context pressure before continuing the current task",
++                                           agent_worker_evidence_skill_loaded(w));
+     ds4_tokens tokens = {0};
+     ds4_chat_append_message(w->engine, &tokens, "user", text);
+     ds4_chat_append_assistant_prefix(w->engine, &tokens, DS4_THINK_NONE);
+@@ -9784,7 +19287,6 @@
      return reserve;
  }
  
@@ -10450,7 +11293,7 @@
  static int agent_compact_image_boundary(const ds4_vision_span *images, size_t count,
                                          bool glm, int pos) {
      for (size_t i = 0; i < count; i++) {
-@@ -9798,10 +18494,6 @@
+@@ -9798,10 +19300,6 @@
      return pos;
  }
  
@@ -10461,7 +11304,7 @@
  static bool agent_worker_compact_transcript(agent_worker *w, const char *reason,
                                    int *open_assistant,
                                    char *err, size_t err_len) {
-@@ -9809,7 +18501,7 @@
+@@ -9809,7 +19307,7 @@
      if (bottom <= 0) return true;
  
      ds4_tokens sys = {0};
@@ -10470,7 +11313,31 @@
      if (bottom <= sys.len) {
          ds4_tokens_free(&sys);
          return true;
-@@ -10110,13 +18802,130 @@
+@@ -9819,7 +19317,8 @@
+         "\n\x1b[1;95mCOMPACTING\x1b[0m %s: summarizing durable task state\n\x1b[38;5;245m",
+         reason && reason[0] ? reason : "context");
+ 
+-    char *prompt_text = agent_compact_make_prompt(reason);
++    char *prompt_text = agent_compact_make_prompt(reason,
++                                                  agent_worker_evidence_skill_loaded(w));
+     ds4_tokens summary_suffix = {0};
+     ds4_chat_append_message(w->engine, &summary_suffix, "user", prompt_text);
+     free(prompt_text);
+@@ -9993,6 +19492,13 @@
+     ds4_chat_append_message(w->engine, &compacted, "user", summary_msg.ptr);
+     free(summary_msg.ptr);
+     free(summary.ptr);
++    /* The summary is the model's account; the ledger is the runtime's.  The
++     * contract and the digest go right after the summary rather than after the
++     * tail: generation may resume inside the tail's open assistant message, and
++     * a system message appended behind it would close that message. */
++    if (agent_worker_evidence_skill_loaded(w))
++        agent_worker_append_evidence_reanchor(w, &compacted,
++                                              "compaction.reanchor", true);
+ 
+     int resumed_start = -1;
+     /* Generation resumes inside the SAME assistant message, including any
+@@ -10110,13 +19616,130 @@
      return true;
  }
  
@@ -10603,7 +11470,7 @@
      if (!agent_worker_should_compact(w)) return true;
      return agent_worker_compact(w, reason, err, err_len);
  }
-@@ -10125,7 +18934,7 @@
+@@ -10125,7 +19748,7 @@
                                       char *err, size_t err_len) {
      ds4_tokens message = {0}, sys = {0};
      ds4_chat_append_message(w->engine, &message, "user", text);
@@ -10612,7 +11479,7 @@
      int ctx = agent_worker_effective_ctx_size(w);
      bool ok = message.len < ctx - sys.len - 4;
      ds4_tokens_free(&sys);
-@@ -10187,6 +18996,7 @@
+@@ -10187,6 +19810,7 @@
      pthread_mutex_unlock(&w->mu);
      return 0;
  }
@@ -10620,7 +11487,7 @@
  
  static int worker_accept_generated_token(agent_worker *w,
                                           int token,
-@@ -10266,14 +19076,308 @@
+@@ -10266,14 +19890,308 @@
             (sr->pending_len || sr->dsml_start_len);
  }
  
@@ -10930,7 +11797,7 @@
  }
  
  static void worker_set_greedy_sampling(agent_worker *w, bool greedy) {
-@@ -10285,16 +19389,3385 @@
+@@ -10285,16 +20203,3385 @@
      pthread_mutex_unlock(&w->mu);
  }
  
@@ -14316,7 +15183,7 @@
      pthread_mutex_unlock(&w->mu);
  
      char compact_err[160] = {0};
-@@ -10313,20 +22786,17 @@
+@@ -10313,20 +23600,17 @@
      agent_worker_append_hints_context(w);
      agent_trace_text(w, "user", user_text ? user_text : "",
                       user_text ? strlen(user_text) : 0);
@@ -14343,7 +15210,7 @@
      }
  
      uint64_t rng = cfg->gen.seed ? cfg->gen.seed :
-@@ -10343,13 +22813,46 @@
+@@ -10343,13 +23627,60 @@
       * pressure, compaction, user Ctrl+C, and the model's final answer are the
       * real stopping conditions.  The transcript is the single source of truth:
       * after a DSML stanza completes we terminate that assistant message, append
@@ -14366,6 +15233,20 @@
 +    w->lean_inspect_transport_failures = 0;
 +    w->lean_turn_start_sec = 0.0;
 +    agent_lean_turn_reset(&w->lean_turn);
++    /* Turn-scoped only: the ledger itself is session-scoped (18.1). */
++    ds4_agent_evidence_turn_reset(&w->evidence_turn);
++    if (w->evidence_reanchor_pending && agent_worker_evidence_skill_loaded(w)) {
++        ds4_chat_append_message(w->engine, &w->transcript, "system",
++            w->evidence_restored
++                ? "Runtime evidence ledger restored from the saved session. "
++                  "Any earlier finalize is void: call evidence_guard finalize "
++                  "again before the final verdict."
++                : "Runtime evidence ledger was not restored as authoritative state. "
++                  "Re-register active findings before final verdict.");
++        agent_worker_append_evidence_reanchor(w, &w->transcript,
++                                              "restore.reanchor", true);
++    }
++    w->evidence_reanchor_pending = false;
      for (int tool_round = 0; ; tool_round++) {
 -        if (!resume_assistant &&
 -            !agent_worker_compact_if_needed(w, "soft limit before assistant continuation",
@@ -14396,7 +15277,7 @@
                                              compact_err, sizeof(compact_err)))
          {
              if (agent_err_is_interrupted(compact_err)) {
-@@ -10360,13 +22863,9 @@
+@@ -10360,13 +23691,9 @@
              agent_set_error(w, compact_err[0] ? compact_err : "context compaction failed");
              return 1;
          }
@@ -14413,7 +15294,7 @@
  
          const ds4_tokens *prompt_for_sync = &w->transcript;
          int old_pos = ds4_session_pos(w->session);
-@@ -10374,9 +22873,12 @@
+@@ -10374,9 +23701,12 @@
          int cached = common == old_pos && w->transcript.len >= old_pos ? common : 0;
  
          int suffix = prompt_for_sync->len - cached;
@@ -14428,7 +15309,7 @@
          agent_trace_tokens(w, "prefill_suffix", prompt_for_sync, cached);
  
          pthread_mutex_lock(&w->mu);
-@@ -10392,6 +22894,9 @@
+@@ -10392,6 +23722,9 @@
          w->status.prefill_tps = 0.0;
          w->status.generated = 0;
          w->status.gen_tps = 0.0;
@@ -14438,7 +15319,7 @@
          w->status.greedy_sampling = false;
          agent_wake_locked(w);
          pthread_mutex_unlock(&w->mu);
-@@ -10400,19 +22905,18 @@
+@@ -10400,19 +23733,18 @@
          ds4_session_set_progress(w->session, worker_progress_cb, w);
          ds4_session_set_display_progress(w->session, worker_progress_cb, w);
          ds4_session_set_cancel(w->session, worker_cancel_session_cb, w);
@@ -14462,7 +15343,7 @@
          if (sync_rc == DS4_SESSION_SYNC_INTERRUPTED) {
              agent_publish_system_status(
                  w, "Model reading interrupted; the model may only be aware of the prefix processed so far.");
-@@ -10426,47 +22930,71 @@
+@@ -10426,47 +23758,77 @@
              return 1;
          }
  
@@ -14509,7 +15390,13 @@
 +        ds4_epistemic_mode epistemic_mode = ds4_agent_epistemic_mode_from_env();
 +        bool epistemic_defer = ds4_agent_epistemic_should_defer(&w->epistemic_turn,
 +                                                                epistemic_mode);
-+        bool defer_authoritative_output = authoritative_defer || epistemic_defer;
++        /* Evidence-First (piano WP6): in block mode a final answer is a
++         * candidate until the ledger finalize is valid, so it is withheld the
++         * same way.  Shadow and off stream as before. */
++        ds4_evidence_mode evidence_mode = agent_worker_evidence_mode(w);
++        bool evidence_defer = evidence_mode == DS4_EVIDENCE_MODE_BLOCK;
++        bool defer_authoritative_output =
++            authoritative_defer || epistemic_defer || evidence_defer;
          agent_token_renderer renderer = {
              .engine = w->engine,
              .worker = w,
@@ -14554,7 +15441,7 @@
          pthread_mutex_lock(&w->mu);
          w->status.state = AGENT_WORKER_GENERATING;
          w->status.prefill_tps = 0.0;
-@@ -10482,218 +23010,146 @@
+@@ -10482,218 +23844,153 @@
                  worker_set_greedy_sampling(w, greedy_sampling);
                  status_greedy_sampling = greedy_sampling;
              }
@@ -14810,10 +15697,17 @@
 +        /* A turn withheld only for the epistemic gate publishes here once the
 +         * scan clears it; one that Sage or Lean is still withholding does not,
 +         * because their own paths decide what becomes visible. */
++        /* Both gates must allow it (20.1); each says yes outside block mode. */
++        ds4_evidence_validation_result evidence_check;
++        bool evidence_ok = agent_worker_evidence_check_final(
++            w, evidence_mode, !got_tool && !malformed_tool && !early_tool_error,
++            gen_text.ptr, &evidence_check);
 +        agent_deferred_output_publish(w, &deferred_output,
-+                                      epistemic_defer && !authoritative_defer &&
++                                      (epistemic_defer || evidence_defer) &&
++                                      !authoritative_defer &&
 +                                      ds4_agent_epistemic_can_publish(&epistemic_scan,
-+                                                                      epistemic_mode));
++                                                                      epistemic_mode) &&
++                                      evidence_ok);
          worker_set_greedy_sampling(w, false);
 -        if (!got_tool && dsml.state == AGENT_DSML_DONE && dsml.calls.len > 0)
 -            got_tool = true;
@@ -14874,7 +15768,7 @@
          } else if (!malformed_tool && dsml.state == AGENT_DSML_ERROR) {
              malformed_tool = true;
          } else if (!got_tool && !malformed_tool && !early_tool_error &&
-@@ -10702,59 +23158,296 @@
+@@ -10702,59 +23999,330 @@
                      dsml.state == AGENT_DSML_PARAM_VALUE))
          {
              malformed_tool = true;
@@ -15026,25 +15920,59 @@
 +             * has not converged after DS4_EPI_DEFAULT_MAX_REPAIR_ROUNDS rounds
 +             * is reported rather than retried, so a model re-asserting the same
 +             * unsupported wording cannot spin here. */
-+            if (epistemic_defer && !authoritative_defer && epistemic_scan.blocked) {
-+                if (ds4_agent_epistemic_can_repair(&w->epistemic_turn)) {
-+                    char *epi_guidance =
-+                        ds4_agent_epistemic_repair_guidance(&epistemic_scan);
-+                    if (epi_guidance != NULL) {
-+                        agent_worker_append_tool_result(w, epi_guidance);
-+                        free(epi_guidance);
-+                        ds4_agent_epistemic_begin_repair(&w->epistemic_turn);
-+                        agent_dsml_parser_free(&dsml);
-+                        free(gen_text.ptr);
-+                        continue;
++            /* Evidence-First composes with it (piano WP16): one repair round
++             * carries both sets of violations, epistemic first, and is charged
++             * to both budgets, so neither gate can spin the other. */
++            bool epi_blocked =
++                epistemic_defer && !authoritative_defer && epistemic_scan.blocked;
++            bool evi_blocked = evidence_defer && !authoritative_defer && !evidence_ok;
++            if (epi_blocked || evi_blocked) {
++                char *epi_guidance = epi_blocked
++                    ? ds4_agent_epistemic_repair_guidance(&epistemic_scan) : NULL;
++                bool can_retry =
++                    (!epi_blocked ||
++                     (ds4_agent_epistemic_can_repair(&w->epistemic_turn) &&
++                      epi_guidance != NULL)) &&
++                    (!evi_blocked ||
++                     w->evidence_turn.repair_rounds < DS4_EVIDENCE_MAX_REPAIR_ROUNDS);
++                if (can_retry) {
++                    agent_buf guidance = {0};
++                    if (epi_guidance) agent_buf_puts(&guidance, epi_guidance);
++                    if (evi_blocked) {
++                        char *evi_guidance =
++                            agent_worker_evidence_repair_guidance(&evidence_check);
++                        if (guidance.len) agent_buf_puts(&guidance, "\n");
++                        agent_buf_puts(&guidance, evi_guidance);
++                        free(evi_guidance);
 +                    }
-+                    /* Nothing to hand back: retrying blind would spend a round
-+                     * on no instruction, so the block is terminal instead. */
++                    char *text = agent_buf_take(&guidance);
++                    agent_worker_append_tool_result(w, text);
++                    free(text);
++                    free(epi_guidance);
++                    if (epi_blocked) ds4_agent_epistemic_begin_repair(&w->epistemic_turn);
++                    if (evi_blocked) {
++                        w->evidence_turn.repair_rounds++;
++                        agent_trace(w, "evidence.repair round=%d reason=%s",
++                                    w->evidence_turn.repair_rounds,
++                                    evidence_check.reason_code);
++                    }
++                    agent_dsml_parser_free(&dsml);
++                    free(gen_text.ptr);
++                    continue;
 +                }
-+                /* Section 47 step 4: say what happened, publish no unsupported
-+                 * candidate bytes.  The withheld buffer is already gone. */
-+                agent_publish_system_status(w,
-+                                            agent_epistemic_finalization_blocked_status);
++                /* Nothing to hand back, or a budget is spent: say what happened
++                 * and publish no candidate bytes.  The withheld buffer is gone
++                 * already (section 47 step 4; piano WP30). */
++                free(epi_guidance);
++                if (epi_blocked)
++                    agent_publish_system_status(w,
++                                                agent_epistemic_finalization_blocked_status);
++                if (evi_blocked) {
++                    agent_trace(w, "evidence.finalize.terminal reason=%s",
++                                evidence_check.reason_code);
++                    agent_publish_system_status(w,
++                                                agent_evidence_finalization_terminal_status);
++                }
 +                free(gen_text.ptr);
 +                agent_dsml_parser_free(&dsml);
 +                agent_set_status(w, AGENT_WORKER_IDLE);
@@ -15208,7 +16136,7 @@
                  agent_dsml_parser_free(&dsml);
                  if (agent_err_is_interrupted(compact_err)) {
                      worker_clear_interrupt(w);
-@@ -10764,38 +23457,86 @@
+@@ -10764,38 +24332,86 @@
                  agent_set_error(w, compact_err[0] ? compact_err : "context compaction failed");
                  return 1;
              }
@@ -15314,7 +16242,7 @@
  
          char *queued_user = worker_request_queued_user_drain(w);
          if (queued_user && queued_user[0]) {
-@@ -10803,12 +23544,9 @@
+@@ -10803,12 +24419,9 @@
              if (!agent_worker_append_user(w, queued_user, compact_err, sizeof(compact_err))) {
                  free(queued_user);
                  if (agent_err_is_interrupted(compact_err)) {
@@ -15329,7 +16257,7 @@
              }
              pthread_mutex_lock(&w->mu);
              w->user_activity = true;
-@@ -10817,13 +23555,6 @@
+@@ -10817,13 +24430,6 @@
              pthread_mutex_unlock(&w->mu);
          }
          free(queued_user);
@@ -15343,7 +16271,7 @@
      }
  }
  
-@@ -10961,6 +23692,7 @@
+@@ -10961,6 +24567,7 @@
      ds4_tokens_free(&prompt);
      return 0;
  }
@@ -15351,7 +16279,7 @@
  
  static void worker_request_save(agent_worker *w) {
      pthread_mutex_lock(&w->mu);
-@@ -11135,7 +23867,7 @@
+@@ -11135,7 +24742,7 @@
  static void *worker_main(void *arg) {
      agent_worker *w = arg;
      agent_trace(w, "agent worker start ctx=%d backend=%s model=%s trace=%s",
@@ -15360,7 +16288,7 @@
                  ds4_backend_name(w->cfg->engine.backend),
                  w->cfg->engine.model_path ? w->cfg->engine.model_path : "",
                  w->cfg->gen.trace_path ? w->cfg->gen.trace_path : "");
-@@ -11693,13 +24425,15 @@
+@@ -11693,13 +25300,15 @@
      size_t paste_tail_len;
  } agent_editor;
  
@@ -15379,7 +16307,7 @@
  
  typedef enum {
      CPR_INVALID,
-@@ -11858,8 +24592,9 @@
+@@ -11858,8 +25467,9 @@
      if (text && text[0]) linenoiseEditInsert(&ed->edit, text, strlen(text));
  }
  
@@ -15391,7 +16319,7 @@
  static void editor_note_output(agent_editor *ed, const char *text, size_t len) {
      int cols = ed->edit.cols > 0 ? (int)ed->edit.cols : 80;
      for (size_t i = 0; i < len; i++) {
-@@ -12379,6 +25114,13 @@
+@@ -12379,6 +25989,13 @@
                             status_start, status_end);
  }
  
@@ -15405,7 +16333,7 @@
  static void editor_redraw_visible_prompt(agent_editor *ed) {
      if (!ed->active || !ed->scroll_region) return;
      linenoiseBeginUpdate(STDOUT_FILENO);
-@@ -12425,12 +25167,6 @@
+@@ -12425,12 +26042,6 @@
      linenoiseEndUpdate();
  }
  
@@ -15418,7 +16346,7 @@
  
  static bool editor_write_scroll_output_preserve_prompt(agent_editor *ed,
                                                         const char *text,
-@@ -12544,18 +25280,18 @@
+@@ -12544,18 +26155,18 @@
  static void editor_write_async(agent_editor *ed, const char *text, size_t len,
                                 const char *prompt, const char *status,
                                 bool force_show) {
@@ -15444,7 +16372,7 @@
          return;
      }
  
-@@ -12622,6 +25358,12 @@
+@@ -12622,6 +26233,12 @@
      puts("  /hints on|off Enable or disable brief programming hints; starts off.");
      puts("  /steer [F]   Show or set FFN steering for subsequent tokens.");
      puts("  /new         Start a fresh session from the system prompt.");
@@ -15457,18 +16385,33 @@
      puts("  /quit, /exit Exit.");
      puts("  Ctrl+C       Interrupt generation; clear edited text.");
      puts("  Enter        Queue text while the agent is busy.");
-@@ -12666,8 +25408,10 @@
+@@ -12666,13 +26283,25 @@
   * the worker thread. */
  static int agent_worker_init(agent_worker *w, ds4_engine *engine, agent_config *cfg) {
      memset(w, 0, sizeof(*w));
 +    ds4_agent_skill_registry_init(&w->dynamic_skills);
++    ds4_agent_evidence_init(&w->evidence_state);
      w->engine = engine;
      w->cfg = cfg;
 +    w->loop_guard_max_tool_rounds = DS4_AGENT_MAX_TOOL_ROUNDS_HARD;
      w->wake_fd[0] = -1;
      w->wake_fd[1] = -1;
      pthread_mutex_init(&w->mu, NULL);
-@@ -12699,6 +25443,7 @@
+     pthread_cond_init(&w->cond, NULL);
+     w->status.state = AGENT_WORKER_IDLE;
++    /* Same exit as a failed pipe: fds are -1, so a later free closes nothing. */
++    ds4_evidence_mode evidence_mode;
++    char evidence_mode_err[160] = {0};
++    if (!ds4_evidence_mode_resolve(getenv("DS4_EVIDENCE_MODE"), false,
++                                   &evidence_mode, evidence_mode_err,
++                                   sizeof(evidence_mode_err))) {
++        fprintf(stderr, "ds4-agent: %s\n", evidence_mode_err);
++        return -1;
++    }
+     if (pipe(w->wake_fd) != 0) return -1;
+     int old_flags;
+     set_nonblock(w->wake_fd[0], true, &old_flags);
+@@ -12699,6 +26328,7 @@
      };
      w->web = ds4_web_create(&web_cfg);
      w->sysprompt_path = ds4_kvstore_path_join(w->cache_dir, "sysprompt.kv");
@@ -15476,7 +16419,7 @@
      if (cfg->gen.trace_path && cfg->gen.trace_path[0]) {
          w->trace = fopen(cfg->gen.trace_path, "ab");
          if (!w->trace) {
-@@ -12706,6 +25451,19 @@
+@@ -12706,6 +26336,19 @@
                      cfg->gen.trace_path, strerror(errno));
              return -1;
          }
@@ -15496,7 +16439,7 @@
      }
      if (pthread_create(&w->thread, NULL, worker_main, w) != 0) return -1;
      return 0;
-@@ -12721,16 +25479,30 @@
+@@ -12721,16 +26364,30 @@
      ds4_session_free(w->session);
      ds4_tokens_free(&w->transcript);
      agent_worker_images_clear(w);
@@ -15527,7 +16470,7 @@
      pthread_cond_destroy(&w->cond);
      pthread_mutex_destroy(&w->mu);
  }
-@@ -13124,15 +25896,13 @@
+@@ -13124,15 +26781,13 @@
          build_prompt_text(&st, prompt, sizeof(prompt));
          int footer_cols = editor.edit.cols > 0 ? (int)editor.edit.cols : 80;
          build_footer_text(&st, &queue, footer_cols, statusline, sizeof(statusline));
@@ -15544,7 +16487,7 @@
              if (editor.hidden && (st.state == AGENT_WORKER_IDLE ||
                                    st.state == AGENT_WORKER_ERROR ||
                                    st.state == AGENT_WORKER_STOPPED))
-@@ -13350,6 +26120,331 @@
+@@ -13350,6 +27005,331 @@
                              }
                          }
                      }
@@ -15876,7 +16819,7 @@
                  } else if (cmd[0] == '/' && !agent_slash_command_known(cmd)) {
                      ssize_t ignored = write(STDOUT_FILENO, "\a", 1);
                      (void)ignored;
-@@ -13378,7 +26473,7 @@
+@@ -13378,7 +27358,7 @@
                      editor_restore_terminal_layout(&editor);
                      if (agent_maybe_save_before_leaving_session(&worker)) {
                          char err[160] = {0};
@@ -15885,7 +16828,7 @@
                              printf("new session failed: %s\n", err);
                          } else {
                              show_welcome_after_restart = true;
-@@ -13444,7 +26539,7 @@
+@@ -13444,7 +27424,7 @@
                          else
                              printf("strip failed: %s\n", err);
                      }
@@ -15894,7 +16837,7 @@
                             (cmd[8] == '\0' || cmd[8] == ' ' || cmd[8] == '\t')) {
                      char *arg = cmd + 8;
                      while (*arg == ' ' || *arg == '\t') arg++;
-@@ -13456,7 +26551,54 @@
+@@ -13456,7 +27436,54 @@
                      if (!agent_worker_show_history(&worker, history_turns,
                                                     err, sizeof(err)))
                          printf("history failed: %s\n", err);
@@ -15949,7 +16892,7 @@
                      agent_prompt_queue_push(&queue, cmd);
                  } else {
                      linenoiseHistoryAdd(cmd);
-@@ -13599,6 +26741,7 @@
+@@ -13599,6 +27626,7 @@
          }
      }
      agent_apply_model_sampling_defaults(engine, &cfg.gen);
@@ -15957,7 +16900,7 @@
  
      /* Model paths and Metal kernel sources are resolved from the launch
       * directory. Tools should run in --chdir, so change directory only after
-@@ -13632,4 +26775,4 @@
+@@ -13632,4 +27660,4 @@
      ds4_prompt_prefix_free(&cfg.gen.prefix);
      return rc;
  }

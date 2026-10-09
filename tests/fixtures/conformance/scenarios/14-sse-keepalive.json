@@ -1,0 +1,16 @@
+{
+  "name": "14-sse-keepalive",
+  "env": { "DS4_AGENT_SSE_KEEPALIVE_MS": "300" },
+  "backend": {
+    "turns": [
+      { "content": "Slow answer.", "finish": "stop", "delayMs": 1500 }
+    ]
+  },
+  "requests": ["Say something."],
+  "expect": [
+    { "event": "comment", "data": { "text": "keepalive" } },
+    { "event": "agent_text", "dataContains": { "content": "Slow answer" } },
+    { "event": "agent_done", "data": { "finish_reason": "stop" } }
+  ],
+  "expectAbsent": [{ "event": "agent_error" }]
+}

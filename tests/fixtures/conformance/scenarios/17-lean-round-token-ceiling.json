@@ -1,0 +1,34 @@
+{
+  "name": "17-lean-round-token-ceiling",
+  "env": {
+    "DS4_LEAN_ENABLED": "1",
+    "DS4_LEAN_RUNTIME_ROOT": "/nonexistent/lean-runtime"
+  },
+  "backend": {
+    "propsNctx": 262144,
+    "turns": [
+      {
+        "content": "ok",
+        "finish": "stop"
+      }
+    ]
+  },
+  "requests": [
+    "/lean start",
+    "Prove 1 + 1 = 2 in Lean."
+  ],
+  "expectRequest": [
+    {
+      "index": 0,
+      "maxTokensAtMost": 8192
+    }
+  ],
+  "expect": [
+    {
+      "event": "agent_done",
+      "data": {
+        "finish_reason": "stop"
+      }
+    }
+  ]
+}

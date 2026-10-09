@@ -1,0 +1,4 @@
+Do not invent, promote, downgrade or resolve Evidence-First findings.
+If Evidence-First analysis is active, preserve only the human-readable
+finding IDs and pending work needed to continue. The runtime ledger remains
+authoritative.

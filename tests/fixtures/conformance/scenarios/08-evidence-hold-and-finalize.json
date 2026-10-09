@@ -1,0 +1,71 @@
+{
+  "name": "08-evidence-hold-and-finalize",
+  "backend": {
+    "tokenCounts": [100],
+    "turns": [
+      {
+        "content": "Preliminary verdict: all clear.",
+        "finish": "stop"
+      },
+      {
+        "toolCalls": [
+          {
+            "id": "ef1",
+            "name": "evidence_guard",
+            "arguments": {
+              "action": "finalize"
+            }
+          }
+        ],
+        "finish": "tool_calls"
+      },
+      {
+        "content": "Final report: all clear.",
+        "finish": "stop"
+      }
+    ]
+  },
+  "requests": [
+    "/skill evidence-first-analysis start",
+    "Give the verdict on the audit."
+  ],
+  "expect": [
+    {
+      "event": "agent_text",
+      "dataContains": {
+        "content": "Final report: all clear."
+      }
+    },
+    {
+      "event": "agent_done",
+      "data": {
+        "finish_reason": "stop"
+      }
+    }
+  ],
+  "expectAbsent": [
+    {
+      "event": "agent_error"
+    },
+    {
+      "event": "agent_text",
+      "dataContains": {
+        "content": "Preliminary verdict"
+      }
+    }
+  ],
+  "expectRequest": [
+    {
+      "index": 1,
+      "role": "user",
+      "messagesContain": "NOT_FINALIZED"
+    },
+    {
+      "index": 2,
+      "messagesContain": "Write the final report now"
+    }
+  ],
+  "env": {
+    "DS4_EVIDENCE_MODE": "block"
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "name": "16-degenerate-reasoning-round",
+  "backend": {
+    "turns": [
+      {
+        "reasoning": "Let me check the theorem statement again.\nThen I call lean_check with the candidate.\nLet me check the theorem statement again.\nThen I call lean_check with the candidate.\nLet me check the theorem statement again.\nThen I call lean_check with the candidate.\nLet me check the theorem statement again.\nThen I call lean_check with the candidate.\nLet me check the theorem statement again.\nThen I call lean_check with the candidate.\nLet me check the theorem statement again.\nThen I call lean_check with the candidate.\nLet me check the theorem statement again.\nThen I call lean_check with the candidate.\nLet me check the theorem statement again.\nThen I call lean_check with the candidate.\nLet me check the theorem statement again.\nThen I call lean_check with the candidate.\nLet me check the theorem statement again.\nThen I call lean_check with the candidate.\nLet me check the theorem statement again.\nThen I call lean_check with the candidate.\nLet me check the theorem statement again.\nThen I call lean_check with the candidate.\n",
+        "reasoningBothVariants": true,
+        "content": "",
+        "finish": "stop"
+      },
+      {
+        "content": "Answer after the repaired round.",
+        "finish": "stop"
+      }
+    ]
+  },
+  "requests": [
+    "Prove something."
+  ],
+  "expect": [
+    {
+      "event": "agent_warning",
+      "data": {
+        "type": "DEGENERATE_GENERATION"
+      }
+    },
+    {
+      "event": "agent_text",
+      "dataContains": {
+        "content": "Answer after the repaired round"
+      }
+    },
+    {
+      "event": "agent_done",
+      "data": {
+        "finish_reason": "stop"
+      }
+    }
+  ],
+  "expectAbsent": [
+    {
+      "event": "agent_error"
+    }
+  ]
+}

@@ -53,13 +53,14 @@ include Makefile
 # extension layer's headers.
 CFLAGS += -I. -I$(STUDIO_DIR)
 
-.PHONY: clean-studio wrapper-status test-studio
+.PHONY: clean-studio wrapper-status test-studio test-studio-agent
 
 # -----------------------------------------------------------------------------
 # Studio object sets.
 # -----------------------------------------------------------------------------
 BUF_OBJS := buf.o
 AGENT_CUSTOM_OBJS := ds4_agent_protocol_guard.o ds4_agent_epistemic.o \
+                     ds4_agent_evidence_guard.o \
                      ds4_agent_skill_registry.o ds4_crawl_client.o \
                      ds4_crawl_grounding.o ds4_context_blob.o \
                      ds4_tool_compress.o $(BUF_OBJS)
@@ -144,6 +145,10 @@ ds4_agent_protocol_guard.o: ds4_agent_protocol_guard.c ds4_agent_protocol_guard.
 ds4_agent_epistemic.o: ds4_agent_epistemic.c ds4_agent_epistemic.h
 	$(CC) $(CFLAGS) -c -o $@ ds4_agent_epistemic.c
 
+# Self-contained on purpose: no worker, no engine, only libc.
+ds4_agent_evidence_guard.o: ds4_agent_evidence_guard.c ds4_agent_evidence_guard.h
+	$(CC) $(CFLAGS) -c -o $@ ds4_agent_evidence_guard.c
+
 ds4_agent_skill_registry.o: ds4_agent_skill_registry.c ds4_agent_skill_registry.h ds4_kvstore.h
 	$(CC) $(CFLAGS) -c -o $@ ds4_agent_skill_registry.c
 
@@ -192,7 +197,7 @@ ds4_agent_session_store.o: ds4_agent_session_store.c ds4_agent_session_store.h d
 ds4_server_runtime.o: ds4_server_runtime.c ds4_server_runtime.h ds4_wrapper.h ds4.h ds4_kvstore.h ds4_default_skills.h $(STUDIO_SERVER_SRC) $(STUDIO_DIR)/ds4_upstream_compat.h
 	$(CC) $(CFLAGS) -Wno-unused-function -DDS4_SERVER_UPSTREAM_SRC='"$(STUDIO_SERVER_SRC)"' -c -o $@ ds4_server_runtime.c
 
-ds4_agent_runtime.o: ds4_agent_runtime.c ds4_agent_runtime.h ds4_wrapper.h ds4_agent_session_store.h ds4_agent_skill_registry.h ds4_agent_protocol_guard.h ds4_agent_epistemic.h ds4.h ds4_ssd.h ds4_distributed.h ds4_tp.h ds4_help.h ds4_prompt_prefix.h ds4_kvstore.h ds4_web.h ds4_crawl_client.h ds4_crawl_grounding.h ds4_context_blob.h ds4_tool_compress.h ds4_default_skills.h $(STUDIO_AGENT_SRC) $(STUDIO_DIR)/ds4_upstream_compat.h $(ORCH_POLICY_HEADERS)
+ds4_agent_runtime.o: ds4_agent_runtime.c ds4_agent_runtime.h ds4_wrapper.h ds4_agent_session_store.h ds4_agent_skill_registry.h ds4_agent_protocol_guard.h ds4_agent_epistemic.h ds4_agent_evidence_guard.h ds4.h ds4_ssd.h ds4_distributed.h ds4_tp.h ds4_help.h ds4_prompt_prefix.h ds4_kvstore.h ds4_web.h ds4_crawl_client.h ds4_crawl_grounding.h ds4_context_blob.h ds4_tool_compress.h ds4_default_skills.h $(STUDIO_AGENT_SRC) $(STUDIO_DIR)/ds4_upstream_compat.h $(ORCH_POLICY_HEADERS)
 	$(CC) $(CFLAGS) -Wno-unused-function -DDS4_AGENT_UPSTREAM_SRC='"$(STUDIO_AGENT_SRC)"' -c -o $@ ds4_agent_runtime.c
 
 # -----------------------------------------------------------------------------
@@ -200,10 +205,10 @@ ds4_agent_runtime.o: ds4_agent_runtime.c ds4_agent_runtime.h ds4_wrapper.h ds4_a
 # These recipes deliberately override the upstream ones (make warns; that is the
 # intended signal that Studio is redirecting the source).
 # -----------------------------------------------------------------------------
-ds4_agent.o: $(STUDIO_AGENT_SRC) ds4.h ds4_ssd.h ds4_distributed.h ds4_tp.h ds4_help.h ds4_prompt_prefix.h ds4_kvstore.h ds4_web.h ds4_agent_epistemic.h ds4_agent_skill_registry.h ds4_context_blob.h ds4_tool_compress.h ds4_crawl_client.h ds4_crawl_grounding.h linenoise.h $(ORCH_POLICY_HEADERS)
+ds4_agent.o: $(STUDIO_AGENT_SRC) ds4.h ds4_ssd.h ds4_distributed.h ds4_tp.h ds4_help.h ds4_prompt_prefix.h ds4_kvstore.h ds4_web.h ds4_agent_epistemic.h ds4_agent_evidence_guard.h ds4_agent_skill_registry.h ds4_context_blob.h ds4_tool_compress.h ds4_crawl_client.h ds4_crawl_grounding.h linenoise.h $(ORCH_POLICY_HEADERS)
 	$(CC) $(CFLAGS) -Wno-unused-function -c -o $@ $(STUDIO_AGENT_SRC)
 
-ds4_agent_cpu.o: $(STUDIO_AGENT_SRC) ds4.h ds4_ssd.h ds4_distributed.h ds4_help.h ds4_prompt_prefix.h ds4_kvstore.h ds4_web.h ds4_agent_epistemic.h ds4_agent_skill_registry.h ds4_context_blob.h ds4_tool_compress.h ds4_crawl_client.h ds4_crawl_grounding.h linenoise.h $(ORCH_POLICY_HEADERS)
+ds4_agent_cpu.o: $(STUDIO_AGENT_SRC) ds4.h ds4_ssd.h ds4_distributed.h ds4_help.h ds4_prompt_prefix.h ds4_kvstore.h ds4_web.h ds4_agent_epistemic.h ds4_agent_evidence_guard.h ds4_agent_skill_registry.h ds4_context_blob.h ds4_tool_compress.h ds4_crawl_client.h ds4_crawl_grounding.h linenoise.h $(ORCH_POLICY_HEADERS)
 	$(CC) $(CFLAGS) -Wno-unused-function -DDS4_NO_GPU -c -o $@ $(STUDIO_AGENT_SRC)
 
 ds4_server.o: $(STUDIO_SERVER_SRC) ds4.h ds4_ssd.h ds4_distributed.h ds4_help.h ds4_kvstore.h rax.h buf.h
@@ -239,6 +244,38 @@ tests/ds4_crawl_grounding_test: tests/ds4_crawl_grounding_test.c ds4_crawl_groun
 tests/ds4_agent_epistemic_test: tests/ds4_agent_epistemic_test.c ds4_agent_epistemic.c ds4_agent_epistemic.h
 	$(CC) $(CFLAGS) -I. -o $@ tests/ds4_agent_epistemic_test.c ds4_agent_epistemic.c
 
+tests/ds4_agent_evidence_guard_test: tests/ds4_agent_evidence_guard_test.c ds4_agent_evidence_guard.c ds4_agent_evidence_guard.h
+	$(CC) $(CFLAGS) -I. -o $@ tests/ds4_agent_evidence_guard_test.c ds4_agent_evidence_guard.c
+
+# Conformance driver (piano WP10): replays tests/fixtures/conformance/evidence/*.ops
+# so frontend/server/evidenceGuard.conformance.test.mjs can diff the Node ledger
+# against the C module byte for byte.  It is a driver, not a test.
+tests/ds4_agent_evidence_cli: tests/ds4_agent_evidence_cli.c ds4_agent_evidence_guard.c ds4_agent_evidence_guard.h
+	$(CC) $(CFLAGS) -I. -o $@ tests/ds4_agent_evidence_cli.c ds4_agent_evidence_guard.c
+
+# ds4_kvstore.c also carries the engine-backed session cache; the registry only
+# needs its SHA-1, so let the linker drop the rest instead of pulling the engine.
+tests/ds4_agent_skill_registry_test: tests/ds4_agent_skill_registry_test.c ds4_agent_skill_registry.c ds4_agent_skill_registry.h ds4_kvstore.c ds4_kvstore.h
+	$(CC) $(CFLAGS) -I. -ffunction-sections -fdata-sections -Wl,--gc-sections \
+		-o $@ tests/ds4_agent_skill_registry_test.c ds4_agent_skill_registry.c ds4_kvstore.c $(LDLIBS)
+
+# WP3 conformance driver: renders a skill directory exactly as the C loop does,
+# so frontend/server/skillRegistry.test.mjs can diff the Node registry against
+# it.  Same link rule as the registry test: ds4_kvstore.c only for its SHA-1.
+tests/ds4_agent_skill_render_cli: tests/ds4_agent_skill_render_cli.c ds4_agent_skill_registry.c ds4_agent_skill_registry.h ds4_kvstore.c ds4_kvstore.h
+	$(CC) $(CFLAGS) -I. -ffunction-sections -fdata-sections -Wl,--gc-sections \
+		-o $@ tests/ds4_agent_skill_render_cli.c ds4_agent_skill_registry.c ds4_kvstore.c $(LDLIBS)
+
+# Studio agent layer: the standalone module tests plus the unit tests compiled
+# into studio/ds4_agent.c.  CPU-only, so it runs without a GPU toolchain.
+STUDIO_AGENT_TESTS := tests/ds4_agent_epistemic_test \
+                      tests/ds4_agent_evidence_guard_test \
+                      tests/ds4_agent_skill_registry_test \
+                      tests/ds4_agent_runtime_skill_test
+
+test-studio-agent: $(STUDIO_AGENT_TESTS)
+	@set -e; for t in $(STUDIO_AGENT_TESTS); do echo "== $$t"; ./$$t; done
+
 # The architectural test: upstream pristine + every overlay anchor resolving.
 # Anchors are resolved by the compose that produced this tree; a strict patch
 # that no longer matches upstream stops the compose before make ever runs.
@@ -249,3 +286,4 @@ clean-studio:
 	rm -f $(STUDIO_EXT_OBJS) $(WRAPPER_OBJS) ds4-wrapper
 	rm -f tests/ds4_agent_runtime_skill_test tests/ds4_agent_runtime_skill_test.o
 	rm -f tests/ds4_crawl_grounding_test tests/ds4_agent_epistemic_test
+	rm -f tests/ds4_agent_evidence_guard_test tests/ds4_agent_skill_registry_test

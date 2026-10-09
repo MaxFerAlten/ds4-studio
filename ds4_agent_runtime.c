@@ -1550,6 +1550,21 @@ static int runtime_apply_skill_command(
         ds4_agent_skill_entry_free(&available_entry);
         runtime_skill_set_result(rt, command, kind, available, loaded,
                                  false, false, bytes, revision, result);
+        /* Evidence-First status (piano 19.1): the ledger, not just the text.
+         * Read while the worker is idle, as every /skill command is. */
+        if (!strcmp(command->name, DS4_EVIDENCE_SKILL_NAME)) {
+            char evidence[16384];
+            rt->worker.evidence_state.enabled = loaded;
+            ds4_agent_evidence_status(&rt->worker.evidence_state,
+                                      agent_worker_evidence_mode(&rt->worker),
+                                      agent_worker_evidence_policy_revision(&rt->worker),
+                                      evidence, sizeof(evidence));
+            char *head = result->message ? result->message : NULL;
+            result->message = NULL;
+            runtime_command_set_message(result, "%s\n%s",
+                                        head ? head : "", evidence);
+            free(head);
+        }
         return 0;
     }
 

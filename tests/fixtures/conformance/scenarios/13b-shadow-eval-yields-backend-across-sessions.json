@@ -1,0 +1,54 @@
+{
+  "name": "13b-shadow-eval-yields-backend-across-sessions",
+  "sessionPerRequest": true,
+  "agentConfig": {
+    "epistemic": {
+      "enabled": true,
+      "mode": "shadow",
+      "withholdOutput": false
+    }
+  },
+  "backend": {
+    "singleSlot": true,
+    "slowSideCallsMs": 30000,
+    "turns": [
+      {
+        "content": "First answer.",
+        "finish": "stop"
+      },
+      {
+        "content": "Second answer.",
+        "finish": "stop"
+      }
+    ]
+  },
+  "requests": [
+    "Say something short.",
+    "Say something else."
+  ],
+  "expect": [
+    {
+      "event": "agent_text",
+      "dataContains": {
+        "content": "First answer"
+      }
+    },
+    {
+      "event": "agent_text",
+      "dataContains": {
+        "content": "Second answer"
+      }
+    },
+    {
+      "event": "agent_done",
+      "data": {
+        "finish_reason": "stop"
+      }
+    }
+  ],
+  "expectAbsent": [
+    {
+      "event": "agent_error"
+    }
+  ]
+}

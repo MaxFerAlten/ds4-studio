@@ -1,0 +1,50 @@
+{
+  "name": "18-shadow-skipped-on-single-slot-backend",
+  "variants": [
+    "llama"
+  ],
+  "agentConfig": {
+    "epistemic": {
+      "enabled": true,
+      "mode": "shadow",
+      "withholdOutput": false
+    }
+  },
+  "backend": {
+    "totalSlots": 1,
+    "turns": [
+      {
+        "content": "First answer.",
+        "finish": "stop"
+      },
+      {
+        "content": "Second answer.",
+        "finish": "stop"
+      }
+    ]
+  },
+  "requests": [
+    "Say something short.",
+    "Say something else."
+  ],
+  "sideCallsAtMost": 0,
+  "expect": [
+    {
+      "event": "agent_text",
+      "dataContains": {
+        "content": "Second answer"
+      }
+    },
+    {
+      "event": "agent_done",
+      "data": {
+        "finish_reason": "stop"
+      }
+    }
+  ],
+  "expectAbsent": [
+    {
+      "event": "agent_error"
+    }
+  ]
+}

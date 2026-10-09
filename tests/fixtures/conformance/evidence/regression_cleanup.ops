@@ -1,0 +1,12 @@
+reset
+open EFA-002 cleanup "claim under test"
+add EFA-002 for static
+mark EFA-002 control_flow done
+mark EFA-002 caller done
+mark EFA-002 counterevidence done
+mark EFA-002 reachability done
+mark EFA-002 dynamic unknown
+reach EFA-002 proven
+verdict EFA-002 confirmed medium true
+mark EFA-002 cleanup done
+verdict EFA-002 confirmed medium true

@@ -1,0 +1,23 @@
+{
+  "name": "03-checkpoint-continue",
+  "backend": {
+    "propsNctx": 32768,
+    "tokenCounts": [100],
+    "turns": [
+      {
+        "content": "[OBSERVATION] the request needs a file read\n[COMPRESSED] one line\n[TARGET_SELECTED] read frontend/package.json\n[VERDICT] GO",
+        "finish": "stop"
+      },
+      { "toolCalls": [{ "id": "c1", "name": "read", "arguments": { "path": "frontend/package.json", "start_line": 1, "max_lines": 3 } }], "finish": "tool_calls" },
+      { "content": "Checkpoint honored: the read is done.", "finish": "stop" }
+    ]
+  },
+  "requests": ["Inspect something and follow the checkpoint protocol."],
+  "expect": [
+    { "event": "agent_status", "data": { "mode": "checkpoint" }, "dataContains": { "reason": "checkpoint GO" } },
+    { "event": "agent_tool_call", "data": { "name": "read" } },
+    { "event": "agent_text", "dataContains": { "content": "Checkpoint honored" } },
+    { "event": "agent_done", "data": { "finish_reason": "stop" } }
+  ],
+  "expectAbsent": [{ "event": "agent_error" }]
+}

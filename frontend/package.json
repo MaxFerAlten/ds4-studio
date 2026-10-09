@@ -6,7 +6,7 @@
     "dev": "node server/index.mjs",
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "test": "NODE_ENV=test node --test --test-concurrency=1 server/*.test.mjs server/lean/*.test.mjs server/epistemic/*.test.mjs server/research/*.test.mjs server/research/providers/*.test.mjs",
+    "test": "NODE_ENV=test node --test --test-concurrency=1 server/*.test.mjs server/agui/gateway.test.mjs server/lean/*.test.mjs server/epistemic/*.test.mjs server/research/*.test.mjs server/research/providers/*.test.mjs",
     "test:frontend": "node --test src/*.test.mjs src/research/*.test.mjs src/evolution/*.test.mjs src/agno/*.test.mjs",
     "test:evolution": "NODE_ENV=test node --test --test-concurrency=1 server/structuredModelClient.test.mjs server/evolution/*.test.mjs",
     "test:evolution:security": "NODE_ENV=test node --test --test-concurrency=1 server/evolution/security/*.test.mjs",
@@ -19,6 +19,10 @@
     "node": "^20.19.0 || >=22.12.0"
   },
   "dependencies": {
+    "@ag-ui/client": "1.0.2",
+    "@ag-ui/core": "1.0.2",
+    "@ag-ui/encoder": "1.0.2",
+    "@assistant-ui/react": "0.15.25",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@vitejs/plugin-react": "^6.0.2",
     "express": "^4.19.2",

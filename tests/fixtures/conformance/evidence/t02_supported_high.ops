@@ -1,0 +1,5 @@
+reset
+open EFA-001 general "claim under test"
+add EFA-001 for static
+verdict EFA-001 supported high true
+verdict EFA-001 supported low true

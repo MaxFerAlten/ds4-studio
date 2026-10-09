@@ -1,0 +1,18 @@
+{
+  "name": "15-lean-runtime-unavailable",
+  "env": { "DS4_LEAN_ENABLED": "1", "DS4_LEAN_RUNTIME_ROOT": "/nonexistent/lean-runtime" },
+  "backend": {
+    "turns": [
+      { "toolCalls": [{ "id": "l1", "name": "lean_check", "arguments": { "code": "theorem t : 1 + 1 = 2 := rfl", "task_mode": "check" } }], "finish": "tool_calls" },
+      { "content": "NOT_VERIFIED: LEAN_RUNTIME_UNAVAILABLE.", "finish": "stop" }
+    ]
+  },
+  "requests": ["/lean start", "Prove 1 + 1 = 2 in Lean."],
+  "expectRequest": [
+    { "index": 0, "toolsContain": "lean_check" }
+  ],
+  "expect": [
+    { "event": "agent_tool_result", "dataContains": { "content": "LEAN_RUNTIME_UNAVAILABLE" } },
+    { "event": "agent_done", "data": { "finish_reason": "stop" } }
+  ]
+}

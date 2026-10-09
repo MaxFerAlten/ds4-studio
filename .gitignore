@@ -110,3 +110,29 @@ __pycache__/
 #---
 ds4-wrapper
 /frontend/.env
+
+# Local agent setup and machine-specific state
+/.agents/
+/.claude/
+/CLAUDE.md
+/.venv/
+/.ds4_scan_logs/
+/.convergenza.loop.tmp.md
+
+# Generated research and agent runtime data
+/frontend/data/agent-context/
+/frontend/data/opendots/
+/frontend/data/research/cache/search/
+/frontend/workspace/lean-runs/
+/graphify-out/
+/lean-runtime/
+
+# Local documentation drafts and generated docs
+/ds4studio.1.md
+/ds4studio.2.md
+/ds4studio.3.md
+/docs/AGENT_ENGINE.md
+/docs/EVIDENCE_FIRST.md
+/docs/convergenza/
+/docs/feature/
+/docs/integration-opendots/

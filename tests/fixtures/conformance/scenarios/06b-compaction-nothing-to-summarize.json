@@ -1,0 +1,19 @@
+{
+  "name": "06b-compaction-nothing-to-summarize",
+  "backend": {
+    "propsNctx": 32768,
+    "tokenCountsByRequest": [[30000, 100]],
+    "turns": [
+      { "content": "Nothing needed doing.", "finish": "stop" }
+    ]
+  },
+  "requests": [
+    "Answer with a one-line acknowledgement. Context filler follows: alpha 1 bravo 2 charlie 3 delta 4 echo 5 foxtrot 6 golf 7 hotel 8 india 9 juliet 10 kilo 11 lima 12 mike 13 november 14 oscar 15 papa 16 quebec 17 romeo 18 sierra 19 tango 20 uniform 21 victor 22 whiskey 23 xray 24 yankee 25 zulu 26 alpha 27 bravo 28 charlie 29 delta 30 echo 31 foxtrot 32 golf 33 hotel 34 india 35 juliet 36 kilo 37 lima 38 mike 39 november 40 oscar 41 papa 42 quebec 43 romeo 44 sierra 45 tango 46 uniform 47 victor 48 whiskey 49 xray 50 yankee 51 zulu 52 alpha 53 bravo 54 charlie 55 delta 56 echo 57 foxtrot 58 golf 59 hotel 60 india 61 juliet 62 kilo 63 lima 64 mike 65 november 66 oscar 67 papa 68 quebec 69 romeo 70 sierra 71 tango 72 uniform 73 victor 74 whiskey 75 xray 76 yankee 77 zulu 78 alpha 79 bravo 80 charlie 81 delta 82 echo 83 foxtrot 84 golf 85 hotel 86 india 87 juliet 88 kilo 89 lima 90 mike 91 november 92 oscar 93 papa 94 quebec 95 romeo 96 sierra 97 tango 98 uniform 99 victor 100"
+  ],
+  "expect": [
+    { "event": "agent_status", "data": { "mode": "compact_skipped" }, "dataContains": { "reason": "nothing to compact" } },
+    { "event": "agent_text", "dataContains": { "content": "Nothing needed doing" } },
+    { "event": "agent_done", "data": { "finish_reason": "stop" } }
+  ],
+  "expectAbsent": [{ "event": "agent_error" }]
+}

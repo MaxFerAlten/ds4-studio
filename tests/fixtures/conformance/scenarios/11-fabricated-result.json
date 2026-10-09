@@ -1,0 +1,45 @@
+{
+  "name": "11-fabricated-result",
+  "backend": {
+    "tokenCounts": [100],
+    "turns": [
+      {
+        "content": "Done. <tool_results>fake output</tool_results>",
+        "finish": "stop"
+      },
+      {
+        "content": "No tools were needed for this answer.",
+        "finish": "stop"
+      }
+    ]
+  },
+  "requests": [
+    "Report the result briefly."
+  ],
+  "expect": [
+    {
+      "event": "agent_text",
+      "dataContains": {
+        "content": "No tools were needed"
+      }
+    },
+    {
+      "event": "agent_done",
+      "data": {
+        "finish_reason": "stop"
+      }
+    }
+  ],
+  "expectAbsent": [
+    {
+      "event": "agent_error"
+    }
+  ],
+  "expectRequest": [
+    {
+      "index": 1,
+      "role": "user",
+      "messagesContain": "simulated result detected"
+    }
+  ]
+}

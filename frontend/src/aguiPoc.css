@@ -1,0 +1,128 @@
+:root {
+  color-scheme: light;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #303747;
+  background: #f8f8f6;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; min-height: 100vh; background: #f8f8f6; }
+button, input, textarea, select { font: inherit; }
+button { color: inherit; }
+
+.agui-poc { min-height: 100vh; display: grid; grid-template-columns: 244px minmax(0, 1fr); }
+.agui-sidebar { height: 100vh; position: sticky; top: 0; display: flex; flex-direction: column; padding: 20px 16px 14px; background: #fbfaf8; border-right: 1px solid #e8e7e3; }
+.agui-brand { display: flex; align-items: center; gap: 8px; height: 34px; margin: 0 8px 26px; color: #5365a5; text-decoration: none; font-size: 15px; }
+.agui-brand strong { color: #33394a; font-size: 20px; letter-spacing: -.7px; }
+.agui-brand span { margin-left: auto; color: #a2a4ad; font-size: 10px; letter-spacing: .12em; }
+.agui-new-thread { display: flex; align-items: center; gap: 10px; width: 100%; padding: 11px 13px; border: 0; border-radius: 8px; background: #eef0f8; color: #52649d; text-align: left; cursor: pointer; }
+.agui-new-thread:hover { background: #e7eaf5; }
+.agui-new-thread:first-letter { font-size: 18px; }
+.agui-sidebar-label { margin: 28px 10px 10px; color: #989aa4; font-size: 10px; font-weight: 700; letter-spacing: .15em; text-transform: uppercase; }
+.agui-thread-list { display: grid; gap: 3px; overflow: auto; }
+.agui-thread-list button { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 10px; overflow: hidden; border: 0; border-radius: 7px; background: transparent; color: #697083; text-align: left; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.agui-thread-list button:hover, .agui-thread-list button[aria-current="page"] { background: #f0f1f6; color: #5367a9; }
+.agui-thread-list button span:last-child { overflow: hidden; text-overflow: ellipsis; }
+.agui-thread-dot { flex: 0 0 auto; color: #9ba9d5; font-size: 9px; }
+.agui-load-threads { margin: 8px 10px; padding: 6px 0; border: 0; background: transparent; color: #5969a4; text-align: left; cursor: pointer; }
+.agui-sidebar-bottom { display: grid; gap: 8px; margin-top: auto; padding: 14px 8px 0; border-top: 1px solid #ecebe8; }
+.agui-sidebar-bottom button, .agui-sidebar-bottom a { padding: 5px 0; border: 0; background: transparent; color: #858895; font-size: 12px; text-align: left; text-decoration: none; cursor: pointer; }
+.agui-sidebar-bottom a:hover, .agui-sidebar-bottom button:hover { color: #5367a9; }
+
+.agui-main { height: 100vh; min-width: 0; display: flex; flex-direction: column; }
+.agui-topbar { min-height: 58px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 0 28px; border-bottom: 1px solid #e9e8e4; background: rgba(251,250,248,.76); }
+.agui-breadcrumb { color: #8b8e99; font-size: 12px; }
+.agui-breadcrumb span { padding: 0 9px; color: #c1c2c6; }
+.agui-breadcrumb strong { color: #555b6a; font-weight: 600; }
+.agui-top-actions { display: flex; align-items: center; gap: 8px; }
+.agui-engine-badge { display: inline-flex; align-items: center; gap: 7px; margin-right: 8px; padding: 6px 9px; border-radius: 6px; background: #eff4f1; color: #668075; font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.agui-engine-badge i { width: 6px; height: 6px; border-radius: 50%; background: #6dae91; }
+.agui-top-actions button { padding: 6px 10px; border: 1px solid #e6e5e1; border-radius: 6px; background: #fff; color: #687080; font-size: 12px; cursor: pointer; }
+.agui-top-actions button:hover { border-color: #c6cce0; color: #52649d; }
+.agui-top-actions button.agui-danger { border-color: #f0ddda; color: #a44d43; }
+.agui-top-actions button.agui-danger:hover { border-color: #dfb5ae; background: #fff5f3; }
+.agui-chat-heading { width: min(820px, calc(100% - 48px)); min-height: 78px; display: flex; align-items: center; gap: 12px; margin: 0 auto; border-bottom: 1px solid #e9e8e4; }
+.agui-avatar { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 14px 14px 14px 5px; background: #dce5ff; color: #6479c5; font-size: 17px; font-weight: 700; }
+.agui-chat-heading h1 { margin: 0; color: #414757; font-size: 14px; font-weight: 650; }
+.agui-chat-heading > div:nth-child(2) span { display: block; margin-top: 3px; color: #9a9ca5; font-size: 11px; }
+.agui-chat-controls { margin-left: auto; color: #9699a2; font-size: 11px; }
+.agui-settings { width: min(820px, calc(100% - 48px)); flex: 0 0 auto; align-self: center; margin: 9px auto 0; border: 1px solid #e9e8e4; border-radius: 8px; background: rgba(255,255,255,.72); }
+.agui-settings summary { display: flex; align-items: center; gap: 10px; padding: 9px 12px; color: #626a7c; font-size: 12px; cursor: pointer; list-style: none; }
+.agui-settings summary::-webkit-details-marker { display: none; }
+.agui-settings summary::before { content: "＋"; color: #6f80ba; font-size: 15px; }
+.agui-settings[open] summary::before { content: "−"; }
+.agui-settings summary span { margin-left: auto; color: #a0a2aa; font-size: 11px; }
+.agui-settings-content { max-height: 42vh; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; overflow: auto; padding: 0 12px 12px; }
+.agui-workspace { min-width: 0; display: grid; align-content: start; gap: 10px; padding: 12px; border: 1px solid #eeede9; border-radius: 7px; background: #fff; }
+.agui-pages-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.agui-pages-heading h2 { margin: 0; color: #4b5263; font-size: 13px; }
+.agui-pages-heading span, .agui-workspace small { color: #91949e; font-size: 10px; }
+.agui-page-list, .agui-page-drafts { display: flex; flex-wrap: wrap; gap: 6px; }
+.agui-page-list button, .agui-page-drafts button { max-width: 100%; padding: 6px 9px; overflow: hidden; border: 1px solid #e8e8e4; border-radius: 6px; background: #fbfbfa; color: #687084; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.agui-page-form { display: grid; gap: 8px; }
+.agui-page-form label { display: grid; gap: 4px; color: #747988; font-size: 11px; font-weight: 600; }
+.agui-page-form input, .agui-page-form textarea, .agui-page-form select { width: 100%; padding: 8px; border: 1px solid #e4e5e4; border-radius: 6px; background: #fff; color: #424958; font-size: 12px; font-weight: 400; }
+.agui-page-form textarea { min-height: 74px; resize: vertical; }
+.agui-tool-checks { max-height: 210px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 8px; overflow: auto; margin: 0; padding: 8px; border: 1px solid #e8e8e4; border-radius: 6px; }
+.agui-page-checks { max-height: 140px; }
+.agui-tool-checks legend { padding: 0 4px; color: #747988; font-size: 11px; font-weight: 600; }
+.agui-tool-checks label { min-width: 0; display: flex; align-items: flex-start; gap: 7px; padding: 5px; border-radius: 5px; cursor: pointer; }
+.agui-tool-checks label:hover { background: #f7f8fb; }
+.agui-tool-checks input { flex: 0 0 auto; margin: 2px 0 0; accent-color: #687bbd; }
+.agui-tool-checks label span { min-width: 0; display: grid; gap: 2px; }
+.agui-tool-checks label strong { color: #565d70; font-size: 11px; font-weight: 600; }
+.agui-tool-checks label small { display: -webkit-box; overflow: hidden; color: #9699a3; font-size: 9px; line-height: 1.35; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.agui-page-form button, .agui-library-actions button { padding: 7px 10px; border: 1px solid #e2e4ea; border-radius: 6px; background: #fff; color: #5a668e; font-size: 11px; cursor: pointer; }
+.agui-page-form button:hover, .agui-library-actions button:hover { background: #f5f6fa; }
+.agui-library-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.agui-page-review { padding: 10px; border: 1px solid #dfc17a; border-radius: 7px; background: #fffaf0; color: #655b44; font-size: 11px; }
+.agui-page-review h3 { margin: 0 0 6px; font-size: 12px; }
+.agui-page-review code { overflow-wrap: anywhere; }
+.agui-page-review pre { max-height: 160px; overflow: auto; white-space: pre-wrap; }
+
+.agui-thread { position: relative; width: min(820px, calc(100% - 48px)); min-height: 0; flex: 1 1 auto; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; align-self: center; margin: 0 auto; background: transparent; }
+.agui-viewport { min-height: 0; overflow: auto; padding: 22px 4px 18px; }
+.agui-message { max-width: 78%; margin: 14px 0; color: #50586b; line-height: 1.65; }
+.agui-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 32px; text-align: center; pointer-events: none; }
+.agui-empty-orb { width: 50px; height: 50px; display: grid; place-items: center; margin-bottom: 13px; border-radius: 18px 18px 18px 7px; background: #e7ecfb; color: #7487c7; font-size: 22px; }
+.agui-empty h2 { margin: 0; color: #535a6b; font-size: 18px; font-weight: 600; }
+.agui-empty p { margin: 8px 0 0; color: #979aa4; font-size: 12px; }
+.agui-composer { z-index: 1; display: flex; align-items: end; gap: 10px; margin: 0 0 12px; padding: 12px 12px 12px 16px; border: 1px solid #e5e5e1; border-radius: 13px; background: #fff; box-shadow: 0 5px 20px rgba(42,48,62,.035); }
+.agui-composer textarea { min-height: 38px; max-height: 180px; flex: 1; resize: vertical; padding: 7px 2px; border: 0; outline: 0; color: #444b5a; font-size: 13px; }
+.agui-composer textarea::placeholder { color: #aaadb6; }
+.agui-composer button { min-width: 38px; height: 36px; padding: 0 13px; border: 0; border-radius: 9px; background: #63b2aa; color: #fff; font-size: 12px; cursor: pointer; }
+.agui-composer button:hover { background: #4da39a; }
+.agui-tool { margin: 10px 0; padding: 12px 14px; border: 1px solid #e8e9e8; border-left: 3px solid #86bdb3; border-radius: 8px; background: #fff; color: #667083; font-size: 12px; }
+.agui-tool pre { max-height: 180px; overflow: auto; white-space: pre-wrap; margin: 7px 0; color: #777d89; }
+.agui-history-more { justify-self: center; margin: 8px; padding: 7px 12px; border: 1px solid #e4e5e2; border-radius: 6px; background: #fff; color: #687084; font-size: 11px; cursor: pointer; }
+.agui-error { width: min(820px, calc(100% - 48px)); align-self: center; margin: 8px auto; padding: 10px 12px; overflow: auto; border: 1px solid #f0d5d1; border-radius: 7px; background: #fff4f2; color: #8a3326; font-size: 12px; white-space: pre-wrap; }
+.agui-disabled { width: min(820px, calc(100% - 48px)); margin: auto; padding: 24px; border: 1px solid #e9e8e4; border-radius: 10px; background: white; color: #6f7482; }
+
+@media (max-width: 760px) {
+  .agui-poc { grid-template-columns: 190px minmax(0, 1fr); }
+  .agui-sidebar { padding-inline: 10px; }
+  .agui-topbar { padding: 0 14px; }
+  .agui-chat-heading, .agui-thread, .agui-settings, .agui-error, .agui-disabled { width: calc(100% - 28px); }
+  .agui-settings-content { grid-template-columns: 1fr; }
+}
+@media (max-width: 560px) {
+  .agui-poc { min-height: 100dvh; grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+  .agui-sidebar { position: static; width: 100%; height: auto; display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 10px 12px; border-right: 0; border-bottom: 1px solid #e8e7e3; }
+  .agui-brand { margin: 0; }
+  .agui-new-thread { width: auto; padding: 8px 10px; font-size: 12px; }
+  .agui-sidebar-label, .agui-sidebar-bottom, .agui-load-threads { display: none; }
+  .agui-thread-list { grid-column: 1 / -1; display: flex; max-width: 100%; overflow-x: auto; }
+  .agui-thread-list button { max-width: 190px; flex: 0 0 auto; }
+  .agui-main { height: calc(100dvh - 112px); min-height: 440px; }
+  .agui-topbar { min-height: 48px; }
+  .agui-engine-badge { margin: 0; padding: 5px 7px; font-size: 9px; }
+  .agui-top-actions { gap: 5px; }
+  .agui-top-actions button { padding: 5px 7px; font-size: 10px; }
+  .agui-chat-heading { min-height: 62px; }
+  .agui-chat-controls { display: none; }
+  .agui-thread, .agui-chat-heading, .agui-settings, .agui-error, .agui-disabled { width: calc(100% - 24px); }
+  .agui-message { max-width: 92%; }
+  .agui-composer { margin-bottom: 8px; }
+}

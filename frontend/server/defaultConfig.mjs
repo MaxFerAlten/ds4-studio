@@ -236,6 +236,11 @@ export const DEFAULT_CONFIG = Object.freeze({
     })
   }),
   agent: Object.freeze({
+    // Agent loop selector (convergenza.loop.md D1): "native" runs the C agent
+    // inside ds4-wrapper, "js" runs the Node loop against any OpenAI-compatible
+    // backend.  WP17 made "js" the default; "native" is deprecated (startup
+    // warning) and documented in docs/AGENT_ENGINE.md.
+    engine: "js",
     nativeChatTimeoutMs: 180_000,
     // Quantum Fix epistemic gate. Ships disabled and in shadow: the first
     // commits must observe and record, never change what a turn publishes.

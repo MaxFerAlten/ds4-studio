@@ -1,0 +1,6 @@
+reset
+open EFA-001 general "claim under test"
+verdict EFA-001 disproved none true
+verdict EFA-001 disproved high false
+verdict EFA-001 disproved hardening false
+status

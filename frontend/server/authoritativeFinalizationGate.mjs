@@ -29,6 +29,42 @@ const PRESENTATION_INTEGRITY_GUIDANCE =
   "checked source verbatim in a lean fence.";
 
 /**
+ * Build machine-readable evidence for the final Agent event. `null` means the
+ * current runtime does not produce that evidence; it must never be read as a
+ * successful check.
+ */
+export function leanVerificationEvidence(leanSnapshot, decision) {
+  const snapshot = leanSnapshot || {};
+  const proofTask = Boolean(snapshot.proofId);
+  const verified = decision?.code === "LEAN_VERIFIED";
+  const profileMatch = proofTask && snapshot.profile && snapshot.checkedProfile
+    ? snapshot.profile === snapshot.checkedProfile
+    : null;
+  return {
+    // The tracker snapshot does not retain every last Lean result status;
+    // report only the positive status it proves and leave other cases unknown.
+    leanStatus: snapshot.verified === true ? "checked" : null,
+    taskStatus: verified ? "verified" : proofTask ? "not_verified" : "not_applicable",
+    evidence: {
+      taskModeMatch: proofTask ? snapshot.taskSpecSealed === true : null,
+      targetDeclarationMatch: proofTask ? Boolean(snapshot.targetDeclaration) : null,
+      targetStatementMatch: proofTask
+        ? snapshot.targetIdentityMatched === true &&
+          Boolean(snapshot.targetStatementSha256) &&
+          snapshot.checkedTargetStatementSha256 === snapshot.targetStatementSha256
+        : null,
+      // The current executor proves textual target identity, not Lean isDefEq.
+      targetElaboratedTypeMatch: null,
+      profileMatch,
+      retainedPublishedSourceMatch: proofTask && snapshot.verified === true ? verified : null,
+      presentationIntegrity: decision?.code === "LEAN_PRESENTATION_INTEGRITY_FAILED"
+        ? false
+        : proofTask && snapshot.verified === true ? verified : null
+    }
+  };
+}
+
+/**
  * Decide whether a completed assistant message may become authoritative state.
  * This function is deliberately pure so the route can gate both commit and SSE.
  */

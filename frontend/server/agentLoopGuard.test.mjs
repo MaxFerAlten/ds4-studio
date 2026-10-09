@@ -6,7 +6,8 @@ import {
   guardAssistantDelta,
   hasStructuredSynthesis,
   normalizeAgentIntentText,
-  protocolFailureFingerprint
+  protocolFailureFingerprint,
+  readStructuredCheckpoint
 } from "./agentLoopGuard.mjs";
 import * as loopGuardModule from "./agentLoopGuard.mjs";
 import { loadAgentLoopPolicy } from "./agentLoopPolicy.mjs";
@@ -115,6 +116,93 @@ test("blocks more than forty file tokens in assistant output", () => {
   assert.equal(checkAssistantFileListEcho(text)?.type, "STOP_FILE_LIST_ECHO");
 });
 
+test("allows a report that cites one file at several lines", () => {
+  const text = [
+    "ds4_crawl_client.c:120 strcpy senza limite.",
+    "ds4_crawl_client.c:340 snprintf troncato.",
+    "ds4_crawl_client.c:512 buffer non liberato.",
+    "ds4_crawl_client.c:610-640 gestione errori. In ds4_crawl_client.c il resto e' corretto."
+  ].join("\n");
+  assert.equal(checkAssistantFileListEcho(text), undefined);
+});
+
+test("blocks the same citation repeated with the same text", () => {
+  const text = Array.from({ length: 4 }, () =>
+    "ds4_crawl_client.c:120 strcpy senza controllo della lunghezza del buffer."
+  ).join("\n");
+  assert.equal(checkAssistantFileListEcho(text)?.type, "STOP_REPEATED_FILE_ECHO");
+});
+
+test("blocks the same citation repeated with reworded text", () => {
+  const text = [
+    "ds4_crawl_client.c:120 strcpy senza controllo della lunghezza del buffer",
+    "ds4_crawl_client.c:120: strcpy, nessun controllo sulla lunghezza del buffer.",
+    "Ricapitolando, ds4_crawl_client.c:120 - strcpy senza controlli di lunghezza sul buffer",
+    "ds4_crawl_client.c:120 strcpy: manca il controllo della lunghezza del buffer"
+  ].join("\n");
+  assert.equal(checkAssistantFileListEcho(text)?.type, "STOP_REPEATED_FILE_ECHO");
+});
+
+test("allows the same citation repeated for different findings", () => {
+  const text = [
+    "ds4_crawl_client.c:120 strcpy senza controllo della lunghezza.",
+    "ds4_crawl_client.c:120 il valore di ritorno di malloc non viene verificato.",
+    "ds4_crawl_client.c:120 la variabile len puo andare in overflow su input lunghi.",
+    "ds4_crawl_client.c:120 manca la chiusura del file descriptor in caso di errore."
+  ].join("\n");
+  assert.equal(checkAssistantFileListEcho(text), undefined);
+});
+
+test("allows a file discussed many times in different sentences", () => {
+  const text = [
+    "ds4_crawl_client.c apre la connessione con un timeout fisso.",
+    "Il redirect viene seguito da ds4_crawl_client.c fino a cinque volte.",
+    "Per il gzip ds4_crawl_client.c delega a zlib.",
+    "La validazione utf8 in ds4_crawl_client.c scarta le sequenze troncate.",
+    "Il parser chunked di ds4_crawl_client.c alloca a ogni blocco.",
+    "I retry di ds4_crawl_client.c non hanno backoff.",
+    "Nessun supporto proxy: ds4_crawl_client.c ignora HTTP_PROXY.",
+    "I cookie restano in memoria finche ds4_crawl_client.c chiude la sessione.",
+    "La verifica tls usa il bundle di sistema (ds4_crawl_client.c)."
+  ].join("\n");
+  assert.equal(checkAssistantFileListEcho(text), undefined);
+});
+
+test("still blocks one file echoed over and over", () => {
+  const text = Array.from({ length: 9 }, () => "ds4_crawl_client.c").join(", ");
+  assert.equal(checkAssistantFileListEcho(text)?.type, "STOP_REPEATED_FILE_ECHO");
+});
+
+// Non-repeating prose: the repeated-phrase check must not be what fires.
+function variedWords(count, seed) {
+  const vocab = ("buffer allocazione stringa indice ciclo errore ritorno puntatore lunghezza " +
+    "socket timeout parser intestazione risposta richiesta memoria limite controllo valore " +
+    "funzione modulo chiamata percorso cache sessione flusso blocco campo tabella").split(" ");
+  let state = seed;
+  return Array.from({ length: count }, () => {
+    state = (state * 1103515245 + 12345) % 2147483648;
+    return vocab[state % vocab.length] + (state % 97);
+  }).join(" ");
+}
+
+test("blocks long unstructured narration", () => {
+  const text = variedWords(900, 7);
+  assert.ok(text.length > 6000);
+  assert.equal(checkAssistantFileListEcho(text)?.type, "STOP_UNSTRUCTURED_LONG_OUTPUT");
+});
+
+test("allows a long markdown report without state markers", () => {
+  const sections = ["Sintesi", "Allocazioni", "Stringhe", "Gestione errori", "Conclusioni"];
+  const text = sections.map((title, s) => [
+    `## ${title}`,
+    ...Array.from({ length: 6 }, (_, i) =>
+      `- src/modulo_${s}_${i}.c:${(i + 1) * 37} ${variedWords(40, s * 10 + i + 1)}`
+    )
+  ].join("\n")).join("\n\n");
+  assert.ok(text.length > 6000);
+  assert.equal(checkAssistantFileListEcho(text), undefined);
+});
+
 test("allows a short useful assistant file list", () => {
   const text = "Targets: ds4.c, frontend/server/agentLoopGuard.mjs, frontend/server/agentLoopGuard.test.mjs";
   assert.equal(checkAssistantFileListEcho(text), undefined);
@@ -123,6 +211,38 @@ test("allows a short useful assistant file list", () => {
 test("blocks repeated five-gram narration", () => {
   const text = Array.from({ length: 3 }, () => "let me inspect the same target now").join(" ");
   assert.equal(checkAssistantFileListEcho(text)?.type, "STOP_REPEATED_TEXT_ECHO");
+});
+
+test("repeated code expressions in an analysis are not narration echo", () => {
+  // WP16 live on DS4: an audit of ds4_agent_evidence_guard.c quoted the bound
+  // expression three times and the turn died before reaching evidence_guard.
+  const text = [
+    "The append checks t->cap - t->len before writing.",
+    "If t->cap - t->len is zero the buffer grows first.",
+    "So `t->cap - t->len` never goes negative here.",
+    "In the loop, while (i < n && buf[i] != 0) advances; later while (i < n && buf[i] != 0) repeats; a third while (i < n && buf[i] != 0) closes it."
+  ].join(" ");
+  assert.equal(checkAssistantFileListEcho(text), undefined);
+});
+
+test("prose repeated around code is still narration echo", () => {
+  const text = Array.from({ length: 3 }, () => "let me inspect the same target now, t->len").join(" ");
+  assert.equal(checkAssistantFileListEcho(text)?.type, "STOP_REPEATED_TEXT_ECHO");
+});
+
+test("a results table naming many files is a report, not a listing", () => {
+  // WP16 live: a table of 41 measured files and their line counts was
+  // stopped as STOP_FILE_LIST_ECHO; each row carries a finding.
+  const rows = Array.from({ length: 45 }, (_, i) => `| frontend/server/mod${i}.mjs | ${100 + i} |`);
+  const text = ["| File | Lines |", "|---|---|", ...rows, "", "Longest: mod44."].join("\n");
+  assert.equal(checkAssistantFileListEcho(text), undefined);
+});
+
+test("a bare list of many files is still a listing", () => {
+  const bullets = Array.from({ length: 45 }, (_, i) => `- frontend/server/mod${i}.mjs`).join("\n");
+  assert.equal(checkAssistantFileListEcho(bullets)?.type, "STOP_FILE_LIST_ECHO");
+  const oneColumn = ["| File |", "|---|", ...Array.from({ length: 45 }, (_, i) => `| frontend/server/mod${i}.mjs |`)].join("\n");
+  assert.equal(checkAssistantFileListEcho(oneColumn)?.type, "STOP_FILE_LIST_ECHO");
 });
 
 test("output echo guard supports warn mode without blocking", () => {
@@ -140,9 +260,14 @@ test("compressed observations require ordered compression target and verdict mar
   guard.recordCompressedObservation();
   assert.equal(guard.requiresStructuredObservation(), true);
 
-  const block = guard.checkAssistantText("I will keep reading the repository.");
-  assert.ok(block?.block);
-  assert.equal(block.type, "STOP_MISSING_OBSERVATION_FLOW");
+  const decision = guard.checkAssistantText("I will keep reading the repository.");
+  assert.equal(decision?.type, "STOP_MISSING_OBSERVATION_FLOW");
+  assert.equal(decision.block, false);
+  assert.equal(decision.warn, true);
+  // An empty final answer has nothing to publish and is still blocked.
+  const empty = new AgentLoopGuard();
+  empty.recordCompressedObservation();
+  assert.equal(empty.checkAssistantText("   ")?.block, true);
 });
 
 test("valid observation flow clears the structured-output requirement", () => {
@@ -325,6 +450,75 @@ test("still blocks prose that skips the observation flow after a tool call", () 
   guard.recordCompressedObservation();
   assert.equal(guard.checkAssistantText("", { isFinalResponse: false }), undefined);
 
-  const block = guard.checkAssistantText("I will keep reading more files.");
-  assert.equal(block?.type, "STOP_MISSING_OBSERVATION_FLOW");
+  const decision = guard.checkAssistantText("I will keep reading more files.");
+  assert.equal(decision?.type, "STOP_MISSING_OBSERVATION_FLOW");
+  assert.equal(decision.block, false);
+});
+
+const checkpointText = (target, verdict) => [
+  "[OBSERVATION] ds4_agent_epistemic.c coperto nella parte sostanziale.",
+  "[COMPRESSED]",
+  "1 difetto nuovo: batching a 32 parole",
+  `[TARGET_SELECTED] ${target}`,
+  `[VERDICT] ${verdict}`
+].join("\n");
+
+test("a GO checkpoint with a target asks to continue", () => {
+  const cp = readStructuredCheckpoint(checkpointText("ds4_agent_epistemic.c 645-708 (scan_final_text)", "GO"));
+  assert.equal(cp.next, "continue");
+  assert.equal(cp.verdict, "GO");
+  assert.match(cp.target, /645-708/);
+});
+
+test("a STOP checkpoint, or one with no target, asks for the final report", () => {
+  assert.equal(readStructuredCheckpoint(checkpointText("ds4.c:10", "STOP")).next, "finish");
+  assert.equal(readStructuredCheckpoint(checkpointText("nessuno", "GO")).next, "finish");
+  assert.equal(readStructuredCheckpoint(checkpointText("", "RETEST")).next, "finish");
+});
+
+test("plain prose is not a checkpoint", () => {
+  assert.equal(readStructuredCheckpoint("## Report\n- ds4.c:10 strcpy"), undefined);
+});
+
+test("a prose final report satisfies the observation flow", () => {
+  const guard = new AgentLoopGuard();
+  guard.recordCompressedObservation();
+  const report = [
+    "## Risultato",
+    "- ds4_agent_epistemic.c:216 il batching a 32 parole crea falsi eseguibili.",
+    "- ds4_agent_epistemic.c:645 scan_final_text usa il classificatore difettoso.",
+    "## Copertura",
+    "Tabelle epi_f03_phrases non lette."
+  ].join("\n");
+  assert.equal(guard.checkAssistantText(report), undefined);
+  assert.equal(guard.requiresStructuredObservation(), false);
+});
+
+test("substantial plain prose also satisfies it; an announcement does not", () => {
+  const prose = new AgentLoopGuard();
+  prose.recordCompressedObservation();
+  const paragraph = "Il classificatore dei comandi processa le parole a blocchi di trentadue " +
+    "e tratta la prima parola di ogni blocco come eseguibile, quindi una parola interna " +
+    "di un comando innocuo diventa un falso test. Il difetto si propaga a scan_final_text, " +
+    "che decide la pubblicazione, per cui una risposta puo essere pubblicata come verificata " +
+    "senza che alcun test sia stato eseguito. Le tabelle di frasi non sono state lette.";
+  assert.ok(paragraph.length >= 400);
+  assert.equal(prose.checkAssistantText(paragraph), undefined);
+
+  const stalled = new AgentLoopGuard();
+  stalled.recordCompressedObservation();
+  const warned = stalled.checkAssistantText("WP2 completato, report in docs/convergenza/WP2.md.");
+  assert.equal(warned?.type, "STOP_MISSING_OBSERVATION_FLOW");
+  assert.equal(warned.block, false, "a short final answer is published with a warning");
+});
+
+test("glob tails are not file tokens for the echo guard", () => {
+  const text = [
+    "Prima corsa: *.test.mjs passa tutto.",
+    "Dopo il fix: *.test.mjs passa tutto.",
+    "Con la cache: *.test.mjs passa tutto.",
+    "Alla fine: *.test.mjs passa tutto."
+  ].join("\n");
+  assert.deepEqual(loopGuardModule.equivalentFileMentions(text), []);
+  assert.notEqual(checkAssistantFileListEcho(text)?.type, "STOP_REPEATED_FILE_ECHO");
 });

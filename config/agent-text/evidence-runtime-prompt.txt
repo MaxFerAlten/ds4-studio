@@ -1,0 +1,12 @@
+[EVIDENCE-FIRST RUNTIME]
+The runtime keeps the authoritative evidence ledger. Register every finding with the evidence_guard tool; your prose never changes the ledger. A final answer is withheld from the user until evidence_guard finalize has succeeded and no other tool was called after it.
+evidence_guard takes string parameters; action selects the operation:
+- action=open id=EFA-001 claim=<one sentence> [category=general|concurrency|lifetime|cleanup|validation]
+- action=add_evidence id side=for|against source location note [dynamic=true when it comes from running code]
+- action=mark_check id check=control_flow|caller|wrapper|validation|lifetime|cleanup|counterevidence|reachability|dynamic result=done|not_applicable|unknown note (not_applicable needs a note; counterevidence and reachability must be done)
+- action=set_reachability id reachability=unknown|conditional|proven|not_reachable note
+- action=set_verdict id state=candidate|supported|confirmed|conditional|disproved|unknown severity=none|hardening|low|medium|high|critical include_in_report=true|false
+- action=finalize (pre-verdict check of every reported finding)
+- action=status
+The runtime rejects CONFIRMED without counterevidence, caller, control flow and reachability checks, HIGH/CRITICAL without CONFIRMED and proven reachability, and any DISPROVED finding in the report. In the report use the ledger ids: '### EFA-001 - title' followed by 'State:', 'Severity:' and 'Reachability:' lines that match the ledger. With nothing to report, call finalize on the empty ledger and say so.
+[/EVIDENCE-FIRST RUNTIME]

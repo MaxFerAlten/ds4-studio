@@ -470,9 +470,103 @@ export function effectiveAgentTools({
  * Combine base tools with optional tools into a single list.
  * ponytail: utility for tool merging; will be wired by caller when needed.
  */
+/**
+ * evidence_guard (WP10): the Evidence-First ledger tool.  It is NOT part of
+ * BASE_AGENT_TOOLS — the C loop likewise keeps it out of the tool prompt and
+ * announces it only while the evidence-first-analysis skill is loaded (shadow
+ * ds4_agent.c:7719-7747, 7903-7909).  Callers append it with
+ * appendOptionalTools when, and only when, the skill is active.
+ * All parameters are strings, mirroring the C dispatch in
+ * agent_tool_evidence_guard (shadow ds4_agent.c:18621).
+ */
+export const EVIDENCE_GUARD_TOOL = deepFreeze({
+  type: "function",
+  function: {
+    name: "evidence_guard",
+    description:
+      "Evidence-First runtime ledger: the only way findings are recorded. " +
+      "action selects the operation (open, add_evidence, mark_check, " +
+      "set_reachability, set_verdict, finalize, status). A final answer is " +
+      "withheld until finalize succeeds and no other tool ran after it.",
+    parameters: {
+      type: "object",
+      properties: {
+        action: { type: "string", description: "open | add_evidence | mark_check | set_reachability | set_verdict | finalize | status" },
+        id: { type: "string", description: "Finding id, EFA-001 style" },
+        claim: { type: "string", description: "open: the claim under test, one sentence" },
+        category: { type: "string", description: "open: general | concurrency | lifetime | cleanup | validation" },
+        side: { type: "string", description: "add_evidence: for | against" },
+        source: { type: "string", description: "add_evidence: where the evidence comes from" },
+        location: { type: "string", description: "add_evidence: file:line or equivalent" },
+        note: { type: "string", description: "mark_check: required for not_applicable" },
+        dynamic: { type: "string", description: "add_evidence: true when it comes from running code" },
+        check: { type: "string", description: "mark_check: control_flow | caller | wrapper | validation | lifetime | cleanup | counterevidence | reachability | dynamic" },
+        result: { type: "string", description: "mark_check: done | not_applicable | unknown" },
+        reachability: { type: "string", description: "set_reachability: unknown | conditional | proven | not_reachable" },
+        state: { type: "string", description: "set_verdict: candidate | supported | confirmed | conditional | disproved | unknown" },
+        severity: { type: "string", description: "set_verdict: none | hardening | low | medium | high | critical" },
+        include_in_report: { type: "string", description: "set_verdict: true | false" }
+      },
+      required: ["action"]
+    }
+  }
+});
+
+// WP11 tool parity: C advertises these three (shadow ds4_agent.c:1346-1352).
+// The JS loop dispatches them (executeTool) but does NOT advertise them in
+// the base list: JS already advertises the canonical web_search/web_read,
+// and rotating the advertised set would break the AGENT_TOOL_NAMES
+// invariant and the prompt-cache prefix. Deviation declared in
+// docs/convergenza/WP11.md.
+export const MORE_TOOL = deepFreeze({
+  type: "function",
+  function: {
+    name: "more",
+    description: "Continue previous read-like output.",
+    parameters: {
+      type: "object",
+      properties: {
+        count: { type: "integer" }
+      }
+    }
+  }
+});
+
+export const GOOGLE_SEARCH_TOOL = deepFreeze({
+  type: "function",
+  function: {
+    name: "google_search",
+    description: "Search web pages.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string" }
+      },
+      required: ["query"]
+    }
+  }
+});
+
+export const VISIT_PAGE_TOOL = deepFreeze({
+  type: "function",
+  function: {
+    name: "visit_page",
+    description: "Read a URL in browser.",
+    parameters: {
+      type: "object",
+      properties: {
+        url: { type: "string" }
+      },
+      required: ["url"]
+    }
+  }
+});
+
 export function appendOptionalTools(baseTools, optionalTools = []) {
+  // Not .map(structuredClone): map passes (value, index, array) and the index
+  // would reach structuredClone's options slot (ERR_INVALID_ARG_TYPE).
   return [
-    ...baseTools.map(structuredClone),
-    ...optionalTools.map(structuredClone)
+    ...baseTools.map((tool) => structuredClone(tool)),
+    ...optionalTools.map((tool) => structuredClone(tool))
   ];
 }

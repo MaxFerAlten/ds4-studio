@@ -56,6 +56,29 @@ test("agent session starts, reports status, and stores committed messages", () =
   assert.deepEqual(session.messages(), [...messages, { role: "assistant", content: "ok" }]);
 });
 
+test("agent session checkpoint restores transcript with a fresh backend reset", () => {
+  const original = new AgentSessionManager();
+  original.start();
+  const transcript = [
+    { role: "system", content: "system prompt" },
+    { role: "user", content: "first" }
+  ];
+  original.commit("reset", transcript, { role: "assistant", content: "answer" });
+  const checkpoint = original.checkpoint();
+  const priorSessionId = original.state.sessionId;
+
+  const restored = new AgentSessionManager();
+  restored.restoreCheckpoint(checkpoint);
+  assert.deepEqual(restored.messages(), [...transcript, { role: "assistant", content: "answer" }]);
+  assert.notEqual(restored.state.sessionId, priorSessionId);
+  assert.equal(restored.promptDirty, true);
+  assert.equal(restored.state.revision, 0);
+  assert.deepEqual(restored.state.messageHashes, []);
+  const next = restored.choosePayload({ messages: [...restored.messages(), { role: "user", content: "second" }], tools: AGENT_TOOLS }, { allowDelta: true });
+  assert.equal(next.mode, "reset");
+  assert.equal(next.payload.messages.length, 4);
+});
+
 test("agent session tracks pony mode and resets prompt state when it changes", () => {
   const session = new AgentSessionManager();
   session.start();
@@ -191,13 +214,36 @@ test("forceReset retries the same payload as a full replay on the existing sessi
 
   const reset = session.choosePayload(
     { messages: fullMessages, tools: AGENT_TOOLS },
-    { allowDelta: true, forceReset: true }
+    { allowDelta: true, forceReset: true, resetReason: "delta rejected by server; retrying full reset" }
   );
   assert.equal(reset.mode, "reset");
   assert.equal(reset.payload.session_id, sessionId);
   assert.equal(reset.payload.delta, undefined);
   assert.deepEqual(reset.payload.messages, fullMessages);
   assert.match(reset.reason, /retrying full reset/);
+});
+
+test("a forced reset is not reported as a server rejection unless it was one", () => {
+  // WP16 live: every round on DS4 and Vitronia said "delta rejected by server"
+  // although stateful was off and no delta was ever sent; the reset came from
+  // a guidance message the loop appended.
+  const session = new AgentSessionManager();
+  session.start();
+  const first = session.choosePayload(
+    { messages: [{ role: "system", content: "tools" }, { role: "user", content: "hi" }], tools: AGENT_TOOLS },
+    { allowDelta: false }
+  );
+  session.commit(first.pending, { role: "assistant", content: "ack" });
+  const messages = [...session.messages(), { role: "user", content: "[DS4 Studio] guidance" }];
+
+  const off = session.choosePayload({ messages, tools: AGENT_TOOLS }, { allowDelta: false, forceReset: true });
+  assert.equal(off.mode, "reset");
+  assert.doesNotMatch(off.reason, /rejected/);
+  assert.match(off.reason, /stateful disabled/);
+
+  const on = session.choosePayload({ messages, tools: AGENT_TOOLS }, { allowDelta: true, forceReset: true });
+  assert.equal(on.mode, "reset");
+  assert.doesNotMatch(on.reason, /rejected/);
 });
 
 test("hashing is incremental: repeat choosePayload calls reuse the stored prefix", () => {

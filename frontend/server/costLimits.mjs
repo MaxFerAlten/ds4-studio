@@ -7,7 +7,7 @@ export const DEFAULT_MAX_ANALYZE_CHUNKS = 64;
 // the cap fired on legitimate work long before any model ran out of context
 // (Halogen advertises 262144, more than twice the old cap).
 //
-// Removing it does not leave the loop unbounded: AGENT_MAX_ITERATIONS (25) and
+// Removing it does not leave the loop unbounded: AGENT_MAX_ITERATIONS (40) and
 // the AgentLoopGuard terminators (no-progress, repeated action, protocol
 // failure, degenerate generation) already stop it, and with no history trimming
 // the backend's own context limit is the final wall.

@@ -1,0 +1,4 @@
+reset
+open EFA-001 general "claim under test"
+verdict EFA-001 candidate high true
+digest

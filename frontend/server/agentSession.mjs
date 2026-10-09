@@ -19,6 +19,9 @@ import { loadAgentLoopPolicy } from "./agentLoopPolicy.mjs";
 import { normalizePonyMode } from "./agentPonyPolicy.mjs";
 import { AGENT_TOOLS } from "./agentToolCatalog.mjs";
 import { EpistemicSessionLedger } from "./epistemic/epistemicSessionLedger.mjs";
+import { createReminderState } from "./agentSystemReminder.mjs";
+import { createEvidenceState, createEvidenceTurn } from "./evidenceGuard.mjs";
+import { createLoopGuardState } from "./agentLoopGuards.mjs";
 
 /** Recursively convert any value into a key-sorted, stable representation. */
 function stable(value) {
@@ -160,6 +163,10 @@ export class AgentSessionManager {
     /** @type {{ sessionId: string, revision: number, messageHashes: string[], messages: Array, toolsHash: string } | null} */
     this.state = null;
     this.active = false;
+    this.promptDirty = false;
+    // Optional per-session reasoning override set by /think. Undefined keeps
+    // the request/UI default; otherwise this is "high" or a 0..100 level.
+    this.thinkMode = undefined;
     this.lastMode = "none";
     this.lastReason = "not started";
     this.ponyMode = "off";
@@ -192,6 +199,17 @@ export class AgentSessionManager {
       outputEchoMode: process.env.DS4_AGENT_OUTPUT_ECHO_GUARD || "block"
     });
     this.usageTotals = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+    // WP7: system-prompt reminder counters, kept outside state.messages so
+    // the delta-protocol hashes are untouched.
+    this.reminder = createReminderState();
+    // WP10: Evidence-First ledger (session-scoped) and per-turn state.
+    this.evidenceState = createEvidenceState();
+    this.evidenceTurn = createEvidenceTurn();
+    // WP11: cursor of the last truncated read (C more_path/more_next_line).
+    this.more = { path: "", nextLine: 0, valid: false };
+    // WP12: fabricated-result / defensive-loop counters + datetime flag
+    // (C loop_guard_consecutive_defensive + datetime_context_injected).
+    this.loopGuardState = createLoopGuardState();
   }
 
   /** Start the agent session. */
@@ -204,11 +222,24 @@ export class AgentSessionManager {
       toolsHash: sha1(AGENT_TOOLS)
     };
     this.active = true;
+    this.promptDirty = false;
+    this.thinkMode = undefined;
     this.ponyMode = "off";
     this.gitnexusEnabled = false;
     this.lastMode = "none";
     this.lastReason = "agent started";
     this.epistemic.clear();
+    // WP7: system-prompt reminder counters, kept outside state.messages so
+    // the delta-protocol hashes are untouched.
+    this.reminder = createReminderState();
+    // WP10: Evidence-First ledger (session-scoped) and per-turn state.
+    this.evidenceState = createEvidenceState();
+    this.evidenceTurn = createEvidenceTurn();
+    // WP11: cursor of the last truncated read (C more_path/more_next_line).
+    this.more = { path: "", nextLine: 0, valid: false };
+    // WP12: fabricated-result / defensive-loop counters + datetime flag
+    // (C loop_guard_consecutive_defensive + datetime_context_injected).
+    this.loopGuardState = createLoopGuardState();
     return this.status();
   }
 
@@ -285,6 +316,39 @@ export class AgentSessionManager {
     return this.state?.messages ? [...this.state.messages] : [];
   }
 
+  checkpoint() {
+    if (!this.state) return null;
+    return {
+      version: 1,
+      messages: structuredClone(this.state.messages ?? []),
+      thinkMode: this.thinkMode ?? null,
+      ponyMode: this.ponyMode,
+      gitnexusEnabled: this.gitnexusEnabled === true
+    };
+  }
+
+  restoreCheckpoint(checkpoint) {
+    if (!checkpoint || checkpoint.version !== 1 || !Array.isArray(checkpoint.messages)) {
+      throw Object.assign(new Error("unsupported agent session checkpoint"), { code: "INVALID_SESSION_CHECKPOINT" });
+    }
+    const serialized = JSON.stringify(checkpoint.messages);
+    if (Buffer.byteLength(serialized) > 16 * 1024 * 1024) {
+      throw Object.assign(new Error("agent session checkpoint exceeds 16 MiB"), { code: "SESSION_CHECKPOINT_TOO_LARGE" });
+    }
+    this.start();
+    this.state.messages = JSON.parse(serialized);
+    // The backend process may have lost its stateful session during restart.
+    // Preserve the transcript but force a fresh full reset using a new session id.
+    this.state.revision = 0;
+    this.state.messageHashes = [];
+    this.state.toolsHash = sha1(AGENT_TOOLS);
+    this.thinkMode = checkpoint.thinkMode ?? undefined;
+    this.ponyMode = checkpoint.ponyMode === "off" ? "off" : checkpoint.ponyMode || "off";
+    this.gitnexusEnabled = checkpoint.gitnexusEnabled === true;
+    this.promptDirty = true;
+    return this.status();
+  }
+
   /**
    * Hash a full message array using the cached prefix when possible.
    * Returns the per-index hashes in the same order as `fullMessages`.
@@ -319,13 +383,14 @@ export class AgentSessionManager {
    * The delta path is exercised when the backend exposes
    * `/v1/ds4/stateful/chat/completions` and the caller opts in.
    *
-   * `forceReset` is used after an HTTP 409 from the stateful backend to
-   * retry the same payload as a full reset on the same session id.
+   * `forceReset` sends the transcript as a full reset on the same session id:
+   * after an HTTP 409 from the stateful backend (the caller passes that as
+   * `resetReason`), or when the loop appended messages outside the session.
    *
    * @param {object} payload – OpenAI-style request payload
-   * @param {{ allowDelta?: boolean, userTurnPolicy?: "reset" | "delta" | "auto", forceReset?: boolean }} options
+   * @param {{ allowDelta?: boolean, userTurnPolicy?: "reset" | "delta" | "auto", forceReset?: boolean, resetReason?: string }} options
    */
-  choosePayload(payload = {}, { allowDelta = false, userTurnPolicy = "reset", forceReset = false } = {}) {
+  choosePayload(payload = {}, { allowDelta = false, userTurnPolicy = "reset", forceReset = false, resetReason = "" } = {}) {
     const p = payload && typeof payload === "object" ? { ...payload } : {};
     const fullMessages = Array.isArray(p.messages) ? [...p.messages] : [];
     const fullHashes = this._hashFullMessages(fullMessages);
@@ -351,7 +416,9 @@ export class AgentSessionManager {
     let parentRevision = 0;
 
     if (forceReset) {
-      reason = "delta rejected by server; retrying full reset";
+      reason = resetReason || (allowDelta
+        ? "transcript changed outside the session; full reset"
+        : "stateful disabled; full reset");
     } else if (this.state.revision > 0 && this.state.messageHashes.length > 0) {
       const storedHashes = this.state.messageHashes;
       let prefixMatches = storedHashes.length <= fullHashes.length;
@@ -499,11 +566,33 @@ export class AgentSessionManager {
     this.state.revision = 0;
     this.state.messageHashes = [];
     this.state.messages = [];
+    this.thinkMode = undefined;
     this.lastMode = "none";
     this.lastReason = reason;
     this.readGuard.clearAll();
     this.epistemic.clear();
+    this.reminder = createReminderState();
+    this.evidenceState = createEvidenceState();
+    this.evidenceTurn = createEvidenceTurn();
+    this.more = { path: "", nextLine: 0, valid: false };
+    this.loopGuardState = createLoopGuardState();
     this.usageTotals = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+  }
+
+  /**
+   * WP8 of convergenza.loop.md: replace the whole transcript after a
+   * compaction.  The delta/stateful prefix cannot survive a rewritten head,
+   * so hashes are rebuilt and the caller must send the next payload with
+   * forceReset (the same path an HTTP 409 already uses).
+   */
+  replaceMessages(next, reason = "transcript replaced") {
+    if (!this.state) return false;
+    const messages = Array.isArray(next) ? [...next] : [];
+    this.state.messages = messages;
+    this.state.messageHashes = messages.map((message) => hashMessage(message));
+    this.state.revision += 1;
+    this.lastReason = reason;
+    return true;
   }
 }
 
@@ -546,6 +635,14 @@ export class AgentSessionStore {
   start(key) {
     const mgr = this.ensure(key);
     return mgr.start();
+  }
+
+  checkpoint(key) {
+    return this.get(key)?.checkpoint() ?? null;
+  }
+
+  restoreCheckpoint(key, checkpoint) {
+    return this.ensure(key).restoreCheckpoint(checkpoint);
   }
 
   stop(key) {
