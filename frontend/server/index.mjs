@@ -1993,7 +1993,7 @@ app.get("/api/server/logs/stream", (req, res) => {
 
 const agentSessions = new AgentSessionStore();
 const aguiFlags = aguiFeatureFlags();
-const localThreadDatabasePath = process.env.DS4_LOCAL_THREADS_DB;
+const localThreadDatabasePath = process.env.DS4_LOCAL_THREADS_DB || "frontend/data/opendots/threads.sqlite";
 if (aguiFlags.localThreads && !localThreadDatabasePath) {
   throw new Error("DS4_LOCAL_THREADS_ENABLED requires DS4_LOCAL_THREADS_DB to name the local SQLite database");
 }

@@ -100,6 +100,64 @@ button { color: inherit; }
 .agui-error { width: min(820px, calc(100% - 48px)); align-self: center; margin: 8px auto; padding: 10px 12px; overflow: auto; border: 1px solid #f0d5d1; border-radius: 7px; background: #fff4f2; color: #8a3326; font-size: 12px; white-space: pre-wrap; }
 .agui-disabled { width: min(820px, calc(100% - 48px)); margin: auto; padding: 24px; border: 1px solid #e9e8e4; border-radius: 10px; background: white; color: #6f7482; }
 
+/* Match the dark DS4 Studio shell while keeping this page fully isolated. */
+:root { color-scheme: dark; color: #eef2f5; background: #0f1115; }
+body { background: #0f1115; }
+.agui-poc { color: #eef2f5; background: #0f1115; }
+.agui-sidebar { background: #171c24; border-color: #252d37; }
+.agui-brand, .agui-brand strong { color: #eef2f5; }
+.agui-brand span, .agui-sidebar-label { color: #8fa0b4; }
+.agui-new-thread { border: 1px solid #38414d; background: #202732; color: #f4f7fa; }
+.agui-new-thread:hover { border-color: #4f8cff; background: #2d6cdf; }
+.agui-thread-list button { color: #c8d2de; }
+.agui-thread-list button:hover, .agui-thread-list button[aria-current="page"] { background: #252d37; color: #fff; }
+.agui-thread-dot, .agui-load-threads, .agui-sidebar-bottom a:hover, .agui-sidebar-bottom button:hover { color: #75a7ff; }
+.agui-sidebar-bottom { border-color: #303844; }
+.agui-sidebar-bottom button, .agui-sidebar-bottom a { color: #9fb0c4; }
+.agui-topbar { border-color: #252d37; background: #171c24; }
+.agui-breadcrumb { color: #9fb0c4; }
+.agui-breadcrumb span { color: #657386; }
+.agui-breadcrumb strong, .agui-chat-heading h1 { color: #eef2f5; }
+.agui-engine-badge { background: #1d332b; color: #79c9a5; }
+.agui-top-actions button, .agui-page-form button, .agui-library-actions button,
+.agui-page-list button, .agui-page-drafts button, .agui-history-more {
+  border-color: #38414d; background: #202732; color: #d7e0eb;
+}
+.agui-top-actions button:hover, .agui-page-form button:hover, .agui-library-actions button:hover,
+.agui-page-list button:hover, .agui-page-drafts button:hover, .agui-history-more:hover {
+  border-color: #4f8cff; background: #2d6cdf; color: #fff;
+}
+.agui-top-actions button.agui-danger { border-color: #684146; color: #ff9b9b; }
+.agui-top-actions button.agui-danger:hover { border-color: #a94d58; background: #512b34; }
+.agui-chat-heading { border-color: #252d37; }
+.agui-avatar, .agui-empty-orb { background: #233b69; color: #8bb5ff; }
+.agui-chat-heading > div:nth-child(2) span, .agui-chat-controls,
+.agui-settings summary span, .agui-pages-heading span, .agui-workspace small,
+.agui-tool-checks label small, .agui-empty p { color: #8fa0b4; }
+.agui-settings, .agui-workspace, .agui-tool, .agui-disabled {
+  border-color: #303844; background: #171c24; color: #c8d2de;
+}
+.agui-settings summary, .agui-pages-heading h2, .agui-tool-checks legend,
+.agui-tool-checks label strong, .agui-empty h2 { color: #dce5ef; }
+.agui-settings summary::before { color: #75a7ff; }
+.agui-page-form label { color: #9fb0c4; }
+.agui-page-form input, .agui-page-form textarea, .agui-page-form select,
+.agui-tool-checks, .agui-composer {
+  border-color: #303844; background: #10141b; color: #eef2f5;
+}
+.agui-tool-checks label:hover { background: #202732; }
+.agui-tool-checks input { accent-color: #4f8cff; }
+.agui-message { color: #d5dee9; }
+.agui-composer { box-shadow: 0 8px 28px rgba(0,0,0,.22); }
+.agui-composer textarea { background: transparent; color: #f2f6fa; }
+.agui-composer textarea::placeholder { color: #8291a4; }
+.agui-composer button { border-color: #4f8cff; background: #2d6cdf; color: #fff; }
+.agui-composer button:hover { background: #3b7bf0; }
+.agui-tool pre { color: #9fb0c4; }
+.agui-error { border-color: #684146; background: #2c1c22; color: #ffb4b4; }
+.agui-disabled { color: #c8d2de; }
+::selection { background: #2d6cdf; color: #fff; }
+
 @media (max-width: 760px) {
   .agui-poc { grid-template-columns: 190px minmax(0, 1fr); }
   .agui-sidebar { padding-inline: 10px; }

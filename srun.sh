@@ -714,6 +714,11 @@ stop_launch_ports
 export DS4_UI_HOST="$HOST"
 export DS4_UI_PORT="$PORT"
 export DS4_UI_CONFIG="$CONFIG_PATH"
+export DS4_AGUI_ENABLED="${DS4_AGUI_ENABLED:-1}"
+if [[ "$DS4_AGUI_ENABLED" == "1" ]]; then
+  export DS4_LOCAL_THREADS_ENABLED="${DS4_LOCAL_THREADS_ENABLED:-1}"
+  export DS4_LOCAL_THREADS_DB="${DS4_LOCAL_THREADS_DB:-frontend/data/opendots/threads.sqlite}"
+fi
 
 cd "$ROOT_DIR"
 
