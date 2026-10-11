@@ -111,7 +111,16 @@ async function verifyPinnedSource(sourcePath, lockPath, runCommand) {
 
 export function validateOpenWikiWorkspacePath(workspacePath) {
   try {
-    return validateWorkspaceRoot(absolute(workspacePath, "Workspace path")).root;
+    const workspace = validateWorkspaceRoot(absolute(workspacePath, "Workspace path"));
+    // The gateway admits a group-writable root (it only writes below
+    // <root>/openwiki), but a Studio session binds the root itself and
+    // AgentSessionManager.setOpenWikiWorkspace refuses group/world write and
+    // foreign owners. Reject here, so setup fails with a clear code instead of
+    // succeeding and then failing at bind time.
+    if (workspace.uid !== process.getuid() || (workspace.mode & 0o022) !== 0) {
+      throw new Error("workspace root must be owned by this user and not group/world writable");
+    }
+    return workspace.root;
   } catch (error) {
     throw Object.assign(new Error("Workspace path must resolve to an existing directory"), {
       code: "OPENWIKI_WORKSPACE_INVALID",
