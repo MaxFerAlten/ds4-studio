@@ -39,7 +39,7 @@ there is a numerical oracle to check against.
 """
 
 [upstream]
-reviewed_sha = "f396751952bffe7c144aac1fe13c17645e341895"
+reviewed_sha = "fc80bd695da76ee14bcb86820bf900a5cdfda806"
 
 [[anchors]]
 file = "ds4.c"

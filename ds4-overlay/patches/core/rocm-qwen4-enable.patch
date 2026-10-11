@@ -26,6 +26,6 @@ diff --git a/ds4.c b/ds4.c
 +#define DS4_HAS_QWEN4_METAL 1
 +#endif
 +#endif
- #ifdef DS4_ROCM_BUILD
+ #if defined(DS4_ROCM_BUILD) || (!defined(__APPLE__) && !defined(DS4_NO_GPU))
  #include "ds4_linux_memory.h"
  #endif
