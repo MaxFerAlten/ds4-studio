@@ -1,0 +1,40 @@
+--- a/ds4_wrapper_http.c
++++ b/studio/ds4_wrapper_http.c
+@@ -3,6 +3,7 @@
+ #include "ds4_wrapper_state.h"
+ #include "ds4_server_ext.h"
+ #include "ds4_agent_ext.h"
++#include "ds4_openwiki_request.h"
+ 
+ #include <stdio.h>
+ #include <stdlib.h>
+@@ -738,6 +739,13 @@
+             if (!message) {
+                 send_json_error(fd, true, 400, "bad_request", "Missing 'message' in request body");
+             } else {
++                bool openwiki_requested = ds4_ow_request_enabled(hr.body);
++                bool openwiki_available = ds4_agent_ext_set_openwiki_enabled(
++                    w->agent_ext, openwiki_requested);
++                if (openwiki_requested && !openwiki_available) {
++                    send_json_error(fd, true, 503, "openwiki_unavailable",
++                                    "OpenWiki is disabled by server configuration");
++                } else {
+                 const char *headers =
+                     "HTTP/1.1 200 OK\r\n"
+                     "Content-Type: text/event-stream\r\n"
+@@ -747,6 +755,7 @@
+                 wrap_send_all(fd, headers, strlen(headers));
+                 chat_cb_ctx cbctx = { .fd = fd, .w = w, .aborted = false };
+                 int chat_rc = ds4_agent_ext_chat(w->agent_ext, message, chat_event_cb, &cbctx, err_buf, sizeof(err_buf));
++                ds4_agent_ext_set_openwiki_enabled(w->agent_ext, false);
+                 if (chat_rc != 0) {
+                     /* No failing return in ds4_agent_ext_chat emits agent_error
+                      * (the runtime sends one only for a turn that ran and
+@@ -762,6 +771,7 @@
+                     }
+                     free(esc);
+                 }
++                }
+                 free(message);
+             }
+             ds4_wrapper_leave_request(w);

@@ -5,6 +5,10 @@
 
 import { readStoredExportIncludeReasoning } from "./utils.mjs";
 
+export function shouldDisableOpenwikiForResponse(status, body) {
+  return status === 503 && String(body).includes("openwiki_unavailable");
+}
+
 export function readAgentSessionKey() {
   try {
     let k = sessionStorage.getItem("ds4_agent_session_key");

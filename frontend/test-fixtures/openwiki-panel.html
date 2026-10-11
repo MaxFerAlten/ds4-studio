@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8"><title>OpenWiki panel test fixture</title></head>
+  <body>
+    <div id="root"></div>
+    <script type="module">
+      import React, { createElement } from "react";
+      import { createRoot } from "react-dom/client";
+      import { OpenWikiPanel } from "../src/panels/OpenWikiPanel.jsx";
+
+      window.openwikiEnabled = false;
+      window.mountOpenWikiPanel = () => {
+        createRoot(document.getElementById("root")).render(createElement(OpenWikiPanel, {
+          request: { model: "ui-test-model" },
+          sessionHeaders: { "X-Agent-Session-Key": "ui-test-session" },
+          onAgentEnabledChange: (enabled) => { window.openwikiEnabled = enabled; },
+        }));
+      };
+    </script>
+  </body>
+</html>

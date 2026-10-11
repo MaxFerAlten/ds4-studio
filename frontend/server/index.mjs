@@ -105,6 +105,23 @@ import { readContextConfig } from "./contextConfig.mjs";
 import { prepareContextInjection, contextStatusPayload } from "./agentContextIntegration.mjs";
 import { recordToolContext } from "./agentContextToolHooks.mjs";
 import { CONTEXT_SEARCH_TOOL } from "./contextSearchTool.mjs";
+import {
+  OPENWIKI_TOOLS,
+  OPENWIKI_TOOL_NAMES,
+  dispatchOpenWikiTool,
+  appendOpenWikiTools,
+  assertOpenWikiReady,
+  readOpenWikiConfig
+} from "./openwikiAgentTools.mjs";
+import { loadConfig as loadOpenWikiGatewayConfig } from "../../integrations/openwiki-gateway/src/config.mjs";
+import {
+  bootstrapOpenWikiEnvironment,
+  configureOpenWikiRuntime,
+  openWikiRuntimePaths,
+  provisionOpenWikiRelease,
+  readOpenWikiRuntimeSetup,
+  validateOpenWikiWorkspacePath,
+} from "./openwikiRuntimeSetup.mjs";
 import { readCapsuleMeta } from "./contextCapsuleMeta.mjs";
 import { readContextTelemetry } from "./contextTelemetry.mjs";
 import { readContextEvents, appendContextEvent } from "./contextLedger.mjs";
@@ -174,6 +191,11 @@ import {
   proxyNativeAgentCommand
 } from "./nativeAgentCommands.mjs";
 import { handleAgentSlashCommand, parseAgentSlashCommand } from "./agentSlashCommands.mjs";
+import { createOpenWikiModelGenerator } from "./openwikiModelAdapter.mjs";
+import { createOpenWikiRepositoryContext } from "./openwikiRepositoryContext.mjs";
+import { createOpenWikiGenerationService } from "./openwikiGenerationService.mjs";
+import { openWikiEnabledForAgentRequest, registerOpenWikiControlRoutes } from "./openwikiRoutes.mjs";
+import { createOpenWikiAgentCommandHandler } from "./openwikiAgentCommand.mjs";
 import {
   maybeAppendSystemPromptReminder,
   pushGuidanceMessage,
@@ -292,6 +314,8 @@ import { createAgnoToolRoutes } from "./agno/agnoToolRoutes.mjs";
 
 const AGNO_AGENT_UI_COMMIT =
   "6dad9593fca6756e1813e4f4b3b2620be6377691";
+
+bootstrapOpenWikiEnvironment(process.env);
 
 const HTTP_DRAIN_GRACE_MS = 2000;
 const SHUTDOWN_TIMEOUT_MS = 10000;
@@ -991,6 +1015,7 @@ app.use(express.json({ limit: "32mb" }));
 // validation or side effects. The guard is resolved per request because its
 // stable owner identity is initialized later in this module.
 const AGENT_ADMISSION_CONTROL_ROUTES = new Set([
+  "PUT /api/openwiki/workspace",
   "POST /api/profiles/select",
   "PUT /api/server/config",
   "POST /api/server/start",
@@ -1174,12 +1199,40 @@ const EVIDENCE_MODE_BOOT = modeResolve(process.env.DS4_EVIDENCE_MODE || null, tr
 if (!EVIDENCE_MODE_BOOT.ok) {
   throw new Error(`${EVIDENCE_MODE_BOOT.error} (DS4_EVIDENCE_MODE accepts off, shadow or block)`);
 }
+const openWikiGenerate = createOpenWikiModelGenerator({
+  buildChatPayload,
+  postJson: postJsonNoTimeout,
+  endpoint: () => `${backendBase()}/v1/chat/completions`,
+});
+const openWikiReadContext = createOpenWikiRepositoryContext();
+let openWikiGenerationService = null;
+function generationService() {
+  if (!openWikiGenerationService) {
+    openWikiGenerationService = createOpenWikiGenerationService({
+      env: process.env,
+      generate: openWikiGenerate,
+      readContext: openWikiReadContext,
+      factories: { payloadModel },
+    });
+  }
+  return openWikiGenerationService;
+}
+const openWikiCommand = createOpenWikiAgentCommandHandler({
+  getDefaultRequest: () => activeRequestDefaults,
+  service: {
+    start: (...args) => generationService().start(...args),
+    run: (...args) => generationService().run(...args),
+    stop: (...args) => generationService().stop(...args),
+    status: (...args) => generationService().status(...args),
+  },
+});
 
-function modelFacingTools({ includeSage, leanEnabled, leanCoreOnly, evidenceEnabled = false }) {
+function modelFacingTools({ includeSage, leanEnabled, leanCoreOnly, evidenceEnabled = false, openWikiEnabled = false }) {
   const tools = advertisedAgentTools({ sageEnabled: includeSage, leanEnabled, leanCoreOnly });
   // The C loop announces evidence_guard only while the skill is loaded (shadow
   // ds4_agent.c:7903-7909); same rule here.
-  return evidenceEnabled ? appendOptionalTools(tools, [EVIDENCE_GUARD_TOOL]) : tools;
+  const withEvidence = evidenceEnabled ? appendOptionalTools(tools, [EVIDENCE_GUARD_TOOL]) : tools;
+  return appendOpenWikiTools(withEvidence, openWikiEnabled);
 }
 
 /**
@@ -1799,6 +1852,79 @@ app.get("/api/server/metrics", asyncHandler(async (_req, res) => {
 app.get("/api/server/config", (_req, res) => {
   res.json({ config: publicConfig(), defaults: DEFAULT_CONFIG });
 });
+
+app.get("/api/openwiki/workspace", asyncHandler(async (_req, res) => {
+  const { configPath, workspaceId } = openWikiRuntimePaths(process.env);
+  try {
+    const gatewayConfig = loadOpenWikiGatewayConfig(configPath);
+    const workspace = gatewayConfig.workspaces[workspaceId];
+    if (!workspace || Object.keys(gatewayConfig.workspaces).length !== 1) {
+      return res.status(503).json({ message: "Il gateway deve avere un solo workspace configurato con l’ID DS4_OPENWIKI_WORKSPACE." });
+    }
+    return res.json({ root: workspace.root });
+  } catch {
+    return res.status(503).json({ message: "La configurazione protetta del gateway OpenWiki non è leggibile o valida." });
+  }
+}));
+
+registerOpenWikiControlRoutes(app, {
+  asyncHandler,
+  sessionKeyForRequest: agentSessionKey,
+  getGenerationService: () => openWikiGenerationService,
+  getAgentSession: (sessionKey) => agentSessions.get(sessionKey),
+  openWikiCommand,
+  getConfig: () => openWikiRuntimePaths(process.env),
+  loadGatewayConfig: loadOpenWikiGatewayConfig,
+  getSetupConfig: () => readOpenWikiRuntimeSetup({ env: process.env }),
+  provisionRelease: ({ sourcePath }) => provisionOpenWikiRelease({ sourcePath, repoRoot: PROJECT_ROOT }),
+  validateWorkspacePath: (workspacePath) => validateOpenWikiWorkspacePath(workspacePath),
+  configureRuntime: (options) => configureOpenWikiRuntime({ ...options, env: process.env }),
+  resetRuntimeConfig: () => openWikiGenerationService?.resetConfiguration(),
+  getDefaultRequest: () => activeRequestDefaults,
+  getEngine: () => wrapperEnabled() ? "native" : "js",
+});
+
+app.put("/api/openwiki/workspace", asyncHandler(async (req, res) => {
+  const { configPath, workspaceId } = openWikiRuntimePaths(process.env);
+  const requestedPath = req.body?.path;
+  if (typeof requestedPath !== "string" || requestedPath.length === 0 || requestedPath.length > 4096 || !path.isAbsolute(requestedPath) || requestedPath.includes("\0")) {
+    return res.status(400).json({ message: "Inserisci un path assoluto valido." });
+  }
+  const candidatePath = path.join(path.dirname(configPath), `.${path.basename(configPath)}.candidate-${crypto.randomUUID()}`);
+  let candidateCreated = false;
+  try {
+    const gatewayConfig = loadOpenWikiGatewayConfig(configPath);
+    if (!gatewayConfig.workspaces[workspaceId] || Object.keys(gatewayConfig.workspaces).length !== 1) {
+      return res.status(503).json({ message: "Il gateway deve avere un solo workspace configurato con l’ID DS4_OPENWIKI_WORKSPACE." });
+    }
+    const originalStat = await fs.lstat(configPath);
+    if (!originalStat.isFile() || originalStat.isSymbolicLink() || originalStat.uid !== process.getuid() || (originalStat.mode & 0o777) !== 0o600) {
+      return res.status(503).json({ message: "Il file del gateway deve appartenere all’utente DS4 Studio ed essere protetto con permessi 0600." });
+    }
+    const raw = JSON.parse(await fs.readFile(configPath, "utf8"));
+    raw.workspaces = { [workspaceId]: { root: requestedPath } };
+    await fs.writeFile(candidatePath, `${JSON.stringify(raw, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+    candidateCreated = true;
+    const validated = loadOpenWikiGatewayConfig(candidatePath);
+    if (validated.workspaces[workspaceId].root !== workspace.root &&
+        openWikiGenerationService?.hasActiveSessions()) {
+      return res.status(409).json({ message: "Ferma OpenWiki nelle sessioni attive prima di cambiare il workspace." });
+    }
+    const currentStat = await fs.lstat(configPath);
+    if (currentStat.dev !== originalStat.dev || currentStat.ino !== originalStat.ino) {
+      return res.status(409).json({ message: "La configurazione del gateway è cambiata durante il salvataggio. Riprova." });
+    }
+    await fs.rename(candidatePath, configPath);
+    candidateCreated = false;
+    await openWikiGenerationService?.resetConfiguration();
+    return res.json({ root: validated.workspaces[workspaceId].root, restartRequired: false });
+  } catch (error) {
+    if (error?.name === "ConfigError") return res.status(400).json({ message: error.message });
+    return res.status(500).json({ message: "Impossibile aggiornare in sicurezza la configurazione del gateway OpenWiki." });
+  } finally {
+    if (candidateCreated) await fs.unlink(candidatePath).catch(() => {});
+  }
+}));
 
 app.get("/api/call-debug", (req, res) => {
   const limit = Number.parseInt(req.query.limit, 10);
@@ -2975,6 +3101,19 @@ async function runNativeAgentTurn({ body, sessionKey, requestSignal }, emit, sig
     return { kind: AGENT_RUN_OUTCOME.COMMAND, events: ponyCommandEventsForSession(sessionKey, ponyCommand) };
   }
 
+  if (parseAgentSlashCommand(message.trim())?.kind === "openwiki") {
+    const result = await openWikiCommand({
+      message: message.trim(),
+      session: agentSessions.get(sessionKey),
+      sessionKey,
+      request: body?.request || {},
+      engine: "native",
+      signal,
+    });
+    syncSageStateFromNativeCommand(message.trim(), result.payload);
+    return { kind: AGENT_RUN_OUTCOME.COMMAND, events: nativeCommandEvents(result.payload, result.ok), ok: result.ok };
+  }
+
   if (isAgentSlashCommand(message)) {
     const result = await proxyNativeAgentCommand(
       fetch,
@@ -2984,6 +3123,7 @@ async function runNativeAgentTurn({ body, sessionKey, requestSignal }, emit, sig
     );
     syncSageStateFromNativeCommand(message.trim(), result.payload);
     if (result.payload.active === false) {
+      await openWikiGenerationService?.stop(sessionKey).catch(() => {});
       agentSessions.stop(sessionKey);
     }
     return { kind: AGENT_RUN_OUTCOME.COMMAND, events: nativeCommandEvents(result.payload, result.ok), ok: result.ok };
@@ -3006,7 +3146,10 @@ async function runNativeAgentTurn({ body, sessionKey, requestSignal }, emit, sig
   // Forward request params (max_tokens, temperature, etc.) to the native agent
   const outboundBody = {
     message: outboundMessage,
-    request: body?.request || {}
+    request: {
+      ...(body?.request || {}),
+      openwiki_enabled: openWikiEnabledForAgentRequest(body?.request?.openwiki_enabled, nativeSessionKey, generationService()),
+    }
   };
 
   // The transport arms its client-disconnect wiring here (the legacy route
@@ -3090,6 +3233,12 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
   const userMessage = body?.message;
   const conversationMessages = Array.isArray(body?.messages) ? body.messages : [];
   const reqParams = body?.request || {};
+  const parsedUserSlash = isAgentSlashCommand(userMessage) ? parseAgentSlashCommand(userMessage) : null;
+  const openWikiRequested = openWikiEnabledForAgentRequest(reqParams.openwiki_enabled, sessionKey, openWikiGenerationService)
+    && parsedUserSlash?.kind !== "openwiki";
+  const runOpenWikiConfig = openWikiRequested
+    ? generationService().readConfig(sessionKey)
+    : readOpenWikiConfig(process.env);
   const dot = body?.dot ?? null;
 
   const ponyCommand = ponyCommandFromText(userMessage);
@@ -3115,6 +3264,27 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
     agentSession.toolScope ? Array.from(agentSession.toolScope) : null,
     dot
   );
+  if (openWikiRequested) {
+    if (dot) {
+      return { kind: AGENT_RUN_OUTCOME.REJECTED, status: 409, body: { error: "OpenWiki is unavailable for dot-scoped threads", code: "DOT_POLICY_FROZEN" } };
+    }
+    if (!runOpenWikiConfig.enabled) {
+      return { kind: AGENT_RUN_OUTCOME.REJECTED, status: 503, body: { error: "openwiki_unavailable" } };
+    }
+    if (runAllowedTools && [...OPENWIKI_TOOL_NAMES].some((name) => !runAllowedTools.includes(name))) {
+      return { kind: AGENT_RUN_OUTCOME.REJECTED, status: 403, body: { error: "OpenWiki is outside this session tool scope", code: "TOOL_SCOPE_DENIED" } };
+    }
+    try {
+      await assertOpenWikiReady(runOpenWikiConfig, { signal });
+    } catch {
+      await generationService().invalidateRead().catch(() => {});
+      if (signal?.aborted) {
+        return { kind: AGENT_RUN_OUTCOME.REJECTED, status: 499, body: { error: "request_cancelled" } };
+      }
+      return { kind: AGENT_RUN_OUTCOME.REJECTED, status: 503, body: { error: "openwiki_unavailable" } };
+    }
+  }
+  const openWikiEnabled = openWikiRequested;
   const runSkillState = dot ? { promptSkills: () => ({}) } : skillState;
   const dotTools = (tools) => toolsForDot(tools, dot);
   const skillsForDot = () => {
@@ -3172,7 +3342,7 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
         ctxInfo.tokens
         - (requestThinkingEnabled(reqParams) ? 8192 : 0)
         - estimateMessagesTokens([{ role: "system", content: JSON.stringify(
-          dotTools(modelFacingTools({ includeSage: !dot && sagePolicyIsActive(), ...(await leanToolFlags(runSkillState)) }))
+          dotTools(modelFacingTools({ includeSage: !dot && sagePolicyIsActive(), openWikiEnabled, ...(await leanToolFlags(runSkillState)) }))
         ) }])
       )),
       callModel: async (summaryMessages, options) => {
@@ -3182,7 +3352,7 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
         // the template changes the system block and a ~240k transcript was
         // prefilled from zero.  tool_choice "none" keeps it a plain answer.
         // (withContextTool is declared later in the route; same expression.)
-        const baseTools = dotTools(modelFacingTools({ includeSage: !dot && sagePolicyIsActive(), ...(await leanToolFlags(runSkillState)) }));
+        const baseTools = dotTools(modelFacingTools({ includeSage: !dot && sagePolicyIsActive(), openWikiEnabled, ...(await leanToolFlags(runSkillState)) }));
         const payload = buildChatPayload({ ...reqParams, stream: false }, summaryMessages);
         payload.tools = dotTools(contextConfig.enabled ? [...baseTools, CONTEXT_SEARCH_TOOL] : baseTools);
         payload.tool_choice = "none";
@@ -3360,6 +3530,12 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
     if (dot) {
       return { kind: AGENT_RUN_OUTCOME.REJECTED, status: 409, body: { error: "Dot-scoped threads use their frozen skill and tool policy", code: "DOT_POLICY_FROZEN" } };
     }
+    if (parsedUserSlash?.kind === "openwiki") {
+      const result = await openWikiCommand({ message: userMessage, session: agentSession, sessionKey,
+        request: reqParams, engine: "js", signal });
+      syncSageStateFromNativeCommand(String(userMessage).trim(), result.payload);
+      return { kind: AGENT_RUN_OUTCOME.COMMAND, ok: result.ok, events: nativeCommandEvents(result.payload, result.ok) };
+    }
     const commandResult = handleAgentSlashCommand({
       message: userMessage,
       session: agentSession,
@@ -3367,6 +3543,7 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
       env: process.env
     });
     syncSageStateFromNativeCommand(String(userMessage).trim(), commandResult.payload);
+    if (commandResult.payload.active === false) await openWikiGenerationService?.stop(sessionKey).catch(() => {});
     return { kind: AGENT_RUN_OUTCOME.COMMAND, ok: commandResult.ok, events: nativeCommandEvents(commandResult.payload, commandResult.ok) };
   }
 
@@ -3448,7 +3625,7 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
   // hash and the real payload hash below cannot drift apart.
   const leanFlags = await leanToolFlags(runSkillState);
   const contextTools = withContextTool(
-    dotTools(modelFacingTools({ includeSage: !dot && sagePolicyIsActive(), evidenceEnabled: evidenceActive, ...leanFlags }))
+    dotTools(modelFacingTools({ includeSage: !dot && sagePolicyIsActive(), evidenceEnabled: evidenceActive, openWikiEnabled, ...leanFlags }))
   );
   const contextInjection = await prepareContextInjection({
     sessionKey,
@@ -3759,7 +3936,7 @@ const authoritativeSageChat = compactSageChat &&
         // tokens, and without them the count stayed under the 400 limit.
         const compactionUsed = await countPromptTokens({
           messages: fullMessages,
-          tools: withContextTool(dotTools(modelFacingTools({ includeSage: !dot && sagePolicyIsActive(), evidenceEnabled: evidenceActive, ...leanFlags })))
+          tools: withContextTool(dotTools(modelFacingTools({ includeSage: !dot && sagePolicyIsActive(), evidenceEnabled: evidenceActive, openWikiEnabled, ...leanFlags })))
         }, {
           fetchImpl: fetch, base: backendBase(), signal: requestSignal
         });
@@ -3853,7 +4030,7 @@ const authoritativeSageChat = compactSageChat &&
       let basePayload = buildChatPayload({ ...requestWithThinkMode, stream: true }, fullMessages);
       // Filter out sage tool if SageMath is not enabled
       basePayload.tools = withContextTool(
-        dotTools(modelFacingTools({ includeSage: !dot && sagePolicyIsActive(), evidenceEnabled: evidenceActive, ...leanFlags }))
+        dotTools(modelFacingTools({ includeSage: !dot && sagePolicyIsActive(), evidenceEnabled: evidenceActive, openWikiEnabled, ...leanFlags }))
       );
       // Tools stay declared so the prompt prefix (and the backend's prompt
       // cache) is unchanged; "none" stops the server from parsing tool calls.
@@ -5070,7 +5247,17 @@ const authoritativeSageChat = compactSageChat &&
           // WP11: `more` continues the last truncated read (C more_path state).
           moreState: agentSession.more,
         };
-        const rawResult = await executeTool(tc.name, tc.arguments, opts);
+        let rawResult;
+        if (OPENWIKI_TOOL_NAMES.has(tc.name)) {
+          rawResult = await dispatchOpenWikiTool(tc.name, tc.arguments, {
+            enabled: openWikiEnabled,
+            allowedTools: runAllowedTools,
+            config: runOpenWikiConfig,
+            signal: controller.signal
+          });
+        } else {
+          rawResult = await executeTool(tc.name, tc.arguments, opts);
+        }
         if (tc.name === "retrieve_context_blob") {
           compressionMetrics.recordRetrieve(!rawResult?.isError);
         }
@@ -5527,6 +5714,25 @@ app.post("/api/native-agent/command", asyncHandler(async (req, res) => {
     crawlOptions.crawlToken = await readCrawlToken();
     crawlOptions.crawlBaseUrl = crawlBase();
   }
+  if (parseAgentSlashCommand(command)?.kind === "openwiki") {
+    const sessionKey = agentSessionKey(req);
+    let result;
+    try {
+      agentIdentity.requireOrigin(req);
+      const ownerId = agentIdentity.ownerOf(req, res);
+      const admitted = await agentAdmission.exclusive("openwiki-generation", () => openWikiCommand({
+        message: command, session: agentSessions.get(sessionKey), sessionKey,
+        request: req.body?.request || {}, engine: wrapperEnabled() ? "native" : "js",
+        signal: AbortSignal.timeout(5 * 60 * 1000)
+      }), { ownerId });
+      result = admitted.value;
+    } catch (error) {
+      if (error instanceof AgentAdmissionError) return res.status(error.status).json({ error: error.message, code: error.code });
+      throw error;
+    }
+    syncSageStateFromNativeCommand(command, result.payload);
+    return res.status(result.status).json(result.payload);
+  }
   // WP5 fallback (gap.js.md GAP-001): without the wrapper there is no C
   // agent, but the JS loop speaks the same slash contract
   // (agentSlashCommands.mjs).  Serve the commands its parser recognizes
@@ -5541,6 +5747,7 @@ app.post("/api/native-agent/command", asyncHandler(async (req, res) => {
     });
     syncSageStateFromNativeCommand(command, commandResult.payload);
     if (commandResult.payload.active === false) {
+      await openWikiGenerationService?.stop(sessionKey).catch(() => {});
       agentSessions.stop(sessionKey);
     }
     return res
@@ -6053,6 +6260,7 @@ async function shutdown() {
     await stopCrawlService();
     await agentUiProcessManager.stop();
     await agnoProcessManager.stop();
+    await openWikiGenerationService?.close();
     await manager.stop();
     await vite.close();
     forceCloseHttp = setTimeout(() => {

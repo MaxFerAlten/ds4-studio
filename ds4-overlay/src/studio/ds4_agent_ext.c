@@ -113,6 +113,11 @@ void ds4_agent_ext_interrupt(ds4_agent_ext *ext) {
     ds4_agent_runtime_interrupt(ext->base);
 }
 
+bool ds4_agent_ext_set_openwiki_enabled(ds4_agent_ext *ext, bool enabled) {
+    if (!ext || !ext->base) return false;
+    return ds4_agent_runtime_set_openwiki_enabled(ext->base, enabled);
+}
+
 int ds4_agent_ext_save(ds4_agent_ext *ext, char *sha_out, size_t sha_len) {
     if (!ext || !ext->base) return -1;
     return ds4_agent_runtime_save(ext->base, sha_out, sha_len);

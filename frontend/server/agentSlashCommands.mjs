@@ -30,6 +30,7 @@ import {
   skillNameValid,
   stageSkill
 } from "./skillRegistry.mjs";
+import { validateWorkspaceRoot } from "../../integrations/openwiki-gateway/src/config.mjs";
 
 const SKILL_NAME_MAX = 64; // DS4_AGENT_SKILL_NAME_MAX
 
@@ -45,7 +46,8 @@ const SIMPLE_KINDS = new Map(Object.entries({
   "/new": "new",
   "/switch": "switch",
   "/del": "del",
-  "/strip": "strip"
+  "/strip": "strip",
+  "/openwiki": "openwiki"
 }));
 const ARG_KINDS = new Set([
   "skill",
@@ -57,7 +59,8 @@ const ARG_KINDS = new Set([
   "sage",
   "lean",
   "crawl",
-  "think"
+  "think",
+  "openwiki"
 ]);
 const HISTORY_DEFAULT_TURNS = 3; // AGENT_HISTORY_DEFAULT_TURNS
 const HISTORY_MAX_TURNS = 200; // AGENT_HISTORY_MAX_TURNS
@@ -176,6 +179,46 @@ export function parseSkillCommandArg(arg) {
     return { action, name };
   }
   throw new SkillError("SKILL_USAGE_INVALID", "action must be start, stop, or status");
+}
+
+// agent_parse_openwiki_command_arg()
+export function parseOpenWikiCommandArg(arg) {
+  if (typeof arg !== "string") {
+    throw new Error("OPENWIKI_USAGE_INVALID: usage: /openwiki start|stop|status or /openwiki <path> init|update");
+  }
+  let text = arg;
+  while (text && (text[0] === " " || text[0] === "\t")) text = text.slice(1);
+  if (!text) {
+    throw new Error("OPENWIKI_USAGE_INVALID: usage: /openwiki start|stop|status or /openwiki <path> init|update");
+  }
+
+  // Check for simple commands: start, stop, status
+  const simpleMatch = /^(start|stop|status)(\s.*)?$/.exec(text);
+  if (simpleMatch) {
+    const action = simpleMatch[1];
+    const rest = simpleMatch[2] || "";
+    if (rest.trim()) {
+      throw new Error("OPENWIKI_USAGE_INVALID: unexpected extra input");
+    }
+    return { action, path: null };
+  }
+
+  // Keep the path's exact internal spaces; only the final token is the action.
+  const match = /^(.*?)[ \t]+([^ \t]+)$/.exec(text.trim());
+  if (!match) {
+    throw new Error("OPENWIKI_USAGE_INVALID: usage: /openwiki start|stop|status or /openwiki <path> init|update");
+  }
+
+  const path = match[1];
+  const action = match[2];
+  if (action !== "init" && action !== "update") {
+    throw new Error("OPENWIKI_USAGE_INVALID: action must be init or update");
+  }
+  if (!path || !path.startsWith("/")) {
+    throw new Error("OPENWIKI_USAGE_INVALID: path must be absolute");
+  }
+
+  return { action, path };
 }
 
 // runtime_skill_error_status()
@@ -297,20 +340,20 @@ function okResult(command, message, data) {
   return {
     ok: true,
     status: 200,
-    payload: { ok: true, command: "skill", message, data, active: true }
+    payload: { ok: true, command, message, data, active: true }
   };
 }
 
-function failResult(status, code, message) {
+function failResult(status, code, message, command = "skill", active = true) {
   return {
     ok: false,
     status,
     payload: {
       ok: false,
-      command: "skill",
+      command,
       message: `${code}: ${message}`,
       code,
-      active: true
+      active
     }
   };
 }
@@ -477,7 +520,13 @@ function applySkillCommand(skillState, command, genericSyntax, env, sessionActiv
 // `session` is the AgentSessionManager (or null); `skillState` comes from
 // agentSkillStateFor(sessionKey).  The route already answers 400 JSON when
 // Agent Mode is off, so AGENT_MODE_REQUIRED mainly guards direct callers.
-export function handleAgentSlashCommand({ message, session, skillState, env = {} } = {}) {
+export function handleAgentSlashCommand({
+  message,
+  session,
+  skillState,
+  env = {},
+  validateOpenWikiRoot = validateWorkspaceRoot,
+} = {}) {
   const parsed = parseAgentSlashCommand(message);
   if (!parsed) {
     return failResult(400, "SLASH_COMMAND_UNSUPPORTED",
@@ -506,6 +555,49 @@ export function handleAgentSlashCommand({ message, session, skillState, env = {}
       return failSkillError(error);
     }
     return applySkillCommand(skillState, command, true, env, Boolean(session?.active));
+  }
+
+  if (parsed.kind === "openwiki") {
+    // Agent Mode required before any openwiki action
+    if (!session?.active) {
+      return failResult(409, "AGENT_MODE_REQUIRED", "The /openwiki command requires Agent Mode", "openwiki", false);
+    }
+    let command;
+    try {
+      command = parseOpenWikiCommandArg(parsed.arg);
+    } catch (error) {
+      const detail = error.message.replace(/^OPENWIKI_USAGE_INVALID:\s*/, "");
+      return failResult(400, "OPENWIKI_USAGE_INVALID", detail, "openwiki");
+    }
+    if (command.path) {
+      let validated;
+      try {
+        validated = validateOpenWikiRoot(command.path);
+      } catch (error) {
+        return failResult(400, "OPENWIKI_PATH_INVALID",
+          "path must be an accessible Git repository root owned by the current user", "openwiki");
+      }
+      // Bind the validated canonical workspace to the session (OWG-03).
+      // This is immutable for the session lifetime; cannot mutate before preflight.
+      try {
+        session.setOpenWikiWorkspace(validated);
+      } catch (error) {
+        if (error.code === "OPENWIKI_WORKSPACE_BOUND") {
+          return failResult(409, "OPENWIKI_WORKSPACE_BOUND",
+            "OpenWiki workspace already bound for this session; cannot change without restart", "openwiki");
+        }
+        if (error.code === "SESSION_INACTIVE") {
+          return failResult(409, "AGENT_MODE_REQUIRED", "The /openwiki command requires Agent Mode", "openwiki", false);
+        }
+        throw error;
+      }
+      return failResult(501, "NOT_IMPLEMENTED_YET",
+        `OpenWiki workspace selected for this session, but '${command.action}' lifecycle is not available yet`,
+        "openwiki");
+    }
+    // Simple commands (start, stop, status) - not implemented in JS loop yet
+    return failResult(501, "NOT_IMPLEMENTED_YET",
+      `OpenWiki command '${command.action}' is not available in the JS agent loop yet`, "openwiki");
   }
 
   if (parsed.kind === "think") {

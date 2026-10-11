@@ -52,6 +52,9 @@ int ds4_agent_ext_chat(ds4_agent_ext *ext,
 
 void ds4_agent_ext_interrupt(ds4_agent_ext *ext);
 
+/* Restrict OpenWiki to the current serialized chat request. */
+bool ds4_agent_ext_set_openwiki_enabled(ds4_agent_ext *ext, bool enabled);
+
 int ds4_agent_ext_save(ds4_agent_ext *ext, char *sha_out, size_t sha_len);
 int ds4_agent_ext_list(ds4_agent_ext *ext, char **json_out);
 int ds4_agent_ext_switch(ds4_agent_ext *ext, const char *sha, char *err, size_t err_len);
