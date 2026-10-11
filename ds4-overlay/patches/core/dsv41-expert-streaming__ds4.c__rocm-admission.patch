@@ -1,0 +1,115 @@
+diff --git a/ds4.c b/ds4.c
+--- a/ds4.c
++++ b/ds4.c
+@@ -71945,11 +71945,23 @@
+ }
+ 
+ #ifdef DS4_HAS_DEEPSEEK41_GPU
++#ifdef DS4_ROCM_BUILD
++static uint64_t ds41_rocm_host_reserve_bytes(uint64_t host);
++#endif
++
+ static bool ds41_memory_admit_for_host(ds4_engine *e, uint64_t graph_bytes,
+                                       bool fit_cache, uint64_t host,
+                                       uint64_t recommended) {
+     const uint64_t gib = UINT64_C(1073741824);
+     uint64_t budget = host / 8u * 7u;
++#ifdef DS4_ROCM_BUILD
++    /* overlay dsv41-expert-streaming: on unified memory the host baseline is
++     * the whole budget; keep the ROCm OS reserve instead of one eighth. */
++    {
++        const uint64_t reserve = ds41_rocm_host_reserve_bytes(host);
++        budget = host > reserve ? host - reserve : 0;
++    }
++#endif
+     if (!host || !recommended) {
+         fprintf(stderr, "ds4: cannot determine a safe V4.1 memory budget\n");
+         return false;
+@@ -71962,7 +71974,13 @@
+         ds4_add_sat_u64(graph_bytes, 2u * gib + e->ssd_streaming_prefill_headroom_bytes));
+     uint64_t expert = 0;
+     if (e->ssd_streaming && !ds4_streaming_routed_expert_bytes(&e->weights, &expert)) return false;
++#ifdef DS4_ROCM_BUILD
++    /* A routed layer needs all of its selected experts resident at once. */
++    const uint32_t minimum_experts = e->ssd_streaming ? DS4_N_EXPERT_USED : 1u;
++    if (fixed >= budget || (expert && (budget - fixed) / expert < minimum_experts)) {
++#else
+     if (fixed >= budget || (expert && budget - fixed < expert)) {
++#endif
+         fprintf(stderr, "ds4: V4.1 needs %.2f GiB before the expert cache; safe budget %.2f GiB. "
+                         "Use --ssd-streaming or a smaller context.\n",
+                 ds4_bytes_to_gib(fixed), ds4_bytes_to_gib(budget));
+@@ -71982,7 +72000,65 @@
+     return true;
+ }
+ 
++#ifdef DS4_ROCM_BUILD
++static bool ds41_stream_unallocated_bytes(const ds4_engine *e,
++                                          const ds4_gpu_stream_expert_memory *memory,
++                                          uint64_t *bytes) {
++    const uint64_t transient = UINT64_C(2) << 30;
++    const uint64_t actual_transient = ds4_add_sat_u64(memory->selected_bytes, memory->pinned_bytes);
++    if (memory->dynamic_bytes > e->ssd_streaming_cache_bytes ||
++        memory->layer_bytes > e->ssd_streaming_prefill_headroom_bytes ||
++        actual_transient > transient) return false;
++    *bytes = ds4_add_sat_u64(e->ssd_streaming_cache_bytes - memory->dynamic_bytes,
++        ds4_add_sat_u64(e->ssd_streaming_prefill_headroom_bytes - memory->layer_bytes,
++                       transient - actual_transient));
++    return true;
++}
++#endif
++
+ static bool ds41_memory_admit(ds4_engine *e, uint64_t graph_bytes, bool fit_cache) {
++#ifdef DS4_ROCM_BUILD
++    /* overlay dsv41-expert-streaming: upstream sizes V4.1 against physical
++     * RAM. On Strix Halo the weights and the graphs share that RAM with the
++     * OS, so charge the model once against the availability observed before
++     * the upload (ds41_host_memory_baseline, CMA excluded), and then require
++     * whatever is not allocated yet to fit in what is available now. */
++    uint64_t available = 0;
++    if (!ds4_linux_nonmovable_memory(&available) || !e->ds41_host_memory_baseline) {
++        fprintf(stderr, "ds4: cannot determine a safe V4.1 ROCm memory budget\n");
++        return false;
++    }
++    if (!ds41_memory_admit_for_host(e, graph_bytes, fit_cache,
++            e->ds41_host_memory_baseline, ds4_gpu_recommended_working_set_size())) return false;
++    const uint64_t additional = graph_bytes > e->ds41_session_bytes ?
++        graph_bytes - e->ds41_session_bytes : 0;
++    uint64_t not_loaded = e->startup_model_span_bytes ? 0 :
++        (g_tp_shard_model_bytes ? g_tp_shard_model_bytes : e->model.size);
++    uint64_t remaining_buffers = UINT64_C(2) << 30;
++    if (e->ssd_streaming) {
++        ds4_gpu_stream_expert_memory memory;
++        if (!weights_streaming_non_routed_bytes(&e->weights, &not_loaded) ||
++            !ds4_gpu_stream_expert_cache_get_memory(&memory) ||
++            !ds41_stream_unallocated_bytes(e, &memory, &remaining_buffers)) {
++            fprintf(stderr, "ds4: V4.1 SSD allocation exceeds its admitted cache/staging plan\n");
++            return false;
++        }
++        if (e->ds41_model_loaded) not_loaded = 0;
++    }
++    /* The vision sidecar uploads after startup admission; charge it until
++     * its map exists. */
++    if (e->vision_ready && !e->vision_map_ready)
++        not_loaded = ds4_add_sat_u64(not_loaded, e->vision_model.size);
++    const uint64_t required = ds4_add_sat_u64(not_loaded, ds4_add_sat_u64(additional,
++        ds4_add_sat_u64(ds41_rocm_host_reserve_bytes(e->ds41_host_memory_baseline), remaining_buffers)));
++    if (required >= available) {
++        fprintf(stderr, "ds4: V4.1 ROCm needs %.2f GiB additional usable memory including reserves; "
++                        "only %.2f GiB is available\n", ds4_bytes_to_gib(required),
++                ds4_bytes_to_gib(available));
++        return false;
++    }
++    return true;
++#else
+     uint64_t host = glm_graph_host_memory_bytes();
+ #ifdef __linux__
+     const long pages = sysconf(_SC_PHYS_PAGES), page_size = sysconf(_SC_PAGESIZE);
+@@ -71991,6 +72067,7 @@
+ #endif
+     return ds41_memory_admit_for_host(e, graph_bytes, fit_cache,
+         host, ds4_gpu_recommended_working_set_size());
++#endif
+ }
+ #endif
+ 

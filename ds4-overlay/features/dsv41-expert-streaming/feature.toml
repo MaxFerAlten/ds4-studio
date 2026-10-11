@@ -117,6 +117,17 @@ patch = "patches/core/dsv41-expert-streaming__ds4.c.patch"
 file = "ds4_gpu.h"
 patch = "patches/gpu/dsv41-expert-streaming__ds4_gpu.h.patch"
 
+# ROCm V4.1 memory admission, ported from the ds4-v41-rocm fork. Upstream sizes
+# V4.1 against physical RAM x 7/8; on unified memory that ignores what the OS
+# and the already-uploaded weights use, and it left ds41_host_memory_baseline
+# (set by the patch above) unused. Charge the model once against the
+# pre-upload baseline, then require the not-yet-allocated part to fit in live
+# availability. The fork's DSpark-support term is omitted: upstream's V4.1
+# gate refuses --dspark, so it is always zero here.
+[[shadow_patch]]
+file = "ds4.c"
+patch = "patches/core/dsv41-expert-streaming__ds4.c__rocm-admission.patch"
+
 [[test]]
 command = "make -f Makefile.overlay ds4_rocm.o"
 required = true
