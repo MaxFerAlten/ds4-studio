@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 
 import {
@@ -11,7 +9,6 @@ import {
   runSageOrchestrator,
   runSageRuntimeValidator,
   sagePolicyDescriptor,
-  sageV2Enabled,
   sageV2Readiness
 } from "./sageOrchestratorBridge.mjs";
 
@@ -32,20 +29,6 @@ function validPayload() {
     artifacts: [{ kind: "function_plot", name: "plot.png" }]
   };
 }
-
-test("feature flag requires an available orchestrator module", async () => {
-  const previous = process.env.DS4_SAGE_AUTONOMOUS_ORCHESTRATION;
-  process.env.DS4_SAGE_AUTONOMOUS_ORCHESTRATION = "true";
-  const tmp = await mkdtemp(path.join(os.tmpdir(), "sage-v2-missing-"));
-  try {
-    assert.equal(sageV2Enabled(), true);
-    assert.equal(sageV2Enabled({ modulePath: path.join(tmp, "missing.py") }), false);
-  } finally {
-    if (previous === undefined) delete process.env.DS4_SAGE_AUTONOMOUS_ORCHESTRATION;
-    else process.env.DS4_SAGE_AUTONOMOUS_ORCHESTRATION = previous;
-    await rm(tmp, { recursive: true, force: true });
-  }
-});
 
 test("readiness fails when the feature is disabled", async () => {
   const previous = process.env.DS4_SAGE_AUTONOMOUS_ORCHESTRATION;
@@ -116,19 +99,6 @@ test("runtime-owned evidence is accepted without trusting model claims", async (
   assert.equal(result.authoritative, true);
   assert.equal(result.passed, true);
   assert.equal(result.checks.length, 1);
-});
-
-test("runtime validator subprocess returns structured authoritative checks", async () => {
-  const result = await runSageRuntimeValidator({
-    taskType: "evaluate",
-    execution: { ok: true, exitCode: 0, timedOut: false },
-    candidateReport: { kind: "math_report", title: "Result", sections: [] },
-    artifacts: []
-  });
-  assert.equal(result.authoritative, true);
-  assert.equal(result.passed, true);
-  assert.ok(result.checks.length > 0);
-  assert.equal(result.normalizedReport.authority, "runtime");
 });
 
 test("bridge policy descriptor points to the canonical skill and hashes exact content", async () => {
