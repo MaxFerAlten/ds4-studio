@@ -25,7 +25,7 @@ async function withRoutes(t, overrides = {}) {
     getConfig: () => overrides.config ?? { configPath: "/tmp/gateway.json", workspaceId: "repo" },
     loadGatewayConfig: overrides.loadConfig ?? (() => ({ workspaces: { repo: { root: "/tmp/repository" } } })),
     getSetupConfig: async () => ({ configured: false, sourcePath: "", workspacePath: "" }),
-    validateWorkspacePath: async () => {},
+    validateWorkspacePath: overrides.validateWorkspacePath ?? (async () => {}),
     provisionRelease: async ({ sourcePath }) => {
       calls.push({ kind: "provision", sourcePath });
       return { commit: "a".repeat(40), releaseDir: "/tmp/openwiki-release/package" };

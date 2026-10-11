@@ -101,7 +101,9 @@ test("pinned provisioning clones the selected commit and excludes checkout dirt 
   const clone = calls.find(({ command, args }) => command === "git" && args[0] === "clone");
   assert.deepEqual(clone.args.slice(0, 3), ["clone", "--no-hardlinks", "--no-checkout"]);
   assert.ok(calls.some(({ command, args }) => command === "git" && args[0] === "-C" && args.includes("--detach") && args.includes(commit)));
-  assert.ok(calls.some(({ command, args }) => command === "bash" && args.includes("openwiki-install-release.sh")));
+  // The installer is invoked by absolute path (repoRoot/scripts/...), so match its name.
+  assert.ok(calls.some(({ command, args }) => command === "bash" &&
+    args.some((arg) => path.basename(arg) === "openwiki-install-release.sh")));
   assert.ok(calls.some(({ command, args }) => command === "bash" && args.includes("--smoke")));
   assert.equal(calls.some(({ command, args }) => command === "git" && args.includes("status")), false);
 });
