@@ -38,7 +38,9 @@ test("catalog: evidence_guard is optional, never a base tool, action required", 
 test("index.mjs: mode resolves at boot and advertising follows the skill", () => {
   const src = source();
   assert.match(src, /const EVIDENCE_MODE_BOOT = modeResolve\(process\.env\.DS4_EVIDENCE_MODE \|\| null, true\)/);
-  assert.match(src, /return evidenceEnabled \? appendOptionalTools\(tools, \[EVIDENCE_GUARD_TOOL\]\) : tools/);
+  // ecfb76d appends the OpenWiki tools after this step; evidence_guard is
+  // still added only when evidence is enabled.
+  assert.match(src, /const withEvidence = evidenceEnabled \? appendOptionalTools\(tools, \[EVIDENCE_GUARD_TOOL\]\) : tools;\s*return appendOpenWikiTools\(withEvidence, openWikiEnabled\);/);
   // The three chat payload sites opt in; nothing else advertises the tool.
   assert.equal((src.match(/evidenceEnabled: evidenceActive/g) ?? []).length, 3);
   assert.match(src, /const evidenceActive = !dot && Boolean\(skillState\?\.promptSkills\?\.\(\)\.evidenceLoaded\)/);

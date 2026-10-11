@@ -247,7 +247,9 @@ test("JS agent stream guards cumulative text before emitting SSE", async () => {
 test("JS agent compresses tool results and activates observation flow before exposure", async () => {
   const source = await readFile(new URL("./index.mjs", import.meta.url), "utf8");
 
-  assert.match(source, /const rawResult = await executeTool\(tc\.name, tc\.arguments, opts\)/);
+  // ecfb76d routes OpenWiki tools to their own dispatcher; every other tool
+  // still goes through executeTool into the same rawResult.
+  assert.match(source, /let rawResult;\s*if \(OPENWIKI_TOOL_NAMES\.has\(tc\.name\)\) \{[\s\S]*?\} else \{\s*rawResult = await executeTool\(tc\.name, tc\.arguments, opts\);\s*\}/);
   assert.match(
     source,
     /compressAgentToolResult\(tc\.name,\s*rawResult\)/
