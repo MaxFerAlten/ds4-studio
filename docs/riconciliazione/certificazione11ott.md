@@ -178,9 +178,18 @@ Accorgimento operativo: l'hook rtk riscrive `tail`, `grep`, `git` ecc. e a volte
 | `4e8bbb3` | `overlay-test-rocm` linka con l'insieme di oggetti dell'overlay (quindi con `ds4_engram.o`); `ds4_test` risulta SKIP esplicito se manca il GGUF | rc=0 (`24_*`) |
 | `fb9b36b` | Rimossi i test orfani della cancellazione `989bf52`: 3 file di script (15 test), l'e2e Sage (5) e 2 casi del bridge Sage | Ripristinando i file cancellati in un worktree di prova, i 35 casi passano tutti: erano orfani e basta. Dopo la rimozione: 2902 test, 2858 pass (invariati), **40 fail** (prima 62) (`26_*`) |
 
-Fallimenti frontend ancora aperti (40 server + 1 UI), con diagnosi ma senza correzione:
-- **25** contratti cambiati e test non aggiornati: AG-UI attivo di default da `5bda80a`; `openwikiWorkspace` nello status da `ecfb76d`; l'harness parity legge il DB thread reale del repo.
-- **9** test Lean leggono il `ds4_agent.c` del root (upstream) invece della copia patchata da Studio.
-- **2** regex su `index.mjs` invecchiate dopo il refactor OpenWiki.
-- **3** OpenWiki: 2 bug nei test, più un **difetto di sicurezza reale**: `validateWorkspaceRoot` non rifiuta le directory scrivibili dal gruppo.
-- **1** `buildFlags`: policy `-ffast-math` da decidere.
+Correzioni successive (commit `c37532d`…`ede13f4`):
+
+| Commit | Cosa |
+|---|---|
+| `c37532d` | Il preflight OpenWiki di Studio rifiuta le root scrivibili dal gruppo o di altri utenti, che il binding di sessione rifiuterebbe comunque. **Correzione rispetto a quanto scritto prima:** nel gateway non c'è una falla di sicurezza. La sua `validateWorkspaceRoot` accetta una root `0770` per scelta (lo dice il suo test di config) e scrive solo in `<root>/openwiki` (`0700`). Il gateway non è stato modificato |
+| `da418b8` | 2 difetti nei test OpenWiki: confronto sul basename del path dell'installer; override di `validateWorkspacePath` ignorato da `withRoutes` |
+| `8d70f8b` | I test Lean leggono il `studio/ds4_agent.c` composto (convenzione `DS4_CONFORMANCE_SHADOW`); senza shadow lo skip è esplicito |
+| `3145ccd` | 2 regex adeguate al refactor OpenWiki (stessi invarianti) |
+| `8a04c99` | Test UI allineato all'etichetta reale del campo workspace |
+
+Risultato, con `DS4_CONFORMANCE_SHADOW` impostato: server **2902 test, 2873 pass, 26 fail, 3 skip**; UI **254/254** (`27_*`, `28_*`).
+
+I 26 fallimenti residui dipendono da una decisione:
+- **24** `legacy parity: *` e **1** AG-UI: i test non seguono le scelte di `5bda80a` (AG-UI attivo di default) e di `ecfb76d` (`openwikiWorkspace` nello status). In più l'harness parity usa il DB thread reale del repo.
+- **1** `buildFlags`: policy `-ffast-math` per il Makefile del root.
