@@ -167,3 +167,20 @@ Unit test ROCm con gli oggetti dell'overlay (sostituisce la parte di `test-rocm`
 `CORE_OBJS="… ds4_layer_pack.o ds4_engram.o $(ROCM_MMQ_OBJS)"`, `DS4_LINK="hipcc … --offload-arch=gfx1151"`, `DS4_LINK_LIBS="-lm -pthread -lhipblas -lhipblaslt -lrocblas"`.
 
 Accorgimento operativo: l'hook rtk riscrive `tail`, `grep`, `git` ecc. e a volte risponde `[rtk: No such file or directory]` senza eseguire il comando. Per tutto ciò che produce prove usare `rtk proxy <cmd>` oppure il path assoluto del binario.
+
+---
+
+## 5. Rimedi successivi (stesso giorno)
+
+| Commit | Cosa | Esito |
+|---|---|---|
+| `eeae74b` | `dsv41-expert-streaming`: porting dal fork `ds4-v41-rocm` dell'ammissione di memoria V4.1 su ROCm. La formula upstream (RAM fisica × 7/8) lasciava inutilizzato `ds41_host_memory_baseline`, e `test_deepseek41_memory` falliva su qualsiasi host. Correzione rispetto alla §2.4: il test **dipendeva** dalla RAM fisica della macchina (budget 106.31 GiB = 121.5 GiB × 7/8) | `overlay-test-deepseek41` rc=0, compose 26/26, invarianti PASS, build verde (`25_*`) |
+| `4e8bbb3` | `overlay-test-rocm` linka con l'insieme di oggetti dell'overlay (quindi con `ds4_engram.o`); `ds4_test` risulta SKIP esplicito se manca il GGUF | rc=0 (`24_*`) |
+| `fb9b36b` | Rimossi i test orfani della cancellazione `989bf52`: 3 file di script (15 test), l'e2e Sage (5) e 2 casi del bridge Sage | Ripristinando i file cancellati in un worktree di prova, i 35 casi passano tutti: erano orfani e basta. Dopo la rimozione: 2902 test, 2858 pass (invariati), **40 fail** (prima 62) (`26_*`) |
+
+Fallimenti frontend ancora aperti (40 server + 1 UI), con diagnosi ma senza correzione:
+- **25** contratti cambiati e test non aggiornati: AG-UI attivo di default da `5bda80a`; `openwikiWorkspace` nello status da `ecfb76d`; l'harness parity legge il DB thread reale del repo.
+- **9** test Lean leggono il `ds4_agent.c` del root (upstream) invece della copia patchata da Studio.
+- **2** regex su `index.mjs` invecchiate dopo il refactor OpenWiki.
+- **3** OpenWiki: 2 bug nei test, più un **difetto di sicurezza reale**: `validateWorkspaceRoot` non rifiuta le directory scrivibili dal gruppo.
+- **1** `buildFlags`: policy `-ffast-math` da decidere.
