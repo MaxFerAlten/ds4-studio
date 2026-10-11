@@ -108,7 +108,8 @@ test("OpenWiki workspace configuration is below Lean 4 and accepts an absolute p
   ]);
   assert.ok(appSource.indexOf('data-agent-id="right-rail-lean-tab"') < appSource.indexOf('data-agent-id="right-rail-openwiki-tab"'));
   assert.match(panelSource, /Path assoluto del checkout OpenWiki/);
-  assert.match(panelSource, /Path assoluto del workspace/);
+  // The workspace field is labelled by what it is for: the directory OpenWiki documents.
+  assert.match(panelSource, /Path assoluto della directory da documentare/);
   assert.match(panelSource, /api\/openwiki\/config/);
   assert.match(panelSource, /X-Agent-Session-Key|sessionHeaders/);
   assert.match(serverSource, /app\.put\("\/api\/openwiki\/workspace"/);
