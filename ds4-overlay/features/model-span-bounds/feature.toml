@@ -19,6 +19,12 @@ Three coherent parts:
    into a mapping the host had already torn down. The fix moves every host
    free below the GPU cleanup block, and hoists ds4_threads_shutdown() to the
    top so no worker can touch the model while it is being released.
+   Re-derived on upstream fc80bd6, which still frees host memory first and
+   added a DSpark TP split release (ds4_gpu_release_dspark_tp_split) right
+   after ds4_engine_tp_unbind(). That block is GPU-side teardown, so it keeps
+   its upstream position, ahead of ds4_gpu_cleanup(). The patch is now three
+   small hunks instead of one whole-function rewrite, so a future upstream
+   change elsewhere in the function breaks only the hunk it touches.
 
 2. ds4_cuda.cu - cuda_model_range_ptr() trusted the caller's offset/bytes
    against the model map. A span that runs past the registered region now
@@ -35,7 +41,7 @@ was needed.
 """
 
 [upstream]
-reviewed_sha = "bc93ed05cada3c81bd6b9cf00a297a5e13b15eea"
+reviewed_sha = "fc80bd695da76ee14bcb86820bf900a5cdfda806"
 
 [[anchors]]
 file = "ds4.c"
