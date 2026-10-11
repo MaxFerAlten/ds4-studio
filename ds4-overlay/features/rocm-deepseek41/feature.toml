@@ -41,7 +41,7 @@ needs a real model run; nothing here has been validated against one.
 """
 
 [upstream]
-reviewed_sha = "9139e2ae58a41503968a500f36f75895c1ba63fc"
+reviewed_sha = "fc80bd695da76ee14bcb86820bf900a5cdfda806"
 
 # Upstream f3967519 added an identical guard for DS4_HAS_QWEN4_GPU directly
 # below this one, so the bare "#if !defined(DS4_NO_GPU) && !defined(...)" line
