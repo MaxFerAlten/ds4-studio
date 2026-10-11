@@ -1,0 +1,36 @@
+
+  GitNexus Detect Changes (1.6.12)
+Changes: 43 files, 288 symbols
+Affected processes: 21
+Risk level: critical
+
+Changed symbols:
+  Section QA Before Releases → QA_BEFORE_RELEASES.md
+  Section 8. CUDA / DGX Spark → QA_BEFORE_RELEASES.md
+  Section 9. ROCm / Strix Halo → QA_BEFORE_RELEASES.md
+  Section 17. DeepSeek V4.1 Flash → QA_BEFORE_RELEASES.md
+  Section CUDA Network Tensor Parallelism → QA_BEFORE_RELEASES.md
+  Section CUDA TP Reference Workloads → QA_BEFORE_RELEASES.md
+  Section 18. Qwen3.8 Flash Next → QA_BEFORE_RELEASES.md
+  Section Qwen Quality And Speed References → QA_BEFORE_RELEASES.md
+  Section 19. Release Sign-off → QA_BEFORE_RELEASES.md
+  Section Vendored llama.cpp mmq kernels → cuda/mmq/VENDOR.md
+  Section Re-syncing with upstream → cuda/mmq/VENDOR.md
+  Template ds4_mmq_k_tile_supported → cuda/mmq/ds4_mmq.cu
+  Function ds4_mmq_k_tile_supported → cuda/mmq/ds4_mmq.cu
+  Template ds4_mmq_dense_impl → cuda/mmq/ds4_mmq.cu
+  Function ds4_mmq_dense_impl → cuda/mmq/ds4_mmq.cu
+... and 273 more
+
+Affected execution flows:
+  • Print_topic → Option_name_has_switch (5 steps) — changed: print_model_runtime
+  • Ds4_tp_batch_gate_exchange → Ds4_tp_slab_batch_in_offset (4 steps) — changed: ds4_tp_batch_gate_exchange, tp_rdma_block_gate_exchange, tp_rdma_block_post_layer
+  • Ds4_tp_batch_gate_exchange → Tp_rdma_ensure_work_requests (4 steps) — changed: ds4_tp_batch_gate_exchange, tp_rdma_block_gate_exchange, tp_rdma_block_post_layer
+  • Ds4_tp_batch_gate_exchange → Tp_wc_status_str (4 steps) — changed: ds4_tp_batch_gate_exchange, tp_rdma_block_gate_exchange, tp_rdma_drain_cq
+  • Ds4_tp_worker_run → Tp_now_sec (4 steps) — changed: ds4_tp_worker_run, ds4_tp_create, tp_now_sec
+  • Ds4_tp_worker_run → Tp_set_err (4 steps) — changed: ds4_tp_worker_run, ds4_tp_create, tp_set_err
+  • Ds4_tp_worker_run → Tp_rdma_load_api (4 steps) — changed: ds4_tp_worker_run, ds4_tp_create, tp_rdma_probe, tp_rdma_load_api
+  • Ds4_tp_worker_run → Tp_read_full (4 steps) — changed: ds4_tp_worker_run, ds4_tp_recv_command, tp_read_full
+  • Print_topic → Title (3 steps) — changed: print_model_runtime
+  • Ds4_tp_batch_gate_exchange → Ds4_tp_slab_batch_out_offset (3 steps) — changed: ds4_tp_batch_gate_exchange, tp_rdma_block_gate_exchange
+... and 11 more

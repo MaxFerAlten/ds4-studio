@@ -1,0 +1,42 @@
+cc -O3 -g -march=native -Wall -Wextra -std=c11 -I. -ffunction-sections -fdata-sections -o tests/test_quality_api tests/test_quality_api.c -Wl,--gc-sections -lm
+./tests/test_quality_api
+quality API parser, top-1 selection and continued-prefill scheduling: PASS
+python3 tests/test_collect_official.py
+.model=deepseek-v4-flash endpoint=https://api.deepseek.com/chat/completions
+key_env=TEST_API_KEY token_field=max_tokens thinking=disabled reasoning=omit
+official 1/1: case_000
+wrote /tmp/tmp5x04g9vo/manifest.tsv
+model=deepseek-v4-flash endpoint=https://api.deepseek.com/chat/completions
+key_env=TEST_API_KEY token_field=max_tokens thinking=disabled reasoning=omit
+official 1/1: case_000
+wrote /tmp/tmp5x04g9vo/manifest.tsv
+model=deepseek-v4-flash endpoint=https://api.deepseek.com/chat/completions
+key_env=TEST_API_KEY token_field=max_tokens thinking=disabled reasoning=omit
+official 1/1: case_000
+wrote /tmp/tmp_g8hq7bf/manifest.tsv
+model=deepseek-v4-flash endpoint=https://api.deepseek.com/chat/completions
+key_env=TEST_API_KEY token_field=max_tokens thinking=disabled reasoning=omit
+official 1/1: case_000
+wrote /tmp/tmp_g8hq7bf/manifest.tsv
+model=deepseek-v4-flash endpoint=https://api.deepseek.com/chat/completions
+key_env=TEST_API_KEY token_field=max_tokens thinking=disabled reasoning=omit
+official 1/1: case_000
+wrote /tmp/tmph561lndr/manifest.tsv
+model=deepseek-v4-flash endpoint=https://api.deepseek.com/chat/completions
+key_env=TEST_API_KEY token_field=max_tokens thinking=disabled reasoning=omit
+official 1/1: case_000
+wrote /tmp/tmph561lndr/manifest.tsv
+.model=deepseek-v4-flash endpoint=https://api.deepseek.com/chat/completions
+key_env=TEST_API_KEY token_field=max_tokens thinking=disabled reasoning=omit
+official 1/1: case_000
+wrote /tmp/tmpr98uj_n5/output/manifest.tsv
+model=deepseek-v4-flash endpoint=https://api.deepseek.com/chat/completions
+key_env=TEST_API_KEY token_field=max_tokens thinking=disabled reasoning=omit
+official 1/1: case_000
+wrote /tmp/tmpggghmdmu/output/manifest.tsv
+.
+----------------------------------------------------------------------
+Ran 3 tests in 0.013s
+
+OK
+rc=0

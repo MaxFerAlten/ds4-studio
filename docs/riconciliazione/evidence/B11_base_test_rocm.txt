@@ -1,0 +1,396 @@
+make -f Makefile.overlay test-rocm
+make[1]: ingresso nella directory «/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src»
+make -B ds4_test ds4_agent_test ds4-eval q4k-dot-test mxfp4-dot-test \
+	test-session-state \
+	tests/test_layer_pack tests/test_engine_mgpu_placement tests/test_gpu_args tests/test_prompt_prefix \
+	ds4 ds4-server ds4-bench ds4-agent \
+	CORE_OBJS="ds4.o ds4_image.o ds4_distributed.o ds4_tp.o ds4_ssd.o ds4_rocm.o ds4_rocm_compat.o ds4_rocm_unavailable.o ds4_layer_pack.o cuda/mmq/ds4_ggml_stubs.rocm.o cuda/mmq/ds4_mmq.rocm.o cuda/mmq/quantize.rocm.o cuda/mmq/mmid.rocm.o cuda/mmq/mmvq.rocm.o cuda/mmq/d2r_stubs.rocm.o" \
+	CFLAGS="-O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD" \
+	DS4_LINK="/usr/bin/hipcc -O3 -ffast-math -g -fno-finite-math-only -pthread -D__HIP_PLATFORM_AMD__ -Wno-unused-command-line-argument --offload-arch=gfx1151" \
+	DS4_LINK_LIBS="-lm -pthread -lhipblas -lhipblaslt -lrocblas"
+make[2]: ingresso nella directory «/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src»
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -Wno-unused-function -c -o ds4_test.o tests/ds4_test.c
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -c -o ds4_help.o ds4_help.c
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -c -o ds4_kvstore.o ds4_kvstore.c
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -c -o rax.o rax.c
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -c -o ds4.o ds4.c
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -c -o ds4_image.o ds4_image.c
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -c -o ds4_distributed.o ds4_distributed.c
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -c -o ds4_tp.o ds4_tp.c
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -c -o ds4_ssd.o ds4_ssd.c
+/usr/bin/hipcc -O3 -ffast-math -g -fno-finite-math-only -pthread -D__HIP_PLATFORM_AMD__ -Wno-unused-command-line-argument --offload-arch=gfx1151 -c -o ds4_rocm.o ds4_rocm.cu
+/usr/bin/hipcc -O3 -ffast-math -g -fno-finite-math-only -pthread -D__HIP_PLATFORM_AMD__ -Wno-unused-command-line-argument --offload-arch=gfx1151 -c -o ds4_rocm_compat.o ds4_rocm_compat.cu
+/usr/bin/hipcc -O3 -ffast-math -g -fno-finite-math-only -pthread -D__HIP_PLATFORM_AMD__ -Wno-unused-command-line-argument --offload-arch=gfx1151 -c -o ds4_rocm_unavailable.o ds4_rocm_unavailable.cu
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD   -c -o ds4_layer_pack.o ds4_layer_pack.c
+/usr/bin/hipcc -O3 -ffast-math -g -fno-finite-math-only -pthread -D__HIP_PLATFORM_AMD__ -Wno-unused-command-line-argument --offload-arch=gfx1151 -std=c++17 -DGGML_USE_HIP -DDS4_HIP_MMQ_Y=64 -Icuda/mmq -c -o cuda/mmq/ds4_ggml_stubs.rocm.o cuda/mmq/ds4_ggml_stubs.cu
+/usr/bin/hipcc -O3 -ffast-math -g -fno-finite-math-only -pthread -D__HIP_PLATFORM_AMD__ -Wno-unused-command-line-argument --offload-arch=gfx1151 -std=c++17 -DGGML_USE_HIP -DDS4_HIP_MMQ_Y=64 -Icuda/mmq -c -o cuda/mmq/ds4_mmq.rocm.o cuda/mmq/ds4_mmq.cu
+/usr/bin/hipcc -O3 -ffast-math -g -fno-finite-math-only -pthread -D__HIP_PLATFORM_AMD__ -Wno-unused-command-line-argument --offload-arch=gfx1151 -std=c++17 -DGGML_USE_HIP -DDS4_HIP_MMQ_Y=64 -Icuda/mmq -c -o cuda/mmq/quantize.rocm.o cuda/mmq/quantize.cu
+/usr/bin/hipcc -O3 -ffast-math -g -fno-finite-math-only -pthread -D__HIP_PLATFORM_AMD__ -Wno-unused-command-line-argument --offload-arch=gfx1151 -std=c++17 -DGGML_USE_HIP -DDS4_HIP_MMQ_Y=64 -Icuda/mmq -c -o cuda/mmq/mmid.rocm.o cuda/mmq/mmid.cu
+/usr/bin/hipcc -O3 -ffast-math -g -fno-finite-math-only -pthread -D__HIP_PLATFORM_AMD__ -Wno-unused-command-line-argument --offload-arch=gfx1151 -std=c++17 -DGGML_USE_HIP -DDS4_HIP_MMQ_Y=64 -Icuda/mmq -c -o cuda/mmq/mmvq.rocm.o cuda/mmq/mmvq.cu
+/usr/bin/hipcc -O3 -ffast-math -g -fno-finite-math-only -pthread -D__HIP_PLATFORM_AMD__ -Wno-unused-command-line-argument --offload-arch=gfx1151 -std=c++17 -DGGML_USE_HIP -DDS4_HIP_MMQ_Y=64 -Icuda/mmq -c -o cuda/mmq/d2r_stubs.rocm.o cuda/mmq/test/d2r_stubs.cu
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -Wno-unused-function -c -o ds4_agent_test.o tests/ds4_agent_test.c
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -c -o ds4_prompt_prefix.o ds4_prompt_prefix.c
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -c -o ds4_web.o ds4_web.c
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -c -o linenoise.o linenoise.c
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -c -o ds4_eval.o ds4_eval.c
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -c -o ds4_eval_cases.o ds4_eval_cases.c
+cc -O2 -Wall -Wextra -std=c99 -o tests/test_q4k_dot tests/test_q4k_dot.c -lm -pthread
+./tests/test_q4k_dot
+Q4_K unit tests:
+  block sizes: Q4_K=144 (expect 144), Q8_K=292 (expect 292): PASS
+  scale extraction: PASS
+  dot known: result=2048.0 expected=2048.0: PASS
+  dot vs reference (50 random blocks): PASS
+
+4/4 tests passed
+cc -O2 -Wall -Wextra -std=c99 -o tests/test_mxfp4_dot tests/test_mxfp4_dot.c -lm
+./tests/test_mxfp4_dot
+MXFP4 unit tests:
+  block size: 17 (expect 17): PASS
+  E8M0 scale conversion: PASS
+  nibble order: -32.0 (expect -32.0): PASS
+  dot vs independent reference: PASS
+
+4/4 tests passed
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -Wno-unused-function -DDS4_NO_GPU -I. -c -o tests/test_session_state.o tests/test_session_state.c
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -I. -c -o tests/test_tp_commands.o tests/test_tp_commands.c
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -Wno-unused-function -DDS4_NO_GPU -c -o ds4_cpu.o ds4.c
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -I. -c -o tests/test_tp_rdma.o tests/test_tp_rdma.c
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -I. -c -o tests/test_tp_tcp.o tests/test_tp_tcp.c
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -I. -c -o tests/test_layer_pack.o tests/test_layer_pack.c
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -I. -c -o tests/test_engine_mgpu_placement.o tests/test_engine_mgpu_placement.c
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -Wno-unused-function -DDS4_NO_GPU -DDS4_TEST_HOOKS -c -o ds4_cpu_test_hooks.o ds4.c
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -I. -DDS4_NO_GPU -c -o tests/test_gpu_args.o tests/test_gpu_args.c
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -DDS4_NO_GPU -c -o ds4_gpu_args_cpu.o ds4_gpu_args.c
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -I. -c -o tests/test_prompt_prefix.o tests/test_prompt_prefix.c
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -c -o ds4_cli.o ds4_cli.c
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -c -o ds4_gpu_args.o ds4_gpu_args.c
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -c -o ds4_server.o ds4_server.c
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -c -o ds4_bench.o ds4_bench.c
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -c -o ds4_agent.o ds4_agent.c
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -o tests/test_session_state tests/test_session_state.o ds4_image.o ds4_distributed.o ds4_tp.o ds4_ssd.o ds4_layer_pack.o -lm -pthread
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -o tests/test_tp_commands tests/test_tp_commands.o ds4_cpu.o ds4_image.o ds4_distributed.o ds4_ssd.o ds4_layer_pack.o -lm -pthread
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -o tests/test_tp_rdma tests/test_tp_rdma.o ds4_cpu.o ds4_image.o ds4_distributed.o ds4_ssd.o ds4_layer_pack.o -lm -pthread
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -o tests/test_tp_tcp tests/test_tp_tcp.o ds4_cpu.o ds4_image.o ds4_distributed.o ds4_ssd.o ds4_layer_pack.o -lm -pthread
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -o tests/test_layer_pack tests/test_layer_pack.o ds4_layer_pack.o -lm -pthread
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -o tests/test_gpu_args tests/test_gpu_args.o ds4_gpu_args_cpu.o -lm -pthread
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -o tests/test_prompt_prefix tests/test_prompt_prefix.o ds4_prompt_prefix.o
+./tests/test_session_state
+session state tests: ok
+./tests/test_tp_commands
+ds4-tp: big gate payload exchange failed (layer 39): Connection reset by peer
+ds4-tp: big gate desync: got l=38 tag=b16 seq=17, want l=39 seq=17
+ds4-tp: big gate header exchange failed or peer closed (layer 39 seq 17): Resource temporarily unavailable
+ds4-tp: bad logits frame (type 0 bytes 0)
+ds4-tp: bad logits frame (type 5 bytes 32)
+ds4-tp: bad logits frame (type 10 bytes 28)
+ds4-tp: bad logits frame (type 0 bytes 0)
+TP backend and mutually exclusive placement options: ok
+TP bulk TCP: exact payloads, chunk boundaries, delayed peer, EOF/desync/timeout: ok
+TP cancellation agreement, reuse, interrupted acknowledgment, mismatch and timeout: ok
+TP logits halves: exact frames, reuse, canaries, EOF, invalid frames and timeout: ok
+TP command tests: ok
+./tests/test_tp_rdma
+SKIP: RDMA completion tests require verbs headers
+./tests/test_tp_tcp
+Unix tiny-buffer decode, 1..8-row gates and bulk payloads, nonblocking=0: PASS
+Unix tiny-buffer decode, 1..8-row gates and bulk payloads, nonblocking=1: PASS
+TCP stalled, half-closed and disconnected peers: PASS
+TCP tiny-buffer decode, 1..8-row gates and bulk payloads, nonblocking=0: PASS
+TCP tiny-buffer decode, 1..8-row gates and bulk payloads, nonblocking=1: PASS
+TCP stalled, half-closed and disconnected peers: PASS
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -o tests/test_engine_mgpu_placement tests/test_engine_mgpu_placement.o ds4_cpu_test_hooks.o ds4_image.o ds4_distributed.o ds4_tp.o ds4_ssd.o ds4_layer_pack.o -lm -pthread
+/usr/bin/hipcc -O3 -ffast-math -g -fno-finite-math-only -pthread -D__HIP_PLATFORM_AMD__ -Wno-unused-command-line-argument --offload-arch=gfx1151 -o ds4_test ds4_test.o ds4_help.o ds4_kvstore.o rax.o ds4.o ds4_image.o ds4_distributed.o ds4_tp.o ds4_ssd.o ds4_rocm.o ds4_rocm_compat.o ds4_rocm_unavailable.o ds4_layer_pack.o cuda/mmq/ds4_ggml_stubs.rocm.o cuda/mmq/ds4_mmq.rocm.o cuda/mmq/quantize.rocm.o cuda/mmq/mmid.rocm.o cuda/mmq/mmvq.rocm.o cuda/mmq/d2r_stubs.rocm.o -lm -pthread -lhipblas -lhipblaslt -lrocblas
+/usr/bin/hipcc -O3 -ffast-math -g -fno-finite-math-only -pthread -D__HIP_PLATFORM_AMD__ -Wno-unused-command-line-argument --offload-arch=gfx1151 -o ds4_agent_test ds4_agent_test.o ds4_help.o ds4_prompt_prefix.o ds4_web.o ds4_kvstore.o linenoise.o ds4.o ds4_image.o ds4_distributed.o ds4_tp.o ds4_ssd.o ds4_rocm.o ds4_rocm_compat.o ds4_rocm_unavailable.o ds4_layer_pack.o cuda/mmq/ds4_ggml_stubs.rocm.o cuda/mmq/ds4_mmq.rocm.o cuda/mmq/quantize.rocm.o cuda/mmq/mmid.rocm.o cuda/mmq/mmvq.rocm.o cuda/mmq/d2r_stubs.rocm.o -lm -pthread -lhipblas -lhipblaslt -lrocblas
+/usr/bin/hipcc -O3 -ffast-math -g -fno-finite-math-only -pthread -D__HIP_PLATFORM_AMD__ -Wno-unused-command-line-argument --offload-arch=gfx1151 -o ds4-eval ds4_eval.o ds4_eval_cases.o ds4_help.o ds4.o ds4_image.o ds4_distributed.o ds4_tp.o ds4_ssd.o ds4_rocm.o ds4_rocm_compat.o ds4_rocm_unavailable.o ds4_layer_pack.o cuda/mmq/ds4_ggml_stubs.rocm.o cuda/mmq/ds4_mmq.rocm.o cuda/mmq/quantize.rocm.o cuda/mmq/mmid.rocm.o cuda/mmq/mmvq.rocm.o cuda/mmq/d2r_stubs.rocm.o -lm -pthread -lhipblas -lhipblaslt -lrocblas
+/usr/bin/hipcc -O3 -ffast-math -g -fno-finite-math-only -pthread -D__HIP_PLATFORM_AMD__ -Wno-unused-command-line-argument --offload-arch=gfx1151 -o ds4 ds4_cli.o ds4_help.o ds4_prompt_prefix.o linenoise.o ds4_gpu_args.o ds4.o ds4_image.o ds4_distributed.o ds4_tp.o ds4_ssd.o ds4_rocm.o ds4_rocm_compat.o ds4_rocm_unavailable.o ds4_layer_pack.o cuda/mmq/ds4_ggml_stubs.rocm.o cuda/mmq/ds4_mmq.rocm.o cuda/mmq/quantize.rocm.o cuda/mmq/mmid.rocm.o cuda/mmq/mmvq.rocm.o cuda/mmq/d2r_stubs.rocm.o -lm -pthread -lhipblas -lhipblaslt -lrocblas
+/usr/bin/hipcc -O3 -ffast-math -g -fno-finite-math-only -pthread -D__HIP_PLATFORM_AMD__ -Wno-unused-command-line-argument --offload-arch=gfx1151 -o ds4-server ds4_server.o ds4_help.o ds4_kvstore.o rax.o ds4_gpu_args.o ds4.o ds4_image.o ds4_distributed.o ds4_tp.o ds4_ssd.o ds4_rocm.o ds4_rocm_compat.o ds4_rocm_unavailable.o ds4_layer_pack.o cuda/mmq/ds4_ggml_stubs.rocm.o cuda/mmq/ds4_mmq.rocm.o cuda/mmq/quantize.rocm.o cuda/mmq/mmid.rocm.o cuda/mmq/mmvq.rocm.o cuda/mmq/d2r_stubs.rocm.o -lm -pthread -lhipblas -lhipblaslt -lrocblas
+/usr/bin/hipcc -O3 -ffast-math -g -fno-finite-math-only -pthread -D__HIP_PLATFORM_AMD__ -Wno-unused-command-line-argument --offload-arch=gfx1151 -o ds4-bench ds4_bench.o ds4_help.o ds4_gpu_args.o ds4.o ds4_image.o ds4_distributed.o ds4_tp.o ds4_ssd.o ds4_rocm.o ds4_rocm_compat.o ds4_rocm_unavailable.o ds4_layer_pack.o cuda/mmq/ds4_ggml_stubs.rocm.o cuda/mmq/ds4_mmq.rocm.o cuda/mmq/quantize.rocm.o cuda/mmq/mmid.rocm.o cuda/mmq/mmvq.rocm.o cuda/mmq/d2r_stubs.rocm.o -lm -pthread -lhipblas -lhipblaslt -lrocblas
+ld.lld: error: undefined symbol: ds4_engram_read_batch
+>>> referenced by ds4.c:41831 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:41831)
+>>>               ds4.o:(ds41_engram_prefetch_read)
+>>> referenced by ds4.c:42225 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:42225)
+>>>               ds4.o:(ds41_graph_prefill_sweep)
+ld.lld: error: undefined symbol: ds4_engram_read_batch
+>>> referenced by ds4.c:41831 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:41831)
+>>>               ds4.o:(ds41_engram_prefetch_read)
+>>> referenced by ds4.c:42225 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:42225)
+>>>               ds4.o:(ds41_graph_prefill_sweep)
+ld.lld: error: undefined symbol: ds4_engram_read_batch
+>>> referenced by ds4.c:41831 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:41831)
+>>>               ds4.o:(ds41_engram_prefetch_read)
+>>> referenced by ds4.c:42225 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:42225)
+>>>               ds4.o:(ds41_graph_prefill_sweep)
+ld.lld: error: undefined symbol: ds4_engram_read_batch
+>>> referenced by ds4.c:41831 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:41831)
+>>>               ds4.o:(ds41_engram_prefetch_read)
+>>> referenced by ds4.c:42225 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:42225)
+>>>               ds4.o:(ds41_graph_prefill_sweep)
+ld.lld: error: undefined symbol: ds4_engram_read_batch
+>>> referenced by ds4.c:41831 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:41831)
+>>>               ds4.o:(ds41_engram_prefetch_read)
+>>> referenced by ds4.c:42225 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:42225)
+>>>               ds4.o:(ds41_graph_prefill_sweep)
+ld.lld: error: undefined symbol: ds4_engram_read_batch
+>>> referenced by ds4.c:41831 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:41831)
+>>>               ds4.o:(ds41_engram_prefetch_read)
+>>> referenced by ds4.c:42225 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:42225)
+>>>               ds4.o:(ds41_graph_prefill_sweep)
+
+ld.lld: error: undefined symbol: ds4_engram_table_close
+>>> referenced by ds4.c:40333 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40333)
+>>>               ds4.o:(ds41_graph_free.part.0)
+>>> referenced by ds4.c:40333 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40333)
+>>>               ds4.o:(ds41_graph_free.part.0)
+
+ld.lld: error: undefined symbol: ds4_engram_hash
+>>> referenced by ds4.c:42492 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:42492)
+>>>               ds4.o:(ds41_graph_step_batch)
+>>> referenced by ds4.c:40678 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40678)
+>>>               ds4.o:(ds41_graph_step)
+>>> referenced by ds4.c:40678 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40678)
+>>>               ds4.o:(ds41_graph_prefill_sweep)
+
+ld.lld: error: undefined symbol: ds4_engram_read
+>>> referenced by ds4.c:42496 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:42496)
+>>>               ds4.o:(ds41_graph_step_batch)
+>>> referenced by ds4.c:41491 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:41491)
+>>>               ds4.o:(ds41_graph_step)
+>>> referenced by ds4.c:42213 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:42213)
+>>>               ds4.o:(ds41_graph_prefill_sweep)
+
+ld.lld: error: undefined symbol: ds4_engram_layout_valid
+>>> referenced by ds4.c:40478 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40478)
+>>>               ds4.o:(ds41_graph_alloc)
+
+ld.lld: error: undefined symbol: ds4_engram_table_open
+>>> referenced by ds4.c:40482 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40482)
+>>>               ds4.o:(ds41_graph_alloc)
+
+ld.lld: error: undefined symbol: ds4_engram_history_reset
+>>> referenced by ds4.c:40432 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40432)
+>>>               ds4.o:(ds41_graph_alloc)
+>>> referenced by ds4.c:40432 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40432)
+>>>               ds4.o:(ds4_session_sync_internal)
+>>> referenced by ds4.c:40432 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40432)
+>>>               ds4.o:(ds4_engine_collect_imatrix)
+>>> referenced 2 more times
+
+ld.lld: error: undefined symbol: ds4_engram_table_close
+>>> referenced by ds4.c:40333 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40333)
+>>>               ds4.o:(ds41_graph_free.part.0)
+>>> referenced by ds4.c:40333 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40333)
+>>>               ds4.o:(ds41_graph_free.part.0)
+
+ld.lld: error: undefined symbol: ds4_engram_hash
+>>> referenced by ds4.c:42492 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:42492)
+>>>               ds4.o:(ds41_graph_step_batch)
+>>> referenced by ds4.c:40678 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40678)
+>>>               ds4.o:(ds41_graph_step)
+>>> referenced by ds4.c:40678 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40678)
+>>>               ds4.o:(ds41_graph_prefill_sweep)
+
+ld.lld: error: undefined symbol: ds4_engram_read
+>>> referenced by ds4.c:42496 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:42496)
+>>>               ds4.o:(ds41_graph_step_batch)
+>>> referenced by ds4.c:41491 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:41491)
+>>>               ds4.o:(ds41_graph_step)
+>>> referenced by ds4.c:42213 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:42213)
+>>>               ds4.o:(ds41_graph_prefill_sweep)
+
+ld.lld: error: undefined symbol: ds4_engram_layout_valid
+>>> referenced by ds4.c:40478 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40478)
+>>>               ds4.o:(ds41_graph_alloc)
+
+ld.lld: error: undefined symbol: ds4_engram_table_open
+>>> referenced by ds4.c:40482 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40482)
+>>>               ds4.o:(ds41_graph_alloc)
+
+ld.lld: error: undefined symbol: ds4_engram_history_reset
+>>> referenced by ds4.c:40432 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40432)
+>>>               ds4.o:(ds41_graph_alloc)
+>>> referenced by ds4.c:40432 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40432)
+>>>               ds4.o:(ds4_session_sync_internal)
+>>> referenced by ds4.c:40432 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40432)
+>>>               ds4.o:(ds4_engine_collect_imatrix)
+>>> referenced 2 more times
+
+ld.lld: error: undefined symbol: ds4_engram_table_close
+>>> referenced by ds4.c:40333 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40333)
+>>>               ds4.o:(ds41_graph_free.part.0)
+>>> referenced by ds4.c:40333 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40333)
+>>>               ds4.o:(ds41_graph_free.part.0)
+
+ld.lld: error: undefined symbol: ds4_engram_hash
+>>> referenced by ds4.c:42492 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:42492)
+>>>               ds4.o:(ds41_graph_step_batch)
+>>> referenced by ds4.c:40678 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40678)
+>>>               ds4.o:(ds41_graph_step)
+>>> referenced by ds4.c:40678 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40678)
+>>>               ds4.o:(ds41_graph_prefill_sweep)
+
+ld.lld: error: undefined symbol: ds4_engram_read
+>>> referenced by ds4.c:42496 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:42496)
+>>>               ds4.o:(ds41_graph_step_batch)
+>>> referenced by ds4.c:41491 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:41491)
+>>>               ds4.o:(ds41_graph_step)
+>>> referenced by ds4.c:42213 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:42213)
+>>>               ds4.o:(ds41_graph_prefill_sweep)
+
+ld.lld: error: undefined symbol: ds4_engram_layout_valid
+>>> referenced by ds4.c:40478 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40478)
+>>>               ds4.o:(ds41_graph_alloc)
+
+ld.lld: error: undefined symbol: ds4_engram_table_open
+>>> referenced by ds4.c:40482 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40482)
+>>>               ds4.o:(ds41_graph_alloc)
+
+ld.lld: error: undefined symbol: ds4_engram_history_reset
+>>> referenced by ds4.c:40432 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40432)
+>>>               ds4.o:(ds41_graph_alloc)
+>>> referenced by ds4.c:40432 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40432)
+>>>               ds4.o:(ds4_session_sync_internal)
+>>> referenced by ds4.c:40432 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40432)
+>>>               ds4.o:(ds4_engine_collect_imatrix)
+>>> referenced 2 more times
+
+ld.lld: error: undefined symbol: ds4_engram_table_close
+>>> referenced by ds4.c:40333 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40333)
+>>>               ds4.o:(ds41_graph_free.part.0)
+>>> referenced by ds4.c:40333 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40333)
+>>>               ds4.o:(ds41_graph_free.part.0)
+
+ld.lld: error: undefined symbol: ds4_engram_hash
+>>> referenced by ds4.c:42492 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:42492)
+>>>               ds4.o:(ds41_graph_step_batch)
+>>> referenced by ds4.c:40678 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40678)
+>>>               ds4.o:(ds41_graph_step)
+>>> referenced by ds4.c:40678 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40678)
+>>>               ds4.o:(ds41_graph_prefill_sweep)
+
+ld.lld: error: undefined symbol: ds4_engram_read
+>>> referenced by ds4.c:42496 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:42496)
+>>>               ds4.o:(ds41_graph_step_batch)
+>>> referenced by ds4.c:41491 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:41491)
+>>>               ds4.o:(ds41_graph_step)
+>>> referenced by ds4.c:42213 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:42213)
+>>>               ds4.o:(ds41_graph_prefill_sweep)
+
+ld.lld: error: undefined symbol: ds4_engram_layout_valid
+>>> referenced by ds4.c:40478 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40478)
+>>>               ds4.o:(ds41_graph_alloc)
+
+ld.lld: error: undefined symbol: ds4_engram_table_open
+>>> referenced by ds4.c:40482 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40482)
+>>>               ds4.o:(ds41_graph_alloc)
+
+ld.lld: error: undefined symbol: ds4_engram_history_reset
+>>> referenced by ds4.c:40432 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40432)
+>>>               ds4.o:(ds41_graph_alloc)
+>>> referenced by ds4.c:40432 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40432)
+>>>               ds4.o:(ds4_session_sync_internal)
+>>> referenced by ds4.c:40432 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40432)
+>>>               ds4.o:(ds4_engine_collect_imatrix)
+>>> referenced 2 more times
+
+ld.lld: error: undefined symbol: ds4_engram_table_close
+>>> referenced by ds4.c:40333 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40333)
+>>>               ds4.o:(ds41_graph_free.part.0)
+>>> referenced by ds4.c:40333 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40333)
+>>>               ds4.o:(ds41_graph_free.part.0)
+
+ld.lld: error: undefined symbol: ds4_engram_hash
+>>> referenced by ds4.c:42492 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:42492)
+>>>               ds4.o:(ds41_graph_step_batch)
+>>> referenced by ds4.c:40678 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40678)
+>>>               ds4.o:(ds41_graph_step)
+>>> referenced by ds4.c:40678 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40678)
+>>>               ds4.o:(ds41_graph_prefill_sweep)
+clang++: 
+ld.lld: error: undefined symbol: ds4_engram_read
+>>> referenced by ds4.c:42496 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:42496)
+>>>               ds4.o:(ds41_graph_step_batch)
+>>> referenced by ds4.c:41491 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:41491)
+>>>               ds4.o:(ds41_graph_step)
+>>> referenced by ds4.c:42213 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:42213)
+>>>               ds4.o:(ds41_graph_prefill_sweep)
+
+ld.lld: error: undefined symbol: ds4_engram_layout_valid
+>>> referenced by ds4.c:40478 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40478)
+>>>               ds4.o:(ds41_graph_alloc)
+
+ld.lld: error: undefined symbol: ds4_engram_table_open
+>>> referenced by ds4.c:40482 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40482)
+>>>               ds4.o:(ds41_graph_alloc)
+error: linker command failed with exit code 1 (use -v to see invocation)
+
+ld.lld: error: undefined symbol: ds4_engram_history_reset
+>>> referenced by ds4.c:40432 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40432)
+>>>               ds4.o:(ds41_graph_alloc)
+>>> referenced by ds4.c:40432 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40432)
+>>>               ds4.o:(ds4_session_sync_internal)
+>>> referenced by ds4.c:40432 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40432)
+>>>               ds4.o:(ds4_engine_collect_imatrix)
+>>> referenced 2 more times
+
+ld.lld: error: undefined symbol: ds4_engram_table_close
+>>> referenced by ds4.c:40333 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40333)
+>>>               ds4.o:(ds41_graph_free.part.0)
+>>> referenced by ds4.c:40333 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40333)
+>>>               ds4.o:(ds41_graph_free.part.0)
+
+ld.lld: error: undefined symbol: ds4_engram_hash
+>>> referenced by ds4.c:42492 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:42492)
+>>>               ds4.o:(ds41_graph_step_batch)
+>>> referenced by ds4.c:40678 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40678)
+>>>               ds4.o:(ds41_graph_step)
+>>> referenced by ds4.c:40678 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40678)
+>>>               ds4.o:(ds41_graph_prefill_sweep)
+
+ld.lld: error: undefined symbol: ds4_engram_read
+>>> referenced by ds4.c:42496 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:42496)
+>>>               ds4.o:(ds41_graph_step_batch)
+>>> referenced by ds4.c:41491 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:41491)
+>>>               ds4.o:(ds41_graph_step)
+>>> referenced by ds4.c:42213 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:42213)
+>>>               ds4.o:(ds41_graph_prefill_sweep)
+
+ld.lld: error: undefined symbol: ds4_engram_layout_valid
+>>> referenced by ds4.c:40478 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40478)
+>>>               ds4.o:(ds41_graph_alloc)
+
+ld.lld: error: undefined symbol: ds4_engram_table_open
+>>> referenced by ds4.c:40482 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40482)
+>>>               ds4.o:(ds41_graph_alloc)
+
+ld.lld: error: undefined symbol: ds4_engram_history_reset
+>>> referenced by ds4.c:40432 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40432)
+>>>               ds4.o:(ds41_graph_alloc)
+>>> referenced by ds4.c:40432 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40432)
+>>>               ds4.o:(ds4_session_sync_internal)
+>>> referenced by ds4.c:40432 (/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src/ds4.c:40432)
+>>>               ds4.o:(ds4_engine_collect_imatrix)
+>>> referenced 2 more times
+clang++: error: linker command failed with exit code 1 (use -v to see invocation)
+failed to execute:/opt/rocm-7.2.4/lib/llvm/bin/clang++ --driver-mode=g++ --hip-link  -O3 -ffast-math -g -fno-finite-math-only -pthread -D__HIP_PLATFORM_AMD__ -Wno-unused-command-line-argument -o "ds4-bench" ds4_bench.o ds4_help.o ds4_gpu_args.o ds4.o ds4_image.o ds4_distributed.o ds4_tp.o ds4_ssd.o ds4_rocm.o ds4_rocm_compat.o ds4_rocm_unavailable.o ds4_layer_pack.o cuda/mmq/ds4_ggml_stubs.rocm.o cuda/mmq/ds4_mmq.rocm.o cuda/mmq/quantize.rocm.o cuda/mmq/mmid.rocm.o cuda/mmq/mmvq.rocm.o cuda/mmq/d2r_stubs.rocm.o -lm -pthread -lhipblas -lhipblaslt -lrocblas
+make[2]: *** [Makefile:351: ds4-bench] Errore 1
+make[2]: *** Attesa per i processi non terminati....
+failed to execute:/opt/rocm-7.2.4/lib/llvm/bin/clang++ --driver-mode=g++ --hip-link  -O3 -ffast-math -g -fno-finite-math-only -pthread -D__HIP_PLATFORM_AMD__ -Wno-unused-command-line-argument -o "ds4_test" ds4_test.o ds4_help.o ds4_kvstore.o rax.o ds4.o ds4_image.o ds4_distributed.o ds4_tp.o ds4_ssd.o ds4_rocm.o ds4_rocm_compat.o ds4_rocm_unavailable.o ds4_layer_pack.o cuda/mmq/ds4_ggml_stubs.rocm.o cuda/mmq/ds4_mmq.rocm.o cuda/mmq/quantize.rocm.o cuda/mmq/mmid.rocm.o cuda/mmq/mmvq.rocm.o cuda/mmq/d2r_stubs.rocm.o -lm -pthread -lhipblas -lhipblaslt -lrocblas
+make[2]: *** [Makefile:974: ds4_test] Errore 1
+clang++: error: linker command failed with exit code 1 (use -v to see invocation)
+clang++: error: linker command failed with exit code 1 (use -v to see invocation)
+clang++: error: linker command failed with exit code 1 (use -v to see invocation)
+failed to execute:/opt/rocm-7.2.4/lib/llvm/bin/clang++ --driver-mode=g++ --hip-link  -O3 -ffast-math -g -fno-finite-math-only -pthread -D__HIP_PLATFORM_AMD__ -Wno-unused-command-line-argument -o "ds4-server" ds4_server.o ds4_help.o ds4_kvstore.o rax.o ds4_gpu_args.o ds4.o ds4_image.o ds4_distributed.o ds4_tp.o ds4_ssd.o ds4_rocm.o ds4_rocm_compat.o ds4_rocm_unavailable.o ds4_layer_pack.o cuda/mmq/ds4_ggml_stubs.rocm.o cuda/mmq/ds4_mmq.rocm.o cuda/mmq/quantize.rocm.o cuda/mmq/mmid.rocm.o cuda/mmq/mmvq.rocm.o cuda/mmq/d2r_stubs.rocm.o -lm -pthread -lhipblas -lhipblaslt -lrocblas
+clang++: error: linker command failed with exit code 1 (use -v to see invocation)
+make[2]: *** [Makefile:348: ds4-server] Errore 1
+failed to execute:/opt/rocm-7.2.4/lib/llvm/bin/clang++ --driver-mode=g++ --hip-link  -O3 -ffast-math -g -fno-finite-math-only -pthread -D__HIP_PLATFORM_AMD__ -Wno-unused-command-line-argument -o "ds4_agent_test" ds4_agent_test.o ds4_help.o ds4_prompt_prefix.o ds4_web.o ds4_kvstore.o linenoise.o ds4.o ds4_image.o ds4_distributed.o ds4_tp.o ds4_ssd.o ds4_rocm.o ds4_rocm_compat.o ds4_rocm_unavailable.o ds4_layer_pack.o cuda/mmq/ds4_ggml_stubs.rocm.o cuda/mmq/ds4_mmq.rocm.o cuda/mmq/quantize.rocm.o cuda/mmq/mmid.rocm.o cuda/mmq/mmvq.rocm.o cuda/mmq/d2r_stubs.rocm.o -lm -pthread -lhipblas -lhipblaslt -lrocblas
+make[2]: *** [Makefile:981: ds4_agent_test] Errore 1
+failed to execute:/opt/rocm-7.2.4/lib/llvm/bin/clang++ --driver-mode=g++ --hip-link  -O3 -ffast-math -g -fno-finite-math-only -pthread -D__HIP_PLATFORM_AMD__ -Wno-unused-command-line-argument -o "ds4" ds4_cli.o ds4_help.o ds4_prompt_prefix.o linenoise.o ds4_gpu_args.o ds4.o ds4_image.o ds4_distributed.o ds4_tp.o ds4_ssd.o ds4_rocm.o ds4_rocm_compat.o ds4_rocm_unavailable.o ds4_layer_pack.o cuda/mmq/ds4_ggml_stubs.rocm.o cuda/mmq/ds4_mmq.rocm.o cuda/mmq/quantize.rocm.o cuda/mmq/mmid.rocm.o cuda/mmq/mmvq.rocm.o cuda/mmq/d2r_stubs.rocm.o -lm -pthread -lhipblas -lhipblaslt -lrocblas
+make[2]: *** [Makefile:345: ds4] Errore 1
+failed to execute:/opt/rocm-7.2.4/lib/llvm/bin/clang++ --driver-mode=g++ --hip-link  -O3 -ffast-math -g -fno-finite-math-only -pthread -D__HIP_PLATFORM_AMD__ -Wno-unused-command-line-argument -o "ds4-eval" ds4_eval.o ds4_eval_cases.o ds4_help.o ds4.o ds4_image.o ds4_distributed.o ds4_tp.o ds4_ssd.o ds4_rocm.o ds4_rocm_compat.o ds4_rocm_unavailable.o ds4_layer_pack.o cuda/mmq/ds4_ggml_stubs.rocm.o cuda/mmq/ds4_mmq.rocm.o cuda/mmq/quantize.rocm.o cuda/mmq/mmid.rocm.o cuda/mmq/mmvq.rocm.o cuda/mmq/d2r_stubs.rocm.o -lm -pthread -lhipblas -lhipblaslt -lrocblas
+make[2]: *** [Makefile:354: ds4-eval] Errore 1
+make[2]: uscita dalla directory «/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src»
+make[1]: *** [/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/ds4-studio/Makefile:327: test-rocm] Errore 2
+make[1]: uscita dalla directory «/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/new-ds4-studio-build/ecfb76d14b2e4d98bfd1fac0cbba4fc16851749f/src»
+make: *** [/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/ds4-studio/ds4-overlay/mk/overlay.mk:73: overlay-test-rocm] Errore 2
+rc=2

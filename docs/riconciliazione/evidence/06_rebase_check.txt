@@ -1,0 +1,7 @@
+upstream clean: /mnt/crucial_ai/COPARATOR/riconciliazione-ds4-studio/ds4-studio @ e89754d
+anchors: 23 checked across 15 enabled feature(s)
+all anchors resolve
+== upstream ==
+
+== anchors ==
+rebase_rc=0

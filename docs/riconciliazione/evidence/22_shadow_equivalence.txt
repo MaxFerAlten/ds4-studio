@@ -1,0 +1,1 @@
+real-files-compared=40 symlinked-identical-by-construction

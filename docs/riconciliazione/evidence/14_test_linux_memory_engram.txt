@@ -1,0 +1,7 @@
+cc -O3 -ffast-math -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -I. -o tests/test_linux_memory tests/test_linux_memory.c
+cc -O3 -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -I. -o tests/test_engram tests/test_engram.c ds4_engram.c -lm -pthread
+./tests/test_linux_memory
+Linux nonmovable memory: PASS
+./tests/test_engram
+Engram hashes, history and bounded disk rows: PASS
+rc=0

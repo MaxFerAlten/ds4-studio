@@ -1,0 +1,59 @@
+=== test_exact_patch.py ===
+ok   applies and changes content
+ok   untouched lines preserved
+ok   re-applying an applied patch raises
+ok   mismatched context raises
+ok   symlink target refused
+ok   symlinked original untouched
+ok   ambiguous hunk refused
+ok   dry_run leaves the file alone
+ok   non-strict accepts a repeat at its declared line
+ok   strict refuses a repeated block
+ok   strict refusal writes nothing
+ok   strict applies a unique hunk
+
+test_exact_patch: PASS
+
+=== test_make_patch.py ===
+ok   repeated block: applies strictly and exactly
+ok   repeated block: every hunk unique
+ok   repeated block: context grew past 3
+ok   nearby edits: exact
+ok   nearby edits: merged, no overlap
+ok   edges, insert and delete: exact
+ok   no trailing newline: exact
+
+test_make_patch: PASS
+
+=== test_upstream_immutable.sh ===
+== positive: a pristine clone must pass ==
+ok   clean clone passes (rc=0)
+
+== negative: each kind of write must be caught ==
+ok   worktree edit detected (rc=1)
+ok   staged edit detected (rc=1)
+ok   clean again after restore (rc=0)
+ok   hash manifest detects mutation (rc=1)
+ok   temp/ ignored by the contract (rc=0)
+
+test_upstream_immutable: PASS
+
+=== test_compose_shadow.sh ===
+== 1. compose ==
+ok   composed
+
+== 2/3. no shared inodes, upstream byte-identical ==
+ok   no hardlinked patch targets
+ok   upstream byte-identical after compose
+
+== 4. fail-closed: a broken anchor must stop the compose ==
+corrupted anchor in accelerator-span-bounds
+ok   compose refused with ANCHOR_FAIL
+
+== 5. generated/ is a live view of upstream's build outputs ==
+ok   build output written after the compose is visible
+
+test_compose_shadow: PASS
+
+run_all: PASS
+invariants_rc=0

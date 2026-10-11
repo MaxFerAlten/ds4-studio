@@ -1,0 +1,5 @@
+ds4: V4.1 needs 156.50 GiB before the expert cache; safe budget 106.31 GiB. Use --ssd-streaming or a smaller context.
+ds4-memory.KrLe0t: tests/test_deepseek41_memory.c:29: main: Assertion `ds41_memory_admit(&e, gib + gib / 2, false)' failed.
+Aborted (core dumped)
+make: *** [/tmp/claude-1000/-mnt-crucial-ai-COPARATOR-riconciliazione-ds4-studio-ds4-studio/4e1b4550-b23a-49a8-8193-a3ee16a70554/scratchpad/base/ds4-studio/ds4-overlay/mk/overlay.mk:95: overlay-test-deepseek41-memory] Errore 134
+rc=2
