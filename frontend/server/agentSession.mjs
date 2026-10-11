@@ -13,6 +13,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { isAbsolute, resolve } from "node:path";
 import { ReadGuard } from "./agentTools.mjs";
 import { AgentLoopGuard } from "./agentLoopGuard.mjs";
 import { loadAgentLoopPolicy } from "./agentLoopPolicy.mjs";
@@ -34,6 +35,29 @@ function stable(value) {
     if (v !== undefined) out[key] = stable(v);
   }
   return out;
+}
+
+function restoreOpenWikiWorkspace(value) {
+  if (value == null) return null;
+  const valid = value && typeof value === "object" && !Array.isArray(value) &&
+    typeof value.root === "string" && isAbsolute(value.root) && resolve(value.root) === value.root &&
+    !value.root.includes("\0") && Number.isSafeInteger(value.dev) && value.dev >= 0 &&
+    Number.isSafeInteger(value.ino) && value.ino > 0 &&
+    Number.isSafeInteger(value.uid) && value.uid >= 0 &&
+    Number.isSafeInteger(value.mode) && value.mode >= 0 && value.mode <= 0o7777 &&
+    (value.mode & 0o022) === 0;
+  if (!valid) {
+    throw Object.assign(new Error("invalid OpenWiki workspace in session checkpoint"), {
+      code: "INVALID_SESSION_CHECKPOINT"
+    });
+  }
+  return Object.freeze({
+    root: value.root,
+    dev: value.dev,
+    ino: value.ino,
+    uid: value.uid,
+    mode: value.mode
+  });
 }
 
 function stableJson(value) {
@@ -180,6 +204,10 @@ export class AgentSessionManager {
      *  An empty Set means "no tools allowed" (observation/read-only mode).
      *  A non-empty Set restricts dispatch to only those tool names. */
     this.toolScope = null;
+    // OWG-03: per-session OpenWiki workspace binding (canonical directory from preflight).
+    // Set once via /openwiki <path> init|update after validateWorkspaceRoot preflight.
+    // One workspace per active session; cleared when the session resets/stops.
+    this.openwikiWorkspace = null;
     const loopPolicy = loadAgentLoopPolicy();
     this.loopGuard = new AgentLoopGuard({
       policy: loopPolicy,
@@ -226,6 +254,7 @@ export class AgentSessionManager {
     this.thinkMode = undefined;
     this.ponyMode = "off";
     this.gitnexusEnabled = false;
+    this.openwikiWorkspace = null;
     this.lastMode = "none";
     this.lastReason = "agent started";
     this.epistemic.clear();
@@ -249,6 +278,7 @@ export class AgentSessionManager {
     this.active = false;
     this.ponyMode = "off";
     this.gitnexusEnabled = false;
+    this.openwikiWorkspace = null;
     this.lastMode = "none";
     this.lastReason = "agent stopped";
     this.readGuard.clearAll();
@@ -292,7 +322,8 @@ export class AgentSessionManager {
       revision: this.state?.revision || 0,
       lastMode: this.lastMode,
       lastReason: this.lastReason,
-      ponyMode: this.ponyMode
+      ponyMode: this.ponyMode,
+      openwikiWorkspace: this.openwikiWorkspace
     };
   }
 
@@ -311,6 +342,59 @@ export class AgentSessionManager {
     return this.status();
   }
 
+  /**
+   * OWG-03: Bind the validated canonical OpenWiki workspace root to this session.
+   * Repeating the same identity is idempotent; a different root requires a reset.
+   * The caller MUST have already run validateWorkspaceRoot preflight and pass
+   * the returned canonical root (with dev/ino/uid/mode).
+   * @param {{ root: string, dev: number, ino: number, uid: number, mode: number }} workspace
+   * @returns {string} The bound workspace root
+   * @throws {Error} If workspace is already bound or session is not active
+   */
+  setOpenWikiWorkspace(workspace) {
+    if (!this.active) {
+      const err = new Error("session not active");
+      err.code = "SESSION_INACTIVE";
+      throw err;
+    }
+    if (this.openwikiWorkspace !== null) {
+      const current = this.openwikiWorkspace;
+      if (current.root === workspace?.root && current.dev === workspace?.dev &&
+          current.ino === workspace?.ino && current.uid === workspace?.uid &&
+          current.mode === workspace?.mode) {
+        return current.root;
+      }
+      const err = new Error("openwiki workspace already bound for this session");
+      err.code = "OPENWIKI_WORKSPACE_BOUND";
+      throw err;
+    }
+    const validWorkspace = workspace && typeof workspace === "object" && !Array.isArray(workspace) &&
+      typeof workspace.root === "string" && isAbsolute(workspace.root) && resolve(workspace.root) === workspace.root &&
+      !workspace.root.includes("\0") && Number.isSafeInteger(workspace.dev) && workspace.dev >= 0 &&
+      Number.isSafeInteger(workspace.ino) && workspace.ino > 0 &&
+      Number.isSafeInteger(workspace.uid) && workspace.uid >= 0 &&
+    Number.isSafeInteger(workspace.mode) && workspace.mode >= 0 && workspace.mode <= 0o7777 &&
+      (workspace.mode & 0o022) === 0;
+    if (!validWorkspace) {
+      const err = new Error("invalid workspace object");
+      err.code = "INVALID_WORKSPACE";
+      throw err;
+    }
+    this.openwikiWorkspace = Object.freeze({
+      root: workspace.root,
+      dev: workspace.dev,
+      ino: workspace.ino,
+      uid: workspace.uid,
+      mode: workspace.mode
+    });
+    return this.openwikiWorkspace.root;
+  }
+
+  /** Get the bound OpenWiki workspace for this session, or null if not set. */
+  getOpenWikiWorkspace() {
+    return this.openwikiWorkspace;
+  }
+
   /** Return a copy of the canonical backend transcript for this agent session. */
   messages() {
     return this.state?.messages ? [...this.state.messages] : [];
@@ -323,7 +407,8 @@ export class AgentSessionManager {
       messages: structuredClone(this.state.messages ?? []),
       thinkMode: this.thinkMode ?? null,
       ponyMode: this.ponyMode,
-      gitnexusEnabled: this.gitnexusEnabled === true
+      gitnexusEnabled: this.gitnexusEnabled === true,
+      openwikiWorkspace: this.openwikiWorkspace
     };
   }
 
@@ -335,6 +420,7 @@ export class AgentSessionManager {
     if (Buffer.byteLength(serialized) > 16 * 1024 * 1024) {
       throw Object.assign(new Error("agent session checkpoint exceeds 16 MiB"), { code: "SESSION_CHECKPOINT_TOO_LARGE" });
     }
+    const openwikiWorkspace = restoreOpenWikiWorkspace(checkpoint.openwikiWorkspace);
     this.start();
     this.state.messages = JSON.parse(serialized);
     // The backend process may have lost its stateful session during restart.
@@ -345,6 +431,7 @@ export class AgentSessionManager {
     this.thinkMode = checkpoint.thinkMode ?? undefined;
     this.ponyMode = checkpoint.ponyMode === "off" ? "off" : checkpoint.ponyMode || "off";
     this.gitnexusEnabled = checkpoint.gitnexusEnabled === true;
+    this.openwikiWorkspace = openwikiWorkspace;
     this.promptDirty = true;
     return this.status();
   }
@@ -567,6 +654,7 @@ export class AgentSessionManager {
     this.state.messageHashes = [];
     this.state.messages = [];
     this.thinkMode = undefined;
+    this.openwikiWorkspace = null;
     this.lastMode = "none";
     this.lastReason = reason;
     this.readGuard.clearAll();

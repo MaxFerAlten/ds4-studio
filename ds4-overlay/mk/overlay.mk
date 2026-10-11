@@ -15,6 +15,7 @@ DS4_OVERLAY_TARGETS := \
     overlay-test-deepseek41 \
     overlay-test-agent \
     overlay-test-server \
+    overlay-test-openwiki \
     overlay-status
 
 .PHONY: $(DS4_OVERLAY_TARGETS) \
@@ -129,3 +130,6 @@ overlay-test-agent:
 overlay-test-server:
 	$(MAKE) -f Makefile.overlay ds4_test
 	./ds4_test --server
+
+overlay-test-openwiki:
+	bash tests/run_openwiki_transport.sh

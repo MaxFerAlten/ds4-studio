@@ -36,7 +36,8 @@ import {
   readStoredSession,
   writeStoredSession,
   clearStoredSession,
-  requestFreshNativeAgentSession
+  requestFreshNativeAgentSession,
+  shouldDisableOpenwikiForResponse
 } from "./appLogic.mjs";
 
 test("workspace contract exposes mutually exclusive chat, research, Evolution and Agno modes", async () => {
@@ -73,6 +74,46 @@ test("agent mode transition is visible and blocks chat until initialization comp
   assert.match(block, /Agent Mode initialization in progress/);
   assert.match(block, /setAgentTransitionBusy\(true\)/);
   assert.match(block, /finally\s*\{\s*setAgentTransitionBusy\(false\)/);
+});
+test("OpenWiki opt-in is session-scoped, default OFF, and only sent on the agent chat request", async () => {
+  const [appSource, chatSource] = await Promise.all([
+    readFile(new URL("./App.jsx", import.meta.url), "utf8"),
+    readFile(new URL("./chat/ChatPanel.jsx", import.meta.url), "utf8")
+  ]);
+  assert.match(appSource, /const \[openwikiEnabled, setOpenwikiEnabled\] = useState\(false\)/);
+  assert.match(appSource, /request: \{ \.\.\.request, openwiki_enabled: openwikiEnabled \}/);
+  assert.match(appSource, /shouldDisableOpenwikiForResponse\(res\.status, body\)[\s\S]*?setOpenwikiEnabled\(false\)/);
+  assert.match(appSource, /setOpenwikiEnabled\(false\)/);
+  assert.match(appSource, /openwikiEnabled=\{openwikiEnabled\}/);
+  assert.match(appSource, /<OpenWikiPanel request=\{request\} onAgentEnabledChange=\{setOpenwikiEnabled\} sessionHeaders=\{AGENT_HEADERS\} \/>/);
+  const stopStart = appSource.indexOf("async function toggleAgentMode");
+  const stopEnd = appSource.indexOf("async function callNativeAgentCommand", stopStart);
+  const stopHandler = appSource.slice(stopStart, stopEnd);
+  assert.match(stopHandler, /else if \(!data\.active\)[\s\S]*?setOpenwikiEnabled\(false\)/);
+  assert.match(chatSource, /\{agentMode && \([\s\S]*?data-agent-id="chat-openwiki-toggle"/);
+  assert.match(chatSource, /checked=\{openwikiEnabled\}/);
+});
+
+test("OpenWiki toggle resets only for its unavailable 503 response", () => {
+  assert.equal(shouldDisableOpenwikiForResponse(503, '{"error":"openwiki_unavailable"}'), true);
+  assert.equal(shouldDisableOpenwikiForResponse(503, '{"error":"service_unavailable"}'), false);
+  assert.equal(shouldDisableOpenwikiForResponse(500, '{"error":"openwiki_unavailable"}'), false);
+});
+
+test("OpenWiki workspace configuration is below Lean 4 and accepts an absolute path", async () => {
+  const [appSource, panelSource, serverSource] = await Promise.all([
+    readFile(new URL("./App.jsx", import.meta.url), "utf8"),
+    readFile(new URL("./panels/OpenWikiPanel.jsx", import.meta.url), "utf8"),
+    readFile(new URL("../server/index.mjs", import.meta.url), "utf8")
+  ]);
+  assert.ok(appSource.indexOf('data-agent-id="right-rail-lean-tab"') < appSource.indexOf('data-agent-id="right-rail-openwiki-tab"'));
+  assert.match(panelSource, /Path assoluto del checkout OpenWiki/);
+  assert.match(panelSource, /Path assoluto del workspace/);
+  assert.match(panelSource, /api\/openwiki\/config/);
+  assert.match(panelSource, /X-Agent-Session-Key|sessionHeaders/);
+  assert.match(serverSource, /app\.put\("\/api\/openwiki\/workspace"/);
+  assert.match(serverSource, /loadOpenWikiGatewayConfig\(candidatePath\)/);
+  assert.match(serverSource, /root: validated\.workspaces\[workspaceId\]\.root, restartRequired: false/);
 });
 
 test("native and legacy /lean commands are intercepted before model inference", async () => {

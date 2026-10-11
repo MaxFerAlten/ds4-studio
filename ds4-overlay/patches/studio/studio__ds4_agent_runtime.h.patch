@@ -1,0 +1,12 @@
+--- a/ds4_agent_runtime.h
++++ b/studio/ds4_agent_runtime.h
+@@ -73,6 +73,9 @@
+  * request can run.  Safe to call from the publish callback (worker thread). */
+ void ds4_agent_runtime_interrupt(ds4_agent_runtime *rt);
+ 
++/* Enable OpenWiki only for the next serialized turn; invalid/off config wins. */
++bool ds4_agent_runtime_set_openwiki_enabled(ds4_agent_runtime *rt, bool enabled);
++
+ int ds4_agent_runtime_save(ds4_agent_runtime *rt, char *sha_out, size_t sha_len);
+ int ds4_agent_runtime_list(ds4_agent_runtime *rt, char **json_out);
+ int ds4_agent_runtime_switch(ds4_agent_runtime *rt, const char *sha, char *err, size_t err_len);

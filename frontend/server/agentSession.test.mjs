@@ -295,3 +295,78 @@ test("the system prompt separates a checked Lean result from a certified one", a
   assert.doesNotMatch(AGENT_SYSTEM_PROMPT, /always times out/);
   assert.match(AGENT_SYSTEM_PROMPT, /does not invoke a compiled main/);
 });
+
+test("OWG-03: openwiki workspace binds to session and persists across checkpoint/restore", () => {
+  const session = new AgentSessionManager();
+  session.start();
+  assert.equal(session.status().openwikiWorkspace, null);
+
+  const workspace = { root: "/home/user/repo", dev: 123, ino: 456, uid: process.getuid(), mode: 0o700 };
+  const boundRoot = session.setOpenWikiWorkspace(workspace);
+  assert.equal(boundRoot, "/home/user/repo");
+  assert.deepEqual(session.getOpenWikiWorkspace(), { root: "/home/user/repo", dev: 123, ino: 456, uid: process.getuid(), mode: 0o700 });
+  assert.deepEqual(session.status().openwikiWorkspace, { root: "/home/user/repo", dev: 123, ino: 456, uid: process.getuid(), mode: 0o700 });
+
+  // Cannot bind again (immutable for session lifetime)
+  assert.throws(() => session.setOpenWikiWorkspace({ root: "/other/repo", dev: 999, ino: 888, uid: process.getuid(), mode: 0o700 }), /already bound/);
+
+  // Checkpoint includes openwikiWorkspace
+  const checkpoint = session.checkpoint();
+  assert.deepEqual(checkpoint.openwikiWorkspace, { root: "/home/user/repo", dev: 123, ino: 456, uid: process.getuid(), mode: 0o700 });
+
+  // Restore preserves openwikiWorkspace
+  const restored = new AgentSessionManager();
+  restored.restoreCheckpoint(checkpoint);
+  assert.deepEqual(restored.getOpenWikiWorkspace(), { root: "/home/user/repo", dev: 123, ino: 456, uid: process.getuid(), mode: 0o700 });
+  assert.equal(Object.isFrozen(restored.getOpenWikiWorkspace()), true);
+  assert.deepEqual(restored.status().openwikiWorkspace, { root: "/home/user/repo", dev: 123, ino: 456, uid: process.getuid(), mode: 0o700 });
+});
+
+test("OWG-03: malformed workspace checkpoint is rejected", () => {
+  const session = new AgentSessionManager();
+  assert.throws(() => session.restoreCheckpoint({
+    version: 1,
+    messages: [],
+    openwikiWorkspace: { root: "relative/repo", dev: 1, ino: 2, uid: process.getuid(), mode: 0o700 }
+  }), { code: "INVALID_SESSION_CHECKPOINT" });
+  assert.equal(session.status().active, false);
+  assert.deepEqual(session.messages(), []);
+});
+
+test("OWG-03: openwiki workspace cleared on session stop and reset", () => {
+  const session = new AgentSessionManager();
+  session.start();
+  const workspace = { root: "/home/user/repo", dev: 123, ino: 456, uid: process.getuid(), mode: 0o700 };
+  session.setOpenWikiWorkspace(workspace);
+  assert.notEqual(session.getOpenWikiWorkspace(), null);
+
+  // Reset clears workspace
+  session.reset("test reset");
+  assert.equal(session.getOpenWikiWorkspace(), null);
+
+  // Re-bind after reset
+  session.setOpenWikiWorkspace(workspace);
+  assert.deepEqual(session.getOpenWikiWorkspace(), workspace);
+
+  // Stop clears workspace
+  session.stop();
+  assert.equal(session.getOpenWikiWorkspace(), null);
+});
+
+test("OWG-03: setOpenWikiWorkspace requires active session", () => {
+  const session = new AgentSessionManager();
+  const workspace = { root: "/home/user/repo", dev: 123, ino: 456, uid: process.getuid(), mode: 0o700 };
+  assert.throws(() => session.setOpenWikiWorkspace(workspace), /session not active/);
+});
+
+test("OWG-03: same workspace binding is idempotent and a different root is rejected", () => {
+  const session = new AgentSessionManager();
+  session.start();
+  const workspace = { root: "/home/user/repo", dev: 123, ino: 456, uid: process.getuid(), mode: 0o700 };
+  assert.equal(session.setOpenWikiWorkspace(workspace), workspace.root);
+  assert.equal(session.setOpenWikiWorkspace({ ...workspace }), workspace.root);
+  assert.throws(() => session.setOpenWikiWorkspace({ ...workspace, root: "/home/user/other" }), {
+    code: "OPENWIKI_WORKSPACE_BOUND"
+  });
+  assert.deepEqual(session.getOpenWikiWorkspace(), workspace);
+});

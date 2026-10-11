@@ -1,0 +1,17 @@
+{
+  "name": "ds4-openwiki-gateway",
+  "version": "0.1.0",
+  "description": "Standalone local gateway between DS4 and the public OpenWiki MCP server.",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.22.0"
+  },
+  "scripts": {
+    "start": "node src/daemon.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.31.0"
+  }
+}

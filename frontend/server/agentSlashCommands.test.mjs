@@ -17,11 +17,13 @@ import { join } from "node:path";
 import {
   parseAgentSlashCommand,
   parseSkillCommandArg,
+  parseOpenWikiCommandArg,
   skillErrorStatus,
   handleAgentSlashCommand
 } from "./agentSlashCommands.mjs";
 import { createSessionSkillState } from "./agentSystemText.mjs";
 import { nativeCommandEvents } from "./nativeAgentCommands.mjs";
+import { AgentSessionManager } from "./agentSession.mjs";
 
 // ---------------------------------------------------------------- fixtures
 
@@ -42,8 +44,8 @@ function makeState(skillsDir, env = { DS4_SKILL_AUTO: "0" }) {
 
 const ACTIVE_SESSION = { active: true };
 
-function run(message, { session = ACTIVE_SESSION, skillState, env = {} } = {}) {
-  return handleAgentSlashCommand({ message, session, skillState, env });
+function run(message, { session = ACTIVE_SESSION, skillState, env = {}, validateOpenWikiRoot } = {}) {
+  return handleAgentSlashCommand({ message, session, skillState, env, validateOpenWikiRoot });
 }
 
 // ---------------------------------------------------------------- parser
@@ -72,6 +74,12 @@ test("parseAgentSlashCommand copies the C grammar", () => {
   // /history takes an optional number 1..200.
   assert.deepEqual(parseAgentSlashCommand("/history 5"), { kind: "history", arg: "5", number: 5 });
   assert.equal(parseAgentSlashCommand("/history 201"), null);
+  // /openwiki commands
+  assert.deepEqual(parseAgentSlashCommand("/openwiki start"), { kind: "openwiki", arg: "start", number: 0 });
+  assert.deepEqual(parseAgentSlashCommand("/openwiki stop"), { kind: "openwiki", arg: "stop", number: 0 });
+  assert.deepEqual(parseAgentSlashCommand("/openwiki status"), { kind: "openwiki", arg: "status", number: 0 });
+  assert.deepEqual(parseAgentSlashCommand("/openwiki /home/user/repo init"), { kind: "openwiki", arg: "/home/user/repo init", number: 0 });
+  assert.deepEqual(parseAgentSlashCommand("/openwiki /home/user/my repo update"), { kind: "openwiki", arg: "/home/user/my repo update", number: 0 });
 });
 
 test("parseSkillCommandArg copies the C usage errors", () => {
@@ -96,6 +104,53 @@ test("parseSkillCommandArg copies the C usage errors", () => {
   assert.throws(() => parseSkillCommandArg(`${"a".repeat(65)} start`), {
     code: "SKILL_USAGE_INVALID",
     message: "SKILL_USAGE_INVALID: usage: /skill <name> start|stop|status"
+  });
+});
+
+test("parseOpenWikiCommandArg validates usage", () => {
+  // Simple commands
+  assert.deepEqual(parseOpenWikiCommandArg("start"), { action: "start", path: null });
+  assert.deepEqual(parseOpenWikiCommandArg("stop"), { action: "stop", path: null });
+  assert.deepEqual(parseOpenWikiCommandArg("status"), { action: "status", path: null });
+  assert.deepEqual(parseOpenWikiCommandArg("  start  "), { action: "start", path: null });
+
+  // Path with spaces
+  assert.deepEqual(parseOpenWikiCommandArg("/home/user/repo init"), { action: "init", path: "/home/user/repo" });
+  assert.deepEqual(parseOpenWikiCommandArg("/home/user/my repo update"), { action: "update", path: "/home/user/my repo" });
+  assert.deepEqual(parseOpenWikiCommandArg("/home/user/my  repo update"), { action: "update", path: "/home/user/my  repo" });
+  assert.deepEqual(parseOpenWikiCommandArg("  /path/with spaces  init  "), { action: "init", path: "/path/with spaces" });
+
+  // Invalid: missing action
+  assert.throws(() => parseOpenWikiCommandArg(""), {
+    message: "OPENWIKI_USAGE_INVALID: usage: /openwiki start|stop|status or /openwiki <path> init|update"
+  });
+  assert.throws(() => parseOpenWikiCommandArg("   "), {
+    message: "OPENWIKI_USAGE_INVALID: usage: /openwiki start|stop|status or /openwiki <path> init|update"
+  });
+
+  // Invalid: extra input on simple commands
+  assert.throws(() => parseOpenWikiCommandArg("start extra"), {
+    message: "OPENWIKI_USAGE_INVALID: unexpected extra input"
+  });
+
+  // Invalid: path-based without action
+  assert.throws(() => parseOpenWikiCommandArg("/home/user/repo"), {
+    message: "OPENWIKI_USAGE_INVALID: usage: /openwiki start|stop|status or /openwiki <path> init|update"
+  });
+
+  // Invalid: non-absolute path
+  assert.throws(() => parseOpenWikiCommandArg("relative/path init"), {
+    message: "OPENWIKI_USAGE_INVALID: path must be absolute"
+  });
+
+  // Invalid: unknown action
+  assert.throws(() => parseOpenWikiCommandArg("/home/user/repo foo"), {
+    message: "OPENWIKI_USAGE_INVALID: action must be init or update"
+  });
+
+  // Invalid: unknown simple action
+  assert.throws(() => parseOpenWikiCommandArg("foo"), {
+    message: "OPENWIKI_USAGE_INVALID: usage: /openwiki start|stop|status or /openwiki <path> init|update"
   });
 });
 
@@ -402,4 +457,164 @@ test("status and list do not dirty the system prompt, start and stop do", () => 
   assert.equal(skillState.syspromptDirty, false);
   run("/skill alpha start", { skillState });
   assert.equal(skillState.syspromptDirty, true);
+});
+
+// ---------------------------------------------------------------- openwiki
+
+test("openwiki simple commands return NOT_IMPLEMENTED_YET, never forwarded", () => {
+  const { skills } = fixtureRoot({});
+  const skillState = makeState(skills);
+  for (const message of ["/openwiki start", "/openwiki stop", "/openwiki status"]) {
+    const result = run(message, { skillState });
+    assert.equal(result.ok, false, message);
+    assert.equal(result.payload.code, "NOT_IMPLEMENTED_YET", message);
+    assert.equal(result.payload.command, "openwiki", message);
+    const events = nativeCommandEvents(result.payload, result.ok);
+    assert.equal(events[0].event, "agent_error");
+  }
+});
+
+test("openwiki init/update bind only the validated workspace and reject unavailable lifecycle", () => {
+  const { skills } = fixtureRoot({});
+  const skillState = makeState(skills);
+  const roots = [];
+  const validateOpenWikiRoot = (root) => {
+    roots.push(root);
+    // Return a validated workspace object like the real preflight does
+    return { root, dev: 123, ino: 456, uid: process.getuid(), mode: 0o700 };
+  };
+  // Session with setOpenWikiWorkspace method
+  const session = {
+    active: true,
+    setOpenWikiWorkspace(workspace) {
+      this.openwikiWorkspace = workspace;
+      return workspace.root;
+    },
+    openwikiWorkspace: null
+  };
+  for (const message of ["/openwiki /home/user/repo init", "/openwiki /home/user/repo update"]) {
+    const result = run(message, { skillState, session, validateOpenWikiRoot });
+    assert.equal(result.ok, false, message);
+    assert.equal(result.status, 501, message);
+    assert.equal(result.payload.code, "NOT_IMPLEMENTED_YET", message);
+    assert.equal(result.payload.command, "openwiki", message);
+    assert.match(result.payload.message, /workspace selected.*lifecycle is not available/i);
+    assert.equal(session.openwikiWorkspace.root, "/home/user/repo");
+  }
+  assert.deepEqual(roots, ["/home/user/repo", "/home/user/repo"]);
+});
+
+test("openwiki cannot silently replace the workspace already bound to a session", () => {
+  const { skills } = fixtureRoot({});
+  const skillState = makeState(skills);
+  let bound = null;
+  const session = {
+    active: true,
+    setOpenWikiWorkspace(workspace) {
+      if (bound && bound.root !== workspace.root) {
+        throw Object.assign(new Error("already bound"), { code: "OPENWIKI_WORKSPACE_BOUND" });
+      }
+      bound = workspace;
+    }
+  };
+  const validateOpenWikiRoot = (root) => ({ root, dev: 123, ino: 456, uid: process.getuid(), mode: 0o700 });
+
+  run("/openwiki /home/user/first init", { skillState, session, validateOpenWikiRoot });
+  const changed = run("/openwiki /home/user/second update", { skillState, session, validateOpenWikiRoot });
+  assert.equal(changed.status, 409);
+  assert.equal(changed.payload.code, "OPENWIKI_WORKSPACE_BOUND");
+  assert.equal(bound.root, "/home/user/first");
+});
+
+test("openwiki init then update uses the real session binding and never claims it ran", () => {
+  const { skills } = fixtureRoot({});
+  const skillState = makeState(skills);
+  const session = new AgentSessionManager();
+  session.start();
+  const validateOpenWikiRoot = (root) => ({ root, dev: 123, ino: 456, uid: process.getuid(), mode: 0o700 });
+
+  for (const action of ["init", "update"]) {
+    const result = run(`/openwiki /home/user/repo ${action}`, { skillState, session, validateOpenWikiRoot });
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 501);
+    assert.equal(result.payload.code, "NOT_IMPLEMENTED_YET");
+    assert.match(result.payload.message, /workspace selected.*lifecycle is not available/i);
+    assert.deepEqual(session.getOpenWikiWorkspace(), {
+      root: "/home/user/repo", dev: 123, ino: 456, uid: process.getuid(), mode: 0o700
+    });
+  }
+  session.stop();
+});
+
+test("openwiki path preflight fails closed and does not reveal path details", () => {
+  const { skills } = fixtureRoot({});
+  const session = { active: true, openwikiWorkspace: null };
+  const result = run("/openwiki /private/repo init", {
+    skillState: makeState(skills),
+    session,
+    validateOpenWikiRoot() { throw new Error("secret path details"); },
+  });
+  assert.equal(result.status, 400);
+  assert.equal(result.payload.code, "OPENWIKI_PATH_INVALID");
+  assert.equal(result.payload.command, "openwiki");
+  assert.doesNotMatch(result.payload.message, /private|secret/);
+  assert.equal(session.openwikiWorkspace, null);
+});
+
+test("openwiki usage errors are 400 OPENWIKI_USAGE_INVALID", () => {
+  const { skills } = fixtureRoot({});
+  const skillState = makeState(skills);
+
+  // Missing argument
+  const noArg = run("/openwiki", { skillState });
+  assert.equal(noArg.ok, false);
+  assert.equal(noArg.status, 400);
+  assert.equal(noArg.payload.command, "openwiki");
+  assert.match(noArg.payload.message, /^OPENWIKI_USAGE_INVALID/);
+  assert.doesNotMatch(noArg.payload.message, /OPENWIKI_USAGE_INVALID: OPENWIKI_USAGE_INVALID/);
+
+  // Invalid simple command
+  const badSimple = run("/openwiki foo", { skillState });
+  assert.equal(badSimple.ok, false);
+  assert.equal(badSimple.status, 400);
+  assert.match(badSimple.payload.message, /^OPENWIKI_USAGE_INVALID/);
+
+  // Extra input on simple command
+  const extra = run("/openwiki start extra", { skillState });
+  assert.equal(extra.ok, false);
+  assert.equal(extra.status, 400);
+  assert.match(extra.payload.message, /^OPENWIKI_USAGE_INVALID/);
+
+  // Path without action
+  const noAction = run("/openwiki /home/user/repo", { skillState });
+  assert.equal(noAction.ok, false);
+  assert.equal(noAction.status, 400);
+  assert.match(noAction.payload.message, /^OPENWIKI_USAGE_INVALID/);
+
+  // Non-absolute path
+  const relative = run("/openwiki relative/path init", { skillState });
+  assert.equal(relative.ok, false);
+  assert.equal(relative.status, 400);
+  assert.match(relative.payload.message, /^OPENWIKI_USAGE_INVALID/);
+
+  // Unknown action
+  const unknownAction = run("/openwiki /home/user/repo foo", { skillState });
+  assert.equal(unknownAction.ok, false);
+  assert.equal(unknownAction.status, 400);
+  assert.match(unknownAction.payload.message, /^OPENWIKI_USAGE_INVALID/);
+});
+
+test("openwiki requires Agent Mode (AGENT_MODE_REQUIRED)", () => {
+  const { skills } = fixtureRoot({});
+  const skillState = makeState(skills);
+  for (const message of ["/openwiki start", "/openwiki stop", "/openwiki status", "/openwiki /home/user/repo init"]) {
+    const result = run(message, { skillState, session: { active: false } });
+    assert.equal(result.ok, false, message);
+    assert.equal(result.status, 409);
+    assert.equal(result.payload.command, "openwiki");
+    assert.equal(result.payload.active, false);
+    assert.match(result.payload.message, /^AGENT_MODE_REQUIRED/);
+  }
+  const noSession = run("/openwiki start", { skillState, session: null });
+  assert.equal(noSession.status, 409);
 });

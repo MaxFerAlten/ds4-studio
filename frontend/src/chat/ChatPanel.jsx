@@ -61,6 +61,7 @@ export function ChatPanel({
   messages,
   input,
   generationBusy,
+  commandBusy = false,
   uploadBusy,
   fileAccept,
   uploadedFiles,
@@ -71,6 +72,8 @@ export function ChatPanel({
   searchStrategy,
   agentMode,
   agentStatus,
+  openwikiEnabled = false,
+  onOpenwikiEnabledChange,
   headroomEnabled,
   composerRef,
   fileInputRef,
@@ -156,6 +159,20 @@ export function ChatPanel({
         >
           OpenDots
         </button>
+        {agentMode && (
+          <div className="agent-openwiki-toggle">
+            <label title="Enable OpenWiki for this agent session">
+              <input
+                type="checkbox"
+                checked={openwikiEnabled}
+                onChange={(event) => onOpenwikiEnabledChange?.(event.target.checked)}
+                disabled={generationBusy}
+                data-agent-id="chat-openwiki-toggle"
+              />
+              OpenWiki {openwikiEnabled ? "ON" : "OFF"}
+            </label>
+          </div>
+        )}
         {agentMode && (
           <div className="agent-badge" data-agent-id="chat-agent-badge" title={`Agent Mode Active - Iteration ${agentStatus?.iteration || 0} · Pony ${agentStatus?.ponyMode || "off"} · Headroom ${headroomEnabled ? "on" : "off"} · GitNexus ${agentStatus?.gitnexusEnabled ? "on" : "off"}`}>
             <div className="agent-indicator"></div>
@@ -290,7 +307,7 @@ export function ChatPanel({
           className="icon-button"
           type="button"
           onClick={() => fileInputRef.current?.click()}
-          disabled={uploadBusy || generationBusy}
+          disabled={uploadBusy || generationBusy || commandBusy}
           title="Add file or image (PNG/JPEG)"
           aria-label="Add file or image"
         >
@@ -314,6 +331,7 @@ export function ChatPanel({
         <textarea
           ref={composerRef}
           value={input}
+          disabled={commandBusy}
           title="Message to send to the model. Paste text with right-click."
           placeholder="Write a message..."
           onChange={(event) => handleInputChange(event.target.value)}
@@ -354,9 +372,9 @@ export function ChatPanel({
             Stop
           </button>
         ) : (
-          <button className="send-button" type="button" onClick={sendMessage} disabled={!canSend || uploadBusy} data-agent-id="chat-send-button">
+          <button className="send-button" type="button" onClick={sendMessage} disabled={!canSend || uploadBusy || commandBusy} data-agent-id="chat-send-button">
             <Send size={16} />
-            Send
+            {commandBusy ? "OpenWiki in corso…" : "Send"}
           </button>
         )}
       </div>

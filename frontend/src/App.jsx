@@ -19,6 +19,7 @@ import { ChatPanel } from "./chat/ChatPanel.jsx";
 import { RequestPanel, ProfilePanel, StartupPanel, StrategyPanel, LogsPanel, MetricsPanel, CompressionPanel, CallDebugPanel, PageAgentPanel, LeanPanel } from "./panels/RightRailPanels.jsx";
 import { LeftRail } from "./panels/LeftRail.jsx";
 import { HistoryPanel } from "./panels/HistoryPanel.jsx";
+import { OpenWikiPanel } from "./panels/OpenWikiPanel.jsx";
 import { listResearchSessions } from "./research/researchApi.mjs";
 import { workspaceFromPath, pathForWorkspace } from "./workspaceRouting.mjs";
 import {
@@ -28,7 +29,7 @@ import {
   injectSearchResults, searchResultsBlock,
   parseSseData, formatMetric, initialExportSettings,
   readStoredSession, writeStoredSession, clearStoredSession,
-  requestFreshNativeAgentSession
+  requestFreshNativeAgentSession, shouldDisableOpenwikiForResponse
 } from "./appLogic.mjs";
 import {
   createLiveStatsTracker,
@@ -255,6 +256,7 @@ export default function App() {
   const [callDebugNotice, setCallDebugNotice] = useState("");
   const [callDebugOpen, setCallDebugOpen] = useState({});
   const [generationBusy, setGenerationBusy] = useState(false);
+  const [openWikiBusy, setOpenWikiBusy] = useState(false);
   const [uploadBusy, setUploadBusy] = useState(false);
   const [fileAccept, setFileAccept] = useState("");
   const [uploadedFiles, setUploadedFiles] = useState([]);
@@ -266,6 +268,7 @@ export default function App() {
   const [metricsError, setMetricsError] = useState("");
   const [commandDraft, setCommandDraft] = useState(null);
   const [agentMode, setAgentMode] = useState(false);
+  const [openwikiEnabled, setOpenwikiEnabled] = useState(false);
   const [agentTransitionBusy, setAgentTransitionBusy] = useState(false);
   const [workspaceMode, setWorkspaceMode] = useState(() => workspaceFromPath(window.location.pathname));
   const [selectedResearchSessionId, setSelectedResearchSessionId] = useState(null);
@@ -799,6 +802,7 @@ export default function App() {
     }
 
     setMessages([]);
+    setOpenwikiEnabled(false);
     setCurrentSessionFileName(null);
     setSageActivities({});
     setLeanProofActivity(null);
@@ -1154,7 +1158,13 @@ export default function App() {
         body: JSON.stringify(payload),
         signal: controller.signal
       });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) {
+        const body = await res.text();
+        if (shouldDisableOpenwikiForResponse(res.status, body)) {
+          setOpenwikiEnabled(false);
+        }
+        throw new Error(body);
+      }
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -1329,6 +1339,7 @@ export default function App() {
         // Leaving agent mode clears any pending priming intent: if the user
         // ever re-enters with fresh history, we'll re-arm it then.
         agentPrimingPendingRef.current = false;
+        setOpenwikiEnabled(false);
       }
       setActiveSuggestionIndex(0);
       setHideSuggestions(false);
@@ -1362,6 +1373,17 @@ export default function App() {
   }
 
   async function callNativeAgentCommand(command) {
+    const isOpenWikiGeneration = /^\/openwiki\s+\S+\s+(?:init|update)(?:\s|$)/iu.test(command);
+    const progressId = isOpenWikiGeneration ? `openwiki-${Date.now()}-${Math.random()}` : null;
+    if (isOpenWikiGeneration) {
+      setOpenWikiBusy(true);
+      setMessages((prev) => [...prev, {
+        role: "assistant",
+        content: `${command} — generazione in corso. Le altre richieste al modello sono bloccate fino al completamento.`,
+        agentNotice: true,
+        openWikiProgressId: progressId
+      }]);
+    }
     try {
       const res = await fetch("/api/native-agent/command", {
         method: "POST",
@@ -1389,25 +1411,27 @@ export default function App() {
         );
         if (hasReplayableHistory) agentPrimingPendingRef.current = true;
       }
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content: formatNativeAgentNotice(command, payload, res.status),
-          agentNotice: true,
-          // /crawl results carry real content the user wants kept in exports.
-          exportable: payload.command === "crawl" && payload.ok === true
-        }
-      ]);
+      const notice = {
+        role: "assistant",
+        content: formatNativeAgentNotice(command, payload, res.status),
+        agentNotice: true,
+        // /crawl results carry real content the user wants kept in exports.
+        exportable: payload.command === "crawl" && payload.ok === true
+      };
+      setMessages((prev) => progressId
+        ? prev.map((message) => message.openWikiProgressId === progressId ? notice : message)
+        : [...prev, notice]);
     } catch (err) {
-      setMessages((prev) => [
-        ...prev,
-        {
+      const notice = {
           role: "assistant",
           content: `Failed ${command}: ${err.message}`,
           agentNotice: true
-        }
-      ]);
+      };
+      setMessages((prev) => progressId
+        ? prev.map((message) => message.openWikiProgressId === progressId ? notice : message)
+        : [...prev, notice]);
+    } finally {
+      if (isOpenWikiGeneration) setOpenWikiBusy(false);
     }
   }
 
@@ -1967,7 +1991,7 @@ export default function App() {
       const payload = {
         message: outboundMessage,
         messages: messages,
-        request: { ...request }
+        request: { ...request, openwiki_enabled: openwikiEnabled }
       };
 
       const res = await fetch("/api/agent/chat", {
@@ -2225,6 +2249,7 @@ export default function App() {
   }
 
   async function sendMessage() {
+    if (openWikiBusy) return;
     const text = input.trim();
     const lastMessage = messages[messages.length - 1];
     const pendingDoc = Boolean(lastMessage && lastMessage.role === "user" && lastMessage.attachment);
@@ -2521,6 +2546,7 @@ export default function App() {
           messages={messages}
           input={input}
           generationBusy={generationBusy}
+          commandBusy={openWikiBusy}
           uploadBusy={uploadBusy}
           fileAccept={fileAccept}
           uploadedFiles={uploadedFiles}
@@ -2532,6 +2558,8 @@ export default function App() {
           searchStrategy={searchStrategy}
           agentMode={agentMode}
           agentStatus={agentStatus}
+          openwikiEnabled={openwikiEnabled}
+          onOpenwikiEnabledChange={setOpenwikiEnabled}
           headroomEnabled={headroomEnabled}
           composerRef={composerRef}
           fileInputRef={fileInputRef}
@@ -2602,6 +2630,9 @@ export default function App() {
           </button>
           <button type="button" className={tab === "lean" ? "active" : ""} onClick={() => setTab("lean")} data-agent-id="right-rail-lean-tab">
             Lean 4
+          </button>
+          <button type="button" className={tab === "openwiki" ? "active" : ""} onClick={() => setTab("openwiki")} data-agent-id="right-rail-openwiki-tab">
+            OpenWiki
           </button>
         </div>
         {tab === "request" ? (
@@ -2680,6 +2711,7 @@ export default function App() {
         {tab === "lean" ? (
           <LeanPanel config={config} />
         ) : null}
+        {tab === "openwiki" ? <OpenWikiPanel request={request} onAgentEnabledChange={setOpenwikiEnabled} sessionHeaders={AGENT_HEADERS} /> : null}
         </aside>
       </main>
       {exportDialogOpen ? (

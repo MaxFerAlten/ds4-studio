@@ -1,0 +1,72 @@
+{
+  "schema": 1,
+  "integration": "ds4-openwiki-mcp-gateway",
+  "artifact": "compatibility",
+  "generatedFrom": "WP07-commit-27b3c76",
+  "upstream": {
+    "name": "openwiki",
+    "version": "0.7.2",
+    "commit": "27b3c76cb9b28bc3bb31ccbeb4f0192b0802cf96",
+    "executable": "dist/cli/cli.js",
+    "nodeEngine": ">=22.22.0"
+  },
+  "mcp": {
+    "protocolVersion": "2025-11-25",
+    "serverInfo": {
+      "name": "openwiki",
+      "version": "0.7.2"
+    },
+    "capabilities": {
+      "tools": {
+        "listChanged": true
+      }
+    },
+    "tools": [
+      "openwiki_begin",
+      "openwiki_finish",
+      "openwiki_inspect_page_claims",
+      "openwiki_list_wikis",
+      "openwiki_list_workspaces",
+      "openwiki_next_page",
+      "openwiki_read",
+      "openwiki_search",
+      "openwiki_submit_page",
+      "openwiki_submit_plan"
+    ],
+    "requiredTools": [
+      "openwiki_read",
+      "openwiki_search"
+    ],
+    "readOnlyTools": [
+      "openwiki_list_wikis",
+      "openwiki_list_workspaces",
+      "openwiki_read",
+      "openwiki_search"
+    ],
+    "schemaFingerprint": "aea5c38058e598aac7f8c3baf649140b33551b4e35b841cc1dc3aed6d0cef961"
+  },
+  "toolSchemas": {
+    "canonicalization": "sha256(canonical JSON: object keys sorted recursively, array order preserved)",
+    "aggregateOver": "tools/list entries sorted by name",
+    "tools/list": "aea5c38058e598aac7f8c3baf649140b33551b4e35b841cc1dc3aed6d0cef961",
+    "perTool": {
+      "openwiki_begin": "e951dc72e59a5f65c7b165b206e52b6eb7c52b44d8a0cfdff32c9e834902efb8",
+      "openwiki_finish": "d1a04ee89907f3adc8b8fd63d64ff9a9372c034c3bf897ce4f01660793139720",
+      "openwiki_inspect_page_claims": "83d8a293215cf2631a95fb1fa84e846dffb844f6e8c6d302d594bf4034d25a6b",
+      "openwiki_list_wikis": "23ba523116c222d34b76a9d52e5130f8b34271d7f3b0234bcf42a9c6fc29d220",
+      "openwiki_list_workspaces": "69711b551fe2c52dbf2ca3994cd425a0cbef05d6dccbbb59ade2044982a22f38",
+      "openwiki_next_page": "28cc9abb16ee85bbb6e12b28bc5a0d148abe88354baf05af060e1898bba8644f",
+      "openwiki_read": "e8bc4b90c984b3a74e7b1b16bfcbc6c58a8535445f673af28dfdddf1095cce69",
+      "openwiki_search": "fcc36b8a801a4c3bbf4fe4e732f1d8b8a2eda00604ba152e44e29eb689b90b43",
+      "openwiki_submit_page": "e23d41055c87de79563a552571bbc1d3bb484e964b0f49e5d29d619c32a71889",
+      "openwiki_submit_plan": "4a46a61552f94893efba216e97e798c04431433faea6ce6425373bb06e99a9bb"
+    }
+  },
+  "gateway": {
+    "version": "0.1.0",
+    "mcpSdk": "1.31.0",
+    "runtime": "unix-socket",
+    "telemetryDisabled": true
+  },
+  "fixture": "test/fixtures/openwiki-contract"
+}

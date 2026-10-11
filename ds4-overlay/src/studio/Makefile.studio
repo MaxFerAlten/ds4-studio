@@ -63,7 +63,8 @@ AGENT_CUSTOM_OBJS := ds4_agent_protocol_guard.o ds4_agent_epistemic.o \
                      ds4_agent_evidence_guard.o \
                      ds4_agent_skill_registry.o ds4_crawl_client.o \
                      ds4_crawl_grounding.o ds4_context_blob.o \
-                     ds4_tool_compress.o $(BUF_OBJS)
+                     ds4_tool_compress.o ds4_openwiki_client.o \
+                     ds4_openwiki_policy.o ds4_openwiki_request.o $(BUF_OBJS)
 STUDIO_EXT_OBJS := ds4_server_ext.o ds4_agent_ext.o
 WRAPPER_OBJS := ds4_wrapper.o ds4_wrapper_config.o ds4_wrapper_state.o \
                 ds4_wrapper_http.o ds4_wrapper_metrics.o \
@@ -180,14 +181,23 @@ ds4_wrapper_config.o: ds4_wrapper_config.c ds4_wrapper_config.h
 ds4_wrapper_state.o: ds4_wrapper_state.c ds4_wrapper_state.h ds4_wrapper.h ds4_wrapper_config.h ds4_agent_session_store.h $(STUDIO_DIR)/ds4_agent_ext.h
 	$(CC) $(CFLAGS) -c -o $@ ds4_wrapper_state.c
 
-ds4_wrapper_http.o: ds4_wrapper_http.c ds4_wrapper_http.h ds4_wrapper_metrics.h ds4_wrapper_state.h $(STUDIO_DIR)/ds4_server_ext.h $(STUDIO_DIR)/ds4_agent_ext.h
-	$(CC) $(CFLAGS) -c -o $@ ds4_wrapper_http.c
+ds4_wrapper_http.o: $(STUDIO_DIR)/ds4_wrapper_http.c ds4_wrapper_http.h ds4_wrapper_metrics.h ds4_wrapper_state.h $(STUDIO_DIR)/ds4_server_ext.h $(STUDIO_DIR)/ds4_agent_ext.h $(STUDIO_DIR)/ds4_openwiki_request.h
+	$(CC) $(CFLAGS) -c -o $@ $(STUDIO_DIR)/ds4_wrapper_http.c
 
 ds4_wrapper_metrics.o: ds4_wrapper_metrics.c ds4_wrapper_metrics.h ds4_default_skills.h $(STUDIO_DIR)/ds4_server_ext.h $(STUDIO_DIR)/ds4_agent_ext.h
 	$(CC) $(CFLAGS) -c -o $@ ds4_wrapper_metrics.c
 
 ds4_agent_session_store.o: ds4_agent_session_store.c ds4_agent_session_store.h ds4.h ds4_kvstore.h
 	$(CC) $(CFLAGS) -c -o $@ ds4_agent_session_store.c
+
+ds4_openwiki_client.o: $(STUDIO_DIR)/ds4_openwiki_client.c $(STUDIO_DIR)/ds4_openwiki_client.h $(STUDIO_DIR)/ds4_openwiki_policy.h
+	$(CC) $(CFLAGS) -c -o $@ $(STUDIO_DIR)/ds4_openwiki_client.c
+
+ds4_openwiki_policy.o: $(STUDIO_DIR)/ds4_openwiki_policy.c $(STUDIO_DIR)/ds4_openwiki_policy.h
+	$(CC) $(CFLAGS) -c -o $@ $(STUDIO_DIR)/ds4_openwiki_policy.c
+
+ds4_openwiki_request.o: $(STUDIO_DIR)/ds4_openwiki_request.c $(STUDIO_DIR)/ds4_openwiki_request.h
+	$(CC) $(CFLAGS) -c -o $@ $(STUDIO_DIR)/ds4_openwiki_request.c
 
 # -----------------------------------------------------------------------------
 # Runtime objects. These textually include the (overlaid) upstream monolith, so
@@ -197,18 +207,18 @@ ds4_agent_session_store.o: ds4_agent_session_store.c ds4_agent_session_store.h d
 ds4_server_runtime.o: ds4_server_runtime.c ds4_server_runtime.h ds4_wrapper.h ds4.h ds4_kvstore.h ds4_default_skills.h $(STUDIO_SERVER_SRC) $(STUDIO_DIR)/ds4_upstream_compat.h
 	$(CC) $(CFLAGS) -Wno-unused-function -DDS4_SERVER_UPSTREAM_SRC='"$(STUDIO_SERVER_SRC)"' -c -o $@ ds4_server_runtime.c
 
-ds4_agent_runtime.o: ds4_agent_runtime.c ds4_agent_runtime.h ds4_wrapper.h ds4_agent_session_store.h ds4_agent_skill_registry.h ds4_agent_protocol_guard.h ds4_agent_epistemic.h ds4_agent_evidence_guard.h ds4.h ds4_ssd.h ds4_distributed.h ds4_tp.h ds4_help.h ds4_prompt_prefix.h ds4_kvstore.h ds4_web.h ds4_crawl_client.h ds4_crawl_grounding.h ds4_context_blob.h ds4_tool_compress.h ds4_default_skills.h $(STUDIO_AGENT_SRC) $(STUDIO_DIR)/ds4_upstream_compat.h $(ORCH_POLICY_HEADERS)
-	$(CC) $(CFLAGS) -Wno-unused-function -DDS4_AGENT_UPSTREAM_SRC='"$(STUDIO_AGENT_SRC)"' -c -o $@ ds4_agent_runtime.c
+ds4_agent_runtime.o: $(STUDIO_DIR)/ds4_agent_runtime.c $(STUDIO_DIR)/ds4_agent_runtime.h ds4_wrapper.h ds4_agent_session_store.h ds4_agent_skill_registry.h ds4_agent_protocol_guard.h ds4_agent_epistemic.h ds4_agent_evidence_guard.h ds4.h ds4_ssd.h ds4_distributed.h ds4_tp.h ds4_help.h ds4_prompt_prefix.h ds4_kvstore.h ds4_web.h ds4_crawl_client.h ds4_crawl_grounding.h ds4_context_blob.h ds4_tool_compress.h ds4_default_skills.h $(STUDIO_DIR)/ds4_openwiki_client.h $(STUDIO_DIR)/ds4_openwiki_policy.h $(STUDIO_AGENT_SRC) $(STUDIO_DIR)/ds4_upstream_compat.h $(ORCH_POLICY_HEADERS)
+	$(CC) $(CFLAGS) -Wno-unused-function -DDS4_AGENT_UPSTREAM_SRC='"$(STUDIO_AGENT_SRC)"' -c -o $@ $(STUDIO_DIR)/ds4_agent_runtime.c
 
 # -----------------------------------------------------------------------------
 # Standalone binaries built from the overlaid sources rather than raw upstream.
 # These recipes deliberately override the upstream ones (make warns; that is the
 # intended signal that Studio is redirecting the source).
 # -----------------------------------------------------------------------------
-ds4_agent.o: $(STUDIO_AGENT_SRC) ds4.h ds4_ssd.h ds4_distributed.h ds4_tp.h ds4_help.h ds4_prompt_prefix.h ds4_kvstore.h ds4_web.h ds4_agent_epistemic.h ds4_agent_evidence_guard.h ds4_agent_skill_registry.h ds4_context_blob.h ds4_tool_compress.h ds4_crawl_client.h ds4_crawl_grounding.h linenoise.h $(ORCH_POLICY_HEADERS)
+ds4_agent.o: $(STUDIO_AGENT_SRC) ds4.h ds4_ssd.h ds4_distributed.h ds4_tp.h ds4_help.h ds4_prompt_prefix.h ds4_kvstore.h ds4_web.h ds4_agent_epistemic.h ds4_agent_evidence_guard.h ds4_agent_skill_registry.h ds4_context_blob.h ds4_tool_compress.h ds4_crawl_client.h ds4_crawl_grounding.h $(STUDIO_DIR)/ds4_openwiki_client.h $(STUDIO_DIR)/ds4_openwiki_policy.h linenoise.h $(ORCH_POLICY_HEADERS)
 	$(CC) $(CFLAGS) -Wno-unused-function -c -o $@ $(STUDIO_AGENT_SRC)
 
-ds4_agent_cpu.o: $(STUDIO_AGENT_SRC) ds4.h ds4_ssd.h ds4_distributed.h ds4_help.h ds4_prompt_prefix.h ds4_kvstore.h ds4_web.h ds4_agent_epistemic.h ds4_agent_evidence_guard.h ds4_agent_skill_registry.h ds4_context_blob.h ds4_tool_compress.h ds4_crawl_client.h ds4_crawl_grounding.h linenoise.h $(ORCH_POLICY_HEADERS)
+ds4_agent_cpu.o: $(STUDIO_AGENT_SRC) ds4.h ds4_ssd.h ds4_distributed.h ds4_help.h ds4_prompt_prefix.h ds4_kvstore.h ds4_web.h ds4_agent_epistemic.h ds4_agent_evidence_guard.h ds4_agent_skill_registry.h ds4_context_blob.h ds4_tool_compress.h ds4_crawl_client.h ds4_crawl_grounding.h $(STUDIO_DIR)/ds4_openwiki_client.h $(STUDIO_DIR)/ds4_openwiki_policy.h linenoise.h $(ORCH_POLICY_HEADERS)
 	$(CC) $(CFLAGS) -Wno-unused-function -DDS4_NO_GPU -c -o $@ $(STUDIO_AGENT_SRC)
 
 ds4_server.o: $(STUDIO_SERVER_SRC) ds4.h ds4_ssd.h ds4_distributed.h ds4_help.h ds4_kvstore.h rax.h buf.h

@@ -1,0 +1,20 @@
+# Golden OpenWiki MCP tool-schema manifest (WP07).
+#
+# Every digest is sha256 over canonical JSON: object keys sorted
+# recursively, array order preserved (src/mcp-supervisor.mjs).
+#   tools/list   full tools/list entries sorted by name
+#   <tool name>  one full tools/list entry
+#
+# Verified live against the pinned OpenWiki release by
+# test/contract-openwiki.test.mjs. Regenerate only for a new pin.
+aea5c38058e598aac7f8c3baf649140b33551b4e35b841cc1dc3aed6d0cef961  tools/list
+e951dc72e59a5f65c7b165b206e52b6eb7c52b44d8a0cfdff32c9e834902efb8  openwiki_begin
+d1a04ee89907f3adc8b8fd63d64ff9a9372c034c3bf897ce4f01660793139720  openwiki_finish
+83d8a293215cf2631a95fb1fa84e846dffb844f6e8c6d302d594bf4034d25a6b  openwiki_inspect_page_claims
+23ba523116c222d34b76a9d52e5130f8b34271d7f3b0234bcf42a9c6fc29d220  openwiki_list_wikis
+69711b551fe2c52dbf2ca3994cd425a0cbef05d6dccbbb59ade2044982a22f38  openwiki_list_workspaces
+28cc9abb16ee85bbb6e12b28bc5a0d148abe88354baf05af060e1898bba8644f  openwiki_next_page
+e8bc4b90c984b3a74e7b1b16bfcbc6c58a8535445f673af28dfdddf1095cce69  openwiki_read
+fcc36b8a801a4c3bbf4fe4e732f1d8b8a2eda00604ba152e44e29eb689b90b43  openwiki_search
+e23d41055c87de79563a552571bbc1d3bb484e964b0f49e5d29d619c32a71889  openwiki_submit_page
+4a46a61552f94893efba216e97e798c04431433faea6ce6425373bb06e99a9bb  openwiki_submit_plan

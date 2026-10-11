@@ -1,0 +1,33 @@
+--- a/ds4_agent_runtime.c
++++ b/studio/ds4_agent_runtime.c
+@@ -258,6 +258,15 @@
+     rt->cfg.gen.think_mode = (opt && opt->nothink) ? DS4_THINK_NONE : DS4_THINK_HIGH;
+     rt->cfg.gen.prompt = NULL; /* not one-shot */
+     rt->cfg.gen.system = opt ? opt->system_prompt : NULL;
++    /* Load the trusted server capability before the worker builds its base
++     * prompt. Per-request chat admission still toggles dispatcher use below. */
++    {
++        char openwiki_err[128] = {0};
++        rt->cfg.openwiki_config_valid = ds4_ow_config_from_env(
++            &rt->cfg.openwiki_config, openwiki_err, sizeof(openwiki_err));
++        rt->cfg.openwiki_enabled = rt->cfg.openwiki_config_valid &&
++                                   rt->cfg.openwiki_config.mode == DS4_OW_ON;
++    }
+     /* non_interactive short-circuits agent_web_confirm() before it ever raises
+      * the approval request this runtime answers below, so with it set the
+      * google_search/visit_page tools always failed with "visible Chrome browser
+@@ -591,6 +600,14 @@
+     pthread_mutex_unlock(&rt->worker.mu);
+ }
+ 
++bool ds4_agent_runtime_set_openwiki_enabled(ds4_agent_runtime *rt, bool enabled) {
++    if (!rt) return false;
++    bool available = rt->cfg.openwiki_config_valid &&
++                     rt->cfg.openwiki_config.mode == DS4_OW_ON;
++    rt->cfg.openwiki_enabled = enabled && available;
++    return !enabled || available;
++}
++
+ /* =========================================================================
+  * Session management commands
+  * ========================================================================= */

@@ -1,0 +1,114 @@
+id = "openwiki-transport"
+enabled = true
+owner = "overlay"
+description = "Fail-closed HTTP-over-UDS client and opt-in native search/read dispatcher for the OpenWiki gateway."
+
+[[shadow_patch]]
+from = "ds4_agent_runtime.c"
+file = "studio/ds4_agent_runtime.c"
+patch = "patches/studio/studio__ds4_agent_runtime.c.patch"
+strict = true
+
+[[shadow_patch]]
+from = "ds4_agent_runtime.h"
+file = "studio/ds4_agent_runtime.h"
+patch = "patches/studio/studio__ds4_agent_runtime.h.patch"
+strict = true
+
+[[shadow_patch]]
+from = "ds4_wrapper_http.c"
+file = "studio/ds4_wrapper_http.c"
+patch = "patches/studio/studio__ds4_wrapper_http.c.patch"
+strict = true
+
+[[overlay_file]]
+source = "features/openwiki-transport/src/studio/ds4_openwiki_policy.h"
+target = "studio/ds4_openwiki_policy.h"
+
+[[overlay_file]]
+source = "features/openwiki-transport/src/studio/ds4_openwiki_policy.c"
+target = "studio/ds4_openwiki_policy.c"
+
+[[overlay_file]]
+source = "features/openwiki-transport/src/studio/ds4_openwiki_request.h"
+target = "studio/ds4_openwiki_request.h"
+
+[[overlay_file]]
+source = "features/openwiki-transport/src/studio/ds4_openwiki_request.c"
+target = "studio/ds4_openwiki_request.c"
+
+[[overlay_file]]
+source = "features/openwiki-transport/src/studio/ds4_openwiki_client.h"
+target = "studio/ds4_openwiki_client.h"
+
+[[overlay_file]]
+source = "features/openwiki-transport/src/studio/ds4_openwiki_client.c"
+target = "studio/ds4_openwiki_client.c"
+
+[[overlay_file]]
+source = "features/openwiki-transport/tests/test_openwiki_client.c"
+target = "tests/test_openwiki_client.c"
+
+[[overlay_file]]
+source = "features/openwiki-transport/tests/run_openwiki_transport.sh"
+target = "tests/run_openwiki_transport.sh"
+
+[[overlay_file]]
+source = "features/openwiki-transport/tests/test_openwiki_dispatch_integration.mjs"
+target = "tests/test_openwiki_dispatch_integration.mjs"
+
+[[overlay_file]]
+source = "features/openwiki-transport/tests/test_openwiki_prompt_off.c"
+target = "tests/test_openwiki_prompt_off.c"
+
+[[overlay_file]]
+source = "features/openwiki-transport/tests/test_openwiki_prompt_on.mjs"
+target = "tests/test_openwiki_prompt_on.mjs"
+
+[[overlay_file]]
+source = "features/openwiki-transport/tests/fixtures/compile-only/ds4_agent_evidence_guard.h"
+target = "tests/fixtures/openwiki-prompt-compile-only/ds4_agent_evidence_guard.h"
+
+[[overlay_file]]
+source = "features/openwiki-transport/tests/run_openwiki_prompt_off.sh"
+target = "tests/run_openwiki_prompt_off.sh"
+
+[[overlay_file]]
+source = "features/openwiki-transport/tests/test_openwiki_request.c"
+target = "tests/test_openwiki_request.c"
+
+[[overlay_file]]
+source = "features/openwiki-transport/tests/test_openwiki_request_scope.mjs"
+target = "tests/test_openwiki_request_scope.mjs"
+
+[[overlay_file]]
+source = "features/openwiki-transport/tests/run_openwiki_request.sh"
+target = "tests/run_openwiki_request.sh"
+
+[[overlay_file]]
+source = "features/openwiki-transport/tests/fixtures/openwiki-prompt-off/deepseek.prompt"
+target = "tests/fixtures/openwiki-prompt-off/deepseek.prompt"
+
+[[overlay_file]]
+source = "features/openwiki-transport/tests/fixtures/openwiki-prompt-off/glm.prompt"
+target = "tests/fixtures/openwiki-prompt-off/glm.prompt"
+
+[[overlay_file]]
+source = "features/openwiki-transport/tests/fixtures/openwiki-prompt-off/qwen.prompt"
+target = "tests/fixtures/openwiki-prompt-off/qwen.prompt"
+
+[[overlay_file]]
+source = "features/openwiki-transport/tests/fixtures/openwiki-prompt-off/dsml41.prompt"
+target = "tests/fixtures/openwiki-prompt-off/dsml41.prompt"
+
+[[test]]
+command = "bash tests/run_openwiki_transport.sh"
+required = true
+
+[[test]]
+command = "bash tests/run_openwiki_prompt_off.sh"
+required = true
+
+[[test]]
+command = "bash tests/run_openwiki_request.sh"
+required = true
