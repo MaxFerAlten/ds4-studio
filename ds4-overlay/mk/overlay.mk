@@ -69,8 +69,32 @@ overlay-strix-halo-rebuild:
 		DS4_LINK="$(HIPCC) $(ROCM_CFLAGS)" \
 		DS4_LINK_LIBS="$(ROCM_LDLIBS)"
 
+# Upstream's test-rocm links with its own CORE_OBJS, which lacks
+# ds4_engram.o, so with rocm-deepseek41 enabled it can never link. Same
+# targets and checks here, built with the overlay object set and without -B
+# (the shadow already holds ROCm objects). ds4_test opens a real GGUF
+# (DS4_TEST_MODEL, default ./ds4flash.gguf); without one it is reported as
+# SKIP, never as a pass.
+DS4_TEST_MODEL ?= ds4flash.gguf
+
 overlay-test-rocm:
-	$(MAKE) -f Makefile.overlay test-rocm
+	$(MAKE) -f Makefile.overlay ds4_test ds4_agent_test ds4-eval q4k-dot-test mxfp4-dot-test \
+		test-session-state \
+		tests/test_layer_pack tests/test_engine_mgpu_placement tests/test_gpu_args tests/test_prompt_prefix \
+		ds4 ds4-server ds4-bench ds4-agent \
+		$(DS4_OVERLAY_ROCM_VARS)
+	./ds4-eval --self-test-extractors
+	./ds4_agent_test
+	@if [ -f "$(DS4_TEST_MODEL)" ]; then \
+		DS4_TEST_MODEL="$(DS4_TEST_MODEL)" ./ds4_test; \
+	else \
+		echo "SKIP ds4_test: no model at $(DS4_TEST_MODEL) (set DS4_TEST_MODEL=<gguf>)"; \
+	fi
+	./tests/test_layer_pack
+	./tests/test_engine_mgpu_placement
+	./tests/test_gpu_args
+	./tests/test_gpu_args_cli.sh
+	./tests/test_prompt_prefix
 
 # -----------------------------------------------------------------------------
 # DeepSeek V4.1 checks that exist only downstream.  Upstream carries the V4.1
