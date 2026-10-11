@@ -19,7 +19,14 @@ const REPO_ROOT = resolve(fileURLToPath(import.meta.url), "..", "..", "..", ".."
 const SKILL_PATH = resolve(REPO_ROOT, "skills/lean/SKILL.md");
 const skillBytes = await readFile(SKILL_PATH);
 const skill = skillBytes.toString("utf8");
-const cSource = await readFile(resolve(REPO_ROOT, "ds4_agent.c"), "utf8");
+// The C tool schema is DS4 Studio's agent, which exists only in the composed
+// shadow (studio/ds4_agent.c); the root ds4_agent.c is upstream's and has no
+// lean_check. DS4_CONFORMANCE_SHADOW names the shadow, as in
+// agentTextParity.test.mjs. Without it the C surface is left out and the
+// C-only checks skip explicitly; every other surface is still checked.
+const SHADOW = process.env.DS4_CONFORMANCE_SHADOW || "";
+const cSource = SHADOW ? await readFile(resolve(SHADOW, "studio", "ds4_agent.c"), "utf8") : null;
+const NO_SHADOW = "DS4_CONFORMANCE_SHADOW is not set: the C tool schema lives in the composed studio/ds4_agent.c";
 const { AGENT_SYSTEM_PROMPT } = await import("../agentSession.mjs");
 const rules = agentCoreRulesSection();
 const jsLeanTool = AGENT_TOOLS.find((t) => t.function?.name === "lean_check");
@@ -32,12 +39,17 @@ function cLeanDescription() {
   return m[1].replace(/\\\\"/g, '"');
 }
 
+/** The JS tool schema, plus the C one when the composed shadow is available. */
+const TOOL_SCHEMAS = () => [
+  ["JS tool schema", jsLeanTool.function.description],
+  ...(cSource ? [["C tool schema", cLeanDescription()]] : []),
+];
+
 const MODEL_FACING = () => [
   ["skills/lean/SKILL.md", skill],
   ["system prompt", AGENT_SYSTEM_PROMPT],
   ["runtime rules", rules],
-  ["JS tool schema", jsLeanTool.function.description],
-  ["C tool schema", cLeanDescription()],
+  ...TOOL_SCHEMAS(),
 ];
 
 test("no surface claims Lean does not execute code", () => {
@@ -55,17 +67,15 @@ test("no surface claims Lean does not execute code", () => {
 });
 
 test("the tool schemas state what is actually true about elaboration", () => {
-  for (const [name, text] of [
-    ["JS tool schema", jsLeanTool.function.description],
-    ["C tool schema", cLeanDescription()],
-  ]) {
+  for (const [name, text] of TOOL_SCHEMAS()) {
     assert.match(text, /elaboration may execute metaprograms, tactics, #eval/i, `${name}`);
     assert.match(text, /mandatory sandbox/i, `${name}`);
     assert.match(text, /does not invoke a compiled main/i, `${name}`);
   }
 });
 
-test("the JS and C tool schemas describe lean_check identically", () => {
+test("the JS and C tool schemas describe lean_check identically", (t) => {
+  if (!cSource) return t.skip(NO_SHADOW);
   assert.equal(cLeanDescription(), jsLeanTool.function.description);
 });
 
@@ -108,7 +118,7 @@ test("every surface points Lean work at lean_check, never at bash", () => {
   assert.match(rules, /Use lean_check \(not bash\)/);
   assert.match(AGENT_SYSTEM_PROMPT, /Use lean_check, never bash/);
   assert.match(skill, /Non usare Bash, lake, lean, elan/);
-  for (const [name, text] of [["JS tool schema", jsLeanTool.function.description], ["C tool schema", cLeanDescription()]]) {
+  for (const [name, text] of TOOL_SCHEMAS()) {
     assert.doesNotMatch(text, /\bbash\b/i, `${name} must not suggest bash`);
   }
 });

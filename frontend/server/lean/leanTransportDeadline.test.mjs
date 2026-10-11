@@ -10,15 +10,24 @@
 // Both sides are read from their real definitions — the C macro out of
 // ds4_agent.c, the shutdown windows out of leanProcess.mjs — so this fails if
 // either drifts, which is the whole point of not hardcoding the numbers twice.
+//
+// The C side is DS4 Studio's agent, which exists only in the composed shadow
+// (studio/ds4_agent.c = upstream ds4_agent.c + studio__ds4_agent.c.patch); the
+// root ds4_agent.c is upstream's and has no Lean client. As in
+// agentTextParity.test.mjs, DS4_CONFORMANCE_SHADOW names the shadow, and
+// without it these tests skip explicitly instead of passing.
 
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { test } from "node:test";
 
 import { LEAN_MAX_TIMEOUT_SEC } from "./leanConstants.mjs";
 import { LEAN_PROCESS_KILL_GRACE_MS, LEAN_PROCESS_SETTLE_TIMEOUT_MS } from "./leanProcess.mjs";
 
-const AGENT_SOURCE_URL = new URL("../../../ds4_agent.c", import.meta.url);
+const SHADOW = process.env.DS4_CONFORMANCE_SHADOW || "";
+const AGENT_SOURCE = SHADOW ? join(SHADOW, "studio", "ds4_agent.c") : "";
+const NO_SHADOW = "DS4_CONFORMANCE_SHADOW is not set: the Lean client lives in the composed studio/ds4_agent.c";
 
 /** Read a `#define NAME <integer>` out of the C source. */
 function readCDefine(source, name) {
@@ -38,8 +47,9 @@ function serverMaxResponseMs(timeoutSec) {
   return timeoutSec * 1000 + LEAN_PROCESS_KILL_GRACE_MS + LEAN_PROCESS_SETTLE_TIMEOUT_MS;
 }
 
-test("LF000-033: native transport deadline exceeds the server worst case at every legal timeout", async () => {
-  const source = await readFile(AGENT_SOURCE_URL, "utf8");
+test("LF000-033: native transport deadline exceeds the server worst case at every legal timeout", async (t) => {
+  if (!AGENT_SOURCE) return t.skip(NO_SHADOW);
+  const source = await readFile(AGENT_SOURCE, "utf8");
   const marginMs = readCDefine(source, "AGENT_LEAN_HTTP_TIMEOUT_MARGIN_MS");
   const cMaxTimeoutSec = readCDefine(source, "AGENT_LEAN_MAX_TIMEOUT_SEC");
 
@@ -64,8 +74,9 @@ test("LF000-033: native transport deadline exceeds the server worst case at ever
   }
 });
 
-test("LF000-033: the surviving slack covers post-process work, not just the kill windows", async () => {
-  const source = await readFile(AGENT_SOURCE_URL, "utf8");
+test("LF000-033: the surviving slack covers post-process work, not just the kill windows", async (t) => {
+  if (!AGENT_SOURCE) return t.skip(NO_SHADOW);
+  const source = await readFile(AGENT_SOURCE, "utf8");
   const marginMs = readCDefine(source, "AGENT_LEAN_HTTP_TIMEOUT_MARGIN_MS");
 
   // Slack is timeout-independent: both sides scale with timeout_sec identically,
