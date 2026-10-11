@@ -1,0 +1,1539 @@
+
+> test:frontend
+> node --test src/*.test.mjs src/research/*.test.mjs src/evolution/*.test.mjs src/agno/*.test.mjs
+
+TAP version 13
+# Subtest: workspace contract exposes mutually exclusive chat, research, Evolution and Agno modes
+ok 1 - workspace contract exposes mutually exclusive chat, research, Evolution and Agno modes
+  ---
+  duration_ms: 5.61253
+  type: 'test'
+  ...
+# Subtest: App.jsx wires /agno routing via history pushState and popstate
+ok 2 - App.jsx wires /agno routing via history pushState and popstate
+  ---
+  duration_ms: 0.876615
+  type: 'test'
+  ...
+# Subtest: agent mode transition is visible and blocks chat until initialization completes
+ok 3 - agent mode transition is visible and blocks chat until initialization completes
+  ---
+  duration_ms: 1.12966
+  type: 'test'
+  ...
+# Subtest: OpenWiki opt-in is session-scoped, default OFF, and only sent on the agent chat request
+ok 4 - OpenWiki opt-in is session-scoped, default OFF, and only sent on the agent chat request
+  ---
+  duration_ms: 1.103219
+  type: 'test'
+  ...
+# Subtest: OpenWiki toggle resets only for its unavailable 503 response
+ok 5 - OpenWiki toggle resets only for its unavailable 503 response
+  ---
+  duration_ms: 0.210983
+  type: 'test'
+  ...
+# Subtest: OpenWiki workspace configuration is below Lean 4 and accepts an absolute path
+ok 6 - OpenWiki workspace configuration is below Lean 4 and accepts an absolute path
+  ---
+  duration_ms: 1.776736
+  type: 'test'
+  ...
+# Subtest: native and legacy /lean commands are intercepted before model inference
+ok 7 - native and legacy /lean commands are intercepted before model inference
+  ---
+  duration_ms: 0.819603
+  type: 'test'
+  ...
+# Subtest: native command busy 409 is never treated as success
+ok 8 - native command busy 409 is never treated as success
+  ---
+  duration_ms: 0.833932
+  type: 'test'
+  ...
+# Subtest: STARTUP_GROUPS has expected structure
+ok 9 - STARTUP_GROUPS has expected structure
+  ---
+  duration_ms: 0.267343
+  type: 'test'
+  ...
+# Subtest: FIELD_LABELS covers all startup groups keys
+ok 10 - FIELD_LABELS covers all startup groups keys
+  ---
+  duration_ms: 0.329755
+  type: 'test'
+  ...
+# Subtest: STARTUP_HELP covers all startup keys
+ok 11 - STARTUP_HELP covers all startup keys
+  ---
+  duration_ms: 0.139312
+  type: 'test'
+  ...
+# Subtest: STARTUP_PLACEHOLDERS only defines a subset; missing keys fall back to '' in JSX
+ok 12 - STARTUP_PLACEHOLDERS only defines a subset; missing keys fall back to '' in JSX
+  ---
+  duration_ms: 0.062773
+  type: 'test'
+  ...
+# Subtest: REQUEST_HELP covers all request fields
+ok 13 - REQUEST_HELP covers all request fields
+  ---
+  duration_ms: 0.05632
+  type: 'test'
+  ...
+# Subtest: REQUEST_PLACEHOLDERS covers all request fields
+ok 14 - REQUEST_PLACEHOLDERS covers all request fields
+  ---
+  duration_ms: 0.04101
+  type: 'test'
+  ...
+# Subtest: STRATEGY_OPTIONS has expected values
+ok 15 - STRATEGY_OPTIONS has expected values
+  ---
+  duration_ms: 0.043515
+  type: 'test'
+  ...
+# Subtest: AGENT_COMMANDS has expected structure
+ok 16 - AGENT_COMMANDS has expected structure
+  ---
+  duration_ms: 0.100246
+  type: 'test'
+  ...
+# Subtest: CHECKBOX_FIELDS, TEXT_FIELDS, ENV_FIELDS are Sets
+ok 17 - CHECKBOX_FIELDS, TEXT_FIELDS, ENV_FIELDS are Sets
+  ---
+  duration_ms: 0.031942
+  type: 'test'
+  ...
+# Subtest: fieldType returns correct type for known keys
+ok 18 - fieldType returns correct type for known keys
+  ---
+  duration_ms: 0.061039
+  type: 'test'
+  ...
+# Subtest: startupHelp returns help text for known keys
+ok 19 - startupHelp returns help text for known keys
+  ---
+  duration_ms: 0.195042
+  type: 'test'
+  ...
+# Subtest: serverFieldValue extracts value from server config
+ok 20 - serverFieldValue extracts value from server config
+  ---
+  duration_ms: 0.065648
+  type: 'test'
+  ...
+# Subtest: requestHelp returns help for known keys
+ok 21 - requestHelp returns help for known keys
+  ---
+  duration_ms: 0.05601
+  type: 'test'
+  ...
+# Subtest: appendAssistantDelta appends content and reasoning to last assistant message
+ok 22 - appendAssistantDelta appends content and reasoning to last assistant message
+  ---
+  duration_ms: 0.074777
+  type: 'test'
+  ...
+# Subtest: appendAssistantDelta creates new array (immutable)
+ok 23 - appendAssistantDelta creates new array (immutable)
+  ---
+  duration_ms: 0.055408
+  type: 'test'
+  ...
+# Subtest: replaceAssistantMessage replaces last assistant message with new content
+ok 24 - replaceAssistantMessage replaces last assistant message with new content
+  ---
+  duration_ms: 0.051741
+  type: 'test'
+  ...
+# Subtest: appendAssistantNotice adds notice to last assistant message
+ok 25 - appendAssistantNotice adds notice to last assistant message
+  ---
+  duration_ms: 0.063675
+  type: 'test'
+  ...
+# Subtest: appendTransientNotice pushes a new assistant message with agentNotice
+ok 26 - appendTransientNotice pushes a new assistant message with agentNotice
+  ---
+  duration_ms: 0.04595
+  type: 'test'
+  ...
+# Subtest: parseSseData joins all data: lines, stripping the prefix
+ok 27 - parseSseData joins all data: lines, stripping the prefix
+  ---
+  duration_ms: 0.142008
+  type: 'test'
+  ...
+# Subtest: parseSseData returns empty string when no data lines present
+ok 28 - parseSseData returns empty string when no data lines present
+  ---
+  duration_ms: 0.032865
+  type: 'test'
+  ...
+# Subtest: formatMetric formats values with suffix
+ok 29 - formatMetric formats values with suffix
+  ---
+  duration_ms: 0.047994
+  type: 'test'
+  ...
+# Subtest: initialExportSettings returns false/unsaved when no window/localStorage
+ok 30 - initialExportSettings returns false/unsaved when no window/localStorage
+  ---
+  duration_ms: 0.069466
+  type: 'test'
+  ...
+# Subtest: SESSION_STORAGE_KEY is a constant string
+ok 31 - SESSION_STORAGE_KEY is a constant string
+  ---
+  duration_ms: 0.030249
+  type: 'test'
+  ...
+# Subtest: readStoredSession returns default session when storage is empty
+ok 32 - readStoredSession returns default session when storage is empty
+  ---
+  duration_ms: 0.055088
+  type: 'test'
+  ...
+# Subtest: readStoredSession parses stored JSON session via window.localStorage
+ok 33 - readStoredSession parses stored JSON session via window.localStorage
+  ---
+  duration_ms: 0.075067
+  type: 'test'
+  ...
+# Subtest: writeStoredSession stores session to window.localStorage (fileName||null, messages||[])
+ok 34 - writeStoredSession stores session to window.localStorage (fileName||null, messages||[])
+  ---
+  duration_ms: 0.406195
+  type: 'test'
+  ...
+# Subtest: clearStoredSession removes session from window.localStorage
+ok 35 - clearStoredSession removes session from window.localStorage
+  ---
+  duration_ms: 0.143691
+  type: 'test'
+  ...
+# Subtest: buildChatMessages prepends a non-empty system message
+ok 36 - buildChatMessages prepends a non-empty system message
+  ---
+  duration_ms: 0.201525
+  type: 'test'
+  ...
+# Subtest: buildChatMessages omits a blank/whitespace system message
+ok 37 - buildChatMessages omits a blank/whitespace system message
+  ---
+  duration_ms: 0.108953
+  type: 'test'
+  ...
+# Subtest: buildChatMessages drops the empty trailing assistant placeholder
+ok 38 - buildChatMessages drops the empty trailing assistant placeholder
+  ---
+  duration_ms: 0.108602
+  type: 'test'
+  ...
+# Subtest: buildChatMessages keeps assistant turns that have content
+ok 39 - buildChatMessages keeps assistant turns that have content
+  ---
+  duration_ms: 0.074746
+  type: 'test'
+  ...
+# Subtest: buildChatMessages excludes transient agentNotice messages (no error echo loop)
+ok 40 - buildChatMessages excludes transient agentNotice messages (no error echo loop)
+  ---
+  duration_ms: 0.068184
+  type: 'test'
+  ...
+# Subtest: buildChatMessages tolerates null/undefined entries
+ok 41 - buildChatMessages tolerates null/undefined entries
+  ---
+  duration_ms: 0.044026
+  type: 'test'
+  ...
+# Subtest: requestFreshNativeAgentSession sends a silent native /new
+ok 42 - requestFreshNativeAgentSession sends a silent native /new
+  ---
+  duration_ms: 0.196885
+  type: 'test'
+  ...
+# Subtest: requestFreshNativeAgentSession never calls agent stop
+ok 43 - requestFreshNativeAgentSession never calls agent stop
+  ---
+  duration_ms: 0.088233
+  type: 'test'
+  ...
+# Subtest: requestFreshNativeAgentSession rejects non-2xx
+ok 44 - requestFreshNativeAgentSession rejects non-2xx
+  ---
+  duration_ms: 0.282492
+  type: 'test'
+  ...
+# Subtest: requestFreshNativeAgentSession rejects payload ok:false
+ok 45 - requestFreshNativeAgentSession rejects payload ok:false
+  ---
+  duration_ms: 0.089556
+  type: 'test'
+  ...
+# Subtest: requestFreshNativeAgentSession rejects payload active:false
+ok 46 - requestFreshNativeAgentSession rejects payload active:false
+  ---
+  duration_ms: 0.069095
+  type: 'test'
+  ...
+# Subtest: shows fullscreen only for a ready rendered diagram
+ok 47 - shows fullscreen only for a ready rendered diagram
+  ---
+  duration_ms: 0.549896
+  type: 'test'
+  ...
+# Subtest: renders an accessible fullscreen trigger without mounting the viewer
+ok 48 - renders an accessible fullscreen trigger without mounting the viewer
+  ---
+  duration_ms: 2.413311
+  type: 'test'
+  ...
+# Subtest: renders inline and display LaTeX with KaTeX markup
+ok 49 - renders inline and display LaTeX with KaTeX markup
+  ---
+  duration_ms: 20.070684
+  type: 'test'
+  ...
+# Subtest: keeps dollar signs inside code blocks as code text
+ok 50 - keeps dollar signs inside code blocks as code text
+  ---
+  duration_ms: 1.637173
+  type: 'test'
+  ...
+# Subtest: renders relative Sage graph links through the artifact endpoint
+ok 51 - renders relative Sage graph links through the artifact endpoint
+  ---
+  duration_ms: 1.822856
+  type: 'test'
+  ...
+# Subtest: renders Mermaid fenced blocks as diagram placeholders
+ok 52 - renders Mermaid fenced blocks as diagram placeholders
+  ---
+  duration_ms: 2.358193
+  type: 'test'
+  ...
+# Subtest: keeps an unfinished Mermaid fence in a stable generating state
+ok 53 - keeps an unfinished Mermaid fence in a stable generating state
+  ---
+  duration_ms: 0.895462
+  type: 'test'
+  ...
+# Subtest: keeps Markdown after a closed Mermaid fence visible
+ok 54 - keeps Markdown after a closed Mermaid fence visible
+  ---
+  duration_ms: 0.89967
+  type: 'test'
+  ...
+# Subtest: renders LaTeX backslash delimiters
+ok 55 - renders LaTeX backslash delimiters
+  ---
+  duration_ms: 3.570455
+  type: 'test'
+  ...
+# Subtest: unwraps latex fenced code so KaTeX renders the math
+ok 56 - unwraps latex fenced code so KaTeX renders the math
+  ---
+  duration_ms: 1.698253
+  type: 'test'
+  ...
+# Subtest: unwraps math fenced code
+ok 57 - unwraps math fenced code
+  ---
+  duration_ms: 1.994041
+  type: 'test'
+  ...
+# Subtest: renders portable KaTeX for bare inequalities and row spacing
+ok 58 - renders portable KaTeX for bare inequalities and row spacing
+  ---
+  duration_ms: 9.805853
+  type: 'test'
+  ...
+# Subtest: renders display-math array environments with literal column pipes
+ok 59 - renders display-math array environments with literal column pipes
+  ---
+  duration_ms: 6.247803
+  type: 'test'
+  ...
+# Subtest: renders GFM tables with math that contains vertical bars
+ok 60 - renders GFM tables with math that contains vertical bars
+  ---
+  duration_ms: 3.040147
+  type: 'test'
+  ...
+# Subtest: renders complete LaTeX documents as Markdown and KaTeX
+ok 61 - renders complete LaTeX documents as Markdown and KaTeX
+  ---
+  duration_ms: 3.986509
+  type: 'test'
+  ...
+# Subtest: converts LaTeX lstlisting environments to fenced code in document previews
+ok 62 - converts LaTeX lstlisting environments to fenced code in document previews
+  ---
+  duration_ms: 0.827248
+  type: 'test'
+  ...
+# Subtest: keeps complete LaTeX documents inside ordinary code fences
+ok 63 - keeps complete LaTeX documents inside ordinary code fences
+  ---
+  duration_ms: 0.42421
+  type: 'test'
+  ...
+# Subtest: converts LaTeX prose formatting, lists, references, and trailing Markdown
+ok 64 - converts LaTeX prose formatting, lists, references, and trailing Markdown
+  ---
+  duration_ms: 4.287848
+  type: 'test'
+  ...
+# Subtest: parses agent control commands independently of agent mode
+ok 65 - parses agent control commands independently of agent mode
+  ---
+  duration_ms: 1.045936
+  type: 'test'
+  ...
+# Subtest: parses every direct native command while agent mode is active
+ok 66 - parses every direct native command while agent mode is active
+  ---
+  duration_ms: 1.088469
+  type: 'test'
+  ...
+# Subtest: leaves JS-loop session commands to the agent chat route
+ok 67 - leaves JS-loop session commands to the agent chat route
+  ---
+  duration_ms: 0.128912
+  type: 'test'
+  ...
+# Subtest: does not intercept direct native commands outside agent mode except crawl
+ok 68 - does not intercept direct native commands outside agent mode except crawl
+  ---
+  duration_ms: 0.067832
+  type: 'test'
+  ...
+# Subtest: /skill is blocked locally outside Agent Mode
+ok 69 - /skill is blocked locally outside Agent Mode
+  ---
+  duration_ms: 0.06658
+  type: 'test'
+  ...
+# Subtest: /skill is routed natively inside Agent Mode
+ok 70 - /skill is routed natively inside Agent Mode
+  ---
+  duration_ms: 0.059256
+  type: 'test'
+  ...
+# Subtest: legacy /lean is routed natively inside Agent Mode
+ok 71 - legacy /lean is routed natively inside Agent Mode
+  ---
+  duration_ms: 0.109394
+  type: 'test'
+  ...
+# Subtest: legacy /lean is blocked locally outside Agent Mode
+ok 72 - legacy /lean is blocked locally outside Agent Mode
+  ---
+  duration_ms: 0.052302
+  type: 'test'
+  ...
+# Subtest: parses pony controls only as agent-scoped commands
+ok 73 - parses pony controls only as agent-scoped commands
+  ---
+  duration_ms: 0.166996
+  type: 'test'
+  ...
+# Subtest: routes sage policy controls through the native command endpoint
+ok 74 - routes sage policy controls through the native command endpoint
+  ---
+  duration_ms: 0.333773
+  type: 'test'
+  ...
+# Subtest: canonicalizes agent aliases and preserves arguments
+ok 75 - canonicalizes agent aliases and preserves arguments
+  ---
+  duration_ms: 0.232986
+  type: 'test'
+  ...
+# Subtest: intercepts unknown slash commands only in active agent mode
+ok 76 - intercepts unknown slash commands only in active agent mode
+  ---
+  duration_ms: 0.657396
+  type: 'test'
+  ...
+# Subtest: formats native command success with structured data
+ok 77 - formats native command success with structured data
+  ---
+  duration_ms: 0.118602
+  type: 'test'
+  ...
+# Subtest: formats native command errors without requiring JSON data
+ok 78 - formats native command errors without requiring JSON data
+  ---
+  duration_ms: 0.034177
+  type: 'test'
+  ...
+# Subtest: parses /pageagent status
+ok 79 - parses /pageagent status
+  ---
+  duration_ms: 0.041851
+  type: 'test'
+  ...
+# Subtest: parses /pageagent stop
+ok 80 - parses /pageagent stop
+  ---
+  duration_ms: 0.024898
+  type: 'test'
+  ...
+# Subtest: parses /pageagent run with task
+ok 81 - parses /pageagent run with task
+  ---
+  duration_ms: 0.032964
+  type: 'test'
+  ...
+# Subtest: parses /ui as alias for pageagent run
+ok 82 - parses /ui as alias for pageagent run
+  ---
+  duration_ms: 0.03577
+  type: 'test'
+  ...
+# Subtest: /pageagent commands work independently of agent mode
+ok 83 - /pageagent commands work independently of agent mode
+  ---
+  duration_ms: 0.029979
+  type: 'test'
+  ...
+# Subtest: parses /pageagent start and /pageagent on
+ok 84 - parses /pageagent start and /pageagent on
+  ---
+  duration_ms: 0.03598
+  type: 'test'
+  ...
+# Subtest: parses /pageagent off
+ok 85 - parses /pageagent off
+  ---
+  duration_ms: 0.028005
+  type: 'test'
+  ...
+# Subtest: /debug toggles locally and never reaches the model
+ok 86 - /debug toggles locally and never reaches the model
+  ---
+  duration_ms: 0.033275
+  type: 'test'
+  ...
+# Subtest: formatDebugFrames renders a turn with its compression and guard block
+ok 87 - formatDebugFrames renders a turn with its compression and guard block
+  ---
+  duration_ms: 0.287072
+  type: 'test'
+  ...
+# Subtest: formatDebugFrames stays silent with nothing to report
+ok 88 - formatDebugFrames stays silent with nothing to report
+  ---
+  duration_ms: 0.035029
+  type: 'test'
+  ...
+# Subtest: returns empty string for missing or empty history
+ok 89 - returns empty string for missing or empty history
+  ---
+  duration_ms: 1.266077
+  type: 'test'
+  ...
+# Subtest: skips client-side agent notices, empty assistant placeholders and blank user turns
+ok 90 - skips client-side agent notices, empty assistant placeholders and blank user turns
+  ---
+  duration_ms: 0.14332
+  type: 'test'
+  ...
+# Subtest: serialises a pending attachment user turn so the agent receives the document
+ok 91 - serialises a pending attachment user turn so the agent receives the document
+  ---
+  duration_ms: 0.130075
+  type: 'test'
+  ...
+# Subtest: preserves order and roles of multi-turn history
+ok 92 - preserves order and roles of multi-turn history
+  ---
+  duration_ms: 0.153661
+  type: 'test'
+  ...
+# Subtest: withAgentPriming is a noop when there is nothing to prime
+ok 93 - withAgentPriming is a noop when there is nothing to prime
+  ---
+  duration_ms: 0.069476
+  type: 'test'
+  ...
+# Subtest: withAgentPriming wraps the new request below the history block
+ok 94 - withAgentPriming wraps the new request below the history block
+  ---
+  duration_ms: 0.11225
+  type: 'test'
+  ...
+# Subtest: skill toggles re-arm priming; session-changing and other commands do not
+ok 95 - skill toggles re-arm priming; session-changing and other commands do not
+  ---
+  duration_ms: 0.346227
+  type: 'test'
+  ...
+# Subtest: generic skill mutations re-arm priming only for exact canonical commands
+ok 96 - generic skill mutations re-arm priming only for exact canonical commands
+  ---
+  duration_ms: 0.073414
+  type: 'test'
+  ...
+# Subtest: priming replays the WHOLE conversation from the first turn (no cap / recent window)
+ok 97 - priming replays the WHOLE conversation from the first turn (no cap / recent window)
+  ---
+  duration_ms: 0.331528
+  type: 'test'
+  ...
+# Subtest: a real mutation on a rebuilding command re-arms the priming replay
+ok 98 - a real mutation on a rebuilding command re-arms the priming replay
+  ---
+  duration_ms: 0.266692
+  type: 'test'
+  ...
+# Subtest: a status command never re-arms priming, however it answers
+ok 99 - a status command never re-arms priming, however it answers
+  ---
+  duration_ms: 0.108061
+  type: 'test'
+  ...
+# Subtest: a failed command is not a success, whatever the payload says
+ok 100 - a failed command is not a success, whatever the payload says
+  ---
+  duration_ms: 0.05131
+  type: 'test'
+  ...
+# Subtest: agnoApi never attaches an Authorization header (no tokens in the client)
+ok 101 - agnoApi never attaches an Authorization header (no tokens in the client)
+  ---
+  duration_ms: 17.997488
+  type: 'test'
+  ...
+# Subtest: fetchAgnoStatus reads /api/agno/status
+ok 102 - fetchAgnoStatus reads /api/agno/status
+  ---
+  duration_ms: 0.344915
+  type: 'test'
+  ...
+# Subtest: startAgno posts to /api/agno/start
+ok 103 - startAgno posts to /api/agno/start
+  ---
+  duration_ms: 0.307652
+  type: 'test'
+  ...
+# Subtest: createAgnoRun posts payload to /api/agno/runs
+ok 104 - createAgnoRun posts payload to /api/agno/runs
+  ---
+  duration_ms: 0.669881
+  type: 'test'
+  ...
+# Subtest: createAgnoRun surfaces NATIVE_AGENT_ACTIVE as a typed error
+ok 105 - createAgnoRun surfaces NATIVE_AGENT_ACTIVE as a typed error
+  ---
+  duration_ms: 0.589774
+  type: 'test'
+  ...
+# Subtest: fetchAgnoRuns reads /api/agno/runs
+ok 106 - fetchAgnoRuns reads /api/agno/runs
+  ---
+  duration_ms: 0.262383
+  type: 'test'
+  ...
+# Subtest: fetchAgnoRun and cancelAgnoRun target the run id path
+ok 107 - fetchAgnoRun and cancelAgnoRun target the run id path
+  ---
+  duration_ms: 0.469278
+  type: 'test'
+  ...
+# Subtest: ensureAgnoUi uses POST to /api/agno/agent-ui/ensure
+ok 108 - ensureAgnoUi uses POST to /api/agno/agent-ui/ensure
+  ---
+  duration_ms: 0.645353
+  type: 'test'
+  ...
+# Subtest: ensureAgnoUi propagates server error codes
+ok 109 - ensureAgnoUi propagates server error codes
+  ---
+  duration_ms: 0.509446
+  type: 'test'
+  ...
+# Subtest: stopAgnoUi uses POST to /api/agno/agent-ui/stop
+ok 110 - stopAgnoUi uses POST to /api/agno/agent-ui/stop
+  ---
+  duration_ms: 0.387488
+  type: 'test'
+  ...
+# Subtest: openAgnoRunEvents includes lastSeq in the stream URL
+ok 111 - openAgnoRunEvents includes lastSeq in the stream URL
+  ---
+  duration_ms: 0.545136
+  type: 'test'
+  ...
+# Subtest: openAgnoRunEvents dispatches events reassembled from split network chunks
+ok 112 - openAgnoRunEvents dispatches events reassembled from split network chunks
+  ---
+  duration_ms: 0.249989
+  type: 'test'
+  ...
+# Subtest: openAgnoRunEvents ignores event types outside the known Ds4AgnoEvent enum
+ok 113 - openAgnoRunEvents ignores event types outside the known Ds4AgnoEvent enum
+  ---
+  duration_ms: 0.091629
+  type: 'test'
+  ...
+# Subtest: parseAgnoEventData returns null on malformed JSON instead of throwing
+ok 114 - parseAgnoEventData returns null on malformed JSON instead of throwing
+  ---
+  duration_ms: 0.391215
+  type: 'test'
+  ...
+# Subtest: initialAgnoRun starts idle with no terminal state
+ok 115 - initialAgnoRun starts idle with no terminal state
+  ---
+  duration_ms: 0.492674
+  type: 'test'
+  ...
+# Subtest: applyAgnoEvent accumulates content deltas in order
+ok 116 - applyAgnoEvent accumulates content deltas in order
+  ---
+  duration_ms: 0.130065
+  type: 'test'
+  ...
+# Subtest: applyAgnoEvent ignores duplicate or out-of-order sequence numbers
+ok 117 - applyAgnoEvent ignores duplicate or out-of-order sequence numbers
+  ---
+  duration_ms: 0.06127
+  type: 'test'
+  ...
+# Subtest: applyAgnoEvent locks in terminal state and ignores further events
+ok 118 - applyAgnoEvent locks in terminal state and ignores further events
+  ---
+  duration_ms: 0.687766
+  type: 'test'
+  ...
+# Subtest: applyAgnoEvent captures run_failed error content
+ok 119 - applyAgnoEvent captures run_failed error content
+  ---
+  duration_ms: 0.073243
+  type: 'test'
+  ...
+# Subtest: applyAgnoEvent correlates tool_call and tool_result by toolCallId
+ok 120 - applyAgnoEvent correlates tool_call and tool_result by toolCallId
+  ---
+  duration_ms: 0.130877
+  type: 'test'
+  ...
+# Subtest: applyAgnoEvent handles tool_call without toolCallId by appending
+ok 121 - applyAgnoEvent handles tool_call without toolCallId by appending
+  ---
+  duration_ms: 0.079445
+  type: 'test'
+  ...
+# Subtest: applyAgnoEvent marks tool_result with isError as error status
+ok 122 - applyAgnoEvent marks tool_result with isError as error status
+  ---
+  duration_ms: 0.062372
+  type: 'test'
+  ...
+# Subtest: launchAgnoUi opens about:blank before await
+ok 123 - launchAgnoUi opens about:blank before await
+  ---
+  duration_ms: 1.208725
+  type: 'test'
+  ...
+# Subtest: uses stable window name
+ok 124 - uses stable window name
+  ---
+  duration_ms: 0.972432
+  type: 'test'
+  ...
+# Subtest: nullifies opener
+ok 125 - nullifies opener
+  ---
+  duration_ms: 0.188128
+  type: 'test'
+  ...
+# Subtest: closes popup if ensure fails
+ok 126 - closes popup if ensure fails
+  ---
+  duration_ms: 0.522753
+  type: 'test'
+  ...
+# Subtest: closes popup if URL is remote
+ok 127 - closes popup if URL is remote
+  ---
+  duration_ms: 0.204951
+  type: 'test'
+  ...
+# Subtest: throws POPUP_BLOCKED if window.open returns null
+ok 128 - throws POPUP_BLOCKED if window.open returns null
+  ---
+  duration_ms: 0.137028
+  type: 'test'
+  ...
+# Subtest: propagates POPUP_BLOCKED error
+ok 129 - propagates POPUP_BLOCKED error
+  ---
+  duration_ms: 0.18426
+  type: 'test'
+  ...
+# Subtest: accepts localhost URL
+ok 130 - accepts localhost URL
+  ---
+  duration_ms: 0.160363
+  type: 'test'
+  ...
+# Subtest: accepts 127.0.0.1 URL
+ok 131 - accepts 127.0.0.1 URL
+  ---
+  duration_ms: 0.34771
+  type: 'test'
+  ...
+# Subtest: rejects https URL
+ok 132 - rejects https URL
+  ---
+  duration_ms: 0.310968
+  type: 'test'
+  ...
+# Subtest: rejects non-loopback IP URL
+ok 133 - rejects non-loopback IP URL
+  ---
+  duration_ms: 0.285087
+  type: 'test'
+  ...
+# Subtest: backendHealthLabel names CUDA model copy startup
+ok 134 - backendHealthLabel names CUDA model copy startup
+  ---
+  duration_ms: 0.522893
+  type: 'test'
+  ...
+# Subtest: backendStartupDetail reports CUDA model copy size and elapsed time
+ok 135 - backendStartupDetail reports CUDA model copy size and elapsed time
+  ---
+  duration_ms: 0.229609
+  type: 'test'
+  ...
+# Subtest: backendHealthLabel keeps generic waiting label when startup reason is unknown
+ok 136 - backendHealthLabel keeps generic waiting label when startup reason is unknown
+  ---
+  duration_ms: 0.106748
+  type: 'test'
+  ...
+# Subtest: streamFailureNotice explains backend termination during startup or restart
+ok 137 - streamFailureNotice explains backend termination during startup or restart
+  ---
+  duration_ms: 0.769606
+  type: 'test'
+  ...
+# Subtest: fetchCallDebug requests the limit and returns entries
+ok 138 - fetchCallDebug requests the limit and returns entries
+  ---
+  duration_ms: 0.983234
+  type: 'test'
+  ...
+# Subtest: fetchCallDebug tolerates a missing entries array
+ok 139 - fetchCallDebug tolerates a missing entries array
+  ---
+  duration_ms: 0.146797
+  type: 'test'
+  ...
+# Subtest: fetchCallDebug propagates server errors
+ok 140 - fetchCallDebug propagates server errors
+  ---
+  duration_ms: 1.00693
+  type: 'test'
+  ...
+# Subtest: clearCallDebug issues a DELETE
+ok 141 - clearCallDebug issues a DELETE
+  ---
+  duration_ms: 0.15834
+  type: 'test'
+  ...
+# Subtest: no module reachable from src/ imports a Node built-in
+ok 142 - no module reachable from src/ imports a Node built-in
+  ---
+  duration_ms: 7.099278
+  type: 'test'
+  ...
+# Subtest: exports user and assistant turns as markdown
+ok 143 - exports user and assistant turns as markdown
+  ---
+  duration_ms: 3.168629
+  type: 'test'
+  ...
+# Subtest: includes reasoning only when requested
+ok 144 - includes reasoning only when requested
+  ---
+  duration_ms: 0.284697
+  type: 'test'
+  ...
+# Subtest: exports assistant tool calls and tool results
+ok 145 - exports assistant tool calls and tool results
+  ---
+  duration_ms: 0.352139
+  type: 'test'
+  ...
+# Subtest: parses exported markdown back into chat messages
+ok 146 - parses exported markdown back into chat messages
+  ---
+  duration_ms: 0.476462
+  type: 'test'
+  ...
+# Subtest: normalizes backslash math delimiters for Obsidian outside code fences
+ok 147 - normalizes backslash math delimiters for Obsidian outside code fences
+  ---
+  duration_ms: 0.208087
+  type: 'test'
+  ...
+# Subtest: trims whitespace inside dollar math delimiters for Obsidian
+ok 148 - trims whitespace inside dollar math delimiters for Obsidian
+  ---
+  duration_ms: 0.12297
+  type: 'test'
+  ...
+# Subtest: preserves literal pipes inside display-math array environments for Obsidian
+ok 149 - preserves literal pipes inside display-math array environments for Obsidian
+  ---
+  duration_ms: 0.095477
+  type: 'test'
+  ...
+# Subtest: rewrites bare < > and \\[..] spacing to portable KaTeX for Obsidian
+ok 150 - rewrites bare < > and \\[..] spacing to portable KaTeX for Obsidian
+  ---
+  duration_ms: 0.139412
+  type: 'test'
+  ...
+# Subtest: normalizes vertical bars inside table math for Obsidian
+ok 151 - normalizes vertical bars inside table math for Obsidian
+  ---
+  duration_ms: 0.228587
+  type: 'test'
+  ...
+# Subtest: unwraps latex/math fenced blocks into Obsidian $$ math
+ok 152 - unwraps latex/math fenced blocks into Obsidian $$ math
+  ---
+  duration_ms: 0.374402
+  type: 'test'
+  ...
+# Subtest: wraps bare math fence body into $$ display math
+ok 153 - wraps bare math fence body into $$ display math
+  ---
+  duration_ms: 0.193107
+  type: 'test'
+  ...
+# Subtest: generates stable markdown file names
+ok 154 - generates stable markdown file names
+  ---
+  duration_ms: 0.345866
+  type: 'test'
+  ...
+# Subtest: professional export keeps only editorial output and embeds Sage graphs as base64
+ok 155 - professional export keeps only editorial output and embeds Sage graphs as base64
+  ---
+  duration_ms: 0.647035
+  type: 'test'
+  ...
+# Subtest: professional export resolves relative Sage graphs before embedding them
+ok 156 - professional export resolves relative Sage graphs before embedding them
+  ---
+  duration_ms: 0.319074
+  type: 'test'
+  ...
+# Subtest: agent-mode client notices are not serialised as assistant turns
+ok 157 - agent-mode client notices are not serialised as assistant turns
+  ---
+  duration_ms: 0.082832
+  type: 'test'
+  ...
+# Subtest: appends metadata marker when metadata provided and parses it back
+ok 158 - appends metadata marker when metadata provided and parses it back
+  ---
+  duration_ms: 0.660422
+  type: 'test'
+  ...
+# Subtest: metadata marker is stripped before block parsing
+ok 159 - metadata marker is stripped before block parsing
+  ---
+  duration_ms: 0.117159
+  type: 'test'
+  ...
+# Subtest: parseConversationMetadata returns null when no marker present
+ok 160 - parseConversationMetadata returns null when no marker present
+  ---
+  duration_ms: 0.068824
+  type: 'test'
+  ...
+# Subtest: exportConversationMarkdown preserves raw shell transcript lines
+ok 161 - exportConversationMarkdown preserves raw shell transcript lines
+  ---
+  duration_ms: 0.144603
+  type: 'test'
+  ...
+# Subtest: exportConversationMarkdown does not normalize tool message content
+ok 162 - exportConversationMarkdown does not normalize tool message content
+  ---
+  duration_ms: 0.104335
+  type: 'test'
+  ...
+# Subtest: exportConversationMarkdown still normalizes ordinary math
+ok 163 - exportConversationMarkdown still normalizes ordinary math
+  ---
+  duration_ms: 0.077181
+  type: 'test'
+  ...
+# Subtest: exportConversationMarkdown respects rawToolTranscript flag
+ok 164 - exportConversationMarkdown respects rawToolTranscript flag
+  ---
+  duration_ms: 0.083564
+  type: 'test'
+  ...
+# Subtest: exportConversationMarkdown preserves native-agent prefix lines
+ok 165 - exportConversationMarkdown preserves native-agent prefix lines
+  ---
+  duration_ms: 0.064276
+  type: 'test'
+  ...
+# Subtest: exportConversationMarkdownRaw preserves all content unchanged
+ok 166 - exportConversationMarkdownRaw preserves all content unchanged
+  ---
+  duration_ms: 0.718966
+  type: 'test'
+  ...
+# Subtest: exportConversationMarkdownRaw preserves tool messages
+ok 167 - exportConversationMarkdownRaw preserves tool messages
+  ---
+  duration_ms: 0.111318
+  type: 'test'
+  ...
+# Subtest: exportConversationMarkdownRaw skips agentNotice messages
+ok 168 - exportConversationMarkdownRaw skips agentNotice messages
+  ---
+  duration_ms: 0.069597
+  type: 'test'
+  ...
+# Subtest: agentNotice messages flagged exportable ARE included (e.g. /crawl results)
+ok 169 - agentNotice messages flagged exportable ARE included (e.g. /crawl results)
+  ---
+  duration_ms: 0.119093
+  type: 'test'
+  ...
+# Subtest: parseConversationMarkdown marks messages as archive
+ok 170 - parseConversationMarkdown marks messages as archive
+  ---
+  duration_ms: 0.097701
+  type: 'test'
+  ...
+# Subtest: buildChatMessages excludes archive messages
+ok 171 - buildChatMessages excludes archive messages
+  ---
+  duration_ms: 0.100417
+  type: 'test'
+  ...
+# Subtest: normalizeAgentMessage rejects archive messages
+ok 172 - normalizeAgentMessage rejects archive messages
+  ---
+  duration_ms: 0.04102
+  type: 'test'
+  ...
+# Subtest: CERTIFICATION: original bug scenario — shell transcript preserved
+ok 173 - CERTIFICATION: original bug scenario — shell transcript preserved
+  ---
+  duration_ms: 0.11737
+  type: 'test'
+  ...
+# Subtest: CERTIFICATION: original bug scenario — raw export is completely raw
+ok 174 - CERTIFICATION: original bug scenario — raw export is completely raw
+  ---
+  duration_ms: 0.056841
+  type: 'test'
+  ...
+# Subtest: CERTIFICATION: archive messages blocked from operational context
+ok 175 - CERTIFICATION: archive messages blocked from operational context
+  ---
+  duration_ms: 0.186514
+  type: 'test'
+  ...
+# Subtest: CERTIFICATION: anti-loop guard limits
+ok 176 - CERTIFICATION: anti-loop guard limits
+  ---
+  duration_ms: 0.036582
+  type: 'test'
+  ...
+# Subtest: standard export hides Sage trace while preserving the canonical report
+ok 177 - standard export hides Sage trace while preserving the canonical report
+  ---
+  duration_ms: 0.194791
+  type: 'test'
+  ...
+# Subtest: raw export preserves Sage trace for debugging
+ok 178 - raw export preserves Sage trace for debugging
+  ---
+  duration_ms: 0.085036
+  type: 'test'
+  ...
+# Subtest: professional export selects artifacts from the canonical report run only
+ok 179 - professional export selects artifacts from the canonical report run only
+  ---
+  duration_ms: 0.282963
+  type: 'test'
+  ...
+# Subtest: CERTIFICATION: end-to-end — full conversation round-trip
+ok 180 - CERTIFICATION: end-to-end — full conversation round-trip
+  ---
+  duration_ms: 0.234419
+  type: 'test'
+  ...
+# Subtest: UTF8-001 export preserves Lean tool arguments byte for byte
+ok 181 - UTF8-001 export preserves Lean tool arguments byte for byte
+  ---
+  duration_ms: 0.274156
+  type: 'test'
+  ...
+# Subtest: UTF8-001 raw export preserves Lean tool arguments byte for byte
+ok 182 - UTF8-001 raw export preserves Lean tool arguments byte for byte
+  ---
+  duration_ms: 0.065919
+  type: 'test'
+  ...
+# Subtest: UTF8-001 the exported tool-call JSON round-trips to the exact source
+ok 183 - UTF8-001 the exported tool-call JSON round-trips to the exact source
+  ---
+  duration_ms: 0.104234
+  type: 'test'
+  ...
+# Subtest: UTF8-001 the exported lean fence is byte-identical to the verified source
+ok 184 - UTF8-001 the exported lean fence is byte-identical to the verified source
+  ---
+  duration_ms: 0.074145
+  type: 'test'
+  ...
+# Subtest: UTF8-001 math normalization leaves Lean code fences alone
+ok 185 - UTF8-001 math normalization leaves Lean code fences alone
+  ---
+  duration_ms: 0.067693
+  type: 'test'
+  ...
+# Subtest: UTF8-001 the exported markdown strict-decodes as UTF-8
+ok 186 - UTF8-001 the exported markdown strict-decodes as UTF-8
+  ---
+  duration_ms: 0.207566
+  type: 'test'
+  ...
+# Subtest: UTF8-001 export round-trips Lean Unicode back through the parser
+ok 187 - UTF8-001 export round-trips Lean Unicode back through the parser
+  ---
+  duration_ms: 0.149262
+  type: 'test'
+  ...
+# Subtest: coalesces content and reasoning until scheduled flush
+ok 188 - coalesces content and reasoning until scheduled flush
+  ---
+  duration_ms: 1.207933
+  type: 'test'
+  ...
+# Subtest: flush emits pending delta immediately and clears scheduled timer
+ok 189 - flush emits pending delta immediately and clears scheduled timer
+  ---
+  duration_ms: 0.160735
+  type: 'test'
+  ...
+# Subtest: cancel drops buffered delta
+ok 190 - cancel drops buffered delta
+  ---
+  duration_ms: 0.108822
+  type: 'test'
+  ...
+# Subtest: Evolution mutations attach Bearer token and exact review body
+ok 191 - Evolution mutations attach Bearer token and exact review body
+  ---
+  duration_ms: 18.135769
+  type: 'test'
+  ...
+# Subtest: Evolution reads do not attach authorization and server errors remain failures
+ok 192 - Evolution reads do not attach authorization and server errors remain failures
+  ---
+  duration_ms: 0.767682
+  type: 'test'
+  ...
+# Subtest: submitEvolutionCandidate posts candidate to the manual candidate endpoint with token
+ok 193 - submitEvolutionCandidate posts candidate to the manual candidate endpoint with token
+  ---
+  duration_ms: 0.474458
+  type: 'test'
+  ...
+# Subtest: Evolution UI store ignores duplicate sequences and applies ordered state DTO events
+ok 194 - Evolution UI store ignores duplicate sequences and applies ordered state DTO events
+  ---
+  duration_ms: 0.528204
+  type: 'test'
+  ...
+# Subtest: Evolution UI store marks a sequence gap stale until a full refresh
+ok 195 - Evolution UI store marks a sequence gap stale until a full refresh
+  ---
+  duration_ms: 0.097551
+  type: 'test'
+  ...
+# Subtest: reads no saved export reasoning preference as null
+ok 196 - reads no saved export reasoning preference as null
+  ---
+  duration_ms: 0.502312
+  type: 'test'
+  ...
+# Subtest: persists export reasoning preference as a boolean
+ok 197 - persists export reasoning preference as a boolean
+  ---
+  duration_ms: 0.091529
+  type: 'test'
+  ...
+# Subtest: ignores invalid saved export reasoning values
+ok 198 - ignores invalid saved export reasoning values
+  ---
+  duration_ms: 0.055239
+  type: 'test'
+  ...
+# Subtest: clears saved export reasoning preference
+ok 199 - clears saved export reasoning preference
+  ---
+  duration_ms: 0.647247
+  type: 'test'
+  ...
+# Subtest: historyHasPersistableAssistant accepts agent transcripts ending with an empty placeholder
+ok 200 - historyHasPersistableAssistant accepts agent transcripts ending with an empty placeholder
+  ---
+  duration_ms: 0.534655
+  type: 'test'
+  ...
+# Subtest: historyHasPersistableAssistant ignores UI notices and blank turns
+ok 201 - historyHasPersistableAssistant ignores UI notices and blank turns
+  ---
+  duration_ms: 0.093823
+  type: 'test'
+  ...
+# Subtest: history metadata helpers distinguish stale summaries from non-agent sessions
+ok 202 - history metadata helpers distinguish stale summaries from non-agent sessions
+  ---
+  duration_ms: 0.094104
+  type: 'test'
+  ...
+# Subtest: clamps Mermaid zoom between 25% and 500%
+ok 203 - clamps Mermaid zoom between 25% and 500%
+  ---
+  duration_ms: 0.517042
+  type: 'test'
+  ...
+# Subtest: keeps the point under the cursor fixed while zooming
+ok 204 - keeps the point under the cursor fixed while zooming
+  ---
+  duration_ms: 0.418549
+  type: 'test'
+  ...
+# Subtest: fits and centers a Mermaid diagram inside the viewport
+ok 205 - fits and centers a Mermaid diagram inside the viewport
+  ---
+  duration_ms: 0.128362
+  type: 'test'
+  ...
+# Subtest: fit respects the maximum zoom for small diagrams
+ok 206 - fit respects the maximum zoom for small diagrams
+  ---
+  duration_ms: 0.073684
+  type: 'test'
+  ...
+# Subtest: only the message role label turns strong text into a block
+ok 207 - only the message role label turns strong text into a block
+  ---
+  duration_ms: 2.727976
+  type: 'test'
+  ...
+# Subtest: documentIsVisible allows polling when no document object exists
+ok 208 - documentIsVisible allows polling when no document object exists
+  ---
+  duration_ms: 0.558603
+  type: 'test'
+  ...
+# Subtest: documentIsVisible follows document.hidden
+ok 209 - documentIsVisible follows document.hidden
+  ---
+  duration_ms: 0.093914
+  type: 'test'
+  ...
+# Subtest: startResearch posts the query and returns sessionId
+ok 210 - startResearch posts the query and returns sessionId
+  ---
+  duration_ms: 14.705157
+  type: 'test'
+  ...
+# Subtest: startResearch surfaces the server error message
+ok 211 - startResearch surfaces the server error message
+  ---
+  duration_ms: 0.413809
+  type: 'test'
+  ...
+# Subtest: sendFeedback posts action and plan
+ok 212 - sendFeedback posts action and plan
+  ---
+  duration_ms: 0.260519
+  type: 'test'
+  ...
+# Subtest: cancelResearch posts the sessionId
+ok 213 - cancelResearch posts the sessionId
+  ---
+  duration_ms: 0.286731
+  type: 'test'
+  ...
+# Subtest: fetchResearchState gets the state
+ok 214 - fetchResearchState gets the state
+  ---
+  duration_ms: 0.293544
+  type: 'test'
+  ...
+# Subtest: listResearchSessions gets persisted research summaries
+ok 215 - listResearchSessions gets persisted research summaries
+  ---
+  duration_ms: 0.642547
+  type: 'test'
+  ...
+# Subtest: listResearchSessions surfaces server errors
+ok 216 - listResearchSessions surfaces server errors
+  ---
+  duration_ms: 0.303113
+  type: 'test'
+  ...
+# Subtest: createResearchSession posts the query to the session endpoint
+ok 217 - createResearchSession posts the query to the session endpoint
+  ---
+  duration_ms: 0.300037
+  type: 'test'
+  ...
+# Subtest: launchResearch starts an existing draft session by id
+ok 218 - launchResearch starts an existing draft session by id
+  ---
+  duration_ms: 0.56748
+  type: 'test'
+  ...
+# Subtest: uploadResearchDocument posts multipart form to the documents endpoint
+ok 219 - uploadResearchDocument posts multipart form to the documents endpoint
+  ---
+  duration_ms: 0.693146
+  type: 'test'
+  ...
+# Subtest: researchExportUrl builds the download url with format
+ok 220 - researchExportUrl builds the download url with format
+  ---
+  duration_ms: 0.169892
+  type: 'test'
+  ...
+# Subtest: openResearchStream parses research_event payloads and skips garbage
+ok 221 - openResearchStream parses research_event payloads and skips garbage
+  ---
+  duration_ms: 0.156446
+  type: 'test'
+  ...
+# Subtest: prismReauth posts to /api/research/prism/reauth
+ok 222 - prismReauth posts to /api/research/prism/reauth
+  ---
+  duration_ms: 0.182527
+  type: 'test'
+  ...
+# Subtest: prismReauth surfaces server errors
+ok 223 - prismReauth surfaces server errors
+  ---
+  duration_ms: 0.149132
+  type: 'test'
+  ...
+# Subtest: createResearchSession and startResearch send the selected engine
+ok 224 - createResearchSession and startResearch send the selected engine
+  ---
+  duration_ms: 0.139423
+  type: 'test'
+  ...
+# Subtest: event stream builds the view through the full happy path
+ok 225 - event stream builds the view through the full happy path
+  ---
+  duration_ms: 0.727564
+  type: 'test'
+  ...
+# Subtest: duplicate or stale seq is ignored
+ok 226 - duplicate or stale seq is ignored
+  ---
+  duration_ms: 0.091409
+  type: 'test'
+  ...
+# Subtest: regenerate feedback clears the plan
+ok 227 - regenerate feedback clears the plan
+  ---
+  duration_ms: 0.683707
+  type: 'test'
+  ...
+# Subtest: source_found accumulates unique sources
+ok 228 - source_found accumulates unique sources
+  ---
+  duration_ms: 0.494668
+  type: 'test'
+  ...
+# Subtest: report_completed replaces the streamed body with the authoritative report
+ok 229 - report_completed replaces the streamed body with the authoritative report
+  ---
+  duration_ms: 0.074546
+  type: 'test'
+  ...
+# Subtest: research_error and research_cancelled set terminal states
+ok 230 - research_error and research_cancelled set terminal states
+  ---
+  duration_ms: 0.063554
+  type: 'test'
+  ...
+# Subtest: researchViewFromState reconstructs an authoritative persisted view
+ok 231 - researchViewFromState reconstructs an authoritative persisted view
+  ---
+  duration_ms: 0.195462
+  type: 'test'
+  ...
+# Subtest: formatNodeResult renders strings, objects, and empties for the thought chain
+ok 232 - formatNodeResult renders strings, objects, and empties for the thought chain
+  ---
+  duration_ms: 0.079185
+  type: 'test'
+  ...
+# Subtest: researchViewFromState preserves an in-progress session with safe defaults
+ok 233 - researchViewFromState preserves an in-progress session with safe defaults
+  ---
+  duration_ms: 0.157078
+  type: 'test'
+  ...
+# Subtest: secondsLabel formats server timing values compactly
+ok 234 - secondsLabel formats server timing values compactly
+  ---
+  duration_ms: 0.621866
+  type: 'test'
+  ...
+# Subtest: metricsAvailable requires core server metric counters
+ok 235 - metricsAvailable requires core server metric counters
+  ---
+  duration_ms: 0.164121
+  type: 'test'
+  ...
+# Subtest: metricRows returns stable UI rows grouped for scanning
+ok 236 - metricRows returns stable UI rows grouped for scanning
+  ---
+  duration_ms: 0.886625
+  type: 'test'
+  ...
+# Subtest: metricsSummary reports the current worker and request state
+ok 237 - metricsSummary reports the current worker and request state
+  ---
+  duration_ms: 0.763855
+  type: 'test'
+  ...
+# Subtest: estimates tokens from streamed text
+ok 238 - estimates tokens from streamed text
+  ---
+  duration_ms: 0.853429
+  type: 'test'
+  ...
+# Subtest: updates prefill and generation throughput while deltas stream
+ok 239 - updates prefill and generation throughput while deltas stream
+  ---
+  duration_ms: 0.367339
+  type: 'test'
+  ...
+# Subtest: tracks streamed content by character count without retaining text
+ok 240 - tracks streamed content by character count without retaining text
+  ---
+  duration_ms: 0.103021
+  type: 'test'
+  ...
+# Subtest: uses exact usage values for final stream stats
+ok 241 - uses exact usage values for final stream stats
+  ---
+  duration_ms: 0.082391
+  type: 'test'
+  ...
+# Subtest: separates effective prefill throughput from throughput with cache
+ok 242 - separates effective prefill throughput from throughput with cache
+  ---
+  duration_ms: 0.12776
+  type: 'test'
+  ...
+# Subtest: does not invent native throughput when backend timing is unavailable
+ok 243 - does not invent native throughput when backend timing is unavailable
+  ---
+  duration_ms: 0.146136
+  type: 'test'
+  ...
+# Subtest: uses backend phase timings for agent throughput
+ok 244 - uses backend phase timings for agent throughput
+  ---
+  duration_ms: 0.089365
+  type: 'test'
+  ...
+# Subtest: uses backend decode tokens for native throughput
+ok 245 - uses backend decode tokens for native throughput
+  ---
+  duration_ms: 0.052883
+  type: 'test'
+  ...
+# Subtest: llama.cpp-style timings feed the same panel as ds4's
+ok 246 - llama.cpp-style timings feed the same panel as ds4's
+  ---
+  duration_ms: 0.356588
+  type: 'test'
+  ...
+# Subtest: maps a Halogen agent chunk to a generation rate
+ok 247 - maps a Halogen agent chunk to a generation rate
+  ---
+  duration_ms: 0.275398
+  type: 'test'
+  ...
+# Subtest: ignores a chunk that has timings but no usage yet
+ok 248 - ignores a chunk that has timings but no usage yet
+  ---
+  duration_ms: 0.093193
+  type: 'test'
+  ...
+# Subtest: searchResultsBlock carries the grounding directive and the results
+ok 249 - searchResultsBlock carries the grounding directive and the results
+  ---
+  duration_ms: 1.132866
+  type: 'test'
+  ...
+# Subtest: injectSearchResults appends the block to the latest user turn
+ok 250 - injectSearchResults appends the block to the latest user turn
+  ---
+  duration_ms: 0.198779
+  type: 'test'
+  ...
+# Subtest: injectSearchResults is a no-op without results
+ok 251 - injectSearchResults is a no-op without results
+  ---
+  duration_ms: 0.069777
+  type: 'test'
+  ...
+# Subtest: workspaceFromPath maps /agno to agno mode
+ok 252 - workspaceFromPath maps /agno to agno mode
+  ---
+  duration_ms: 0.580886
+  type: 'test'
+  ...
+# Subtest: workspaceFromPath maps everything else to chat mode
+ok 253 - workspaceFromPath maps everything else to chat mode
+  ---
+  duration_ms: 0.09206
+  type: 'test'
+  ...
+# Subtest: pathForWorkspace round-trips agno and chat
+ok 254 - pathForWorkspace round-trips agno and chat
+  ---
+  duration_ms: 0.063785
+  type: 'test'
+  ...
+1..254
+# tests 254
+# suites 0
+# pass 254
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 215.467924
+rc=0
