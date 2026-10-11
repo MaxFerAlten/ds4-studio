@@ -800,7 +800,7 @@ diff --git a/ds4.c b/ds4.c
  #endif
      e->model.fd = -1;
      e->mtp_model.fd = -1;
-@@ -70869,6 +71309,15 @@
+@@ -70869,3 +71309,12 @@
          ds4_gpu_set_quality(e->quality);
          ds4_gpu_set_glm_model(DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM_DSA);
          ds4_gpu_set_ssd_streaming(e->ssd_streaming);
@@ -813,9 +813,6 @@ diff --git a/ds4.c b/ds4.c
 +                    ds4_bytes_to_gib(reserve));
 +        }
 +#endif
-         if (!ds4_engine_configure_streaming_auto_cache(e, opt->context_size)) {
-             ds4_engine_close(e);
-             *out = NULL;
 @@ -71284,6 +71733,37 @@
          }
          free(load_offsets);

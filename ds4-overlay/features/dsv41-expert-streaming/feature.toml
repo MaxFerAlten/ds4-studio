@@ -83,7 +83,7 @@ currently compile against upstream, and the ds4-kernel-v41 link.
 # prefill_cap=2048 / buffers 3.50 GiB where this build shows 8192 / 10.21 GiB.
 
 [upstream]
-reviewed_sha = "9139e2ae58a41503968a500f36f75895c1ba63fc"
+reviewed_sha = "fc80bd695da76ee14bcb86820bf900a5cdfda806"
 
 [[anchors]]
 file = "ds4_gpu.h"
