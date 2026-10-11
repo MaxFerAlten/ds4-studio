@@ -37,6 +37,16 @@ Also patches tests/test_linux_memory.c, whose CmaTotal-zero case asserted the
 70 kB result and so pinned the bug in place. It now asserts 100 kB, plus a
 real-CMA case and a clamp case.
 
+Scope widened by upstream fc80bd6: ds4.c now includes ds4_linux_memory.h for
+every non-Apple GPU build, not only ROCm:
+
+    #if defined(DS4_ROCM_BUILD) || (!defined(__APPLE__) && !defined(DS4_NO_GPU))
+
+and calls ds4_linux_nonmovable_memory() from a CUDA-only branch. This fix
+therefore also changes the host-memory budget of CUDA Linux builds. The
+reasoning holds there too (same /proc/meminfo parsing), but it has only been
+exercised on Strix Halo / ROCm; no CUDA host was available to verify it.
+
 Retire it if upstream ever reads CmaTotal itself.
 """
 
