@@ -1,0 +1,211 @@
+{
+  "executor": "scripted_local (deterministic, model-free): measures the Harness\u00b2 recursion and the DS4 gate, NOT model benefit",
+  "groups": {
+    "in_task-k1": {
+      "critical_regressions_gated": 0,
+      "decisions": {
+        "KEEP_BASE": 5,
+        "QUARANTINE_CANDIDATE": 9
+      },
+      "delta_pass_gated": {
+        "ci95": [
+          0.357143,
+          0.857143
+        ],
+        "mean": 0.642857,
+        "median": 1.0,
+        "n": 14,
+        "worst": 0.0
+      },
+      "delta_pass_raw": {
+        "ci95": [
+          0.071429,
+          0.857143
+        ],
+        "mean": 0.5,
+        "median": 1.0,
+        "n": 14,
+        "worst": -1.0
+      },
+      "delta_quality_gated": {
+        "ci95": [
+          0.3,
+          0.707143
+        ],
+        "mean": 0.507143,
+        "median": 0.7,
+        "n": 14,
+        "worst": 0.0
+      },
+      "domains": {
+        "json": {
+          "base_pass": 0.2,
+          "gated_pass": 1.0,
+          "gated_regressions": 0,
+          "n": 5,
+          "raw_pass": 1.0,
+          "raw_regressions": 0
+        },
+        "kv": {
+          "base_pass": 0.4,
+          "gated_pass": 1.0,
+          "gated_regressions": 0,
+          "n": 5,
+          "raw_pass": 0.8,
+          "raw_regressions": 1
+        },
+        "ledger": {
+          "base_pass": 0.5,
+          "gated_pass": 1.0,
+          "gated_regressions": 0,
+          "n": 4,
+          "raw_pass": 0.75,
+          "raw_regressions": 1
+        }
+      },
+      "rollouts_total": 56,
+      "sessions_total": 42
+    },
+    "in_task-k2": {
+      "critical_regressions_gated": 0,
+      "decisions": {
+        "KEEP_BASE": 5,
+        "QUARANTINE_CANDIDATE": 9
+      },
+      "delta_pass_gated": {
+        "ci95": [
+          0.357143,
+          0.857143
+        ],
+        "mean": 0.642857,
+        "median": 1.0,
+        "n": 14,
+        "worst": 0.0
+      },
+      "delta_pass_raw": {
+        "ci95": [
+          0.071429,
+          0.857143
+        ],
+        "mean": 0.5,
+        "median": 1.0,
+        "n": 14,
+        "worst": -1.0
+      },
+      "delta_quality_gated": {
+        "ci95": [
+          0.3,
+          0.707143
+        ],
+        "mean": 0.507143,
+        "median": 0.7,
+        "n": 14,
+        "worst": 0.0
+      },
+      "domains": {
+        "json": {
+          "base_pass": 0.2,
+          "gated_pass": 1.0,
+          "gated_regressions": 0,
+          "n": 5,
+          "raw_pass": 1.0,
+          "raw_regressions": 0
+        },
+        "kv": {
+          "base_pass": 0.4,
+          "gated_pass": 1.0,
+          "gated_regressions": 0,
+          "n": 5,
+          "raw_pass": 0.8,
+          "raw_regressions": 1
+        },
+        "ledger": {
+          "base_pass": 0.5,
+          "gated_pass": 1.0,
+          "gated_regressions": 0,
+          "n": 4,
+          "raw_pass": 0.75,
+          "raw_regressions": 1
+        }
+      },
+      "rollouts_total": 112,
+      "sessions_total": 84
+    },
+    "transfer-k1": {
+      "critical_regressions_gated": 2,
+      "decisions": {
+        "TRANSFER": 14
+      },
+      "delta_pass_gated": {
+        "ci95": [
+          0.071429,
+          0.857143
+        ],
+        "mean": 0.5,
+        "median": 1.0,
+        "n": 14,
+        "worst": -1.0
+      },
+      "delta_pass_raw": {
+        "ci95": [
+          0.071429,
+          0.857143
+        ],
+        "mean": 0.5,
+        "median": 1.0,
+        "n": 14,
+        "worst": -1.0
+      },
+      "delta_quality_gated": {
+        "ci95": [
+          0.107143,
+          0.685714
+        ],
+        "mean": 0.407143,
+        "median": 0.7,
+        "n": 14,
+        "worst": -0.7
+      },
+      "domains": {
+        "json": {
+          "base_pass": 0.2,
+          "gated_pass": 1.0,
+          "gated_regressions": 0,
+          "n": 5,
+          "raw_pass": 1.0,
+          "raw_regressions": 0
+        },
+        "kv": {
+          "base_pass": 0.4,
+          "gated_pass": 0.8,
+          "gated_regressions": 1,
+          "n": 5,
+          "raw_pass": 0.8,
+          "raw_regressions": 1
+        },
+        "ledger": {
+          "base_pass": 0.5,
+          "gated_pass": 0.75,
+          "gated_regressions": 1,
+          "n": 4,
+          "raw_pass": 0.75,
+          "raw_regressions": 1
+        }
+      },
+      "rollouts_total": 28,
+      "sessions_total": 0
+    }
+  },
+  "split": "holdout",
+  "upstream": {
+    "roots": [
+      "/mnt/crucial_ai/COPARATOR/ds4",
+      "/mnt/crucial_ai/COPARATOR/riconciliazione-ds4-studio/ds4-studio"
+    ],
+    "unchanged": true
+  }
+}
+
+real	2m44,926s
+user	0m3,839s
+sys	0m2,076s

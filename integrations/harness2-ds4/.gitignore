@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+node-client/node_modules/
+fixtures/.gen-tmp/
+reports/preflight/
+reports/baseline/
+reports/preflight/
+reports/verification/pytest.xml

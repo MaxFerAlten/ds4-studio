@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "registered_before_model_backed_ab": true,
+  "acceptance": {
+    "critical_regressions": 0,
+    "security_failures": 0,
+    "extra_model_loads": 0,
+    "off_mode_baseline_completion_at_least_baseline": true
+  },
+  "promotion": {
+    "holdout_paired_pass_rate_delta_lower_95_ci_min": 0.0,
+    "critical_holdout_regressions": 0,
+    "human_review_required": true
+  },
+  "product_objectives_not_acceptance_gates": {
+    "holdout_paired_pass_rate_delta": 0.05,
+    "tool_waste_reduction_fraction": 0.20
+  },
+  "tool_waste_metric": "Not yet instrumented; do not claim or evaluate the 20% objective until a preregistered operational definition is added.",
+  "model_constraint": "Use only the model already loaded at the configured local endpoint; never load/download a model as part of this benchmark.",
+  "source": "docs/feature/piano.harness2.md §36.4"
+}

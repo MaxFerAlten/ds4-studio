@@ -1,0 +1,11 @@
+{
+  "wp": "WP18",
+  "title": "Implementazione nativa",
+  "status": "NOT_APPLICABLE",
+  "files": [],
+  "evidence": "WP17 BLOCKED_API",
+  "blockers": [],
+  "upstream_unchanged": true,
+  "tests": "reports/verification/*.log",
+  "go_next": true
+}

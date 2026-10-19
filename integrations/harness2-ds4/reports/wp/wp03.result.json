@@ -1,0 +1,13 @@
+{
+  "wp": "WP03",
+  "title": "XDG data dir, SQLite WAL, migrazioni checksum, blob atomici, audit chain",
+  "status": "DONE",
+  "files": [
+    "src/h2ds4/store/*"
+  ],
+  "evidence": "UT-016/017/018, migrazione mismatch rifiutata, symlink db rifiutato",
+  "blockers": [],
+  "upstream_unchanged": true,
+  "tests": "reports/verification/*.log",
+  "go_next": true
+}

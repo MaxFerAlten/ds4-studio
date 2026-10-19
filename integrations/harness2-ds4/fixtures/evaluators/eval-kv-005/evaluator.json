@@ -1,0 +1,47 @@
+{
+  "checks": [
+    {
+      "path": "settings.json",
+      "type": "file_exists",
+      "weight": 0.2
+    },
+    {
+      "expected": {
+        "opt0c": "val76",
+        "opt1c": "val11",
+        "opt2a": "val40",
+        "opt3b": "val72",
+        "opt4b": "val29",
+        "opt5a": "val33"
+      },
+      "path": "settings.json",
+      "type": "json_equals",
+      "weight": 0.7
+    },
+    {
+      "hard": false,
+      "max": 12,
+      "type": "max_tool_calls",
+      "weight": 0.1
+    }
+  ],
+  "holdout_only_score": false,
+  "id": "eval-kv-005",
+  "quality_gate": {
+    "min_improvement": 0.01,
+    "no_hard_regression": true
+  },
+  "schema_version": 1,
+  "scored_metrics": [
+    {
+      "key": "success",
+      "maximize": true,
+      "weight": 0.7
+    },
+    {
+      "key": "tool_efficiency",
+      "maximize": true,
+      "weight": 0.3
+    }
+  ]
+}

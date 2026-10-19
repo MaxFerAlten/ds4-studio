@@ -1,0 +1,22 @@
+TAP version 13
+# Subtest: sends protocol header, idempotency key, parses JSON
+ok 1 - sends protocol header, idempotency key, parses JSON
+  ---
+  duration_ms: 9.732956
+  type: 'test'
+  ...
+# Subtest: maps error bodies and rejects non-JSON and oversize responses
+ok 2 - maps error bodies and rejects non-JSON and oversize responses
+  ---
+  duration_ms: 5.554684
+  type: 'test'
+  ...
+1..2
+# tests 2
+# suites 0
+# pass 2
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 56.562409

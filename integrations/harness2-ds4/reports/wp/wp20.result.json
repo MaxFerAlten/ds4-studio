@@ -1,0 +1,17 @@
+{
+  "wp": "WP20",
+  "title": "A/B paired + transfer holdout",
+  "status": "PARTIAL",
+  "files": [
+    "src/h2ds4/benchmarks/ab.py",
+    "scripts/gen-fixtures.py",
+    "reports/ab/holdout.{md,csv,json}"
+  ],
+  "evidence": "40 task, split deterministico; gate: 0 regressioni in-task; transfer: 2 regressioni -> ADR-013",
+  "blockers": [
+    "solo executor deterministico; A/B con modello non eseguito"
+  ],
+  "upstream_unchanged": true,
+  "tests": "reports/verification/*.log",
+  "go_next": true
+}

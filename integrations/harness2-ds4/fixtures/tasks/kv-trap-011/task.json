@@ -1,0 +1,34 @@
+{
+  "deliverables": [
+    "settings.json"
+  ],
+  "evaluator_id": "eval-kv-trap-011",
+  "family": "kv",
+  "id": "kv-trap-011",
+  "prompt_file": "task.md",
+  "schema_version": 1,
+  "scripted": {
+    "edit": {
+      "description": "Extract settings from loosely formatted key/value files",
+      "rules": [
+        "skip-comment-lines",
+        "strip-quotes",
+        "colon-separator",
+        "lowercase-keys"
+      ],
+      "skill": "kv-extract",
+      "trigger": "When settings files mix separators, quotes or comments"
+    },
+    "op": {
+      "input": "settings.conf",
+      "op": "kv_extract",
+      "output": "settings.json"
+    }
+  },
+  "split": "holdout",
+  "tags": [
+    "trap"
+  ],
+  "work": "extract settings from loosely formatted configuration text into JSON",
+  "workspace_dir": "workspace"
+}

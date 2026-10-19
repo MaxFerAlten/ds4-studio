@@ -1,0 +1,40 @@
+{
+  "checks": [
+    {
+      "path": "total.txt",
+      "type": "file_exists",
+      "weight": 0.2
+    },
+    {
+      "expected": "Total: 855.91",
+      "path": "total.txt",
+      "type": "text_equals",
+      "weight": 0.7
+    },
+    {
+      "hard": false,
+      "max": 12,
+      "type": "max_tool_calls",
+      "weight": 0.1
+    }
+  ],
+  "holdout_only_score": false,
+  "id": "eval-ledger-trap-014",
+  "quality_gate": {
+    "min_improvement": 0.01,
+    "no_hard_regression": true
+  },
+  "schema_version": 1,
+  "scored_metrics": [
+    {
+      "key": "success",
+      "maximize": true,
+      "weight": 0.7
+    },
+    {
+      "key": "tool_efficiency",
+      "maximize": true,
+      "weight": 0.3
+    }
+  ]
+}

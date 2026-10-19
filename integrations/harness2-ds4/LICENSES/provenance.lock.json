@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "harness2": {
+    "repository": "https://github.com/google-research/harness2",
+    "commit": "1cfe254e8d25b15f37048c3730134686abe60335",
+    "commit_date": "2026-10-14",
+    "git_archive_tar_sha256": "bf57c509745735063c954b726e765e41059b246dfd153b99d806bb1bf4bcf822",
+    "license": "Apache-2.0",
+    "installed_extras": [],
+    "note": "harness2[bridge]/[render] NOT installed (LiteLLM/Google auth not needed)"
+  },
+  "uv_lock_sha256": "b4dab8a14fab671554c1c94167fbc68d62abb9aa9635b3c2134c8fa10ed04be2",
+  "python": "3.12.3",
+  "opencode": {
+    "binary_sha256": "b8ed44e893a3307cf23b4e0c83a4bb52b2c38d580fff33d3d9ec16477efb6077",
+    "version": "opencode v2.0.15",
+    "path_class": "nvm global npm (@opencode/cli)",
+    "h2_pinned_commit": "23fb5e0516c99ac04a1aa46c193efda2e1b9bb24",
+    "matches_pin": false
+  },
+  "bubblewrap": "bubblewrap 0.9.0",
+  "systemd": "systemd 255 (255.4-1ubuntu8.18)"
+}

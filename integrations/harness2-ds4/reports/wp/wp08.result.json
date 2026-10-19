@@ -1,0 +1,15 @@
+{
+  "wp": "WP08",
+  "title": "Client OpenAI stretto, gate 1-inflight, proxy UDS whitelisted",
+  "status": "DONE",
+  "files": [
+    "src/h2ds4/model/*"
+  ],
+  "evidence": "CT-001..012, SEC-023..025 contro fake server",
+  "blockers": [
+    "probe_live non eseguito (nessun modello)"
+  ],
+  "upstream_unchanged": true,
+  "tests": "reports/verification/*.log",
+  "go_next": true
+}

@@ -1,0 +1,13 @@
+{
+  "wp": "WP10",
+  "title": "Scheduler persistente, lease, cancel, backpressure",
+  "status": "DONE",
+  "files": [
+    "src/h2ds4/orchestration/{scheduler,state_machine,budgets}.py"
+  ],
+  "evidence": "SIGKILL reale durante PROBING: FAILED WORKER_LOST, nessun rerun; max_queued=1",
+  "blockers": [],
+  "upstream_unchanged": true,
+  "tests": "reports/verification/*.log",
+  "go_next": true
+}

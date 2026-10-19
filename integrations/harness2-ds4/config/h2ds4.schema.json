@@ -1,0 +1,335 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "h2ds4 config",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": false
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "off",
+            "observe",
+            "lab",
+            "propose",
+            "approved"
+          ],
+          "default": "off"
+        },
+        "uds_name": {
+          "type": "string",
+          "default": "h2ds4.sock"
+        },
+        "expose_tcp": {
+          "type": "boolean",
+          "default": false
+        },
+        "api_version": {
+          "type": "integer",
+          "default": 1
+        }
+      }
+    },
+    "ds4": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "root": {
+          "type": "string",
+          "default": "/mnt/crucial_ai/COPARATOR/ds4"
+        },
+        "base_url": {
+          "type": "string",
+          "default": "http://127.0.0.1:8002"
+        },
+        "model_id": {
+          "type": "string",
+          "default": ""
+        },
+        "use_native_agent": {
+          "type": "boolean",
+          "default": false
+        },
+        "allow_runtime_restart": {
+          "type": "boolean",
+          "default": false
+        },
+        "allow_session_switch": {
+          "type": "boolean",
+          "default": false
+        },
+        "allow_skill_hot_reload": {
+          "type": "boolean",
+          "default": false
+        },
+        "protected_roots": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      }
+    },
+    "inference": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "type": "string",
+          "default": "openai_compatible_local"
+        },
+        "max_inflight": {
+          "type": "integer",
+          "default": 1
+        },
+        "max_queued": {
+          "type": "integer",
+          "default": 1
+        },
+        "request_timeout_s": {
+          "type": "integer",
+          "default": 1800
+        },
+        "max_request_bytes": {
+          "type": "integer",
+          "default": 4194304
+        },
+        "retry_non_idempotent": {
+          "type": "boolean",
+          "default": false
+        },
+        "allow_remote_provider": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "experiment": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "default_k": {
+          "type": "integer",
+          "default": 1
+        },
+        "max_k": {
+          "type": "integer",
+          "default": 2
+        },
+        "max_task_wall_s": {
+          "type": "integer",
+          "default": 3600
+        },
+        "max_model_calls": {
+          "type": "integer",
+          "default": 16
+        },
+        "max_tool_calls": {
+          "type": "integer",
+          "default": 64
+        },
+        "max_total_input_tokens": {
+          "type": "integer",
+          "default": 100000
+        },
+        "max_total_output_tokens": {
+          "type": "integer",
+          "default": 24000
+        },
+        "max_trace_bytes": {
+          "type": "integer",
+          "default": 2000000
+        },
+        "max_file_bytes": {
+          "type": "integer",
+          "default": 10485760
+        },
+        "max_candidate_files": {
+          "type": "integer",
+          "default": 24
+        },
+        "max_workspace_bytes": {
+          "type": "integer",
+          "default": 1073741824
+        },
+        "allow_auto_promotion": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "sandbox": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "backend": {
+          "type": "string",
+          "default": "bwrap"
+        },
+        "required": {
+          "type": "boolean",
+          "default": true
+        },
+        "network": {
+          "type": "string",
+          "default": "none"
+        },
+        "user_namespace_required": {
+          "type": "boolean",
+          "default": true
+        },
+        "cpu_quota_pct": {
+          "type": "integer",
+          "default": 100
+        },
+        "memory_max_mib": {
+          "type": "integer",
+          "default": 2048
+        },
+        "pids_max": {
+          "type": "integer",
+          "default": 96
+        },
+        "workspace_max_mib": {
+          "type": "integer",
+          "default": 256
+        },
+        "ro_toolchain_paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allowed_components": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "c1",
+            "c3",
+            "c4",
+            "c6"
+          ]
+        },
+        "allow_generated_scripts": {
+          "type": "boolean",
+          "default": false
+        },
+        "allow_generated_plugins": {
+          "type": "boolean",
+          "default": false
+        },
+        "allow_generated_subagents": {
+          "type": "boolean",
+          "default": false
+        },
+        "require_explicit_approval": {
+          "type": "boolean",
+          "default": true
+        },
+        "minimum_success_delta": {
+          "type": "number",
+          "default": 0.0
+        },
+        "regression_tolerance": {
+          "type": "number",
+          "default": 0.0
+        },
+        "minimum_quality_gain": {
+          "type": "number",
+          "default": 0.01
+        },
+        "max_token_ratio": {
+          "type": "number",
+          "default": 2.0
+        },
+        "baseline_must_be_in_pool": {
+          "type": "boolean",
+          "default": true
+        }
+      }
+    },
+    "memory": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_retrieved_items": {
+          "type": "integer",
+          "default": 5
+        },
+        "max_context_chars": {
+          "type": "integer",
+          "default": 6000
+        },
+        "max_index_entries": {
+          "type": "integer",
+          "default": 2000
+        },
+        "ttl_days": {
+          "type": "integer",
+          "default": 90
+        },
+        "cross_model_transfer": {
+          "type": "string",
+          "default": "evaluate_only"
+        }
+      }
+    },
+    "audit": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "store_raw_prompts": {
+          "type": "boolean",
+          "default": false
+        },
+        "store_raw_tool_outputs": {
+          "type": "boolean",
+          "default": false
+        },
+        "hash_sensitive_artifacts": {
+          "type": "boolean",
+          "default": true
+        },
+        "retention_days": {
+          "type": "integer",
+          "default": 30
+        }
+      }
+    },
+    "paths": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "runtime_dir": {
+          "type": "string",
+          "default": ""
+        },
+        "data_dir": {
+          "type": "string",
+          "default": ""
+        },
+        "cache_dir": {
+          "type": "string",
+          "default": ""
+        }
+      }
+    }
+  }
+}

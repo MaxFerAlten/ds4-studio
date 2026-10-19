@@ -1,0 +1,27 @@
+# h2ds4 user unit. NOT enabled by any installer: install and start only on explicit request.
+#   cp systemd/h2ds4.service ~/.config/systemd/user/ && systemctl --user daemon-reload
+#   systemctl --user start h2ds4.service      # never `enable --now` in the first release
+[Unit]
+Description=Harness2 DS4 experimental sidecar (h2ds4)
+ConditionPathExists=%h/.config/h2ds4/config.toml
+
+[Service]
+Type=simple
+WorkingDirectory=/mnt/crucial_ai/COPARATOR/riconciliazione-ds4-studio/ds4-studio/integrations/harness2-ds4
+Environment=PYTHONUNBUFFERED=1
+Environment=H2DS4_CONFIG=%h/.config/h2ds4/config.toml
+UMask=0077
+ExecStart=/mnt/crucial_ai/COPARATOR/riconciliazione-ds4-studio/ds4-studio/integrations/harness2-ds4/scripts/start-sidecar.sh
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%t/h2ds4 %h/.local/share/h2ds4 %h/.cache/h2ds4
+LimitNOFILE=2048
+TasksMax=128
+MemoryMax=2G
+
+[Install]
+WantedBy=default.target

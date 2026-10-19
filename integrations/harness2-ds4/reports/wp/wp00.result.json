@@ -1,0 +1,17 @@
+{
+  "wp": "WP00",
+  "title": "Baseline + discovery read-only di entrambi i checkout",
+  "status": "DONE",
+  "files": [
+    "scripts/audit-upstream.sh",
+    "src/h2ds4/upstream.py",
+    "reports/discovery.json",
+    "reports/upstream-fingerprint.json",
+    "reports/gaps.md"
+  ],
+  "evidence": "before/after identici; capability true/false/unknown con evidenza file:line",
+  "blockers": [],
+  "upstream_unchanged": true,
+  "tests": "reports/verification/*.log",
+  "go_next": true
+}

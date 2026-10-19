@@ -1,0 +1,3 @@
+[submodule "integrations/harness2-ds4/vendor/harness2"]
+	path = integrations/harness2-ds4/vendor/harness2
+	url = https://github.com/google-research/harness2.git

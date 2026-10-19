@@ -1,0 +1,17 @@
+{
+  "wp": "WP01",
+  "title": "Harness2 vendor al commit pinnato, provenance, licenze",
+  "status": "DONE",
+  "files": [
+    "vendor/harness2 (submodule @1cfe254e)",
+    "LICENSES/provenance.lock.json",
+    "LICENSES/THIRD_PARTY_NOTICES.md",
+    "LICENSES/sbom.cdx.json",
+    "uv.lock"
+  ],
+  "evidence": "upstream unittest 5/5, harness2-demo k=1 OK, nessun benchmark setup, nessuna connessione modello",
+  "blockers": [],
+  "upstream_unchanged": true,
+  "tests": "reports/verification/*.log",
+  "go_next": true
+}

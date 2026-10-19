@@ -1,0 +1,16 @@
+{
+  "wp": "WP21",
+  "title": "Hardening operativo",
+  "status": "DONE",
+  "files": [
+    "systemd/h2ds4.service",
+    "scripts/*.sh"
+  ],
+  "evidence": "unit verificata (non abilitata), stop graceful, stale socket recovery esplicito",
+  "blockers": [
+    "uninstall documentato, non eseguito"
+  ],
+  "upstream_unchanged": true,
+  "tests": "reports/verification/*.log",
+  "go_next": true
+}

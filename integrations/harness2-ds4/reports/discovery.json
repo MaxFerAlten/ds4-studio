@@ -1,0 +1,139 @@
+{
+  "ds4_canonical": {
+    "capabilities": {
+      "agent_chat_route": "true",
+      "chat_tools_param": "true",
+      "http_busy_reservation": "false",
+      "isolated_task_workspace_api": "false",
+      "live_model_reachable": "unknown",
+      "openai_chat_route": "true",
+      "openai_models_route": "true",
+      "per_request_skill_override": "false",
+      "plugin_extension_routes": "false",
+      "run_status_cancel_routes": "false",
+      "skills_dir_bootstrap_env": "true",
+      "skills_dir_read_by_js_loop": "false",
+      "stream_include_usage": "true",
+      "token_count_route": "false",
+      "trace_export_api": "unknown",
+      "wrapper_mode_switch_route": "true"
+    },
+    "configured_backend_port": 8002,
+    "configured_ui_port": null,
+    "ds4_server_v1_routes": [
+      "/v1/chat/completions",
+      "/v1/completions",
+      "/v1/messages",
+      "/v1/models",
+      "/v1/responses"
+    ],
+    "evidence": {
+      "chat_tools_param": [
+        "ds4_server.c:1844",
+        "ds4_server.c:4132",
+        "ds4_server.c:4339",
+        "ds4_server.c:4854",
+        "ds4_server.c:5345"
+      ],
+      "model_busy_internal": [
+        "ds4_server.c:10161",
+        "ds4_server.c:12382",
+        "ds4_server.c:12394",
+        "ds4_server.c:12405",
+        "ds4_server.c:13307"
+      ],
+      "skills_dir_bootstrap_env": [
+        "srun.sh:5",
+        "srun.sh:95"
+      ],
+      "stream_include_usage": [
+        "ds4_server.c:825",
+        "ds4_server.c:1379",
+        "ds4_server.c:1393",
+        "ds4_server.c:1394",
+        "ds4_server.c:4207"
+      ]
+    },
+    "head": "0aaea5a238fb41a35106a551e73c8409dfb751ac",
+    "node_routes_count": 58,
+    "root": "/mnt/crucial_ai/COPARATOR/ds4"
+  },
+  "ds4_studio_riconciliazione": {
+    "capabilities": {
+      "agent_chat_route": "true",
+      "chat_tools_param": "true",
+      "http_busy_reservation": "false",
+      "isolated_task_workspace_api": "false",
+      "live_model_reachable": "unknown",
+      "openai_chat_route": "true",
+      "openai_models_route": "true",
+      "per_request_skill_override": "false",
+      "plugin_extension_routes": "false",
+      "run_status_cancel_routes": "true",
+      "skills_dir_bootstrap_env": "true",
+      "skills_dir_read_by_js_loop": "true",
+      "stream_include_usage": "true",
+      "token_count_route": "false",
+      "trace_export_api": "unknown",
+      "wrapper_mode_switch_route": "true"
+    },
+    "configured_backend_port": 8002,
+    "configured_ui_port": null,
+    "ds4_server_v1_routes": [
+      "/v1/chat/completions",
+      "/v1/completions",
+      "/v1/messages",
+      "/v1/models",
+      "/v1/responses"
+    ],
+    "evidence": {
+      "chat_tools_param": [
+        "ds4_server.c:1844",
+        "ds4_server.c:4132",
+        "ds4_server.c:4339",
+        "ds4_server.c:4854",
+        "ds4_server.c:5345"
+      ],
+      "model_busy_internal": [
+        "ds4_server.c:10161",
+        "ds4_server.c:12382",
+        "ds4_server.c:12394",
+        "ds4_server.c:12405",
+        "ds4_server.c:13317"
+      ],
+      "skills_dir_bootstrap_env": [
+        "srun.sh:5",
+        "srun.sh:97"
+      ],
+      "skills_dir_read_by_js_loop": [
+        "frontend/server/agentSystemText.mjs:123"
+      ],
+      "stream_include_usage": [
+        "ds4_server.c:825",
+        "ds4_server.c:1379",
+        "ds4_server.c:1393",
+        "ds4_server.c:1394",
+        "ds4_server.c:4207"
+      ]
+    },
+    "head": "acff3505c67be69a1560faac5a97912af7a364f8",
+    "node_routes_count": 61,
+    "root": "/mnt/crucial_ai/COPARATOR/riconciliazione-ds4-studio/ds4-studio"
+  },
+  "live_backend": {
+    "captured": "2026-10-19",
+    "probe": "curl --max-time 3 http://127.0.0.1:8002/v1/models",
+    "result": "connection refused (no model loaded; not started by design)"
+  },
+  "sandbox": {
+    "checks": {
+      "bwrap": true,
+      "cgroup_scope": true,
+      "gpu_devices_hidden": true,
+      "loopback": true,
+      "systemd_run": true,
+      "userns_netns": true
+    },
+    "ok": true
+  }
+}

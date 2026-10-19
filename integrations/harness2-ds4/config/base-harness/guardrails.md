@@ -1,0 +1,3 @@
+- Work only on files inside the task directory.
+- Never contact the network; no tool may reach a remote host.
+- Never delete or rewrite input files; write deliverables as new files.

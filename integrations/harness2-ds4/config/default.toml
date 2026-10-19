@@ -1,0 +1,84 @@
+# h2ds4 default configuration (plan §11). Conservative by construction:
+# the service is disabled, mode is off, and every relaxation is rejected by
+# Settings.validate(). Copy to ~/.config/h2ds4/config.toml to customise.
+
+[service]
+enabled = false
+mode = "off"                  # off | observe | lab | propose | approved
+uds_name = "h2ds4.sock"
+expose_tcp = false
+api_version = 1
+
+[ds4]
+root = "/mnt/crucial_ai/COPARATOR/ds4"   # read-only, never passed to tools
+base_url = "http://127.0.0.1:8002"        # frontend/ds4-ui.config.json server.port (WP00)
+model_id = ""                             # from /v1/models, never guessed
+use_native_agent = false                  # BLOCKED_API (reports/wp17.result.json)
+allow_runtime_restart = false
+allow_session_switch = false
+allow_skill_hot_reload = false
+protected_roots = ["/mnt/crucial_ai/COPARATOR/riconciliazione-ds4-studio/ds4-studio"]
+
+[inference]
+provider = "openai_compatible_local"
+max_inflight = 1
+max_queued = 1
+request_timeout_s = 1800
+max_request_bytes = 4194304
+retry_non_idempotent = false
+allow_remote_provider = false
+
+[experiment]
+default_k = 1
+max_k = 2
+max_task_wall_s = 3600
+max_model_calls = 16
+max_tool_calls = 64
+max_total_input_tokens = 100000
+max_total_output_tokens = 24000
+max_trace_bytes = 2000000
+max_file_bytes = 10485760
+max_candidate_files = 24
+max_workspace_bytes = 1073741824
+allow_auto_promotion = false
+
+[sandbox]
+backend = "bwrap"
+required = true
+network = "none"
+user_namespace_required = true
+cpu_quota_pct = 100
+memory_max_mib = 2048
+pids_max = 96
+workspace_max_mib = 256
+ro_toolchain_paths = []
+
+[policy]
+allowed_components = ["c1", "c3", "c4", "c6"]
+allow_generated_scripts = false
+allow_generated_plugins = false
+allow_generated_subagents = false
+require_explicit_approval = true
+minimum_success_delta = 0.0
+regression_tolerance = 0.0
+minimum_quality_gain = 0.01
+max_token_ratio = 2.0
+baseline_must_be_in_pool = true
+
+[memory]
+max_retrieved_items = 5
+max_context_chars = 6000
+max_index_entries = 2000
+ttl_days = 90
+cross_model_transfer = "evaluate_only"
+
+[audit]
+store_raw_prompts = false
+store_raw_tool_outputs = false
+hash_sensitive_artifacts = true
+retention_days = 30
+
+[paths]
+runtime_dir = ""
+data_dir = ""
+cache_dir = ""

@@ -1,0 +1,16 @@
+{
+  "wp": "WP19",
+  "title": "Accounting capability-aware",
+  "status": "DONE",
+  "files": [
+    "src/h2ds4/model/proxy.py (totals)",
+    "runs.usage_source"
+  ],
+  "evidence": "usage provider|unknown|none distinti; queue vs inference ms",
+  "blockers": [
+    "nessuna metrica GPU APU inventata"
+  ],
+  "upstream_unchanged": true,
+  "tests": "reports/verification/*.log",
+  "go_next": true
+}

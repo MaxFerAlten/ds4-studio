@@ -1,0 +1,14 @@
+{
+  "wp": "WP17",
+  "title": "Discovery API native",
+  "status": "BLOCKED_API",
+  "files": [
+    "src/h2ds4/substrates/ds4_native.py",
+    "docs/DS4_NATIVE_BLOCKERS.md"
+  ],
+  "evidence": "blocker documentati con evidenza",
+  "blockers": [],
+  "upstream_unchanged": true,
+  "tests": "reports/verification/*.log",
+  "go_next": true
+}

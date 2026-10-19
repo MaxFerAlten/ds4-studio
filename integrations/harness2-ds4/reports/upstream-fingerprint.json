@@ -1,0 +1,33 @@
+{
+  "ds4_canonical": {
+    "root": "/mnt/crucial_ai/COPARATOR/ds4",
+    "head_before": "0aaea5a238fb41a35106a551e73c8409dfb751ac",
+    "head_after": "0aaea5a238fb41a35106a551e73c8409dfb751ac",
+    "tracked_count": 3447,
+    "tracked_manifest_sha256_before": "467a97635cc2bc1dc3fb9d2ca1cb66c3c7516c258f1ad94cce78cfd6f1233a0c",
+    "tracked_manifest_sha256_after": "467a97635cc2bc1dc3fb9d2ca1cb66c3c7516c258f1ad94cce78cfd6f1233a0c",
+    "status_entries_before": 23174,
+    "status_entries_after": 23174,
+    "untracked_entries": 23174,
+    "captured_before": "2026-10-18T22:19:13.831506+00:00",
+    "captured_after": "2026-10-18T23:15:56.314105+00:00",
+    "identical": true,
+    "differences": 0
+  },
+  "ds4_studio_riconciliazione": {
+    "root": "/mnt/crucial_ai/COPARATOR/riconciliazione-ds4-studio/ds4-studio",
+    "head_before": "acff3505c67be69a1560faac5a97912af7a364f8",
+    "head_after": "acff3505c67be69a1560faac5a97912af7a364f8",
+    "tracked_count": 4469,
+    "tracked_manifest_sha256_before": "e4ccf6f73d29af0273f1d2929882985624cbb24f3b79661abf8a9df173db44ca",
+    "tracked_manifest_sha256_after": "e4ccf6f73d29af0273f1d2929882985624cbb24f3b79661abf8a9df173db44ca",
+    "status_entries_before": 151,
+    "status_entries_after": 151,
+    "untracked_entries": 115,
+    "captured_before": "2026-10-18T22:19:14.050359+00:00",
+    "captured_after": "2026-10-18T23:15:56.554344+00:00",
+    "identical": true,
+    "differences": 0
+  },
+  "method": "scripts/audit-upstream.sh: git ls-files -s + sha256 of every tracked file (symlinks hashed by link text, never followed) + porcelain status + untracked size/mtime manifest; GIT_OPTIONAL_LOCKS=0"
+}

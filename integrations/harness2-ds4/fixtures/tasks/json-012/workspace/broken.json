@@ -1,0 +1,15 @@
+{
+  // generated settings
+  k16_0: "v6x",
+  k68_1: "v6x",
+  k23_2: "v5x",
+  k22_3: 217,
+  nested: {
+    items: [
+      7,
+      0,
+      6
+    ],
+    name: "svc"
+  }
+}

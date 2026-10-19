@@ -1,0 +1,1 @@
+`ledger.csv` lists transaction amounts, one per row under the `amount` header. Write `total.txt` with a single line `Total: <amount>` (two decimals) for the signed sum of every amount; negative amounts may be written as -x or (x).

@@ -1,0 +1,1 @@
+`settings.conf` holds settings as `key = value` lines (some may use `:` or quotes, and `#` lines are comments). Write `settings.json` as a flat JSON object mapping each key, lower-cased, to its unquoted value.

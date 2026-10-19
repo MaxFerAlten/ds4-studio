@@ -1,0 +1,53 @@
+{
+  "checks": [
+    {
+      "path": "fixed.json",
+      "type": "file_exists",
+      "weight": 0.2
+    },
+    {
+      "expected": {
+        "k33_2": "v2x",
+        "k61_0": 938,
+        "k80_1": "v6x",
+        "k89_3": 38,
+        "nested": {
+          "items": [
+            5,
+            5,
+            7
+          ],
+          "name": "svc"
+        }
+      },
+      "path": "fixed.json",
+      "type": "json_equals",
+      "weight": 0.7
+    },
+    {
+      "hard": false,
+      "max": 12,
+      "type": "max_tool_calls",
+      "weight": 0.1
+    }
+  ],
+  "holdout_only_score": true,
+  "id": "eval-json-002",
+  "quality_gate": {
+    "min_improvement": 0.01,
+    "no_hard_regression": true
+  },
+  "schema_version": 1,
+  "scored_metrics": [
+    {
+      "key": "success",
+      "maximize": true,
+      "weight": 0.7
+    },
+    {
+      "key": "tool_efficiency",
+      "maximize": true,
+      "weight": 0.3
+    }
+  ]
+}

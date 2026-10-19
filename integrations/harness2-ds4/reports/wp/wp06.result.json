@@ -1,0 +1,13 @@
+{
+  "wp": "WP06",
+  "title": "Evidence: JSONL OpenCode -> eventi tipizzati, redazione, troncamento fedele",
+  "status": "DONE",
+  "files": [
+    "src/h2ds4/evidence/{normalize,redact,fingerprint}.py"
+  ],
+  "evidence": "UT-019, SEC-026, nessun verdict nei contesti",
+  "blockers": [],
+  "upstream_unchanged": true,
+  "tests": "reports/verification/*.log",
+  "go_next": true
+}

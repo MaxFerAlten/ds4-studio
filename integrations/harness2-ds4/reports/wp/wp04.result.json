@@ -1,0 +1,13 @@
+{
+  "wp": "WP04",
+  "title": "Manifest/registry/hash canonici",
+  "status": "DONE",
+  "files": [
+    "src/h2ds4/{canonical,models,fixtures,registry}.py"
+  ],
+  "evidence": "campi extra rifiutati, digest mismatch rifiutati",
+  "blockers": [],
+  "upstream_unchanged": true,
+  "tests": "reports/verification/*.log",
+  "go_next": true
+}

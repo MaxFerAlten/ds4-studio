@@ -1,0 +1,15 @@
+{
+  "wp": "WP23",
+  "title": "Security & legal gate",
+  "status": "DONE",
+  "files": [
+    "LICENSES/*",
+    "reports/cve-scan.json",
+    "docs/SECURITY.md"
+  ],
+  "evidence": "pip-audit 0 vulnerabilita su 27 dipendenze; licenze note 30/30",
+  "blockers": [],
+  "upstream_unchanged": true,
+  "tests": "reports/verification/*.log",
+  "go_next": true
+}

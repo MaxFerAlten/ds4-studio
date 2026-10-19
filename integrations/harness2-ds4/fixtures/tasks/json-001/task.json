@@ -1,0 +1,32 @@
+{
+  "deliverables": [
+    "fixed.json"
+  ],
+  "evaluator_id": "eval-json-001",
+  "family": "json",
+  "id": "json-001",
+  "prompt_file": "task.md",
+  "schema_version": 1,
+  "scripted": {
+    "edit": {
+      "description": "Repair malformed JSON before parsing it",
+      "rules": [
+        "strip-trailing-commas",
+        "single-quotes",
+        "bare-keys",
+        "strip-comments"
+      ],
+      "skill": "json-repair",
+      "trigger": "When an input JSON file does not parse"
+    },
+    "op": {
+      "input": "broken.json",
+      "op": "json_repair",
+      "output": "fixed.json"
+    }
+  },
+  "split": "holdout",
+  "tags": [],
+  "work": "repair malformed JSON configuration files into valid, equivalent JSON",
+  "workspace_dir": "workspace"
+}

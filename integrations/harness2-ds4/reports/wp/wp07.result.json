@@ -1,0 +1,15 @@
+{
+  "wp": "WP07",
+  "title": "Server UDS, auth admin, protocollo, body cap, idempotenza, rate limit",
+  "status": "DONE",
+  "files": [
+    "src/h2ds4/{protocol/api,serve,service,client}.py",
+    "src/h2ds4/errors.py",
+    "tests/contract/test_rate_limit.py"
+  ],
+  "evidence": "CT-014..017, SEC-019..021, doppio sidecar rifiutato, 0 listener TCP, off fail-closed, 120 richieste/minuto per processo con risposta RATE_LIMITED/429",
+  "blockers": [],
+  "upstream_unchanged": true,
+  "tests": "reports/verification/*.log; focused rate-limit test passed",
+  "go_next": true
+}

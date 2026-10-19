@@ -1,0 +1,15 @@
+{
+  "wp": "WP09",
+  "title": "Sandbox rootless bwrap + systemd scope + bridge loopback->UDS",
+  "status": "DONE",
+  "files": [
+    "src/h2ds4/sandbox/*"
+  ],
+  "evidence": "SEC-002..013, 017, 018, 026..028, CIR-001: 19/19 PASS, 0 SKIP",
+  "blockers": [
+    "Podman non usato (ADR-012)"
+  ],
+  "upstream_unchanged": true,
+  "tests": "reports/verification/*.log",
+  "go_next": true
+}

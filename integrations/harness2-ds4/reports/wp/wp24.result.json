@@ -1,0 +1,14 @@
+{
+  "wp": "WP24",
+  "title": "Documentazione finale",
+  "status": "DONE",
+  "files": [
+    "README.md",
+    "docs/*"
+  ],
+  "evidence": "documenti allineati al comportamento implementato",
+  "blockers": [],
+  "upstream_unchanged": true,
+  "tests": "reports/verification/*.log",
+  "go_next": true
+}

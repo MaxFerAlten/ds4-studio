@@ -1,0 +1,13 @@
+{
+  "wp": "WP14",
+  "title": "Experience library",
+  "status": "DONE",
+  "files": [
+    "src/h2ds4/memory/library.py"
+  ],
+  "evidence": "dedup, CONFLICT, cross-model, TTL, 2000 voci, cap caratteri",
+  "blockers": [],
+  "upstream_unchanged": true,
+  "tests": "reports/verification/*.log",
+  "go_next": true
+}

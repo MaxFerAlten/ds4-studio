@@ -1,0 +1,16 @@
+{
+  "wp": "WP02",
+  "title": "Package Python + CLI con exit code stabili",
+  "status": "DONE",
+  "files": [
+    "pyproject.toml",
+    "src/h2ds4/{cli,errors,settings}.py"
+  ],
+  "evidence": "ruff 0, mypy 0 (60 file), test settings",
+  "blockers": [
+    "Python 3.13 assente: solo 3.12.3"
+  ],
+  "upstream_unchanged": true,
+  "tests": "reports/verification/*.log",
+  "go_next": true
+}

@@ -1,0 +1,12 @@
+.............................................................s.......... [ 36%]
+........................................................................ [ 73%]
+.....................................................                    [100%]
+=============================== warnings summary ===============================
+tests/contract/test_api.py:11
+  /mnt/crucial_ai/COPARATOR/harness2-ds4/tests/contract/test_api.py:11: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+SKIPPED [1] tests/integration/test_h2_cli_substrates.py:116: SKIPPED_UNVERIFIED: needs a loaded DS4 model and an explicit maintenance window (H2DS4_LIVE=1)
+196 passed, 1 skipped, 1 warning in 51.28s

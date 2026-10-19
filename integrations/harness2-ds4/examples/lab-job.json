@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "task_id": "json-002",
+  "task_family": "json",
+  "mode": "lab",
+  "substrate": "scripted_local",
+  "workspace_fixture_id": "json-002",
+  "baseline_harness_id": "sha256:c086e89062ab87f143aae0f77a156903f530db371122391b0f8e02f4b0d25181",
+  "model_profile_id": "sha256:2544e8001304fa56fe9c2dff628d0873ff3cb1d02cdb64769523f7e2f1a1e362",
+  "evaluation_profile_id": "sha256:6159064176d24ada90268eae6f8f284c16a081fbadf6498c0bd78e698403b05f",
+  "k": 1,
+  "run_seed": 42
+}

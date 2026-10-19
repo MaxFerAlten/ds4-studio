@@ -1,0 +1,49 @@
+{
+  "seed": 20261019,
+  "dev": [
+    "json-003",
+    "json-005",
+    "json-007",
+    "json-008",
+    "json-011",
+    "ledger-003",
+    "ledger-005",
+    "ledger-007",
+    "ledger-008",
+    "ledger-009",
+    "ledger-trap-012",
+    "ledger-trap-014",
+    "kv-003",
+    "kv-005",
+    "kv-007",
+    "kv-008",
+    "kv-trap-012",
+    "kv-trap-014"
+  ],
+  "val": [
+    "json-004",
+    "json-009",
+    "ledger-004",
+    "ledger-010",
+    "ledger-trap-013",
+    "kv-004",
+    "kv-009",
+    "kv-trap-013"
+  ],
+  "holdout": [
+    "json-001",
+    "json-002",
+    "json-006",
+    "json-010",
+    "json-012",
+    "ledger-001",
+    "ledger-002",
+    "ledger-006",
+    "ledger-trap-011",
+    "kv-001",
+    "kv-002",
+    "kv-006",
+    "kv-010",
+    "kv-trap-011"
+  ]
+}

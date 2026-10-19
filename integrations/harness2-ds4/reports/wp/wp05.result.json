@@ -1,0 +1,13 @@
+{
+  "wp": "WP05",
+  "title": "Policy hard gate e tree validator (dopo harness2.tree.validate)",
+  "status": "DONE",
+  "files": [
+    "src/h2ds4/policy/*"
+  ],
+  "evidence": "UT-005..011, SEC-001..003, SEC-014..016; C5/C7/C8 e guardrails rifiutati",
+  "blockers": [],
+  "upstream_unchanged": true,
+  "tests": "reports/verification/*.log",
+  "go_next": true
+}

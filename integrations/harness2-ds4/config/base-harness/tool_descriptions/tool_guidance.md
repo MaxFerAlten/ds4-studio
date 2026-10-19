@@ -1,0 +1,2 @@
+- `read`: read an input file before acting on it.
+- `write`: write a deliverable file; prefer one write per deliverable.

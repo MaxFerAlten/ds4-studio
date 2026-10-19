@@ -1,0 +1,14 @@
+{
+  "wp": "WP13",
+  "title": "Evaluator deterministico + gate con baseline",
+  "status": "DONE",
+  "files": [
+    "src/h2ds4/evidence/evaluator.py",
+    "src/h2ds4/policy/promotion.py"
+  ],
+  "evidence": "14 casi golden; degradato => mai QUARANTINE",
+  "blockers": [],
+  "upstream_unchanged": true,
+  "tests": "reports/verification/*.log",
+  "go_next": true
+}

@@ -1,0 +1,33 @@
+{
+  "deliverables": [
+    "total.txt"
+  ],
+  "evaluator_id": "eval-ledger-trap-011",
+  "family": "ledger",
+  "id": "ledger-trap-011",
+  "prompt_file": "task.md",
+  "schema_version": 1,
+  "scripted": {
+    "edit": {
+      "description": "Sum ledgers with debits, credits and accounting negatives",
+      "rules": [
+        "signed-amounts",
+        "parenthesised-negatives"
+      ],
+      "skill": "ledger-reconcile",
+      "trigger": "When a ledger mixes credits and debits"
+    },
+    "op": {
+      "column": 0,
+      "input": "ledger.csv",
+      "op": "ledger_sum",
+      "output": "total.txt"
+    }
+  },
+  "split": "holdout",
+  "tags": [
+    "trap"
+  ],
+  "work": "reconcile transaction ledgers into a single signed total",
+  "workspace_dir": "workspace"
+}

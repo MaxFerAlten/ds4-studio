@@ -1,0 +1,14 @@
+{
+  "wp": "WP11",
+  "title": "Substrate OpenCode locale implementato",
+  "status": "DONE",
+  "files": [
+    "src/h2ds4/substrates/opencode_local.py",
+    "tests/integration/test_h2_cli_substrates.py"
+  ],
+  "evidence": "L5 probe 1 passed; test_l5_opencode_local_proxy_smoke 1 passed in 97.37s con deepseek-v4-flash: 4 chiamate via proxy, 9 eventi JSONL, deliverable creato, zero dinieghi; OpenCode v2.0.32 verificato tramite SHA-256 immutabile 489b51816a77809e841310e80c88e834c28c19ad1639e12ba8a19f08b47ab607; fail-closed sugli altri binari",
+  "blockers": [],
+  "upstream_unchanged": true,
+  "tests": "reports/verification/*.log; test_opencode_preflight_accepts_only_pinned_binary_digest: 2 passed",
+  "go_next": true
+}

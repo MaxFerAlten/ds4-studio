@@ -1,0 +1,54 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "h2ds4"
+version = "0.1.0"
+description = "Isolated Harness2 sidecar for DS4 Studio"
+requires-python = ">=3.12,<3.14"
+license = "Apache-2.0"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn>=0.30,<1",
+  "pydantic>=2.10,<3",
+  "httpx>=0.27,<1",
+  "harness2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "pytest-asyncio>=0.25,<2", "ruff>=0.9,<1", "mypy>=1.14,<2"]
+
+[project.scripts]
+h2ds4 = "h2ds4.cli:main"
+
+[tool.uv.sources]
+# Pinned, read-only vendor checkout (1cfe254e8d25b15f37048c3730134686abe60335).
+harness2 = { path = "vendor/harness2" }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/h2ds4"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+  "model_live: needs an already-running DS4 model and an explicit maintenance window",
+  "sandbox: needs bubblewrap with unprivileged user namespaces",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["vendor"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+warn_unused_ignores = true
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Header", "fastapi.Body"]

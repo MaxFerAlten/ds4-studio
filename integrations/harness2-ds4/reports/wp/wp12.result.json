@@ -1,0 +1,15 @@
+{
+  "wp": "WP12",
+  "title": "Integrazione core H2 k=1/k=2 via BenchmarkAdapter e Proposer",
+  "status": "DONE",
+  "files": [
+    "src/h2ds4/orchestration/{h2_adapter,engine}.py"
+  ],
+  "evidence": "R=4k/P=3k verificati (k=1,2); proposte invalide -> fallback",
+  "blockers": [
+    "proposer model-backed testato solo contro fake"
+  ],
+  "upstream_unchanged": true,
+  "tests": "reports/verification/*.log",
+  "go_next": true
+}

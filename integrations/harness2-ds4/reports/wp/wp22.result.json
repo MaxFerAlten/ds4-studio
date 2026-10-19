@@ -1,0 +1,13 @@
+{
+  "wp": "WP22",
+  "title": "CLI UX e report",
+  "status": "DONE",
+  "files": [
+    "src/h2ds4/cli.py"
+  ],
+  "evidence": "experiment report/overlay diff/validate/doctor; output senza payload sensibili",
+  "blockers": [],
+  "upstream_unchanged": true,
+  "tests": "reports/verification/*.log",
+  "go_next": true
+}

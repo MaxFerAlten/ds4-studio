@@ -1,0 +1,15 @@
+{
+  "wp": "WP16",
+  "title": "Skill staging esterno",
+  "status": "DONE",
+  "files": [
+    "src/h2ds4/overlay/export.py"
+  ],
+  "evidence": "collisioni rifiutate, replace con diff, canoniche intatte, idempotente",
+  "blockers": [
+    "loader: ds4 canonico non legge DS4_SKILLS_DIR"
+  ],
+  "upstream_unchanged": true,
+  "tests": "reports/verification/*.log",
+  "go_next": true
+}

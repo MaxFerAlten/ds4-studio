@@ -1,0 +1,10 @@
+{
+  "name": "h2ds4-node-client",
+  "version": "0.1.0",
+  "private": true,
+  "description": "UDS client for the h2ds4 sidecar. External tool only: never imported into DS4.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": { "node": ">=20" },
+  "scripts": { "test": "node --test test/client.test.mjs" }
+}

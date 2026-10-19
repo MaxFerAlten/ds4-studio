@@ -1,0 +1,13 @@
+{
+  "wp": "WP15",
+  "title": "Overlay stage/approve/activate/rollback",
+  "status": "DONE",
+  "files": [
+    "src/h2ds4/overlay/{manifest,stage,approve,validate}.py"
+  ],
+  "evidence": "CAS stale rifiutato, pointer riconciliato dopo crash, APPROVED_NOT_APPLIED",
+  "blockers": [],
+  "upstream_unchanged": true,
+  "tests": "reports/verification/*.log",
+  "go_next": true
+}

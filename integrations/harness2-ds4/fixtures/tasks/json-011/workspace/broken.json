@@ -1,0 +1,17 @@
+{
+  // generated settings
+  k85_0: 775,
+  k15_1: 689,
+  k24_2: 'v9x',
+  k10_3: 'v6x',
+  k52_4: 'v9x',
+  k81_5: 'v4x',
+  nested: {
+    items: [
+      5,
+      4,
+      0
+    ,],
+    name: 'svc'
+  },
+}
