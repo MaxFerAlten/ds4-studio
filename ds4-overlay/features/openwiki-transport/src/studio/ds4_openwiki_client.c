@@ -1,4 +1,6 @@
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 #include "ds4_openwiki_client.h"
 
 #include <ctype.h>
