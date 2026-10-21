@@ -54,6 +54,21 @@ Nessun riavvio automatico.
 
 ## 4. Profilo
 
+Prima derivare l'identità dal GGUF locale, senza avviare il runtime:
+
+```bash
+PYTHONPATH=integrations/deepinfer-ds4/python python3 -m deepinfer_ds4 identity \
+  --model gguf/DeepSeek-V4.1-Flash-Q2.gguf --backend rocm --device-id gfx1151 \
+  --context-length 4096 --mtp-max 0 --kv-dtype f16 --config-label baseline \
+  > identity.json
+```
+
+Backend, device, contesto, MTP e dtype KV sono dichiarazioni dell'operatore: devono
+corrispondere al run. `--kv-dtype` e `--overlay-commit` omessi producono `null`;
+`--runtime-commit` omesso usa `git rev-parse HEAD` della root del repository, oppure
+`null` se Git non è disponibile. Un commit sorgente non identifica una build binaria.
+Il JSON è direttamente utilizzabile da `profile --identity`:
+
 ```bash
 PYTHONPATH=integrations/deepinfer-ds4/python python3 -m deepinfer_ds4 profile write \
   --dir ~/.cache/ds4/deepinfer-perf \
@@ -62,6 +77,43 @@ PYTHONPATH=integrations/deepinfer-ds4/python python3 -m deepinfer_ds4 profile wr
 
 Il profilo è invalidato da qualsiasi cambio di identità (modello, runtime, backend,
 quantizzazione, contesto, MTP).
+
+Il parser supporta GGUF v2/v3 (anche v3 big endian), tutti i tipi metadata e gli
+array non annidati. Legge solo header e padding: limite totale 256 MiB, stringhe
+16 MiB, un milione di elementi per array/numero di KV o tensori, due milioni di
+valori complessivi, fino a quattro dimensioni per tensore. Dati troncati, valori
+non finiti, booleani invalidi, duplicati, tipi GGML sconosciuti e limiti superati
+producono errore chiuso.
+Il parser non verifica l'integrità di tutti i payload dei tensori.
+
+Gli hash dei metadati usano SHA-256 del JSON canonico UTF-8 (chiavi ordinate,
+separatori compatti, escape ASCII) della mappa `chiave: [[tipo, eventuale sottotipo
+array], valore]`. Tutte le chiavi `tokenizer.*` vanno in `tokenizer_hash`, inclusi
+tokens, merges, token_type, scores e scalari; `tokenizer.chat_template` ha invece
+`chat_template_hash`. Entrambi sono `null` se assenti. Nessuna di queste chiavi
+entra in `gguf_metadata_hash`. `tensor_layout_hash` copre la lista ordinata di
+nome, numero dimensioni, dimensioni, tipo e offset; `quantization` è l'istogramma
+dei tipi GGML ordinato per ID. Gli hash canonici sono indipendenti dall'ordine
+dei KV e dall'endianness, ma distinguono i tipi metadata.
+
+Per default `model_sha256` vale **`sample:<weights_sample_sha256>`**. È un
+fingerprint veloce, **non un hash completo del contenuto** e non una prova di
+compatibilità KV. SHA-256 copre i byte dell'header inclusi i padding, la dimensione
+del file come uint64 little endian e i tre digest SHA-256 binari dei campioni.
+I campioni sono finestre da 1 MiB, relative all'inizio dei dati tensore: offset 0,
+50% della regione dati e ultimo MiB. Per file piccoli si riducono le finestre e
+si limita quella centrale alla fine dei dati; possono sovrapporsi. Nessun mtime
+entra nell'identità. L'identità legge al massimo 3 MiB di payload; modifiche fuori
+dai campioni possono sfuggire. Il percorso e la stringa modello non identificano
+i pesi, né viene verificato automaticamente un manifest (piano §11).
+
+Solo `--full-hash` abilita la lettura completa in blocchi da 8 MiB e produce un
+vero `model_sha256`. È costoso: usarlo separatamente dalle misure di performance.
+`identity --kv` emette tutti i campi del piano §7.1: quelli non dimostrabili
+offline restano `null` e sono elencati in `unverified_fields`. In particolare
+`model_weights_hash` resta `null` senza `--full-hash`, con il fingerprint veloce
+esposto separatamente. Build, kernel, RoPE/attention effettivi e layout KV
+restano non verificati; nessun formato KV on-disk o gate runtime viene cambiato.
 
 ## 5. Telemetria DSpark / MTP dai log
 

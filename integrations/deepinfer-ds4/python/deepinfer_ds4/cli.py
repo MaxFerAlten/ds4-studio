@@ -1,5 +1,5 @@
 # Part of DS4-Studio DeepInfer integration (plan §3, §4.1, §10).
-"""`python -m deepinfer_ds4 ingest|select|profile|dspark-log` - JSON, errors exit 2."""
+"""`python -m deepinfer_ds4 ingest|select|identity|profile|dspark-log` - JSON, errors exit 2."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import bench_ingest, dspark_log, perf_profile, spec_select
+from . import bench_ingest, dspark_log, identity, perf_profile, spec_select
 
 
 def _expand(pattern: str) -> list[str]:
@@ -77,6 +77,15 @@ def _load_identity(path: str) -> perf_profile.PerfIdentity:
         return perf_profile.PerfIdentity.from_dict(json.load(f))
 
 
+def _cmd_identity(a: argparse.Namespace) -> object:
+    derive = identity.kv_identity if a.kv else identity.build_perf_identity
+    result = derive(a.model, backend=a.backend, device_id=a.device_id,
+                    context_length=a.context_length, mtp_max=a.mtp_max, kv_dtype=a.kv_dtype,
+                    runtime_commit=a.runtime_commit, overlay_commit=a.overlay_commit,
+                    config_label=a.config_label, full_hash=a.full_hash)
+    return result if a.kv else result.to_dict()
+
+
 def _cmd_profile(a: argparse.Namespace) -> object:
     store = perf_profile.PerfProfileStore(a.dir, ttl_s=a.ttl)
     ident = _load_identity(a.identity)
@@ -113,6 +122,20 @@ def build_parser() -> argparse.ArgumentParser:
     log = sub.add_parser("dspark-log", help="summarize DS4 speculation stderr (numeric fields only)")
     log.add_argument("--log", nargs="+", action="extend", required=True, help="log files, repeatable")
     log.set_defaults(fn=_cmd_dspark_log)
+
+    ident = sub.add_parser("identity", help="derive offline GGUF identity (three weight samples by default)")
+    ident.add_argument("--model", required=True)
+    ident.add_argument("--backend", required=True)
+    ident.add_argument("--device-id", required=True)
+    ident.add_argument("--context-length", type=int, required=True)
+    ident.add_argument("--mtp-max", type=int, required=True)
+    ident.add_argument("--kv-dtype", help="declared KV dtype; null when unspecified")
+    ident.add_argument("--runtime-commit", help="source revision; defaults to repository HEAD")
+    ident.add_argument("--overlay-commit", help="declared overlay revision; null when unspecified")
+    ident.add_argument("--config-label", default="")
+    ident.add_argument("--full-hash", action="store_true", help="expensive: stream SHA-256 of the entire file")
+    ident.add_argument("--kv", action="store_true", help="emit offline KV identity and unverified fields")
+    ident.set_defaults(fn=_cmd_identity)
 
     prof = sub.add_parser("profile", help="decode perf profile store")
     prof.add_argument("action", choices=("write", "show"))

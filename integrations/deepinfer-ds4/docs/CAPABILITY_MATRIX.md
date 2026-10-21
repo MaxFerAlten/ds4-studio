@@ -27,7 +27,7 @@ Capability non dimostrata = `false`. Fonte: `INVENTORY.md`.
 | PR-04 canary ON/OFF | **fatto (Modalità A)** | `spec_select.py` con gate §10.2; nessun riavvio automatico |
 | PR-05 recipe adapter | bloccato | serve clone esplicito deepseek-recipe |
 | PR-06 grammar | NO-GO | manca hook token mask |
-| PR-07 kv identity | rinviato | cambia formato on-disk |
+| PR-07 kv identity | **fatto (derivazione offline)**; persistenza rinviata | `identity.py` / CLI `identity`: header GGUF, hash separati, fingerprint campionato o hash completo esplicito; campi KV non verificati a `null`. Formato KV on-disk invariato; restore esatto e manifest verificati ancora rinviati |
 | PR-08 swa spike | R&D | |
 | PR-09 scheduler async prep | rinviato | single inference DS4 |
 | PR-10 moe hotness | rinviato | richiede patch ds4.c |
