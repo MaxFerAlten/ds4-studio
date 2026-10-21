@@ -10,12 +10,25 @@ diff --git a/ds4_rocm.cu b/ds4_rocm.cu
  #include "rocm/ds4_rocm_runtime.cuh"
  
  #include "rocm/ds4_rocm_common.cuh"
-@@ -170,6 +172,8 @@
- #include "rocm/ds4_rocm_hc_output_launch.cuh"
+@@ -171,6 +173,8 @@
  
  #include "rocm/ds4_rocm_current_api_compat.cuh"
-+
-+#include "rocm/ds4_rocm_v41.cuh"
  
++#include "rocm/ds4_rocm_v41.cuh"
++
  #include "ds4_glm53_vision_gpu.cuh"
  #include "ds4_deepseek4_vision_gpu.cuh"
+ #include "rocm/ds4_rocm_deepseek4_vision.cuh"
+@@ -182,7 +186,11 @@
+  * Whether these 2104 lines are CORRECT under HIP is a separate question. */
+ #include "rocm/ds4_rocm_qwen4_compat.cuh"
+ #include "ds4_qwen4_cuda.cuh"
+-#include "ds4_deepseek41_cuda.cuh"
++/* overlay rocm-strix-halo: upstream includes ds4_deepseek41_cuda.cuh here for
++ * its ROCm V4.1 graph. rocm/ds4_rocm_v41.cuh above defines the same 18
++ * ds4_gpu_dsv41_* entry points with gfx1151-tuned kernels and explicit OCML
++ * arithmetic, and the upstream-only ones are declared CUDA-only, so the
++ * upstream header is left out rather than redefining every symbol. */
+ 
+ /* Tensor-parallel gates are Metal-only; stubs keep shared graph code
+  * linkable (TP option validation rejects non-Metal backends). */

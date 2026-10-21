@@ -53,13 +53,13 @@ and tests.
 | `accelerator-span-bounds` | on | bounds-check every tensor, not only Q8_0 2-D — what rejects disk-only V4.1 descriptors |
 | `rocm-disk-only-engram` | on | validated Engram exemption on ROCm instead of upstream's name-only check |
 | `rocm-vision-alpha-precision` | on | `rsqrtf` → `1.0f/sqrtf`; required, `rsqrtf` is `__device__`-only on ROCm 7.2.4 |
-| `rocm-strix-halo` | on | `ds4_rocm.cu` hook + `ds4_rocm_v41.cuh` + `ds4_rocm_hc_sgemm.cuh` |
+| `rocm-strix-halo` | on | `ds4_rocm.cu` hook + `ds4_rocm_v41.cuh` + `ds4_rocm_hc_sgemm.cuh`; drops upstream's `ds4_deepseek41_cuda.cuh` include on ROCm |
 | `cuda-mmq-v41` | on | MMQ tier additions for the V4.1 quantised paths |
 | `vision-gpu-v41` | on | DeepSeek 4.1 vision GPU path |
 | `engram-rocm` | on | Engram disk-row handling for ROCm |
 | `deepseek41-harness` | on | three downstream-only V4.1 test harnesses |
 | `docs-strix-halo` | on | Strix Halo operational docs |
-| `dsv41-expert-streaming` | **off** | expert-streaming callers; incomplete, see `docs/FINDINGS.md` §6 |
+| `dsv41-expert-streaming` | on | ROCm V4.1 prefill workspace cap, host Engram staging, gfx1151 HC projection; streaming itself is upstream's since 5379c1c |
 
 Verified on this machine: both branches of `test_deepseek41_cache_spans` pass,
 and `ds4_rocm.o` compiles clean under ROCm 7.2.4 / gfx1151.

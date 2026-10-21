@@ -4,33 +4,20 @@ owner = "overlay"
 description = """
 Let DeepSeek V4.1 actually run on ROCm.
 
-Upstream refuses it outright:
+Upstream 4c64ae4 (in 5379c1c) enabled the V4.1 ROCm target graph itself:
+DS4_HAS_DEEPSEEK41_GPU is now defined on ROCm, and ds4_rocm_unavailable.cu
+carries the ds4_gpu_tp_init / _shutdown / _failed stubs this feature used to
+add. Both parts were retired at that sync. The ROCm V4.1 entry points still
+come from rocm/ds4_rocm_v41.cuh (feature rocm-strix-halo), not from upstream's
+shared CUDA header.
 
-    #if !defined(DS4_NO_GPU) && !defined(DS4_ROCM_BUILD)
-    #define DS4_HAS_DEEPSEEK41_GPU 1
-    #endif
+What remains, measured rather than assumed:
 
-so on a ROCm build the CUDA clause of the V4.1 support gate is compiled out and
-only Metal remains, producing at runtime:
-
-    ds4: V4.1 requires Metal or single-GPU CUDA per rank ...
-
-That exclusion is correct for upstream, which ships no ROCm V4.1 backend. This
-overlay does: rocm/ds4_rocm_v41.cuh, carried by feature rocm-strix-halo,
-implements the V4.1 GPU entry points, and a ROCm build reports
-DS4_BACKEND_CUDA, so the existing single-device clause applies unchanged once
-the macro is allowed to be defined.
-
-Three gaps had to be closed, all measured rather than assumed:
-
-  1. the macro itself (ds4.c);
+  1. DS4_HAVE_V41_GPU (ds4.c): the fork gates its V4.1 GPU paths on this macro
+     and upstream has no such macro, so every #if using it evaluated to 0;
   2. the gate additionally refuses the SSD quality / preload-experts /
      full-layers variants under ROCm, mirroring the downstream fork - those
-     have no ROCm implementation;
-  3. ds4_gpu_tp_init / _shutdown / _failed had no ROCm definition. TP is
-     refused by the gate before they can run, so they are stubs in
-     ds4_rocm_unavailable.cu alongside the TP gate stubs already there;
-     _failed returns failure so anything reaching it stops.
+     have no ROCm implementation.
 
 ds4_engram.o also has to join the ROCm object set - see mk/overlay.mk. Upstream
 leaves it out because ROCm never needed Engram.
@@ -41,7 +28,7 @@ needs a real model run; nothing here has been validated against one.
 """
 
 [upstream]
-reviewed_sha = "fc80bd695da76ee14bcb86820bf900a5cdfda806"
+reviewed_sha = "5379c1c9ac315f1540371b06a3db88491d4059ff"
 
 # Upstream f3967519 added an identical guard for DS4_HAS_QWEN4_GPU directly
 # below this one, so the bare "#if !defined(DS4_NO_GPU) && !defined(...)" line
@@ -59,19 +46,9 @@ kind = "exact"
 text = "                (e->backend == DS4_BACKEND_CUDA && !opt->cuda_tensor_parallel &&"
 count = 1
 
-[[anchors]]
-file = "ds4_rocm_unavailable.cu"
-kind = "exact"
-text = "ROCM_UNAVAILABLE_INT(ds4_gpu_tp_big_gate_wait)"
-count = 1
-
 [[shadow_patch]]
 file = "ds4.c"
 patch = "patches/core/rocm-deepseek41-enable.patch"
-
-[[shadow_patch]]
-file = "ds4_rocm_unavailable.cu"
-patch = "patches/rocm/rocm-deepseek41-tp-stubs.patch"
 
 [[test]]
 command = "make -f Makefile.overlay overlay-strix-halo"

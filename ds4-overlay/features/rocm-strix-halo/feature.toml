@@ -9,17 +9,31 @@ Scope is deliberately limited to what builds. The ROCm-side callers of the V4.1
 expert-streaming subsystem live in feature dsv41-expert-streaming, which is
 disabled because its declarations have not been ported yet.
 
+Since upstream 5379c1c, ds4_rocm.cu also includes ds4_deepseek41_cuda.cuh for
+its own ROCm V4.1 graph. That header defines the same 18 ds4_gpu_dsv41_* entry
+points as rocm/ds4_rocm_v41.cuh (19 "redefinition" errors under hipcc), and
+the six it adds beyond them are declared CUDA-only in ds4_deepseek41_gpu.h.
+The hook therefore drops that include and keeps the overlay's gfx1151-tuned,
+OCML-exact implementations. Retire this only after measuring upstream's
+header against them on gfx1151 for both parity and speed.
+
 Verified: ds4_rocm.o compiles clean under ROCm 7.2.4 for gfx1151 with this
 feature enabled.
 """
 
 [upstream]
-reviewed_sha = "9139e2ae58a41503968a500f36f75895c1ba63fc"
+reviewed_sha = "5379c1c9ac315f1540371b06a3db88491d4059ff"
 
 [[anchors]]
 file = "ds4_rocm.cu"
 kind = "exact"
 text = "#include \"rocm/ds4_rocm_runtime.cuh\""
+count = 1
+
+[[anchors]]
+file = "ds4_rocm.cu"
+kind = "exact"
+text = "#include \"ds4_deepseek41_cuda.cuh\""
 count = 1
 
 [[shadow_patch]]
