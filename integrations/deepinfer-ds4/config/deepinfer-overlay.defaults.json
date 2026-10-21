@@ -1,0 +1,15 @@
+{
+  "deepinfer_overlay": {
+    "enabled": false,
+    "telemetry": {"enabled": false, "sample_rate": 0.02},
+    "speculation": {"mode": "off", "state": "DISABLED", "max_draft": 1, "warmup_steps": 200,
+                    "selection": "mode_a_between_sessions"},
+    "recipe_adapter": {"enabled": false, "allowed_families": ["deepseek-v4.1"]},
+    "grammar": {"async_compile": false, "max_cache_bytes": 67108864},
+    "kv": {"fingerprint_v2": false, "bounded_swa_replay": false},
+    "scheduler": {"async_prep": false},
+    "moe": {"hotness_telemetry": false},
+    "gates": {"min_runs": 7, "go_min_ci_low_pct": 5.0, "no_go_ci_high_pct": -3.0,
+              "max_ttft_regression_pct": 5.0, "bootstrap_resamples": 2000}
+  }
+}

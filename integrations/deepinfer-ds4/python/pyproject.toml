@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deepinfer-ds4"
+version = "0.1.0"
+description = "DS4-Studio DeepInfer integration (Mode A)"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["deepinfer_ds4*"]

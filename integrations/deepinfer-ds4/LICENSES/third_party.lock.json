@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "deepinfer": {
+    "repository": "https://github.com/deepseek-ai/DeepInfer.git",
+    "commit": "9bd9cf243fc53ef9afbf8f04d391d989117d6ab9",
+    "commit_date": "2026-10-21",
+    "license": "Apache-2.0",
+    "license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    "local_checkout": "../DeepInfer (read-only study copy, not vendored, not a submodule)",
+    "ported_files": {
+      "csrc/engine/mtp_varlen.hpp": "164f45db4cccd6d6909dd2846e7dfffb57754b108af679443bf4bd71ec33785a",
+      "deepinfer/worker/decode_perf_cache.py": "472ff10a43df0e4b5b91becb51b13e651df62ca928032c2752c39df99f40e55e"
+    },
+    "copied_verbatim": []
+  },
+  "deepseek_recipe": {
+    "repository": "https://github.com/deepseek-ai/deepseek-recipe",
+    "commit": null,
+    "status": "not acquired: no local checkout; plan rule 6 forbids implicit network fetch"
+  },
+  "ds4_studio_base_commit": "aa617605672165e6c393b089e34c0a1602a496eb"
+}
