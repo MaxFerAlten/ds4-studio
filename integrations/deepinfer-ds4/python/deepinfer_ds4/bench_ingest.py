@@ -104,9 +104,10 @@ def aggregate_by_ctx(rows: list[BenchRow]) -> dict[int, CtxStats]:
 
 
 def profile_measurements(stats: dict[int, CtxStats], draft_length: int = 0) -> list[dict]:
-    """One single-sequence decode measurement per context size (plan §3.1)."""
+    """One context-tagged single-sequence measurement per size (plan §3.1 refinement)."""
     return [
-        {"num_sequences": 1, "draft_length": draft_length, "p50_ms": s.ms_per_token_p50,
+        {"num_sequences": 1, "draft_length": draft_length, "ctx_tokens": ctx,
+         "p50_ms": s.ms_per_token_p50,
          "p95_ms": s.ms_per_token_p95, "samples": s.n}
-        for _, s in sorted(stats.items())
+        for ctx, s in sorted(stats.items())
     ]

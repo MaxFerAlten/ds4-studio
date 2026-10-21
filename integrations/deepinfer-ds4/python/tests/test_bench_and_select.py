@@ -8,7 +8,7 @@ import sys
 
 import pytest
 
-from deepinfer_ds4 import bench_ingest, perf_profile
+from deepinfer_ds4 import bench_ingest, cli as cli_module, perf_profile
 from deepinfer_ds4.spec_select import (
     GO, INCONCLUSIVE, INSUFFICIENT_DATA, NO_GO, Gates, RunSet,
     choose_draft_length, expected_accepted, select,
@@ -67,8 +67,17 @@ def test_parse_and_aggregate(tmp_path):
     assert s.ms_per_token_p50 <= s.ms_per_token_p95 == 50.0
     ms = bench_ingest.profile_measurements(stats)
     assert [m["samples"] for m in ms] == [2, 1]
+    assert [m["ctx_tokens"] for m in ms] == [4096, 8192]
     for m in ms:
         perf_profile.validate_measurement(m)
+
+
+def test_profile_measurements_preserve_contexts(tmp_path):
+    p = write_csv(tmp_path / "contexts.csv", [(8192, 10, 200), (4096, 20, 100)])
+    stats = bench_ingest.aggregate_by_ctx(bench_ingest.parse_csv(str(p)))
+    measurements = bench_ingest.profile_measurements(stats, draft_length=2)
+    assert [m["ctx_tokens"] for m in measurements] == [4096, 8192]
+    assert [m["draft_length"] for m in measurements] == [2, 2]
 
 
 @pytest.mark.parametrize("body", [
@@ -175,7 +184,8 @@ def test_cli_select_and_profile(tmp_path):
             "--csv", str(tmp_path / "base-*.csv"))
     assert r.returncode == 0, r.stderr
     r = cli("profile", "show", "--dir", str(store), "--identity", str(ident))
-    assert json.loads(r.stdout)["profile"]["measurements"][0]["samples"] == 9
+    measurement = json.loads(r.stdout)["profile"]["measurements"][0]
+    assert measurement["samples"] == 9 and measurement["ctx_tokens"] == 4096
 
 
 def test_cli_errors_exit_2(tmp_path):
@@ -183,6 +193,45 @@ def test_cli_errors_exit_2(tmp_path):
     assert r.returncode == 2 and "no CSV matches" in r.stderr
     r = cli("select", "--baseline", str(tmp_path / "x"), "--candidate", "noequals")
     assert r.returncode == 2
+
+
+def test_runset_returns_context(tmp_path):
+    csv = write_csv(tmp_path / "run.csv", [(8192, 20, 100)])
+    runset, logs, ctx = cli_module._runset("base", str(csv))
+    assert runset.label == "base" and logs == [] and ctx == 8192
+
+
+@pytest.mark.parametrize("contexts", [(8192, 4096), (4096, 8192), (8192, 8192, 4096)])
+def test_cli_select_rejects_different_config_contexts(tmp_path, monkeypatch, capsys, contexts):
+    args = ["select", "--baseline-label", "base"]
+    labels = ["base"] + [f"candidate-{i}" for i in range(1, len(contexts))]
+    for i, (label, ctx) in enumerate(zip(labels, contexts)):
+        csv = write_csv(tmp_path / f"{label}.csv", [(ctx, 20, 100)] * 7)
+        args.extend(["--baseline", str(csv)] if i == 0 else ["--candidate", f"{label}={csv}"])
+
+    def must_not_select(*args, **kwargs):
+        pytest.fail("select must reject mismatched contexts before comparing runs")
+
+    monkeypatch.setattr(cli_module.spec_select, "select", must_not_select)
+    assert cli_module.main(args) == 2
+    captured = capsys.readouterr()
+    assert not captured.out
+    for label, ctx in zip(labels, contexts):
+        assert label in captured.err and str(ctx) in captured.err
+
+
+def test_cli_profile_write_rejects_context_above_identity(tmp_path):
+    csv = write_csv(tmp_path / "contexts.csv", [(4096, 20, 100), (8192, 10, 200)])
+    identity_path = tmp_path / "identity.json"
+    identity_path.write_text(json.dumps(dict(
+        model_sha256="a" * 64, runtime_commit="r", overlay_commit="o", backend="rocm",
+        device_id="gfx1151", quantization="Q2", context_length=4096, kv_dtype="f16", mtp_max=0)))
+    directory = tmp_path / "store"
+    r = cli("profile", "write", "--dir", str(directory), "--identity", str(identity_path),
+            "--csv", str(csv))
+    assert r.returncode == 2, r.stderr
+    assert "ctx_tokens" in r.stderr and "8192" in r.stderr and "4096" in r.stderr
+    assert not directory.exists()
 
 
 def test_offline_no_network_imports():

@@ -1,11 +1,15 @@
 # Derived from DeepInfer (https://github.com/deepseek-ai/DeepInfer) commit 9bd9cf2,
 # deepinfer/worker/decode_perf_cache.py, Apache-2.0. Modified for DS4-Studio.
-"""Decode perf profile store, schema_version 1 (plan §3.1).
+"""Decode perf profile store, schema_version 1 (plan §3.1 refinement).
 
 Differences from DeepInfer's DecodePerfCache: no torch.distributed broadcast
 (DS4 is a single process), an identity that also covers backend, device,
 quantization, context and MTP, a content digest, 0600 files in a 0700
 directory, flock-serialised writers and a directory fsync after rename.
+Each numeric measurement includes its positive ctx_tokens, bounded by the
+identity's context_length and unique with num_sequences and draft_length.
+Filenames order writes by nanoseconds; payload timestamps remain in seconds.
+This refines the unpersisted v1 schema, so its version remains 1.
 Only numeric measurements are accepted, so no prompt text can be stored.
 """
 
@@ -31,12 +35,13 @@ DEFAULT_TTL_S = 7 * 24 * 3600
 # reader never sees a file vanish halfway (same margin as DeepInfer).
 STALE_GRACE_S = 2 * 3600
 LOCK_NAME = ".lock"
+NS_PER_S = 1_000_000_000
 
 IDENTITY_FIELDS = (
     "model_sha256", "runtime_commit", "overlay_commit", "backend", "device_id",
     "quantization", "context_length", "kv_dtype", "mtp_max",
 )
-MEASUREMENT_FIELDS = ("num_sequences", "draft_length", "p50_ms", "p95_ms", "samples")
+MEASUREMENT_FIELDS = ("num_sequences", "draft_length", "ctx_tokens", "p50_ms", "p95_ms", "samples")
 
 
 @dataclass(frozen=True)
@@ -96,11 +101,11 @@ def _is_int(v: Any) -> bool:
 def validate_measurement(m: Any) -> dict[str, Any]:
     if not isinstance(m, dict) or set(m) != set(MEASUREMENT_FIELDS):
         raise ValueError(f"measurement must have exactly {MEASUREMENT_FIELDS}")
-    for k in ("num_sequences", "draft_length", "samples"):
+    for k in ("num_sequences", "draft_length", "ctx_tokens", "samples"):
         if not _is_int(m[k]) or m[k] < 0:
             raise ValueError(f"{k} must be a non-negative integer")
-    if m["samples"] == 0 or m["num_sequences"] == 0:
-        raise ValueError("samples and num_sequences must be > 0")
+    if m["samples"] == 0 or m["num_sequences"] == 0 or m["ctx_tokens"] == 0:
+        raise ValueError("samples, num_sequences and ctx_tokens must be > 0")
     p50, p95 = m["p50_ms"], m["p95_ms"]
     for v in (p50, p95):
         if not isinstance(v, (int, float)) or isinstance(v, bool) or not math.isfinite(v) or v < 0:
@@ -111,7 +116,10 @@ def validate_measurement(m: Any) -> dict[str, Any]:
 
 
 def parse_filename(filename: str) -> tuple[str, int, bool] | None:
-    """`<sha256>.<uuid4 hex>.<unix s>[.tmp]`, else None."""
+    """`<sha256>.<uuid4 hex>.<unix ns, at least 19 digits>[.tmp]`, else None.
+
+    Returns (key, timestamp_ns, is_tmp); legacy seconds-only names are dirty.
+    """
     parts = filename.split(".")
     is_tmp = len(parts) == 4 and parts[-1] == "tmp"
     if is_tmp:
@@ -119,7 +127,7 @@ def parse_filename(filename: str) -> tuple[str, int, bool] | None:
     if len(parts) != 3:
         return None
     key, file_uuid, ts = parts
-    if not _is_hex(key, 64) or not _is_hex(file_uuid, 32) or not ts.isdigit():
+    if not _is_hex(key, 64) or not _is_hex(file_uuid, 32) or len(ts) < 19 or not ts.isdigit():
         return None
     return key, int(ts), is_tmp
 
@@ -157,7 +165,7 @@ class PerfProfileStore:
             if name == LOCK_NAME:
                 continue
             parsed = parse_filename(name)
-            if parsed is not None and now_s - parsed[1] <= self.ttl_s + STALE_GRACE_S:
+            if parsed is not None and now_s - parsed[1] // NS_PER_S <= self.ttl_s + STALE_GRACE_S:
                 continue
             path = os.path.join(self.directory, name)
             try:
@@ -171,7 +179,16 @@ class PerfProfileStore:
         if not measurements:
             raise ValueError("at least one measurement is required")
         clean = [validate_measurement(m) for m in measurements]
-        now_s = int(time.time()) if now_s is None else now_s
+        seen = set()
+        for m in clean:
+            if m["ctx_tokens"] > identity.context_length:
+                raise ValueError(f"ctx_tokens {m['ctx_tokens']} exceeds identity context_length {identity.context_length}")
+            measurement_key = (m["num_sequences"], m["draft_length"], m["ctx_tokens"])
+            if measurement_key in seen:
+                raise ValueError(f"duplicate (num_sequences, draft_length, ctx_tokens) key: {measurement_key}")
+            seen.add(measurement_key)
+        now_ns = time.time_ns() if now_s is None else now_s * NS_PER_S
+        now_s = now_ns // NS_PER_S
         body = {
             "schema_version": SCHEMA_VERSION,
             "identity": identity.to_dict(),
@@ -182,10 +199,17 @@ class PerfProfileStore:
         data = (canonical_json(payload) + "\n").encode()
 
         self._ensure_dir()
-        name = f"{identity.key()}.{uuid.uuid4().hex}.{now_s}"
-        tmp = os.path.join(self.directory, name + ".tmp")
-        final = os.path.join(self.directory, name)
+        key = identity.key()
         with self._locked():
+            # Persist the tie-break under flock so separate writers and frozen
+            # clocks still order writes in the same second by publication order.
+            for existing in os.listdir(self.directory):
+                parsed = parse_filename(existing)
+                if parsed is not None and parsed[0] == key and parsed[1] // NS_PER_S == now_s:
+                    now_ns = max(now_ns, parsed[1] + 1)
+            name = f"{key}.{uuid.uuid4().hex}.{now_ns:019d}"
+            tmp = os.path.join(self.directory, name + ".tmp")
+            final = os.path.join(self.directory, name)
             fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             try:
                 with os.fdopen(fd, "wb") as f:
@@ -235,7 +259,7 @@ class PerfProfileStore:
             if parsed is None:
                 continue
             file_key, ts, is_tmp = parsed
-            if is_tmp or file_key != key or now_s - ts > self.ttl_s:
+            if is_tmp or file_key != key or now_s - ts // NS_PER_S > self.ttl_s:
                 continue
             candidates.append((ts, name))
         for _, name in sorted(candidates, reverse=True):

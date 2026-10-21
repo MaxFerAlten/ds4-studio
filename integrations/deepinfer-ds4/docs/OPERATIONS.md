@@ -38,8 +38,11 @@ PYTHONPATH=integrations/deepinfer-ds4/python python3 -m deepinfer_ds4 select \
 ```
 
 Comandi dalla root del repository. `--ctx N` seleziona solo le righe con
-`ctx_tokens=N`; senza filtro resta l'errore se i CSV mescolano contesti. Un
-contesto assente produce un errore. Anche `ingest` accetta il filtro opzionale:
+`ctx_tokens=N`; senza filtro resta l'errore se i CSV mescolano contesti. Baseline
+e candidati devono avere tutti lo stesso contesto, anche se ogni configurazione
+contiene un solo contesto: per esempio baseline 8192 e candidato 4096 producono
+errore (exit 2) con etichette e contesti, prima del confronto. Un contesto assente
+produce un errore. Anche `ingest` accetta il filtro opzionale:
 
 ```bash
 PYTHONPATH=integrations/deepinfer-ds4/python python3 -m deepinfer_ds4 ingest \
@@ -77,6 +80,21 @@ PYTHONPATH=integrations/deepinfer-ds4/python python3 -m deepinfer_ds4 profile wr
 
 Il profilo è invalidato da qualsiasi cambio di identità (modello, runtime, backend,
 quantizzazione, contesto, MTP).
+
+Lo schema resta `schema_version: 1` (precisazione del piano §3.1, prima di qualsiasi
+persistenza). Ogni misura contiene `num_sequences`, `draft_length`, `ctx_tokens`,
+`p50_ms`, `p95_ms` e `samples`. `ctx_tokens` è un intero obbligatorio > 0 e non può
+superare `identity.context_length`; `profile write` rifiuta i CSV che superano
+questo limite. La chiave `(num_sequences, draft_length, ctx_tokens)` deve essere
+unica nel profilo: contesti diversi conservano misure distinte.
+
+La lettura sceglie il profilo valido più recente. I nomi dei file hanno formato
+`<sha256>.<uuid4 hex>.<unix ns>` (timestamp di almeno 19 cifre, con zeri iniziali
+se necessario); sotto `flock` il timestamp cresce a ogni scrittura per la stessa
+identità nello stesso secondo, anche con un orologio fisso. `created_at_unix`
+nel JSON resta espresso in secondi. Il TTL predefinito resta 7 giorni, con
+cancellazione dopo altre 2 ore; i file `.tmp` recenti sono preservati. I vecchi
+nomi con timestamp in secondi sono considerati file sporchi e rimossi dal cleanup.
 
 Il parser supporta GGUF v2/v3 (anche v3 big endian), tutti i tipi metadata e gli
 array non annidati. Legge solo header e padding: limite totale 256 MiB, stringhe

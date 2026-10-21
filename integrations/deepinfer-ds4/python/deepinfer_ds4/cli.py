@@ -20,7 +20,7 @@ def _expand(pattern: str) -> list[str]:
     return paths
 
 
-def _runset(label: str, pattern: str, ctx: int | None = None) -> tuple[spec_select.RunSet, list[Path]]:
+def _runset(label: str, pattern: str, ctx: int | None = None) -> tuple[spec_select.RunSet, list[Path], int]:
     rows, logs = [], []
     for p in _expand(pattern):
         selected = [r for r in bench_ingest.parse_csv(p) if ctx is None or r.ctx_tokens == ctx]
@@ -33,7 +33,8 @@ def _runset(label: str, pattern: str, ctx: int | None = None) -> tuple[spec_sele
     ctxs = {r.ctx_tokens for r in rows}
     if len(ctxs) != 1:
         raise ValueError(f"{label}: runs mix context sizes {sorted(ctxs)}; select one per call")
-    return spec_select.RunSet(label, [r.gen_tps for r in rows], [r.gen_first_ms for r in rows]), logs
+    runset = spec_select.RunSet(label, [r.gen_tps for r in rows], [r.gen_first_ms for r in rows])
+    return runset, logs, ctxs.pop()
 
 
 def _cmd_ingest(a: argparse.Namespace) -> object:
@@ -48,17 +49,23 @@ def _cmd_ingest(a: argparse.Namespace) -> object:
 
 def _cmd_select(a: argparse.Namespace) -> object:
     cands = []
+    contexts = []
     telemetry = {}
     for spec in a.candidate:
         label, sep, pattern = spec.partition("=")
         if not sep or not label or not pattern:
             raise ValueError(f"--candidate must be NAME=GLOB, got {spec!r}")
-        runset, logs = _runset(label, pattern, a.ctx)
+        runset, logs, ctx = _runset(label, pattern, a.ctx)
         cands.append(runset)
+        contexts.append((label, ctx))
         if logs:
             telemetry[label] = dataclasses.asdict(dspark_log.parse_logs(logs))
     gates = spec_select.Gates(min_runs=a.min_runs, resamples=a.resamples)
-    baseline, logs = _runset(a.baseline_label, a.baseline, a.ctx)
+    baseline, logs, ctx = _runset(a.baseline_label, a.baseline, a.ctx)
+    contexts.insert(0, (a.baseline_label, ctx))
+    if len({ctx for _, ctx in contexts}) != 1:
+        detail = ", ".join(f"{label}={ctx}" for label, ctx in contexts)
+        raise ValueError(f"configs must share the same ctx_tokens: {detail}")
     out = dataclasses.asdict(spec_select.select(baseline, cands, gates, a.seed))
     if logs:
         telemetry[a.baseline_label] = dataclasses.asdict(dspark_log.parse_logs(logs))
