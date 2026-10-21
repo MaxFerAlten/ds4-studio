@@ -195,3 +195,75 @@ def test_offline_no_network_imports():
             elif isinstance(node, ast.ImportFrom) and node.module:
                 names = [node.module]
             assert not {n.split(".")[0] for n in names} & banned, src.name
+
+
+def test_cli_context_filters_preserve_mixed_context_error(tmp_path):
+    for i in range(7):
+        write_csv(tmp_path / f"base-{i}.csv", [(4096, 20, 100), (8192, 10, 200)])
+        write_csv(tmp_path / f"cand-{i}.csv", [(4096, 24, 100), (8192, 8, 200)])
+    args = ("select", "--baseline", str(tmp_path / "base-*.csv"),
+            "--candidate", f"fast={tmp_path / 'cand-*.csv'}", "--resamples", "100")
+    r = cli(*args)
+    assert r.returncode == 2 and "runs mix context sizes [4096, 8192]" in r.stderr
+    r = cli(*args, "--ctx", "4096")
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    assert out["recommended"] == "fast" and out["candidates"][0]["runs"] == 7
+    r = cli(*args, "--ctx", "8192")
+    assert json.loads(r.stdout)["candidates"][0]["decision"] == NO_GO
+    r = cli("ingest", "--csv", str(tmp_path / "base-*.csv"), "--ctx", "8192")
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    assert len(out["contexts"]) == 1
+    assert out["contexts"][0]["ctx_tokens"] == 8192 and out["contexts"][0]["n"] == 7
+    r = cli("ingest", "--csv", str(tmp_path / "base-*.csv"))
+    assert len(json.loads(r.stdout)["contexts"]) == 2
+    for args in (args, ("ingest", "--csv", str(tmp_path / "base-*.csv"))):
+        r = cli(*args, "--ctx", "12345")
+        assert r.returncode == 2 and "no rows for ctx 12345" in r.stderr
+
+
+def test_cli_dspark_logs_multiple_files_and_errors(tmp_path):
+    first, second = tmp_path / "first.log", tmp_path / "second.log"
+    first.write_text("ds4: DSpark scheduler skip remaining=2\nprivate prompt\n")
+    second.write_text("ds4: Qwen3.8 mtp: 10 verify cycles, 7 drafts accepted (70.0%)\n")
+    r = cli("dspark-log", "--log", str(first), str(second))
+    assert r.returncode == 0, r.stderr
+    out = json.loads(r.stdout)
+    assert out["accepted_drafts"] == 7 and out["cycles"] == 10
+    assert out["acceptance_avg"] == 0.7 and out["unknown_lines"] == 1
+    assert "private" not in r.stdout and str(tmp_path) not in r.stdout
+    repeated = cli("dspark-log", "--log", str(first), "--log", str(second))
+    assert repeated.stdout == r.stdout
+    assert cli("dspark-log", "--log", str(tmp_path / "missing.log")).returncode == 2
+
+
+def test_cli_neighbor_telemetry_does_not_change_decisions(tmp_path):
+    for label, tps in (("baseline", 20), ("fast", 24)):
+        (tmp_path / label).mkdir()
+        for i in range(7):
+            write_csv(tmp_path / label / f"run-{i:02}.csv", [(4096, tps, 100), (8192, tps / 2, 200)])
+    args = ("select", "--baseline", str(tmp_path / "baseline" / "run-*.csv"),
+            "--candidate", f"fast={tmp_path / 'fast' / 'run-*.csv'}",
+            "--ctx", "4096", "--resamples", "100")
+    before = json.loads(cli(*args).stdout)
+    assert "telemetry" not in before
+    stats = (pathlib.Path(__file__).parent / "fixtures" / "dspark_stderr.txt").read_text().splitlines()[7]
+    for label in ("baseline", "fast"):
+        for i in range(7):
+            (tmp_path / label / f"run-{i:02}.log").write_text(stats + "\nprivate prompt\n")
+    # A different context's CSV/log and an orphan failed log must not be counted.
+    write_csv(tmp_path / "fast" / "run-90.csv", [(16384, 1, 1000)])
+    for i in (90, 99):
+        (tmp_path / "fast" / f"run-{i}.log").write_text(stats + "\n")
+    r = cli(*args)
+    assert r.returncode == 0, r.stderr
+    after = json.loads(r.stdout)
+    telemetry = after.pop("telemetry")
+    assert after.pop("telemetry_scope") == "whole_run"
+    assert after == before
+    assert set(telemetry) == {"baseline", "fast"}
+    assert telemetry["fast"]["accepted_drafts"] == 84
+    assert telemetry["fast"]["cycles"] == 56
+    assert telemetry["fast"]["unknown_lines"] == 7
+    assert "private" not in r.stdout and str(tmp_path) not in r.stdout

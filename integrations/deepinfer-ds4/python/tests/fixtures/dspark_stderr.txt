@@ -1,0 +1,24 @@
+ds4: DSpark scheduler skip remaining=3
+ds4: DSpark scheduler no-draft pause skip=8 accepted_total=12 long_accept=1 confidence0=0.750
+ds4: DSpark scheduler no-draft pause skip=8 accepted_total=12 long_accept=0 confidence0=n/a:0.000
+ds4: DSpark scheduler break-even pause cycles=4 accepted=2 saved=1.000ms extra=2.000ms skip=8
+ds4: DSpark scheduler bypass accepted=6 avg=1.500 no_draft=0
+ds4: DSpark scheduler pause cycles=4 accepted=1 avg=0.250 no_draft=2 extra_per_accept=2.000ms saved=1.000ms extra=2.000ms skip=8
+ds4: DSpark scheduler tail skip max=2 min=8
+ds4: DSpark stats cycles=8 first_tokens=8 proposed=24 accepted_draft=12 accept_rate=50.00% avg_accept=1.500 seed_batches=0 full=2 partial=2 direct_full=1 direct_partial=1 replay_fallbacks=0 miss_first=1 no_draft=1 no_room=0 invalid=0 scheduler_skips=3 tail_skips=1 verifier_unavailable=0 errors=0 time_ms propose=1.000 prop_stage0=0.100 prop_setup=0.100 prop_cache=0.100 prop_chain=0.100 prop_hidden=0.100 prop_conf0=0.100 prop_logits=0.100 prop_markov=0.100 prop_confidence=0.100 snapshot=0.100 verify=2.000 verify_upload=0.100 verify_layer=0.100 verify_head=0.100 verify_read=0.100 verify_fused_head=0 replay=0.100 spec_total=3.000 target=1.000 saved=2.000 net_saved=-2.000 draft_len_hist=0:1,3:7 accepted_len_hist=0:2,2:6
+ds4: Qwen3.8 mtp: 10 verify cycles, 7 drafts accepted (70.0%)
+ds4: V4.1 DSpark proposed=4 accepted=2 draft=1.000 ms verify=2.000 ms
+ds4: mtp timing margin-skip drafted=2 committed=1 margin=0.500 threshold=3.000 draft=1.000 ms verify=2.000 ms total=3.000 ms
+ds4: mtp timing decode2 drafted=2 committed=2 draft=1.000 ms snapshot=0.500 ms verify=2.000 ms total=3.500 ms
+ds4: mtp timing decode2 drafted=2 committed=1 draft=1.000 ms snapshot=0.500 ms verify=2.000 ms prefix=0.500 ms total=4.000 ms
+ds4: mtp timing micro drafted=3 committed=3 draft=1.000 ms snapshot=0.500 ms verify=2.000 ms total=3.500 ms
+ds4: mtp timing micro drafted=3 committed=1 draft=1.000 ms snapshot=0.500 ms verify=2.000 ms prefix=0.500 ms total=4.000 ms noreplay=1
+ds4: mtp timing micro drafted=3 committed=1 draft=1.000 ms snapshot=0.500 ms verify=2.000 ms exact_replay=0.500 ms total=4.000 ms
+ds4: mtp timing micro drafted=3 committed=2 draft=1.000 ms snapshot=0.500 ms verify=2.000 ms replay=0.500 ms total=4.000 ms
+ds4: mtp timing seq drafted=3 verified=2 draft=1.000 ms verify=2.000 ms total=3.000 ms
+ds4: mtp spec seq accept drafted=2 accepted=3
+ds4: mtp spec seq partial drafted=3 verified=1 accepted=2
+ds4-bench: DSpark enabled with draft width 5; frontier restoration uses session snapshots
+ds4-bench: DSpark support model did not enable speculative decoding
+ds4-bench: DSpark decode at frontier 4096 failed: synthetic error
+ds4-bench: DSpark decode at frontier 8192 accepted no tokens
