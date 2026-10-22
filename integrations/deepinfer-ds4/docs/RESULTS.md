@@ -21,12 +21,15 @@ Report completi in `experiments/`.
 | ctx 4096 | `DS4_DSPARK_SCHEDULER_MIN_AVG_MILLI=1000` | +9.9% | +9.4 / +10.1 | +3.3% | 1.96 | GO |
 | ctx 16384 | `DS4_DSPARK_SCHEDULER_MIN_AVG_MILLI=1500` | **+12.6%** | +12.3 / +12.7 | +0.5% | 1.80 | **GO** |
 | ctx 16384 | `DS4_DSPARK_SCHEDULER=0` | +10.9% | +10.8 / +11.2 | +0.7% | 2.30 | GO |
+| ctx 65536 | `DS4_DSPARK_SCHEDULER_MIN_AVG_MILLI=1500` | **+25.1%** | +25.0 / +25.4 | +0.5% | 2.38 | **GO** |
 | prosa ctx 4096 | `--dspark` (default) | -2.2% | -2.4 / -1.3 | +3.7% | 0.27 | INCONCLUSIVE |
 | prosa ctx 4096 | `DS4_DSPARK_SCHEDULER_MIN_AVG_MILLI=1500` | -1.7% | -2.1 / -1.1 | +1.9% | 0.27 | INCONCLUSIVE |
 | prosa ctx 4096 | `DS4_DSPARK_SCHEDULER=0` | **-18.7%** | -18.9 / -18.1 | +1.9% | 0.83 | **NO_GO** |
 
 Righe "prosa": prompt formato dai Markdown del repo (`docs/*.md`, README, MODEL_CARD); le altre righe usano sorgenti C.
-Baseline: 14.4 tok/s (ctx 4096) e 14.0 tok/s (ctx 16384).
+Baseline: 14.4 tok/s (ctx 4096), 14.0 tok/s (ctx 16384), 12.5 tok/s (ctx 65536).
+A 64K è stato confrontato solo `minavg-1500` contro baseline (prefill ~300 s per run): `--dspark`
+default non è misurato a questo contesto.
 
 ## Diagnosi
 
@@ -46,7 +49,7 @@ punto di pareggio misurato su questo device.
   `ds4.c:72451-72455`). I knob dello scheduler non cambiano la classe di equivalenza
   rispetto a `--dspark` default: aumentano solo quanto spesso DSpark gira.
 - Non misurati: equivalenza statistica con temperatura > 0 (`--mtp-exact-sampling`),
-  qualità su benchmark di task, contesti 64K/100K, carico server/agent.
+  qualità su benchmark di task, contesti 100K+, carico server/agent.
 
 ## Decisione
 
@@ -59,7 +62,7 @@ rispetto a `--dspark` default. Senza scheduler (`=0`) la prosa perde il 18.7%: i
 indispensabile, quindi `DS4_DSPARK_SCHEDULER=0` è scartato.
 
 2. **Per chi usa già `--dspark`** (che accetta già questa divergenza), la Modalità A raccomanda
-   `DS4_DSPARK_SCHEDULER_MIN_AVG_MILLI=1500`: è GO a 4K e 16K con il guadagno più costante,
+   `DS4_DSPARK_SCHEDULER_MIN_AVG_MILLI=1500`: è GO a 4K, 16K e 64K (il guadagno cresce col contesto),
    e mantiene il backoff dello scheduler, a differenza di `DS4_DSPARK_SCHEDULER=0`.
    Applicazione manuale al prossimo avvio:
    ```bash
@@ -67,7 +70,7 @@ indispensabile, quindi `DS4_DSPARK_SCHEDULER=0` è scartato.
    ```
 3. **Prima di proporre il valore upstream** (default gfx1151 in `ds4.c`): prosa verificata
    (nessun peggioramento rispetto a `--dspark` default). Restano: tool-use reale via server,
-   `--mtp-exact-sampling` (ds4-bench è solo greedy), contesti 64K, V4 Flash 0731 (con DSpark
+   `--mtp-exact-sampling` (ds4-bench è solo greedy), V4 Flash 0731 (con DSpark
    residente va in OOM su 128 GB: 91 GiB di modello + drafter, 2 GiB liberi) e V4.1 (manca
    localmente il GGUF di supporto DSpark V4.1). Il valore 4000 potrebbe essere stato
    scelto per altri carichi: un NO_GO su prosa è un risultato valido.
