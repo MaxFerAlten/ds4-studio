@@ -14,4 +14,6 @@ grep -q 'window=unset' "$tmp/a/baseline/run-01.log" || { echo "FAIL env leaked";
 [ "$(stat -c %a "$tmp/a")" = 700 ] || { echo "FAIL perms"; exit 1; }
 diff <(grep round "$tmp/a.err") <(grep round "$tmp/b.err") >/dev/null || { echo "FAIL order not seeded"; exit 1; }
 python3 -c "import json,sys; m=json.load(open(sys.argv[1])); assert m['rounds']==3 and m['seed']==7" "$tmp/a/metadata.json"
+if run "$tmp/a" 2>/dev/null; then echo "FAIL reused out dir accepted"; exit 1; fi
+grep -q 'not empty' "$tmp/a.err" || { echo "FAIL reuse message"; exit 1; }
 echo "PASS bench_matrix"

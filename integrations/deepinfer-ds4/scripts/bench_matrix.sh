@@ -37,6 +37,11 @@ common=("$@")
 [ -x "$bench" ] || { echo "bench_matrix: $bench not executable" >&2; exit 2; }
 case "$rounds" in ''|*[!0-9]*) echo "bench_matrix: --rounds must be an integer" >&2; exit 2 ;; esac
 
+# A reused directory would mix stale runs into the gate's run count.
+if [ -e "$out" ] && [ -n "$(ls -A "$out" 2>/dev/null)" ]; then
+    echo "bench_matrix: $out is not empty; use a fresh directory per experiment" >&2
+    exit 2
+fi
 mkdir -p "$out"
 chmod 700 "$out"
 
