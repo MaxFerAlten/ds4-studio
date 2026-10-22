@@ -31,9 +31,9 @@ Capability non dimostrata = `false`. Fonte: `INVENTORY.md`.
 | PR-08 swa spike | R&D | |
 | PR-09 scheduler async prep | rinviato | single inference DS4 |
 | PR-10 moe hotness | **parser offline fatto**; cattura bloccata su ROCm | `expert_heat.py` / CLI `expert-heat` (hotlist v1, profilo JSON). Profiler DS4 solo Metal (`ds4.c:72002`): su Strix Halo serve hook upstream. Vedi `EXPERT_HEAT.md` |
-| PR-11 hardening | parziale | test unit; benchmark baseline da catturare su HW |
+| PR-11 hardening | parziale | test unit + Gate 0 reale; restano prosa/tool-use, V4.1, 64K, exact sampling |
 
 ## Gate
 
-- Gate 0 (baseline ripetibile): **aperto** — richiede run reali `ds4-bench` su Strix Halo (>=7 run/scenario). Lo strumento è pronto (`OPERATIONS.md`).
-- Gate 2: decisione automatica `GO/NO_GO/INCONCLUSIVE/INSUFFICIENT_DATA` da `spec_select`; nessun numero dichiarato senza misure.
+- Gate 0 (baseline ripetibile): **chiuso** per V4 Flash IQ2XXS su gfx1151, ctx 4K e 16K, 7 run/scenario (`RESULTS.md`, `experiments/`).
+- Gate 2 (beneficio >5% con CI): **GO** per `DS4_DSPARK_SCHEDULER_MIN_AVG_MILLI=1500` con `--dspark` (+10.0% a 4K, +12.6% a 16K); **non promosso a default**: DSpark opportunistico cambia l'output greedy (regola 4). Vedi ADR-001 in `RESULTS.md`.

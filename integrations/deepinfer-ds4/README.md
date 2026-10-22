@@ -28,6 +28,13 @@ NO-GO / rinviato in `docs/CAPABILITY_MATRIX.md`.
 | `docs/` | Inventario `file:line`, capability matrix, operazioni | — |
 | `LICENSES/` | Licenza Apache-2.0, notices, `third_party.lock.json` | — |
 
+## Risultato
+
+Su Strix Halo, con `--dspark` già attivo, abbassare la soglia dello scheduler
+(`DS4_DSPARK_SCHEDULER_MIN_AVG_MILLI=1500`) dà +10.0% decode a 4K e +12.6% a 16K,
+con CI al 95% sopra il +5% e TTFT invariato. Nessun default cambiato: dettagli,
+limiti e correttezza in [`docs/RESULTS.md`](docs/RESULTS.md).
+
 ## Verifica
 
 ```bash
