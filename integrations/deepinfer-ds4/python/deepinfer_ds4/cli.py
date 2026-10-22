@@ -10,7 +10,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import bench_ingest, dspark_log, identity, perf_profile, spec_select
+from . import bench_ingest, dspark_log, expert_heat, identity, perf_profile, spec_select
 
 
 def _expand(pattern: str) -> list[str]:
@@ -79,6 +79,16 @@ def _cmd_dspark_log(a: argparse.Namespace) -> object:
     return dataclasses.asdict(dspark_log.parse_logs(a.log))
 
 
+def _cmd_expert_heat(a: argparse.Namespace) -> object:
+    with open(a.hotlist, encoding="utf-8") as f:
+        hot = expert_heat.parse_hotlist(f.read())
+    out = expert_heat.summarize(hot, a.top)
+    if a.compare:
+        with open(a.compare, encoding="utf-8") as f:
+            out["compare"] = expert_heat.compare(hot, expert_heat.parse_hotlist(f.read()), a.top)
+    return out
+
+
 def _load_identity(path: str) -> perf_profile.PerfIdentity:
     with open(path, encoding="utf-8") as f:
         return perf_profile.PerfIdentity.from_dict(json.load(f))
@@ -143,6 +153,12 @@ def build_parser() -> argparse.ArgumentParser:
     ident.add_argument("--full-hash", action="store_true", help="expensive: stream SHA-256 of the entire file")
     ident.add_argument("--kv", action="store_true", help="emit offline KV identity and unverified fields")
     ident.set_defaults(fn=_cmd_identity)
+
+    heat = sub.add_parser("expert-heat", help="MoE expert hotness from a ds4 hotlist v1 (telemetry only)")
+    heat.add_argument("--hotlist", required=True, help="DS4_EXPERT_HOTLIST output file")
+    heat.add_argument("--compare", help="second hotlist: per-layer top-N Jaccard and Spearman")
+    heat.add_argument("--top", type=int, default=16)
+    heat.set_defaults(fn=_cmd_expert_heat)
 
     prof = sub.add_parser("profile", help="decode perf profile store")
     prof.add_argument("action", choices=("write", "show"))

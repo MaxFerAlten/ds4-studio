@@ -25,12 +25,12 @@ Capability non dimostrata = `false`. Fonte: `INVENTORY.md`.
 | PR-02 telemetry/perf-cache | **fatto (control plane)** | `python/deepinfer_ds4/perf_profile.py`, `bench_ingest.py` |
 | PR-03 speculation shadow | **fatto (libreria)** | `c/` policy + state machine, non collegata all'hot path |
 | PR-04 canary ON/OFF | **fatto (Modalità A)** | `spec_select.py` con gate §10.2; nessun riavvio automatico |
-| PR-05 recipe adapter | bloccato | serve clone esplicito deepseek-recipe |
+| PR-05 recipe adapter | bloccato | checkout di studio `../recipe-study` @ `935817c` (MIT); integrazione delle dipendenze Rust di terze parti negata dal classificatore permessi: richiede approvazione utente |
 | PR-06 grammar | NO-GO | manca hook token mask |
 | PR-07 kv identity | **fatto (derivazione offline)**; persistenza rinviata | `identity.py` / CLI `identity`: header GGUF, hash separati, fingerprint campionato o hash completo esplicito; campi KV non verificati a `null`. Formato KV on-disk invariato; restore esatto e manifest verificati ancora rinviati |
 | PR-08 swa spike | R&D | |
 | PR-09 scheduler async prep | rinviato | single inference DS4 |
-| PR-10 moe hotness | rinviato | richiede patch ds4.c |
+| PR-10 moe hotness | **parser offline fatto**; cattura bloccata su ROCm | `expert_heat.py` / CLI `expert-heat` (hotlist v1, profilo JSON). Profiler DS4 solo Metal (`ds4.c:72002`): su Strix Halo serve hook upstream. Vedi `EXPERT_HEAT.md` |
 | PR-11 hardening | parziale | test unit; benchmark baseline da catturare su HW |
 
 ## Gate

@@ -15,8 +15,10 @@
   },
   "deepseek_recipe": {
     "repository": "https://github.com/deepseek-ai/deepseek-recipe",
-    "commit": null,
-    "status": "not acquired: no local checkout; plan rule 6 forbids implicit network fetch"
+    "commit": "935817c66f5d6e64838f419692545f06787e485f",
+    "commit_date": "2026-10-20",
+    "license": "MIT",
+    "status": "studied read-only in ../recipe-study; not vendored, not built, no dependency added"
   },
   "ds4_studio_base_commit": "aa617605672165e6c393b089e34c0a1602a496eb"
 }
