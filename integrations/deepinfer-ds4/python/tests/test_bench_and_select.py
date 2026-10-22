@@ -316,3 +316,12 @@ def test_cli_neighbor_telemetry_does_not_change_decisions(tmp_path):
     assert telemetry["fast"]["cycles"] == 56
     assert telemetry["fast"]["unknown_lines"] == 7
     assert "private" not in r.stdout and str(tmp_path) not in r.stdout
+
+
+def test_first_token_ms_includes_prefill():
+    row = bench_ingest.BenchRow(4096, 4096, 200.0, 128, 14.0, 400.0, 127, 14.0, 0)
+    assert bench_ingest.first_token_ms(row) == 1000.0 * 4096 / 200.0 + 400.0
+    no_prefill = bench_ingest.BenchRow(0, 0, 0.0, 128, 14.0, 70.0, 127, 14.0, 0)
+    assert bench_ingest.first_token_ms(no_prefill) == 70.0
+    with pytest.raises(ValueError):
+        bench_ingest.first_token_ms(bench_ingest.BenchRow(4096, 4096, 0.0, 128, 14.0, 1.0, 127, 14.0, 0))

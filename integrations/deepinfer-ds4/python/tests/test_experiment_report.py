@@ -44,8 +44,8 @@ def test_synthetic_report_metrics_privacy_and_selection(tmp_path):
     for field in ("schema_version: 1", "rounds: 7", "seed: 5", "model_basename: model.gguf",
                   "git_sha_ds4: abc123", "utc_time: 2026-10-22T12:00:00Z"):
         assert field in out
-    assert "| baseline | 4096 | 7 | 20.000 | 503.000 | 106.000 | no logs |" in out
-    assert "| candidate | 8192 | 7 | 8.000 | 303.000 | 206.000 |" in out
+    assert "| baseline | 4096 | 7 | 20.000 | 503.000 | 106.000 | 8292.000 | no logs |" in out
+    assert "| candidate | 8192 | 7 | 8.000 | 303.000 | 206.000 | 27506.667 |" in out
     assert '"accepted_drafts": 84' in out and '"cycles": 56' in out
     assert '"acceptance_avg": 1.5' in out and '"unknown_lines": 7' in out
     assert "whole run" in out and "not attributed to individual contexts" in out
@@ -91,6 +91,6 @@ def test_report_includes_configuration_with_only_failed_logs(tmp_path):
     r = run_report(tmp_path)
     assert r.returncode == 0, r.stderr
     for ctx in (4096, 8192):
-        assert f"| failed | {ctx} | 0 | n/a | n/a | n/a | no logs |" in r.stdout
+        assert f"| failed | {ctx} | 0 | n/a | n/a | n/a | n/a | no logs |" in r.stdout
         assert f"| {ctx} | failed | INSUFFICIENT_DATA |" in r.stdout
     assert "SECRET" not in r.stdout and "/home" not in r.stdout

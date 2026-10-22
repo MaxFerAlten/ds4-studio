@@ -65,6 +65,19 @@ def parse_csv(path: str) -> list[BenchRow]:
     return rows
 
 
+def first_token_ms(row: BenchRow) -> float:
+    """Benchmark time to the first emitted token: prefill plus the first decode call.
+
+    `gen_first_ms` alone excludes prefill and, under DSpark, times a whole
+    propose/verify block, so it is not comparable across paths on its own
+    (docs/TTFT_SEMANTICS.md).
+    """
+    if row.prefill_tokens and row.prefill_tps <= 0:
+        raise ValueError("prefill_tps must be > 0 when prefill_tokens > 0")
+    prefill_ms = 1000.0 * row.prefill_tokens / row.prefill_tps if row.prefill_tokens else 0.0
+    return prefill_ms + row.gen_first_ms
+
+
 def median(values: list[float]) -> float:
     if not values:
         raise ValueError("median of empty list")

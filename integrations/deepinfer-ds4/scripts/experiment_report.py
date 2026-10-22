@@ -75,28 +75,30 @@ def render_report(directory: Path) -> str:
         "", "## Measurements", "",
         "DSpark telemetry covers the whole run, including all its contexts; "
         "it is not attributed to individual contexts. Only logs next to successful CSVs are included.",
-        "", "| config | ctx_tokens | n | median gen_tps | median prefill_tps | p95 gen_first_ms | DSpark (whole run) |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | --- |",
+        "", "| config | ctx_tokens | n | median gen_tps | median prefill_tps | p95 gen_first_ms | p95 first_token_ms | DSpark (whole run) |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
     ])
     runsets = {}
     for label, contexts in groups.items():
         for ctx in ctxs:
             rows, logs = contexts.get(ctx, ([], set()))
             runsets[label, ctx] = spec_select.RunSet(
-                label, [r.gen_tps for r in rows], [r.gen_first_ms for r in rows])
+                label, [r.gen_tps for r in rows], [bench_ingest.first_token_ms(r) for r in rows])
             summary = (json.dumps(dataclasses.asdict(dspark_log.parse_logs(sorted(logs))),
                                   sort_keys=True, allow_nan=False) if logs else "no logs")
             if rows:
                 stats = bench_ingest.aggregate_by_ctx(rows)[ctx]
                 metrics = (stats.n, stats.gen_tps_median,
-                           bench_ingest.median([r.prefill_tps for r in rows]), stats.gen_first_ms_p95)
+                           bench_ingest.median([r.prefill_tps for r in rows]), stats.gen_first_ms_p95,
+                           bench_ingest.percentile([bench_ingest.first_token_ms(r) for r in rows], 95))
             else:
-                metrics = (0, None, None, None)
+                metrics = (0, None, None, None, None)
             values = (label, ctx, *metrics, summary)
             lines.append("| " + " | ".join(_cell(v) for v in values) + " |")
 
     lines.extend(["", "## Selection vs baseline", "",
                   f"Default selection gates; bootstrap seed {seed}.", "",
+                  "TTFT gate uses first_token_ms = prefill + first decode call (docs/TTFT_SEMANTICS.md).", "",
                   "| ctx_tokens | config | decision | improvement % | CI95 % | TTFT p95 regression % | reason |",
                   "| ---: | --- | --- | ---: | --- | ---: | --- |"])
     recommendations = []

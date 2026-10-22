@@ -33,7 +33,7 @@ def _runset(label: str, pattern: str, ctx: int | None = None) -> tuple[spec_sele
     ctxs = {r.ctx_tokens for r in rows}
     if len(ctxs) != 1:
         raise ValueError(f"{label}: runs mix context sizes {sorted(ctxs)}; select one per call")
-    runset = spec_select.RunSet(label, [r.gen_tps for r in rows], [r.gen_first_ms for r in rows])
+    runset = spec_select.RunSet(label, [r.gen_tps for r in rows], [bench_ingest.first_token_ms(r) for r in rows])
     return runset, logs, ctxs.pop()
 
 
