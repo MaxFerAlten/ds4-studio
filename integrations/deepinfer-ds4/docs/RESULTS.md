@@ -31,6 +31,50 @@ Baseline: 14.4 tok/s (ctx 4096), 14.0 tok/s (ctx 16384), 12.5 tok/s (ctx 65536).
 A 64K è stato confrontato solo `minavg-1500` contro baseline (prefill ~300 s per run): `--dspark`
 default non è misurato a questo contesto.
 
+## Server: tool-use e sampling (`experiments/g0g-server.md`)
+
+`ds4-server` fresco per ogni (config, round), 7 round in ordine randomizzato, ctx 32768.
+Workload (`scripts/make_server_workload.py`): tre richieste agentiche con 5 tool, una
+tool call precedente e il suo risultato (sorgenti del repo, 1.4K–8.6K token di prompt,
+greedy, thinking high); `sampled-code` (temperatura 0.7, 384 token); `sample`
+(temperatura 1.0, 16 token, 40 seed per round). Decode dal log del server
+(`gen / (total - prefill)`), perché lo streaming trattiene i delta mentre classifica
+thinking/DSML. TTFT dal client. Baseline tool-use: 14.5 tok/s.
+
+| Scenario | `--dspark` | `+MIN_AVG_MILLI=1500` | `--mtp-exact-sampling` | `exact + 1500` |
+|---|---|---|---|---|
+| tool-use (3 pooled) | +9.1% GO | **+15.8% GO** | +10.2% GO | **+17.0% GO** |
+| tool-next-step | -3.2% INC | +8.9% GO | -3.1% INC | +8.6% GO |
+| tool-final-answer | +33.2% GO | +33.1% GO | +35.0% GO | +34.6% GO |
+| tool-patch | +20.0% NO_GO (TTFT +5.5%) | +20.9% GO | +20.0% GO | +19.7% GO |
+| sampled-code (T 0.7) | +2.6% NO_GO | +18.9% NO_GO | -1.0% NO_GO | +2.2% NO_GO |
+| sample (T 1.0, 16 tok) | -12.4% NO_GO | -12.1% NO_GO | -9.9% NO_GO | -7.7% NO_GO |
+
+Δ = decode mediano rispetto alla baseline. I NO_GO su `sampled-code` e `sample` vengono
+dal TTFT, non dal decode. Con DSpark attivo il primo delta arriva più tardi, con una
+mediana per richiesta da +25 a +300 ms secondo config e scenario e senza dipendere dal
+knob. Sui prompt brevi (15–30 token) vale +19–29%. Sulle richieste agentiche
+(1.4K–8.6K token) vale +1–4%, perché lì il TTFT è dominato dal prefill (7–40 s). Con
+16 token di output DSpark perde anche in decode.
+
+Confronto diretto 1500 contro `--dspark` default (`--baseline dspark`): tool-use pooled
++6.2% (CI +0.3 / +10.2), tool-next-step +12.5% (CI +2.2 / +16.8), `sampled-code`
++15.9% GO. Nessuno scenario peggiora oltre il rumore. Con `--mtp-exact-sampling`,
+1500 non cambia `sampled-code` (-0.4%): l'accettazione esatta resta bassa a T 0.7
+(1.05 draft per ciclo contro 1.76).
+
+Distribuzione a temperatura 1.0: chi-quadro con permutazioni per posizione della
+parola, 280 campioni per config, 250 output distinti nella baseline. Nessuna differenza
+rilevata per nessuna config (p minimo 0.60, soglia Bonferroni 0.0083). A parità di
+seed, `exact` riproduce il testo della baseline in 184 casi su 280, `--dspark` senza
+exact in 90 su 280. Il test ha potenza limitata: esclude solo spostamenti grandi.
+L'equivalenza in distribuzione resta una garanzia di progetto di
+`--mtp-exact-sampling`, non di `--dspark` opportunistico.
+
+Output greedy nelle tool call: tutte le config chiudono con `finish=tool_calls` in ogni
+run. Su `tool-patch` DSpark produce in alcuni round una variante da 147/148 token invece
+di 93: è la stessa divergenza greedy documentata sotto.
+
 ## Diagnosi
 
 Con i default, DSpark su gfx1151 esegue solo 25 cicli speculativi su 512 token: lo scheduler
@@ -48,8 +92,9 @@ punto di pareggio misurato su questo device.
   (stato del verificatore batched, ordine fp diverso; `docs/SPECULATIVE_DECODING.md`,
   `ds4.c:72451-72455`). I knob dello scheduler non cambiano la classe di equivalenza
   rispetto a `--dspark` default: aumentano solo quanto spesso DSpark gira.
-- Non misurati: equivalenza statistica con temperatura > 0 (`--mtp-exact-sampling`),
-  qualità su benchmark di task, contesti 100K+, carico server/agent.
+- Temperatura > 0: nessuna differenza di distribuzione rilevata (sezione Server, potenza
+  limitata).
+- Non misurati: qualità su benchmark di task, contesti 100K+, sessioni batched o concorrenti.
 
 ## Decisione
 
@@ -69,8 +114,10 @@ indispensabile, quindi `DS4_DSPARK_SCHEDULER=0` è scartato.
    DS4_DSPARK_SCHEDULER_MIN_AVG_MILLI=1500 ./ds4-server --dspark --mtp-model gguf/DeepSeek-V4-Flash-DSpark-support.gguf ...
    ```
 3. **Prima di proporre il valore upstream** (default gfx1151 in `ds4.c`): prosa verificata
-   (nessun peggioramento rispetto a `--dspark` default). Restano: tool-use reale via server,
-   `--mtp-exact-sampling` (ds4-bench è solo greedy), V4 Flash 0731 (con DSpark
+   (nessun peggioramento rispetto a `--dspark` default) e tool-use e sampling via server
+   verificati (1500 non è mai peggiore di `--dspark` default, e su tool-use e
+   `exact + 1500` è GO contro la baseline). Per chi usa `--mtp-exact-sampling` con
+   temperatura > 0 il knob non porta guadagno. Restano V4 Flash 0731 (con DSpark
    residente va in OOM su 128 GB: 91 GiB di modello + drafter, 2 GiB liberi) e V4.1 (manca
    localmente il GGUF di supporto DSpark V4.1). Il valore 4000 potrebbe essere stato
    scelto per altri carichi: un NO_GO su prosa è un risultato valido.

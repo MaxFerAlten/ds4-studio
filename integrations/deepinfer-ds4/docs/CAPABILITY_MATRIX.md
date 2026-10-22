@@ -31,7 +31,7 @@ Capability non dimostrata = `false`. Fonte: `INVENTORY.md`.
 | PR-08 swa spike | R&D | |
 | PR-09 scheduler async prep | rinviato | single inference DS4 |
 | PR-10 moe hotness | **parser offline fatto**; cattura bloccata su ROCm | `expert_heat.py` / CLI `expert-heat` (hotlist v1, profilo JSON). Profiler DS4 solo Metal (`ds4.c:72002`): su Strix Halo serve hook upstream. Vedi `EXPERT_HEAT.md` |
-| PR-11 hardening | parziale | test unit + Gate 0 reale (4K, 16K, 64K, prosa); restano tool-use via server, V4.1, exact sampling |
+| PR-11 hardening | parziale | test unit + Gate 0 reale (4K, 16K, 64K, prosa) + server tool-use e sampling (`scripts/server_matrix.py`, `experiments/g0g-server.md`); restano V4.1, 0731, sessioni concorrenti |
 
 ## Gate
 
