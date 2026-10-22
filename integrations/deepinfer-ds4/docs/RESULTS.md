@@ -75,6 +75,29 @@ Output greedy nelle tool call: tutte le config chiudono con `finish=tool_calls` 
 run. Su `tool-patch` DSpark produce in alcuni round una variante da 147/148 token invece
 di 93: è la stessa divergenza greedy documentata sotto.
 
+## Workload upstream (`experiments/g0h-ps-*.md`)
+
+Il benchmark con cui upstream ha introdotto 4000 (`e532136`, `speed-bench/gfx1151-prefill-results.md`):
+prompt `speed-bench/promessi_sposi.txt`, 128 token greedy, 7 run per config.
+
+| Esperimento | `--dspark` (4000) vs baseline | 1500 vs baseline | 1500 vs 4000 | Draft accettati/ciclo 4000 → 1500 |
+|---|---:|---:|---:|---|
+| 2K | -7.1% NO_GO (TTFT) | -7.6% NO_GO (TTFT) | -0.5% (CI -3.0 / +3.1) | 0.04 → 0.04, stessi cicli |
+| 16K | -5.9% NO_GO | -5.5% NO_GO | +0.5% (CI +0.0 / +1.5) | 0.10 → 0.10, stessi cicli |
+| 2K, modello 0731 | -4.4% NO_GO (TTFT) | -4.8% NO_GO (TTFT) | -0.4% (CI -1.4 / +0.9) | 0.04 → 0.06 |
+
+Su questo workload 1500 e 4000 prendono le stesse decisioni di scheduling: sul modello
+principale cicli, skip e draft accettati sono identici. La protezione per cui è stato
+scelto 4000 resta quindi invariata con 1500.
+
+Non riprodotto: upstream riporta accettazione del 100% a 16K, qui sono 0.10 draft per
+ciclo. Upstream usava `IQ2XXS-...-0731` con il suo drafter, qui il modello principale e
+non-0731. L'overhead di DSpark su questi prompt va dal 4 al 7% invece dell'1.1%
+riportato, ma è lo stesso per entrambe le soglie.
+
+Modello 0731: in locale c'è la variante `Layers37-42Q4KExperts-...-0731`, che con DSpark
+residente entra solo con `--ctx-alloc 4096`. Non è la `IQ2XXS-0731` di upstream.
+
 ## Diagnosi
 
 Con i default, DSpark su gfx1151 esegue solo 25 cicli speculativi su 512 token: lo scheduler
@@ -117,7 +140,8 @@ indispensabile, quindi `DS4_DSPARK_SCHEDULER=0` è scartato.
    (nessun peggioramento rispetto a `--dspark` default) e tool-use e sampling via server
    verificati (1500 non è mai peggiore di `--dspark` default, e su tool-use e
    `exact + 1500` è GO contro la baseline). Per chi usa `--mtp-exact-sampling` con
-   temperatura > 0 il knob non porta guadagno. Restano V4 Flash 0731 (con DSpark
+   temperatura > 0 il knob non porta guadagno. Sul workload upstream (`promessi_sposi`)
+   1500 e 4000 prendono le stesse decisioni (sezione Workload upstream). Restano V4 Flash 0731 (con DSpark
    residente va in OOM su 128 GB: 91 GiB di modello + drafter, 2 GiB liberi) e V4.1 (manca
    localmente il GGUF di supporto DSpark V4.1). Il valore 4000 potrebbe essere stato
    scelto per altri carichi: un NO_GO su prosa è un risultato valido.
