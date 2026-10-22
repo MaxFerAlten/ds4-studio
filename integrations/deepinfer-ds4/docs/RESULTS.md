@@ -21,7 +21,11 @@ Report completi in `experiments/`.
 | ctx 4096 | `DS4_DSPARK_SCHEDULER_MIN_AVG_MILLI=1000` | +9.9% | +9.4 / +10.1 | +3.3% | 1.96 | GO |
 | ctx 16384 | `DS4_DSPARK_SCHEDULER_MIN_AVG_MILLI=1500` | **+12.6%** | +12.3 / +12.7 | +0.5% | 1.80 | **GO** |
 | ctx 16384 | `DS4_DSPARK_SCHEDULER=0` | +10.9% | +10.8 / +11.2 | +0.7% | 2.30 | GO |
+| prosa ctx 4096 | `--dspark` (default) | -2.2% | -2.4 / -1.3 | +3.7% | 0.27 | INCONCLUSIVE |
+| prosa ctx 4096 | `DS4_DSPARK_SCHEDULER_MIN_AVG_MILLI=1500` | -1.7% | -2.1 / -1.1 | +1.9% | 0.27 | INCONCLUSIVE |
+| prosa ctx 4096 | `DS4_DSPARK_SCHEDULER=0` | **-18.7%** | -18.9 / -18.1 | +1.9% | 0.83 | **NO_GO** |
 
+Righe "prosa": prompt formato dai Markdown del repo (`docs/*.md`, README, MODEL_CARD); le altre righe usano sorgenti C.
 Baseline: 14.4 tok/s (ctx 4096) e 14.0 tok/s (ctx 16384).
 
 ## Diagnosi
@@ -49,6 +53,11 @@ punto di pareggio misurato su questo device.
 1. **Nessun default cambiato.** Regola 4 del piano: DSpark opportunistico cambia l'output
    greedy, quindi non può diventare il default rispetto al decode ordinario.
    `config/deepinfer-overlay.defaults.json` resta tutto OFF.
+Sulla prosa l'accettazione scende a 0.27 draft per ciclo. Con 1500 lo scheduler fa ancora
+backoff: cicli e draft accettati sono identici al default, e la differenza sta nel rumore
+rispetto a `--dspark` default. Senza scheduler (`=0`) la prosa perde il 18.7%: il backoff è
+indispensabile, quindi `DS4_DSPARK_SCHEDULER=0` è scartato.
+
 2. **Per chi usa già `--dspark`** (che accetta già questa divergenza), la Modalità A raccomanda
    `DS4_DSPARK_SCHEDULER_MIN_AVG_MILLI=1500`: è GO a 4K e 16K con il guadagno più costante,
    e mantiene il backoff dello scheduler, a differenza di `DS4_DSPARK_SCHEDULER=0`.
@@ -56,7 +65,9 @@ punto di pareggio misurato su questo device.
    ```bash
    DS4_DSPARK_SCHEDULER_MIN_AVG_MILLI=1500 ./ds4-server --dspark --mtp-model gguf/DeepSeek-V4-Flash-DSpark-support.gguf ...
    ```
-3. **Prima di proporre il valore upstream** (default gfx1151 in `ds4.c`): ripetere con
-   prompt di prosa e tool-use (l'accettazione dipende dal contenuto), con V4 Flash 0731 e
-   V4.1, con `--mtp-exact-sampling`, e con contesti 64K. Il valore 4000 potrebbe essere stato
+3. **Prima di proporre il valore upstream** (default gfx1151 in `ds4.c`): prosa verificata
+   (nessun peggioramento rispetto a `--dspark` default). Restano: tool-use reale via server,
+   `--mtp-exact-sampling` (ds4-bench è solo greedy), contesti 64K, V4 Flash 0731 (con DSpark
+   residente va in OOM su 128 GB: 91 GiB di modello + drafter, 2 GiB liberi) e V4.1 (manca
+   localmente il GGUF di supporto DSpark V4.1). Il valore 4000 potrebbe essere stato
    scelto per altri carichi: un NO_GO su prosa è un risultato valido.
