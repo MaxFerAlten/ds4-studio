@@ -25,13 +25,13 @@ Capability non dimostrata = `false`. Fonte: `INVENTORY.md`.
 | PR-02 telemetry/perf-cache | **fatto (control plane)** | `python/deepinfer_ds4/perf_profile.py`, `bench_ingest.py` |
 | PR-03 speculation shadow | **fatto (libreria)** | `c/` policy + state machine, non collegata all'hot path |
 | PR-04 canary ON/OFF | **fatto (Modalità A)** | `spec_select.py` con gate §10.2; nessun riavvio automatico |
-| PR-05 recipe adapter | bloccato | checkout di studio `../recipe-study` @ `935817c` (MIT); integrazione delle dipendenze Rust di terze parti negata dal classificatore permessi: richiede approvazione utente |
+| PR-05 recipe adapter | **fatto (adapter + golden)**; routing NO-GO | `recipe-adapter/` (Rust, `../deepseek-recipe` @ `935817c`, build offline autorizzata), oracolo DS4 e 54 casi golden: divergenze intenzionali di DS4 (prefisso effort V4, testo tool, `developer`) → `route()` = legacy. Validazione fail-closed delle tool call. Vedi `RECIPE_ADAPTER.md` (ADR-002) |
 | PR-06 grammar | NO-GO | manca hook token mask |
 | PR-07 kv identity | **fatto (derivazione offline)**; persistenza rinviata | `identity.py` / CLI `identity`: header GGUF, hash separati, fingerprint campionato o hash completo esplicito; campi KV non verificati a `null`. Formato KV on-disk invariato; restore esatto e manifest verificati ancora rinviati |
 | PR-08 swa spike | R&D | |
 | PR-09 scheduler async prep | rinviato | single inference DS4 |
 | PR-10 moe hotness | **parser offline fatto**; cattura bloccata su ROCm | `expert_heat.py` / CLI `expert-heat` (hotlist v1, profilo JSON). Profiler DS4 solo Metal (`ds4.c:72002`): su Strix Halo serve hook upstream. Vedi `EXPERT_HEAT.md` |
-| PR-11 hardening | parziale | test unit + Gate 0 reale; restano prosa/tool-use, V4.1, 64K, exact sampling |
+| PR-11 hardening | parziale | test unit + Gate 0 reale (4K, 16K, 64K, prosa); restano tool-use via server, V4.1, exact sampling |
 
 ## Gate
 

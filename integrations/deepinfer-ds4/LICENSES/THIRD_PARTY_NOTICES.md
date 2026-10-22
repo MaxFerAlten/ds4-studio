@@ -16,3 +16,14 @@ carry a prominent notice in their header):
 
 No DeepInfer code is compiled into `ds4`, `ds4-server`, `ds4-agent` or `ds4-wrapper`.
 No CUDA/Ascend/TileLang component is copied.
+
+## deepseek-recipe
+
+- Source: https://github.com/deepseek-ai/deepseek-recipe, commit `935817c66f5d6e64838f419692545f06787e485f`
+- License: MIT (full text: `deepseek-recipe-LICENSE.txt`)
+- Used as a Cargo path dependency by `recipe-adapter/` (crates `deepseek-recipe`,
+  `deepseek-recipe-encoding`); no recipe source is copied into this directory.
+  Transitive crates and versions are pinned in `recipe-adapter/Cargo.lock`; the
+  bundled tokenizer files under recipe's `static/tokenizers/` are not used.
+- The adapter is a standalone process; it is not linked into `ds4`, `ds4-server`,
+  `ds4-agent` or `ds4-wrapper`.

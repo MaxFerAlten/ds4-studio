@@ -24,6 +24,7 @@ NO-GO / rinviato in `docs/CAPABILITY_MATRIX.md`.
 |---|---|---|
 | `c/` | Libreria C11 senza dipendenze: `E_m`, scelta draft `U(m)=(1+E_m)/T(m)`, port di `MTPVarlen::schedule`, finestra mediana, state machine `DISABLED→SHADOW→CANARY→ENABLED/FALLBACK` | `csrc/engine/mtp_varlen.hpp` |
 | `python/deepinfer_ds4/` | Control plane: perf-profile atomico (schema v1), ingest CSV `ds4-bench`, selettore Modalità A con bootstrap CI, CLI | `deepinfer/worker/decode_perf_cache.py` |
+| `recipe-adapter/` | Processo Rust opt-in su deepseek-recipe (`encode`/`parse`), oracolo golden sul renderer DS4, validazione tool call; routing NO-GO (`docs/RECIPE_ADAPTER.md`) | deepseek-recipe (MIT) |
 | `scripts/bench_matrix.sh` | Matrice benchmark Gate 0: ordine randomizzato con seed, un CSV per run, metadata senza prompt | — |
 | `docs/` | Inventario `file:line`, capability matrix, operazioni | — |
 | `LICENSES/` | Licenza Apache-2.0, notices, `third_party.lock.json` | — |

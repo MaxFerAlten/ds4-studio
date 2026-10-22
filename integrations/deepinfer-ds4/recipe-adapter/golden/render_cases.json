@@ -1,0 +1,1919 @@
+{
+ "schema_version": 1,
+ "cases": [
+  {
+   "name": "deepseek-v4/single-turn/none",
+   "model_family": "deepseek-v4",
+   "ds4_syntax": "deepseek",
+   "think": "none",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are terse."
+     },
+     {
+      "role": "user",
+      "content": "Hello"
+     }
+    ],
+    "thinking": {
+     "type": "disabled"
+    }
+   }
+  },
+  {
+   "name": "deepseek-v4/single-turn/high",
+   "model_family": "deepseek-v4",
+   "ds4_syntax": "deepseek",
+   "think": "high",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are terse."
+     },
+     {
+      "role": "user",
+      "content": "Hello"
+     }
+    ],
+    "thinking": {
+     "type": "enabled"
+    },
+    "reasoning_effort": "high"
+   }
+  },
+  {
+   "name": "deepseek-v4/single-turn/max",
+   "model_family": "deepseek-v4",
+   "ds4_syntax": "deepseek",
+   "think": "max",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are terse."
+     },
+     {
+      "role": "user",
+      "content": "Hello"
+     }
+    ],
+    "thinking": {
+     "type": "enabled"
+    },
+    "reasoning_effort": "max"
+   }
+  },
+  {
+   "name": "deepseek-v4/no-system/none",
+   "model_family": "deepseek-v4",
+   "ds4_syntax": "deepseek",
+   "think": "none",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "user",
+      "content": "Hello"
+     }
+    ],
+    "thinking": {
+     "type": "disabled"
+    }
+   }
+  },
+  {
+   "name": "deepseek-v4/no-system/high",
+   "model_family": "deepseek-v4",
+   "ds4_syntax": "deepseek",
+   "think": "high",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "user",
+      "content": "Hello"
+     }
+    ],
+    "thinking": {
+     "type": "enabled"
+    },
+    "reasoning_effort": "high"
+   }
+  },
+  {
+   "name": "deepseek-v4/no-system/max",
+   "model_family": "deepseek-v4",
+   "ds4_syntax": "deepseek",
+   "think": "max",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "user",
+      "content": "Hello"
+     }
+    ],
+    "thinking": {
+     "type": "enabled"
+    },
+    "reasoning_effort": "max"
+   }
+  },
+  {
+   "name": "deepseek-v4/developer-role/none",
+   "model_family": "deepseek-v4",
+   "ds4_syntax": "deepseek",
+   "think": "none",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "developer",
+      "content": "Be brief."
+     },
+     {
+      "role": "user",
+      "content": "Hello"
+     }
+    ],
+    "thinking": {
+     "type": "disabled"
+    }
+   }
+  },
+  {
+   "name": "deepseek-v4/developer-role/high",
+   "model_family": "deepseek-v4",
+   "ds4_syntax": "deepseek",
+   "think": "high",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "developer",
+      "content": "Be brief."
+     },
+     {
+      "role": "user",
+      "content": "Hello"
+     }
+    ],
+    "thinking": {
+     "type": "enabled"
+    },
+    "reasoning_effort": "high"
+   }
+  },
+  {
+   "name": "deepseek-v4/developer-role/max",
+   "model_family": "deepseek-v4",
+   "ds4_syntax": "deepseek",
+   "think": "max",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "developer",
+      "content": "Be brief."
+     },
+     {
+      "role": "user",
+      "content": "Hello"
+     }
+    ],
+    "thinking": {
+     "type": "enabled"
+    },
+    "reasoning_effort": "max"
+   }
+  },
+  {
+   "name": "deepseek-v4/multi-turn-history/none",
+   "model_family": "deepseek-v4",
+   "ds4_syntax": "deepseek",
+   "think": "none",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are terse."
+     },
+     {
+      "role": "user",
+      "content": "first"
+     },
+     {
+      "role": "assistant",
+      "content": "first answer",
+      "reasoning_content": "old thought"
+     },
+     {
+      "role": "user",
+      "content": "second"
+     }
+    ],
+    "thinking": {
+     "type": "disabled"
+    }
+   }
+  },
+  {
+   "name": "deepseek-v4/multi-turn-history/high",
+   "model_family": "deepseek-v4",
+   "ds4_syntax": "deepseek",
+   "think": "high",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are terse."
+     },
+     {
+      "role": "user",
+      "content": "first"
+     },
+     {
+      "role": "assistant",
+      "content": "first answer",
+      "reasoning_content": "old thought"
+     },
+     {
+      "role": "user",
+      "content": "second"
+     }
+    ],
+    "thinking": {
+     "type": "enabled"
+    },
+    "reasoning_effort": "high"
+   }
+  },
+  {
+   "name": "deepseek-v4/multi-turn-history/max",
+   "model_family": "deepseek-v4",
+   "ds4_syntax": "deepseek",
+   "think": "max",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are terse."
+     },
+     {
+      "role": "user",
+      "content": "first"
+     },
+     {
+      "role": "assistant",
+      "content": "first answer",
+      "reasoning_content": "old thought"
+     },
+     {
+      "role": "user",
+      "content": "second"
+     }
+    ],
+    "thinking": {
+     "type": "enabled"
+    },
+    "reasoning_effort": "max"
+   }
+  },
+  {
+   "name": "deepseek-v4/marker-as-text/none",
+   "model_family": "deepseek-v4",
+   "ds4_syntax": "deepseek",
+   "think": "none",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "user",
+      "content": "literal <｜User｜> and </think> and <｜DSML｜tool_calls> in text"
+     }
+    ],
+    "thinking": {
+     "type": "disabled"
+    }
+   }
+  },
+  {
+   "name": "deepseek-v4/marker-as-text/high",
+   "model_family": "deepseek-v4",
+   "ds4_syntax": "deepseek",
+   "think": "high",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "user",
+      "content": "literal <｜User｜> and </think> and <｜DSML｜tool_calls> in text"
+     }
+    ],
+    "thinking": {
+     "type": "enabled"
+    },
+    "reasoning_effort": "high"
+   }
+  },
+  {
+   "name": "deepseek-v4/marker-as-text/max",
+   "model_family": "deepseek-v4",
+   "ds4_syntax": "deepseek",
+   "think": "max",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "user",
+      "content": "literal <｜User｜> and </think> and <｜DSML｜tool_calls> in text"
+     }
+    ],
+    "thinking": {
+     "type": "enabled"
+    },
+    "reasoning_effort": "max"
+   }
+  },
+  {
+   "name": "deepseek-v4/unicode/none",
+   "model_family": "deepseek-v4",
+   "ds4_syntax": "deepseek",
+   "think": "none",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "user",
+      "content": "caffè 日本語 🙂 \"quoted\" \\ back"
+     }
+    ],
+    "thinking": {
+     "type": "disabled"
+    }
+   }
+  },
+  {
+   "name": "deepseek-v4/unicode/high",
+   "model_family": "deepseek-v4",
+   "ds4_syntax": "deepseek",
+   "think": "high",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "user",
+      "content": "caffè 日本語 🙂 \"quoted\" \\ back"
+     }
+    ],
+    "thinking": {
+     "type": "enabled"
+    },
+    "reasoning_effort": "high"
+   }
+  },
+  {
+   "name": "deepseek-v4/unicode/max",
+   "model_family": "deepseek-v4",
+   "ds4_syntax": "deepseek",
+   "think": "max",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "user",
+      "content": "caffè 日本語 🙂 \"quoted\" \\ back"
+     }
+    ],
+    "thinking": {
+     "type": "enabled"
+    },
+    "reasoning_effort": "max"
+   }
+  },
+  {
+   "name": "deepseek-v4/tool-defs-only/none",
+   "model_family": "deepseek-v4",
+   "ds4_syntax": "deepseek",
+   "think": "none",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are terse."
+     },
+     {
+      "role": "user",
+      "content": "Weather in Roma?"
+     }
+    ],
+    "thinking": {
+     "type": "disabled"
+    },
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Weather for a city",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "city": {
+          "type": "string"
+         },
+         "days": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "city"
+        ]
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "deepseek-v4/tool-defs-only/high",
+   "model_family": "deepseek-v4",
+   "ds4_syntax": "deepseek",
+   "think": "high",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are terse."
+     },
+     {
+      "role": "user",
+      "content": "Weather in Roma?"
+     }
+    ],
+    "thinking": {
+     "type": "enabled"
+    },
+    "reasoning_effort": "high",
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Weather for a city",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "city": {
+          "type": "string"
+         },
+         "days": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "city"
+        ]
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "deepseek-v4/tool-defs-only/max",
+   "model_family": "deepseek-v4",
+   "ds4_syntax": "deepseek",
+   "think": "max",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are terse."
+     },
+     {
+      "role": "user",
+      "content": "Weather in Roma?"
+     }
+    ],
+    "thinking": {
+     "type": "enabled"
+    },
+    "reasoning_effort": "max",
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Weather for a city",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "city": {
+          "type": "string"
+         },
+         "days": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "city"
+        ]
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "deepseek-v4/tool-multi-step/none",
+   "model_family": "deepseek-v4",
+   "ds4_syntax": "deepseek",
+   "think": "none",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are terse."
+     },
+     {
+      "role": "user",
+      "content": "Weather in Roma?"
+     },
+     {
+      "role": "assistant",
+      "content": "",
+      "reasoning_content": "need weather",
+      "tool_calls": [
+       {
+        "id": "call_1",
+        "type": "function",
+        "function": {
+         "name": "get_weather",
+         "arguments": "{\"city\":\"Roma\",\"days\":2}"
+        }
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "call_1",
+      "content": "sunny, 24C"
+     }
+    ],
+    "thinking": {
+     "type": "disabled"
+    },
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Weather for a city",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "city": {
+          "type": "string"
+         },
+         "days": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "city"
+        ]
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "deepseek-v4/tool-multi-step/high",
+   "model_family": "deepseek-v4",
+   "ds4_syntax": "deepseek",
+   "think": "high",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are terse."
+     },
+     {
+      "role": "user",
+      "content": "Weather in Roma?"
+     },
+     {
+      "role": "assistant",
+      "content": "",
+      "reasoning_content": "need weather",
+      "tool_calls": [
+       {
+        "id": "call_1",
+        "type": "function",
+        "function": {
+         "name": "get_weather",
+         "arguments": "{\"city\":\"Roma\",\"days\":2}"
+        }
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "call_1",
+      "content": "sunny, 24C"
+     }
+    ],
+    "thinking": {
+     "type": "enabled"
+    },
+    "reasoning_effort": "high",
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Weather for a city",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "city": {
+          "type": "string"
+         },
+         "days": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "city"
+        ]
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "deepseek-v4/tool-multi-step/max",
+   "model_family": "deepseek-v4",
+   "ds4_syntax": "deepseek",
+   "think": "max",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are terse."
+     },
+     {
+      "role": "user",
+      "content": "Weather in Roma?"
+     },
+     {
+      "role": "assistant",
+      "content": "",
+      "reasoning_content": "need weather",
+      "tool_calls": [
+       {
+        "id": "call_1",
+        "type": "function",
+        "function": {
+         "name": "get_weather",
+         "arguments": "{\"city\":\"Roma\",\"days\":2}"
+        }
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "call_1",
+      "content": "sunny, 24C"
+     }
+    ],
+    "thinking": {
+     "type": "enabled"
+    },
+    "reasoning_effort": "max",
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Weather for a city",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "city": {
+          "type": "string"
+         },
+         "days": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "city"
+        ]
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "deepseek-v4/tool-multi-step-answer/none",
+   "model_family": "deepseek-v4",
+   "ds4_syntax": "deepseek",
+   "think": "none",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are terse."
+     },
+     {
+      "role": "user",
+      "content": "Weather in Roma?"
+     },
+     {
+      "role": "assistant",
+      "content": "",
+      "reasoning_content": "need weather",
+      "tool_calls": [
+       {
+        "id": "call_1",
+        "type": "function",
+        "function": {
+         "name": "get_weather",
+         "arguments": "{\"city\":\"Roma\",\"days\":2}"
+        }
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "call_1",
+      "content": "sunny, 24C"
+     },
+     {
+      "role": "assistant",
+      "content": "Sunny, 24C.",
+      "reasoning_content": "have result"
+     },
+     {
+      "role": "user",
+      "content": "And tomorrow?"
+     }
+    ],
+    "thinking": {
+     "type": "disabled"
+    },
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Weather for a city",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "city": {
+          "type": "string"
+         },
+         "days": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "city"
+        ]
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "deepseek-v4/tool-multi-step-answer/high",
+   "model_family": "deepseek-v4",
+   "ds4_syntax": "deepseek",
+   "think": "high",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are terse."
+     },
+     {
+      "role": "user",
+      "content": "Weather in Roma?"
+     },
+     {
+      "role": "assistant",
+      "content": "",
+      "reasoning_content": "need weather",
+      "tool_calls": [
+       {
+        "id": "call_1",
+        "type": "function",
+        "function": {
+         "name": "get_weather",
+         "arguments": "{\"city\":\"Roma\",\"days\":2}"
+        }
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "call_1",
+      "content": "sunny, 24C"
+     },
+     {
+      "role": "assistant",
+      "content": "Sunny, 24C.",
+      "reasoning_content": "have result"
+     },
+     {
+      "role": "user",
+      "content": "And tomorrow?"
+     }
+    ],
+    "thinking": {
+     "type": "enabled"
+    },
+    "reasoning_effort": "high",
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Weather for a city",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "city": {
+          "type": "string"
+         },
+         "days": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "city"
+        ]
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "deepseek-v4/tool-multi-step-answer/max",
+   "model_family": "deepseek-v4",
+   "ds4_syntax": "deepseek",
+   "think": "max",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are terse."
+     },
+     {
+      "role": "user",
+      "content": "Weather in Roma?"
+     },
+     {
+      "role": "assistant",
+      "content": "",
+      "reasoning_content": "need weather",
+      "tool_calls": [
+       {
+        "id": "call_1",
+        "type": "function",
+        "function": {
+         "name": "get_weather",
+         "arguments": "{\"city\":\"Roma\",\"days\":2}"
+        }
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "call_1",
+      "content": "sunny, 24C"
+     },
+     {
+      "role": "assistant",
+      "content": "Sunny, 24C.",
+      "reasoning_content": "have result"
+     },
+     {
+      "role": "user",
+      "content": "And tomorrow?"
+     }
+    ],
+    "thinking": {
+     "type": "enabled"
+    },
+    "reasoning_effort": "max",
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Weather for a city",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "city": {
+          "type": "string"
+         },
+         "days": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "city"
+        ]
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "deepseek-v4.1/single-turn/none",
+   "model_family": "deepseek-v4.1",
+   "ds4_syntax": "deepseek41",
+   "think": "none",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are terse."
+     },
+     {
+      "role": "user",
+      "content": "Hello"
+     }
+    ],
+    "thinking": {
+     "type": "disabled"
+    }
+   }
+  },
+  {
+   "name": "deepseek-v4.1/single-turn/high",
+   "model_family": "deepseek-v4.1",
+   "ds4_syntax": "deepseek41",
+   "think": "high",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are terse."
+     },
+     {
+      "role": "user",
+      "content": "Hello"
+     }
+    ],
+    "thinking": {
+     "type": "enabled"
+    },
+    "reasoning_effort": "high"
+   }
+  },
+  {
+   "name": "deepseek-v4.1/single-turn/max",
+   "model_family": "deepseek-v4.1",
+   "ds4_syntax": "deepseek41",
+   "think": "max",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are terse."
+     },
+     {
+      "role": "user",
+      "content": "Hello"
+     }
+    ],
+    "thinking": {
+     "type": "enabled"
+    },
+    "reasoning_effort": "max"
+   }
+  },
+  {
+   "name": "deepseek-v4.1/no-system/none",
+   "model_family": "deepseek-v4.1",
+   "ds4_syntax": "deepseek41",
+   "think": "none",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "user",
+      "content": "Hello"
+     }
+    ],
+    "thinking": {
+     "type": "disabled"
+    }
+   }
+  },
+  {
+   "name": "deepseek-v4.1/no-system/high",
+   "model_family": "deepseek-v4.1",
+   "ds4_syntax": "deepseek41",
+   "think": "high",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "user",
+      "content": "Hello"
+     }
+    ],
+    "thinking": {
+     "type": "enabled"
+    },
+    "reasoning_effort": "high"
+   }
+  },
+  {
+   "name": "deepseek-v4.1/no-system/max",
+   "model_family": "deepseek-v4.1",
+   "ds4_syntax": "deepseek41",
+   "think": "max",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "user",
+      "content": "Hello"
+     }
+    ],
+    "thinking": {
+     "type": "enabled"
+    },
+    "reasoning_effort": "max"
+   }
+  },
+  {
+   "name": "deepseek-v4.1/developer-role/none",
+   "model_family": "deepseek-v4.1",
+   "ds4_syntax": "deepseek41",
+   "think": "none",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "developer",
+      "content": "Be brief."
+     },
+     {
+      "role": "user",
+      "content": "Hello"
+     }
+    ],
+    "thinking": {
+     "type": "disabled"
+    }
+   }
+  },
+  {
+   "name": "deepseek-v4.1/developer-role/high",
+   "model_family": "deepseek-v4.1",
+   "ds4_syntax": "deepseek41",
+   "think": "high",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "developer",
+      "content": "Be brief."
+     },
+     {
+      "role": "user",
+      "content": "Hello"
+     }
+    ],
+    "thinking": {
+     "type": "enabled"
+    },
+    "reasoning_effort": "high"
+   }
+  },
+  {
+   "name": "deepseek-v4.1/developer-role/max",
+   "model_family": "deepseek-v4.1",
+   "ds4_syntax": "deepseek41",
+   "think": "max",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "developer",
+      "content": "Be brief."
+     },
+     {
+      "role": "user",
+      "content": "Hello"
+     }
+    ],
+    "thinking": {
+     "type": "enabled"
+    },
+    "reasoning_effort": "max"
+   }
+  },
+  {
+   "name": "deepseek-v4.1/multi-turn-history/none",
+   "model_family": "deepseek-v4.1",
+   "ds4_syntax": "deepseek41",
+   "think": "none",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are terse."
+     },
+     {
+      "role": "user",
+      "content": "first"
+     },
+     {
+      "role": "assistant",
+      "content": "first answer",
+      "reasoning_content": "old thought"
+     },
+     {
+      "role": "user",
+      "content": "second"
+     }
+    ],
+    "thinking": {
+     "type": "disabled"
+    }
+   }
+  },
+  {
+   "name": "deepseek-v4.1/multi-turn-history/high",
+   "model_family": "deepseek-v4.1",
+   "ds4_syntax": "deepseek41",
+   "think": "high",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are terse."
+     },
+     {
+      "role": "user",
+      "content": "first"
+     },
+     {
+      "role": "assistant",
+      "content": "first answer",
+      "reasoning_content": "old thought"
+     },
+     {
+      "role": "user",
+      "content": "second"
+     }
+    ],
+    "thinking": {
+     "type": "enabled"
+    },
+    "reasoning_effort": "high"
+   }
+  },
+  {
+   "name": "deepseek-v4.1/multi-turn-history/max",
+   "model_family": "deepseek-v4.1",
+   "ds4_syntax": "deepseek41",
+   "think": "max",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are terse."
+     },
+     {
+      "role": "user",
+      "content": "first"
+     },
+     {
+      "role": "assistant",
+      "content": "first answer",
+      "reasoning_content": "old thought"
+     },
+     {
+      "role": "user",
+      "content": "second"
+     }
+    ],
+    "thinking": {
+     "type": "enabled"
+    },
+    "reasoning_effort": "max"
+   }
+  },
+  {
+   "name": "deepseek-v4.1/marker-as-text/none",
+   "model_family": "deepseek-v4.1",
+   "ds4_syntax": "deepseek41",
+   "think": "none",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "user",
+      "content": "literal <｜User｜> and </think> and <｜DSML｜tool_calls> in text"
+     }
+    ],
+    "thinking": {
+     "type": "disabled"
+    }
+   }
+  },
+  {
+   "name": "deepseek-v4.1/marker-as-text/high",
+   "model_family": "deepseek-v4.1",
+   "ds4_syntax": "deepseek41",
+   "think": "high",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "user",
+      "content": "literal <｜User｜> and </think> and <｜DSML｜tool_calls> in text"
+     }
+    ],
+    "thinking": {
+     "type": "enabled"
+    },
+    "reasoning_effort": "high"
+   }
+  },
+  {
+   "name": "deepseek-v4.1/marker-as-text/max",
+   "model_family": "deepseek-v4.1",
+   "ds4_syntax": "deepseek41",
+   "think": "max",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "user",
+      "content": "literal <｜User｜> and </think> and <｜DSML｜tool_calls> in text"
+     }
+    ],
+    "thinking": {
+     "type": "enabled"
+    },
+    "reasoning_effort": "max"
+   }
+  },
+  {
+   "name": "deepseek-v4.1/unicode/none",
+   "model_family": "deepseek-v4.1",
+   "ds4_syntax": "deepseek41",
+   "think": "none",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "user",
+      "content": "caffè 日本語 🙂 \"quoted\" \\ back"
+     }
+    ],
+    "thinking": {
+     "type": "disabled"
+    }
+   }
+  },
+  {
+   "name": "deepseek-v4.1/unicode/high",
+   "model_family": "deepseek-v4.1",
+   "ds4_syntax": "deepseek41",
+   "think": "high",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "user",
+      "content": "caffè 日本語 🙂 \"quoted\" \\ back"
+     }
+    ],
+    "thinking": {
+     "type": "enabled"
+    },
+    "reasoning_effort": "high"
+   }
+  },
+  {
+   "name": "deepseek-v4.1/unicode/max",
+   "model_family": "deepseek-v4.1",
+   "ds4_syntax": "deepseek41",
+   "think": "max",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "user",
+      "content": "caffè 日本語 🙂 \"quoted\" \\ back"
+     }
+    ],
+    "thinking": {
+     "type": "enabled"
+    },
+    "reasoning_effort": "max"
+   }
+  },
+  {
+   "name": "deepseek-v4.1/tool-defs-only/none",
+   "model_family": "deepseek-v4.1",
+   "ds4_syntax": "deepseek41",
+   "think": "none",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are terse."
+     },
+     {
+      "role": "user",
+      "content": "Weather in Roma?"
+     }
+    ],
+    "thinking": {
+     "type": "disabled"
+    },
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Weather for a city",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "city": {
+          "type": "string"
+         },
+         "days": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "city"
+        ]
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "deepseek-v4.1/tool-defs-only/high",
+   "model_family": "deepseek-v4.1",
+   "ds4_syntax": "deepseek41",
+   "think": "high",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are terse."
+     },
+     {
+      "role": "user",
+      "content": "Weather in Roma?"
+     }
+    ],
+    "thinking": {
+     "type": "enabled"
+    },
+    "reasoning_effort": "high",
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Weather for a city",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "city": {
+          "type": "string"
+         },
+         "days": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "city"
+        ]
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "deepseek-v4.1/tool-defs-only/max",
+   "model_family": "deepseek-v4.1",
+   "ds4_syntax": "deepseek41",
+   "think": "max",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are terse."
+     },
+     {
+      "role": "user",
+      "content": "Weather in Roma?"
+     }
+    ],
+    "thinking": {
+     "type": "enabled"
+    },
+    "reasoning_effort": "max",
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Weather for a city",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "city": {
+          "type": "string"
+         },
+         "days": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "city"
+        ]
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "deepseek-v4.1/tool-multi-step/none",
+   "model_family": "deepseek-v4.1",
+   "ds4_syntax": "deepseek41",
+   "think": "none",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are terse."
+     },
+     {
+      "role": "user",
+      "content": "Weather in Roma?"
+     },
+     {
+      "role": "assistant",
+      "content": "",
+      "reasoning_content": "need weather",
+      "tool_calls": [
+       {
+        "id": "call_1",
+        "type": "function",
+        "function": {
+         "name": "get_weather",
+         "arguments": "{\"city\":\"Roma\",\"days\":2}"
+        }
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "call_1",
+      "content": "sunny, 24C"
+     }
+    ],
+    "thinking": {
+     "type": "disabled"
+    },
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Weather for a city",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "city": {
+          "type": "string"
+         },
+         "days": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "city"
+        ]
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "deepseek-v4.1/tool-multi-step/high",
+   "model_family": "deepseek-v4.1",
+   "ds4_syntax": "deepseek41",
+   "think": "high",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are terse."
+     },
+     {
+      "role": "user",
+      "content": "Weather in Roma?"
+     },
+     {
+      "role": "assistant",
+      "content": "",
+      "reasoning_content": "need weather",
+      "tool_calls": [
+       {
+        "id": "call_1",
+        "type": "function",
+        "function": {
+         "name": "get_weather",
+         "arguments": "{\"city\":\"Roma\",\"days\":2}"
+        }
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "call_1",
+      "content": "sunny, 24C"
+     }
+    ],
+    "thinking": {
+     "type": "enabled"
+    },
+    "reasoning_effort": "high",
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Weather for a city",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "city": {
+          "type": "string"
+         },
+         "days": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "city"
+        ]
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "deepseek-v4.1/tool-multi-step/max",
+   "model_family": "deepseek-v4.1",
+   "ds4_syntax": "deepseek41",
+   "think": "max",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are terse."
+     },
+     {
+      "role": "user",
+      "content": "Weather in Roma?"
+     },
+     {
+      "role": "assistant",
+      "content": "",
+      "reasoning_content": "need weather",
+      "tool_calls": [
+       {
+        "id": "call_1",
+        "type": "function",
+        "function": {
+         "name": "get_weather",
+         "arguments": "{\"city\":\"Roma\",\"days\":2}"
+        }
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "call_1",
+      "content": "sunny, 24C"
+     }
+    ],
+    "thinking": {
+     "type": "enabled"
+    },
+    "reasoning_effort": "max",
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Weather for a city",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "city": {
+          "type": "string"
+         },
+         "days": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "city"
+        ]
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "deepseek-v4.1/tool-multi-step-answer/none",
+   "model_family": "deepseek-v4.1",
+   "ds4_syntax": "deepseek41",
+   "think": "none",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are terse."
+     },
+     {
+      "role": "user",
+      "content": "Weather in Roma?"
+     },
+     {
+      "role": "assistant",
+      "content": "",
+      "reasoning_content": "need weather",
+      "tool_calls": [
+       {
+        "id": "call_1",
+        "type": "function",
+        "function": {
+         "name": "get_weather",
+         "arguments": "{\"city\":\"Roma\",\"days\":2}"
+        }
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "call_1",
+      "content": "sunny, 24C"
+     },
+     {
+      "role": "assistant",
+      "content": "Sunny, 24C.",
+      "reasoning_content": "have result"
+     },
+     {
+      "role": "user",
+      "content": "And tomorrow?"
+     }
+    ],
+    "thinking": {
+     "type": "disabled"
+    },
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Weather for a city",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "city": {
+          "type": "string"
+         },
+         "days": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "city"
+        ]
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "deepseek-v4.1/tool-multi-step-answer/high",
+   "model_family": "deepseek-v4.1",
+   "ds4_syntax": "deepseek41",
+   "think": "high",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are terse."
+     },
+     {
+      "role": "user",
+      "content": "Weather in Roma?"
+     },
+     {
+      "role": "assistant",
+      "content": "",
+      "reasoning_content": "need weather",
+      "tool_calls": [
+       {
+        "id": "call_1",
+        "type": "function",
+        "function": {
+         "name": "get_weather",
+         "arguments": "{\"city\":\"Roma\",\"days\":2}"
+        }
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "call_1",
+      "content": "sunny, 24C"
+     },
+     {
+      "role": "assistant",
+      "content": "Sunny, 24C.",
+      "reasoning_content": "have result"
+     },
+     {
+      "role": "user",
+      "content": "And tomorrow?"
+     }
+    ],
+    "thinking": {
+     "type": "enabled"
+    },
+    "reasoning_effort": "high",
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Weather for a city",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "city": {
+          "type": "string"
+         },
+         "days": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "city"
+        ]
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "deepseek-v4.1/tool-multi-step-answer/max",
+   "model_family": "deepseek-v4.1",
+   "ds4_syntax": "deepseek41",
+   "think": "max",
+   "request": {
+    "model": "ds4",
+    "messages": [
+     {
+      "role": "system",
+      "content": "You are terse."
+     },
+     {
+      "role": "user",
+      "content": "Weather in Roma?"
+     },
+     {
+      "role": "assistant",
+      "content": "",
+      "reasoning_content": "need weather",
+      "tool_calls": [
+       {
+        "id": "call_1",
+        "type": "function",
+        "function": {
+         "name": "get_weather",
+         "arguments": "{\"city\":\"Roma\",\"days\":2}"
+        }
+       }
+      ]
+     },
+     {
+      "role": "tool",
+      "tool_call_id": "call_1",
+      "content": "sunny, 24C"
+     },
+     {
+      "role": "assistant",
+      "content": "Sunny, 24C.",
+      "reasoning_content": "have result"
+     },
+     {
+      "role": "user",
+      "content": "And tomorrow?"
+     }
+    ],
+    "thinking": {
+     "type": "enabled"
+    },
+    "reasoning_effort": "max",
+    "tools": [
+     {
+      "type": "function",
+      "function": {
+       "name": "get_weather",
+       "description": "Weather for a city",
+       "parameters": {
+        "type": "object",
+        "properties": {
+         "city": {
+          "type": "string"
+         },
+         "days": {
+          "type": "integer"
+         }
+        },
+        "required": [
+         "city"
+        ]
+       }
+      }
+     }
+    ]
+   }
+  }
+ ]
+}

@@ -1,0 +1,20 @@
+# Part of DS4-Studio DeepInfer integration (plan §5, PR-05): opt-in local
+# protocol adapter over deepseek-recipe. Not linked into any DS4 binary.
+[package]
+name = "ds4di-recipe-adapter"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+# Standalone: not a member of the deepseek-recipe workspace.
+[workspace]
+
+[dependencies]
+# Local read-only checkout pinned in LICENSES/third_party.lock.json (935817c).
+# No image crate: the adapter never fetches or decodes images.
+deepseek-recipe = { path = "../../../../deepseek-recipe/deepseek-recipe" }
+deepseek-recipe-encoding = { path = "../../../../deepseek-recipe/deepseek-recipe-encoding" }
+futures = { version = "0.3.31", default-features = false, features = ["executor"] }
+serde_json = { version = "1.0.145", features = ["preserve_order"] }
+tokio-stream = "0.1.17"

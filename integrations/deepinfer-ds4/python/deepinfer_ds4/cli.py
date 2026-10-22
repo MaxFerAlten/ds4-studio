@@ -10,7 +10,7 @@ import json
 import sys
 from pathlib import Path
 
-from . import bench_ingest, dspark_log, expert_heat, identity, perf_profile, spec_select
+from . import bench_ingest, dspark_log, expert_heat, identity, perf_profile, recipe_golden, spec_select
 
 
 def _expand(pattern: str) -> list[str]:
@@ -116,6 +116,15 @@ def _cmd_profile(a: argparse.Namespace) -> object:
     return {"key": ident.key(), "profile": store.read(ident)}
 
 
+def _cmd_recipe_golden(a: argparse.Namespace) -> object:
+    cases = recipe_golden.load_cases(Path(a.cases))
+    results, fingerprint = recipe_golden.compare(cases, Path(a.adapter), Path(a.oracle))
+    report = recipe_golden.build_report(results, fingerprint)
+    if not a.cases_detail:
+        report.pop("cases")
+    return report
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="deepinfer_ds4")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -160,6 +169,13 @@ def build_parser() -> argparse.ArgumentParser:
     heat.add_argument("--top", type=int, default=16)
     heat.set_defaults(fn=_cmd_expert_heat)
 
+    gold = sub.add_parser("recipe-golden", help="compare deepseek-recipe prompts with DS4's renderer")
+    gold.add_argument("--cases", default=str(recipe_golden.DEFAULT_CASES))
+    gold.add_argument("--adapter", default=str(recipe_golden.DEFAULT_ADAPTER))
+    gold.add_argument("--oracle", default=str(recipe_golden.DEFAULT_ORACLE))
+    gold.add_argument("--cases-detail", action="store_true", help="include per-case results")
+    gold.set_defaults(fn=_cmd_recipe_golden)
+
     prof = sub.add_parser("profile", help="decode perf profile store")
     prof.add_argument("action", choices=("write", "show"))
     prof.add_argument("--dir", required=True)
@@ -175,7 +191,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         out = args.fn(args)
-    except (OSError, ValueError, KeyError, TypeError) as e:
+    except (OSError, ValueError, KeyError, TypeError, RuntimeError) as e:
         print(f"deepinfer_ds4: {e}", file=sys.stderr)
         return 2
     json.dump(out, sys.stdout, indent=2, sort_keys=True, allow_nan=False)
