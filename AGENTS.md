@@ -21,6 +21,23 @@ work, and it stays in context for the whole session.
   keep `gitnexus_query` `limit ≤ 3`; prefer `gitnexus_context` on a single
   symbol over repeated full-process dumps.
 
+## DSpark / speculative decoding (Strix Halo)
+
+Read `integrations/deepinfer-ds4/docs/DSPARK_NOTES.md` before touching DSpark,
+the scheduler, model/drafter config or speed claims. Key facts:
+
+- `DS4_DSPARK_SCHEDULER_MIN_AVG_MILLI=1500` speeds up V4 Flash `--dspark` on
+  gfx1151 (default 4000; +10–25% code, +16% tool-use; same backoff on prose).
+  Opt-in env only: never change DS4 defaults (opportunistic DSpark changes
+  greedy output).
+- DeepSeek V4.1 ignores that knob: `ds41_session_speculate()` has no
+  scheduler. V4.1 DSpark is unmeasured here and its drafter GGUF is not local;
+  do not claim it helps or hurts.
+- DS4 Studio: persistent backend env goes in `server.env` of
+  `frontend/ds4-ui.config.json`; never set `server.dspark: true` without a
+  valid `mtp` for that model.
+- The upstream issue draft is intentionally unpublished; do not post it.
+
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
