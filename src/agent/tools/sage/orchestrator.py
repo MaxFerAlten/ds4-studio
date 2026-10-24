@@ -10,6 +10,7 @@ from .classifier import classify_sage_task
 from .exceptions import (
     SageExecutionFailedControlled,
     SageQualityGateFailed,
+    SageResultParseError,
     FinalCodeMutationError,
 )
 from .executor import SageExecutor
@@ -22,6 +23,7 @@ from .models import (
     SageTaskType,
     SageResponse,
     FunctionStudyResult,
+    PlotRequest,
     ValidationReport,
     SageExecutionResult,
 )
@@ -30,7 +32,7 @@ from .parser import extract_result_json, validate_schema
 from .planner import build_plan
 from .plot_builder import build_plot_code, validate_plot
 from .prompt_loader import SagePromptLoader
-from .quality_gate import can_publish
+from .quality_gate import can_publish, requires_plots
 from .renderer import render_function_study
 from .repair import SageRepairEngine, apply_repair_cycle
 from .telemetry import SageTelemetry
@@ -88,8 +90,11 @@ class SageOrchestrator:
         user_text = raw_request.get("code", "")
         task_type_str = raw_request.get("task_type", "auto")
 
+        # The request id must be reproducible across processes: str(hash(...))
+        # depends on PYTHONHASHSEED, so the same request landed in a different
+        # runtime directory on every run.
         request = SageRequest(
-            request_id=str(hash(user_text)),
+            request_id=sha256_text(user_text)[:16],
             raw_user_text=user_text,
             expression=user_text,
         )
@@ -205,17 +210,25 @@ class SageOrchestrator:
             except (ValueError, TypeError):
                 pass
 
-        # Build plot code and execute
-        plot_path = str(request_dir / "plot.png")
-        plot_code = build_plot_code(
-            expression=expression,
-            output_path=plot_path,
+        # Build the plot package. A function study owes three artifact kinds —
+        # the function and both derivatives — and the runtime validator refuses
+        # to publish without all three, so producing one PNG was never enough.
+        first_derivative = str(raw_result.get("first_derivative", "")).strip()
+        second_derivative = str(raw_result.get("second_derivative", "")).strip()
+        artifacts = self._build_plot_package(
+            request_dir=request_dir,
             variable=request.variable,
+            plots=[
+                ("function_plot", "plot.png", expression),
+                ("first_derivative_plot", "plot_first_derivative.png",
+                 first_derivative or f"diff({expression}, {request.variable})"),
+                ("second_derivative_plot", "plot_second_derivative.png",
+                 second_derivative or f"diff({expression}, {request.variable}, 2)"),
+            ],
         )
-        plot_execution = self.executor.execute(plot_code, request_dir, attempt=1)
 
-        result.plot_path = plot_path if validate_plot(plot_path) else None
-        if not result.plot_path:
+        result.plot_path = artifacts[0]["path"] if artifacts else None
+        if len(artifacts) < 3:
             self.telemetry.record_plot_failure()
 
         # Final code: use the executed template code
@@ -245,12 +258,13 @@ class SageOrchestrator:
             )
 
         # Quality gate
-        plot_ok = result.plot_path is not None
+        plot_ok = len(artifacts) >= 3
         if not can_publish(
             math_report=math_report,
             katex_report=katex_report,
             final_execution=reexec,
             plot_ok=plot_ok,
+            task_type=request.task_type.value,
         ):
             self.telemetry.record_quality_gate_failure()
             raise SageQualityGateFailed(
@@ -263,11 +277,14 @@ class SageOrchestrator:
             document=document,
             plot_path=result.plot_path,
             code=result.final_sage_code,
+            artifacts=artifacts,
             metadata={
                 "task_type": request.task_type.value,
                 "math_validated": math_report.passed,
                 "katex_validated": katex_report.passed,
                 "plot_ok": plot_ok,
+                "requires_plots": requires_plots(request.task_type.value),
+                "artifact_kinds": [artifact["kind"] for artifact in artifacts],
                 "attempts": execution.attempt,
                 "policy": {
                     "name": policy_metadata.name,
@@ -276,3 +293,33 @@ class SageOrchestrator:
                 },
             },
         )
+
+    def _build_plot_package(self, *, request_dir, variable, plots):
+        """Render one PNG per requested plot kind.
+
+        Returns only the artifacts that actually landed on disk: a missing plot
+        must be visible to the orchestration as a missing artifact, not hidden
+        behind a path that points at nothing.
+        """
+        artifacts = []
+        for index, (kind, file_name, expression) in enumerate(plots, start=1):
+            if not expression:
+                continue
+            output_path = str(request_dir / file_name)
+            plot_code = build_plot_code(
+                PlotRequest(
+                    expression=expression,
+                    variable=variable,
+                    output_path=output_path,
+                )
+            )
+            self.executor.execute(plot_code, request_dir, attempt=index)
+            if not validate_plot(output_path):
+                continue
+            artifacts.append({
+                "kind": kind,
+                "name": file_name,
+                "path": output_path,
+                "media_type": "image/png",
+            })
+        return artifacts

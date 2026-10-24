@@ -7,7 +7,7 @@ from .models import SageTaskType
 FUNCTION_STUDY_KEYWORDS = [
     "studio di funzione",
     "dominio",
-    "segno della funzione",
+    "segno",
     "asintoti",
     "monotonia",
     "massimi e minimi",

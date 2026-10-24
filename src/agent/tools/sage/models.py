@@ -198,6 +198,10 @@ class SageResponse:
     plot_path: Optional[str] = None
     code: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
+    #: One entry per produced artifact: {"kind", "name", "path", "media_type"}.
+    #: A function study owes three kinds; plot_path stays as the first one for
+    #: the callers that still read a single plot.
+    artifacts: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
