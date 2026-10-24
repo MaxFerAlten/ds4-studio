@@ -164,3 +164,49 @@ test("rollout flag zero uses the legacy raw path through the same gateway", asyn
   assert.equal(result.publishable, false);
   assert.equal(result.content, "raw");
 });
+
+// Regression: Sage V2 runs function_study only; every other task type made
+// the Python orchestrator raise NotImplementedError, reported as
+// execution_error five times until budget_exhausted.  A declined task now
+// runs on the classic executor and is still authorized.
+test("a task the V2 orchestrator declines falls back to the classic executor", async () => {
+  const { runSageOrchestrator } = await import("./sageOrchestratorBridge.mjs");
+  let rawCalls = 0;
+  let authorizedRaw = null;
+  await executeAuthoritativeSage({ code: "expand((x+y)^3)", task_type: "auto" }, {
+    rawExecutor: async () => {
+      rawCalls += 1;
+      return legacyRaw();
+    },
+    sageV2EnabledFn: () => true,
+    bridgeExecutor: (args, options) => runSageOrchestrator(args, {
+      ...options,
+      bridgeRunner: async () => ({
+        exitCode: 0,
+        timedOut: false,
+        stdout: JSON.stringify({ unsupportedTaskType: true, message: "Sage V2 does not yet handle task type symbolic_generic" }),
+        stderr: ""
+      })
+    }),
+    authorizer: async ({ raw }) => {
+      authorizedRaw = raw;
+      return authorized();
+    }
+  });
+  assert.equal(rawCalls, 1);
+  assert.equal(authorizedRaw?.content, "raw", "the classic result is what gets authorized");
+});
+
+test("a real V2 failure is not retried on the classic executor", async () => {
+  let rawCalls = 0;
+  await executeAuthoritativeSage({ code: "1/0" }, {
+    rawExecutor: async () => {
+      rawCalls += 1;
+      return legacyRaw();
+    },
+    sageV2EnabledFn: () => true,
+    bridgeExecutor: async () => ({ content: "failed", isError: true, debug: { bridgeError: "SAGE_EXECUTION_FAILED" } }),
+    authorizer: async () => authorized()
+  });
+  assert.equal(rawCalls, 0);
+});

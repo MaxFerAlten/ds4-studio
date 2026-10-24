@@ -191,7 +191,13 @@ orchestrator = SageOrchestrator(
     prompt_path=Path(${JSON.stringify(policy.path)}),
     runtime_base=Path(request.get("runtime_base") or "runtime/sage"),
 )
-response = orchestrator.run(request)
+try:
+    response = orchestrator.run(request)
+except NotImplementedError as error:
+    # V2 only runs some task types (function_study); the rest belong to the
+    # classic executor.  Say so instead of failing like a broken computation.
+    print(json.dumps({"unsupportedTaskType": True, "message": str(error)}))
+    sys.exit(0)
 metadata = response.metadata if isinstance(response.metadata, dict) else {}
 task_type = str(metadata.get("task_type") or request.get("task_type") or "auto")
 needs_plots = requires_plots(task_type)
@@ -271,11 +277,25 @@ print(json.dumps({
   if (result.exitCode !== 0) {
     return controlledBridgeFailure("SAGE_EXECUTION_FAILED", { exitCode: result.exitCode });
   }
+  let parsed;
   try {
-    return normalizeSageOrchestratorPayload(JSON.parse(String(result.stdout).trim()));
+    parsed = JSON.parse(String(result.stdout).trim());
   } catch {
     return controlledBridgeFailure("SAGE_BRIDGE_INVALID_JSON");
   }
+  if (parsed?.unsupportedTaskType === true) return controlledBridgeFailure(SAGE_V2_UNSUPPORTED_TASK);
+  try {
+    return normalizeSageOrchestratorPayload(parsed);
+  } catch {
+    return controlledBridgeFailure("SAGE_BRIDGE_INVALID_JSON");
+  }
+}
+
+// The orchestrator declined the task type; the caller runs the classic path.
+export const SAGE_V2_UNSUPPORTED_TASK = "SAGE_V2_UNSUPPORTED_TASK";
+
+export function sageV2DeclinedTask(result) {
+  return result?.debug?.bridgeError === SAGE_V2_UNSUPPORTED_TASK;
 }
 
 export async function runSageRuntimeValidator(payload, options = {}) {

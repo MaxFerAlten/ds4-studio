@@ -1,5 +1,6 @@
 import {
   runSageOrchestrator,
+  sageV2DeclinedTask,
   sageV2Enabled
 } from "./sageOrchestratorBridge.mjs";
 import {
@@ -63,9 +64,13 @@ export async function executeAuthoritativeSage(args, options = {}) {
       const legacy = await options.rawExecutor(args, options);
       return legacy?.sageResult ? normalizeAuthoritativeSageResponse(legacy) : legacy;
     }
-    const raw = enabled()
+    let raw = enabled()
       ? await bridgeExecutor(args, options)
       : await options.rawExecutor(args, options);
+    // V2 handles function_study only; every other task (symbolic, limits,
+    // series...) failed five times as "execution_error" and burned the
+    // repair budget.  Those run on the classic executor, still authorized.
+    if (sageV2DeclinedTask(raw)) raw = await options.rawExecutor(args, options);
     const authorized = await authorizer({
       args: structuredClone(args ?? {}),
       raw,
