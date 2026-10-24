@@ -49,16 +49,22 @@ export function createLegacyAgentChatHandler({
           Connection: "keep-alive",
           "X-Accel-Buffering": "no"
         });
-        aborting = true;
-        req.on("aborted", abort);
-        res.on("close", () => { if (!res.writableEnded) cancel.abort(); });
+        // A run with a client X-DS4-Run-Id keeps its events and can be
+        // rejoined by repeating the request (page reload, dropped stream), so
+        // a disconnect detaches instead of cancelling; Stop goes through
+        // /v1/cancel.  Anonymous runs keep the legacy cancel-on-disconnect.
+        if (!admissionIdentity?.retainEvents) {
+          aborting = true;
+          req.on("aborted", abort);
+          res.on("close", () => { if (!res.writableEnded) cancel.abort(); });
+        }
         // A withheld round (evidence/epistemic block) or a long prefill sends
         // no byte for minutes; clients and proxies with an idle timeout then
         // drop the stream and the server cancels the turn (WP16: undici gave
         // up at 300 s).  An SSE comment keeps the connection alive and is
         // ignored by EventSource.
         const keepalive = setInterval(() => {
-          if (!res.writableEnded) res.write(": keepalive\n\n");
+          if (!res.writableEnded && !res.destroyed) res.write(": keepalive\n\n");
         }, keepaliveMs);
         const clearKeepalive = () => clearInterval(keepalive);
         res.once("finish", clearKeepalive);
@@ -86,7 +92,8 @@ export function createLegacyAgentChatHandler({
         res.write(data);
         return;
       }
-      if (res.writableEnded) return;
+      // A detached run keeps emitting after its client left.
+      if (res.writableEnded || res.destroyed) return;
       res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
     };
 
@@ -109,7 +116,7 @@ export function createLegacyAgentChatHandler({
         case AGENT_RUN_OUTCOME.NATIVE_STREAMED:
           nativeWiring?.cleanup();
           nativeWiring = null;
-          if (!res.writableEnded) res.end();
+          if (!res.writableEnded && !res.destroyed) res.end();
           return;
         default:
           throw new Error(`agent run returned an unknown outcome: ${JSON.stringify(outcome)}`);

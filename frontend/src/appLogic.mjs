@@ -24,6 +24,44 @@ export function readAgentSessionKey() {
 export const AGENT_SESSION_KEY = readAgentSessionKey();
 export const AGENT_HEADERS = { "X-Agent-Session-Key": AGENT_SESSION_KEY };
 
+// An agent turn outlives its page: the server keeps running it after a reload
+// or a dropped stream.  The tab remembers the in-flight request (same run id,
+// byte-identical body) so it can rejoin it with X-DS4-Run-Join and replay its
+// events instead of losing the answer.  Per tab (sessionStorage), like the
+// agent session key.
+export const PENDING_AGENT_RUN_KEY = "ds4_pending_agent_run";
+export const PENDING_AGENT_RUN_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+
+export function savePendingAgentRun(storage, run) {
+  try {
+    storage.setItem(PENDING_AGENT_RUN_KEY, JSON.stringify(run));
+    return true;
+  } catch {
+    return false; // quota (large images) or storage disabled: no resume
+  }
+}
+
+export function readPendingAgentRun(storage, { sessionKey, now = Date.now(), maxAgeMs = PENDING_AGENT_RUN_MAX_AGE_MS } = {}) {
+  let run;
+  try {
+    run = JSON.parse(storage.getItem(PENDING_AGENT_RUN_KEY) || "null");
+  } catch {
+    return null;
+  }
+  if (!run || typeof run.runId !== "string" || !run.payload || typeof run.payload !== "object") return null;
+  if (run.sessionKey !== sessionKey || !(now - Number(run.startedAt) < maxAgeMs)) return null;
+  return run;
+}
+
+export function clearPendingAgentRun(storage, runId) {
+  try {
+    const current = JSON.parse(storage.getItem(PENDING_AGENT_RUN_KEY) || "null");
+    if (!runId || current?.runId === runId) storage.removeItem(PENDING_AGENT_RUN_KEY);
+  } catch {
+    /* storage unavailable */
+  }
+}
+
 export const STARTUP_GROUPS = [
   ["Model", ["binary", "model", "mtp", "mtpDraft", "mtpMargin"]],
   ["Runtime", ["ctx", "tokens", "threads", "backend", "quality", "warmWeights"]],

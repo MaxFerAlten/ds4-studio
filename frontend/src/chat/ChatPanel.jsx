@@ -61,6 +61,8 @@ export function ChatPanel({
   messages,
   input,
   generationBusy,
+  serverRun,
+  cancelServerRun,
   commandBusy = false,
   uploadBusy,
   fileAccept,
@@ -171,6 +173,22 @@ export function ChatPanel({
               />
               OpenWiki {openwikiEnabled ? "ON" : "OFF"}
             </label>
+          </div>
+        )}
+        {serverRun && !generationBusy && (
+          <div className="agent-badge" data-agent-id="chat-server-run-badge"
+            title="A turn started elsewhere (another tab, another origin, or before a reload) is still running on the server">
+            <div className="agent-indicator"></div>
+            <span>
+              Turno in corso sul server dal {new Date(serverRun.startedAt).toLocaleTimeString()}
+              {serverRun.ownedByCaller ? "" : " (avviato da un'altra scheda/origine: fermalo da lì)"}
+            </span>
+            {serverRun.ownedByCaller && (
+              <button type="button" className="agent-stop-btn" onClick={cancelServerRun}
+                title="Stop the server turn" data-agent-id="chat-server-run-stop">
+                <Square size={12} />
+              </button>
+            )}
           </div>
         )}
         {agentMode && (

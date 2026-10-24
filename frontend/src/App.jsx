@@ -23,7 +23,8 @@ import { OpenWikiPanel } from "./panels/OpenWikiPanel.jsx";
 import { listResearchSessions } from "./research/researchApi.mjs";
 import { workspaceFromPath, pathForWorkspace } from "./workspaceRouting.mjs";
 import {
-  AGENT_HEADERS, AGENT_COMMANDS, ENV_FIELDS,
+  AGENT_HEADERS, AGENT_COMMANDS, ENV_FIELDS, AGENT_SESSION_KEY,
+  savePendingAgentRun, readPendingAgentRun, clearPendingAgentRun,
   appendAssistantDelta, replaceAssistantMessage,
   appendAssistantNotice, appendTransientNotice, buildChatMessages, chatMessageText,
   injectSearchResults, searchResultsBlock,
@@ -328,6 +329,8 @@ export default function App() {
   // only receives a single `message` string per turn — gets the context. See
   // ./agentPriming.mjs for the rationale.
   const agentPrimingPendingRef = useRef(false);
+  const resumeAttemptedRef = useRef(false);
+  const [serverRun, setServerRun] = useState(null);
 
   const refreshResearchSessions = useCallback(async () => {
     setResearchHistoryBusy(true);
@@ -506,6 +509,13 @@ export default function App() {
       .then((data) => {
         setAgentMode(Boolean(data.active));
         setAgentStatus(data);
+        // This tab reloaded while one of its agent turns was running: rejoin
+        // it (the server replays its events; it never re-runs the turn).
+        const pending = data.active && readPendingAgentRun(sessionStorage, { sessionKey: AGENT_SESSION_KEY });
+        if (pending && !resumeAttemptedRef.current) {
+          resumeAttemptedRef.current = true;
+          sendAgentMessage(null, null, [], pending);
+        }
       })
       .catch(() => {});
     const timer = setInterval(() => {
@@ -519,6 +529,11 @@ export default function App() {
           return null;
         })
         .catch((err) => setError(err.message));
+      // A turn can run on the server with no page attached (another tab or
+      // origin, a reload that could not rejoin): surface it.
+      jsonFetch("/api/agent/status", { headers: AGENT_HEADERS })
+        .then((data) => setServerRun(data?.serverRun ?? null))
+        .catch(() => {});
       /* Fetch compression metrics periodically when agent is active. */
       jsonFetch("/api/agent/compression-metrics")
         .then((data) => setCompressionMetrics({ ...data, refreshError: null }))
@@ -1911,11 +1926,18 @@ export default function App() {
     }
   }
 
-  async function sendAgentMessage(text, searchResult = null, images = []) {
+  // `resume` rejoins a turn this tab started before a reload or a dropped
+  // stream (readPendingAgentRun): same run id and body, replayed by the server.
+  async function sendAgentMessage(text, searchResult = null, images = [], resume = null) {
+    if (resume) {
+      text = resume.text;
+      images = (resume.images || []).map((url) => ({ url }));
+    }
+    const baseMessages = resume ? resume.payload.messages : messages;
     handleInputChange("");
     setError("");
     const nextMessages = [
-      ...messages,
+      ...baseMessages,
       images.length
         ? { role: "user", content: text, images: images.map((img) => img.url) }
         : { role: "user", content: text },
@@ -1978,39 +2000,64 @@ export default function App() {
     // agent receives the context it needs (e.g. the document `/sage` should
     // validate). The locally rendered turns stay untouched.
     let outboundMessage = text;
-    if (agentPrimingPendingRef.current && agentRequestTakesPriming(text)) {
+    if (!resume && agentPrimingPendingRef.current && agentRequestTakesPriming(text)) {
       outboundMessage = withAgentPriming(messages, text);
       agentPrimingPendingRef.current = false;
     }
     // Web search mode: fold the live results into the outbound message so the agent
     // model sees them. The native runtime only reads `message`; the locally rendered
     // user turn stays clean (results are transient, like agent priming above).
-    if (searchResult) {
+    if (searchResult && !resume) {
       outboundMessage = `${outboundMessage}${searchResultsBlock(searchResult)}`;
     }
 
+    const runId = resume?.runId ?? crypto.randomUUID();
+    const debug = resume ? Boolean(resume.debug) : debugEnabled;
+    let rejoin = false;
     try {
-      const payload = {
-        message: outboundMessage,
-        messages: messages,
-        request: { ...request, openwiki_enabled: openwikiEnabled }
-      };
-      if (images.length) payload.images = images.map((img) => img.url);
+      let payload = resume?.payload;
+      if (!payload) {
+        payload = {
+          message: outboundMessage,
+          messages: messages,
+          request: { ...request, openwiki_enabled: openwikiEnabled }
+        };
+        if (images.length) payload.images = images.map((img) => img.url);
+        savePendingAgentRun(sessionStorage, {
+          runId, payload, text, debug, sessionKey: AGENT_SESSION_KEY, startedAt: Date.now(),
+          images: images.map((img) => img.url)
+        });
+      }
 
       const res = await fetch("/api/agent/chat", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           ...AGENT_HEADERS,
+          // The run id makes the turn rejoinable after a reload; a resume
+          // only joins, it never starts the turn a second time.
+          "X-DS4-Run-Id": runId,
+          ...(resume ? { "X-DS4-Run-Join": "1" } : {}),
           // Per-request rather than server state: two tabs can disagree, and a
           // stuck flag cannot outlive the run that set it.
-          ...(debugEnabled ? { "X-Agent-Debug": "1" } : {})
+          ...(debug ? { "X-Agent-Debug": "1" } : {})
         },
         body: JSON.stringify(payload),
         signal: controller.signal
       });
 
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) {
+        const body = await res.text();
+        if (resume) {
+          clearPendingAgentRun(sessionStorage, runId);
+          setMessages(appendTransientNotice(
+            "Il turno agente avviato prima del ricaricamento non è più disponibile sul server " +
+            "(già concluso e scaduto, o server riavviato)."
+          ));
+          return;
+        }
+        throw new Error(body);
+      }
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -2207,12 +2254,21 @@ export default function App() {
         deltaBatcher.flush();
         setMessages(appendTransientNotice(streamFailureNotice(err).replace(/^Stream/, "Agent stream")));
       }
+      // A dropped stream (not Stop) leaves the run going on the server:
+      // rejoin it once instead of handing the turn back.
+      rejoin = err.name !== "AbortError" && !resume?.isRetry &&
+        Boolean(readPendingAgentRun(sessionStorage, { sessionKey: AGENT_SESSION_KEY }));
       // Re-encoding a dropped image means picking the file again; hand it back.
-      if (images.length) setPendingImages((prev) => [...images, ...prev]);
+      if (!rejoin && images.length) setPendingImages((prev) => [...images, ...prev]);
     } finally {
       deltaBatcher.cancel();
       setGenerationBusy(false);
       if (abortRef.current === controller) abortRef.current = null;
+      if (!rejoin) clearPendingAgentRun(sessionStorage, runId);
+    }
+    if (rejoin) {
+      const pending = readPendingAgentRun(sessionStorage, { sessionKey: AGENT_SESSION_KEY });
+      if (pending?.runId === runId) return sendAgentMessage(null, null, [], { ...pending, isRetry: true });
     }
   }
 
@@ -2565,6 +2621,8 @@ export default function App() {
           messages={messages}
           input={input}
           generationBusy={generationBusy}
+          serverRun={serverRun}
+          cancelServerRun={() => fetch("/v1/cancel", { method: "POST" }).catch(() => {})}
           commandBusy={openWikiBusy}
           uploadBusy={uploadBusy}
           fileAccept={fileAccept}

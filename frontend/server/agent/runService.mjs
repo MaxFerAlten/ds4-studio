@@ -129,6 +129,14 @@ export function createAgentRunService({
       if (!admission) return dispatch(input, emit, signal);
 
       const supplied = options?.admissionIdentity;
+      if (supplied?.joinOnly) {
+        try {
+          admission.lookup(supplied);
+        } catch (error) {
+          if (!(error instanceof AgentAdmissionError)) throw error;
+          return { kind: AGENT_RUN_OUTCOME.REJECTED, status: error.status, body: { error: error.message, code: error.code } };
+        }
+      }
       const anonymous = randomUUID();
       const identity = supplied || { ownerId: "anonymous", threadId: "anonymous", runId: anonymous, requestHash: anonymous };
 

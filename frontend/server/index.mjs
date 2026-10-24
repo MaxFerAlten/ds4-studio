@@ -2434,11 +2434,21 @@ app.get("/api/agent/status", async (req, res) => {
   const status = agentSessions.status(agentSessionKey(req));
   let statefulSupported;
   try { statefulSupported = await probeStatefulBackend(); } catch { statefulSupported = false; }
+  // A turn can outlive the page that started it (reload, dropped stream,
+  // another tab or origin): expose it so the UI can show it and offer Stop.
+  const lease = agentAdmission.snapshot();
+  const leaseOwner = agentAdmission.activeIdentity()?.ownerId;
   res.json({
     ...status,
     statefulSupported,
     statefulMode: AGENT_STATEFUL_MODE,
-    readGuardMode: AGENT_READ_GUARD_MODE
+    readGuardMode: AGENT_READ_GUARD_MODE,
+    serverRun: lease ? {
+      label: lease.label,
+      state: lease.state,
+      startedAt: lease.startedAt,
+      ownedByCaller: leaseOwner === agentIdentity.ownerOf(req, res)
+    } : null
   });
 });
 
@@ -5667,7 +5677,10 @@ function legacyAgentAdmissionIdentity(req, res) {
     threadId: agentIdentity.derive("legacy", sessionKey),
     runId,
     requestHash: hashRequest({ sessionKey, debug: req.get("X-Agent-Debug") === "1", body: req.body ?? null }),
-    retainEvents: Boolean(clientRunId)
+    retainEvents: Boolean(clientRunId),
+    // X-DS4-Run-Join: 1 reattaches to an existing run (page reload) and must
+    // never start the turn again when that run is gone.
+    joinOnly: Boolean(clientRunId) && req.get("X-DS4-Run-Join") === "1"
   };
 }
 
