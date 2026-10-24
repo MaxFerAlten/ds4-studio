@@ -2140,6 +2140,10 @@ const AGENT_LOOP_POLICY = loadAgentLoopPolicy();
 const AGENT_MAX_ITERATIONS = AGENT_LOOP_POLICY.maxAgentIterations;
 const AGENT_SSE_KEEPALIVE_MS = Number(process.env.DS4_AGENT_SSE_KEEPALIVE_MS) || 15000;
 const AGENT_LEAN_ROUND_MAX_TOKENS = Number(process.env.DS4_AGENT_LEAN_ROUND_MAX_TOKENS) || 8192;
+// task_mode=utility lean_check calls bypass the proof tracker (no attempt or
+// wall-clock budget), so a model "proving" through utility calls looped for
+// 12+ rounds.  Cap them per turn.
+const AGENT_LEAN_MAX_UTILITY_CHECKS = Number(process.env.DS4_AGENT_LEAN_MAX_UTILITY_CHECKS) || 8;
 // A reply made only of [OBSERVATION]..[VERDICT] is a checkpoint the
 // compressed-output contract asked for, not an answer: GO with a target means
 // the model meant to keep going. Nudge it on instead of ending the turn there,
@@ -3778,6 +3782,7 @@ const authoritativeSageChat = compactSageChat &&
   // built before the first candidate runs and never rebuilt.
   let leanTaskSpec = null;
   let leanFinalStatusEmitted = false;
+  let leanUtilityChecks = 0;
 
   const writeLeanStatus = (data) => {
     const snapshot = leanTracker.snapshot();
@@ -5206,8 +5211,24 @@ const authoritativeSageChat = compactSageChat &&
             };
           }
         } else if (tc.name === "lean_check") {
-          // Utility mode: no tracker ownership, no proof lifecycle.
-          // The check runs immediately without budget or strategy tracking.
+          // Utility mode: no tracker ownership, no proof lifecycle, only a
+          // per-turn count so diagnostic checks cannot loop unbounded.
+          if (leanUtilityChecks >= AGENT_LEAN_MAX_UTILITY_CHECKS) {
+            writeLeanStatus({ callId: tc.id, status: "blocked" });
+            return {
+              id: tc.id,
+              name: tc.name,
+              content:
+                `LEAN_ORCHESTRATION\ncode=LEAN_UTILITY_BUDGET_EXHAUSTED\n` +
+                `attemptConsumed=false\nutilityChecks=${leanUtilityChecks}/${AGENT_LEAN_MAX_UTILITY_CHECKS}\n` +
+                "The utility lean_check budget for this turn is spent. To prove the claim, " +
+                "call lean_check with task_mode=\"proof\" and a target_declaration/target_statement; " +
+                "otherwise stop and report what the checks established, without claiming a verified proof.",
+              isError: true,
+              guarded: true
+            };
+          }
+          leanUtilityChecks++;
           leanSourceSha256 = sha256Hex(tc.arguments?.code ?? "");
         }
 
