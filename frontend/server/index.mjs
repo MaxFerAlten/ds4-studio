@@ -5242,6 +5242,7 @@ const authoritativeSageChat = compactSageChat &&
           policyRevision: tc.name === "sage" ? sageState.policyRevision : undefined,
           leanPolicyRevision: tc.name === "lean_check" ? leanCheckPolicyRevision : undefined,
           leanExecutor: tc.name === "lean_check" ? runLeanCheckForAgent : undefined,
+          leanInspectExecutor: tc.name === "lean_inspect" ? runLeanInspectForAgent : undefined,
           leanAttempt: isLeanProofCall ? leanTracker.snapshot().attempt : undefined,
           leanProofId: isLeanProofCall ? leanTracker.snapshot().proofId : undefined,
           leanExpectedTargetStatementSha256:
