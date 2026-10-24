@@ -1,0 +1,38 @@
+id = "jpeg-huffman-table-ids"
+enabled = true
+owner = "overlay"
+description = """
+Accept all four Huffman table ids per class (0-3) in the vendored IRIS JPEG
+decoder, as ITU-T T.81 allows.
+
+This is a DECODE FIX. The decoder rejected DHT/SOS table ids above 1, so
+valid progressive JPEGs that use ids 2-3 (mozjpeg, Facebook/Instagram
+downloads) failed in ds4_image_decode_memory() with:
+
+    invalid or unsupported JPEG image
+
+The table array grows from huff[4] (DC 0-1, AC 2-3) to huff[8] (DC 0-3,
+AC 4-7). A 912x1136 progressive 4:2:0 Facebook JPEG now decodes and matches
+Pillow pixel for pixel; tests/test_image_decode still passes.
+
+Provenance: found in DS4 Studio image upload. Retire it if upstream's
+jpeg.h ever accepts table ids above 1.
+"""
+
+[upstream]
+reviewed_sha = "bc57c7d50d6e60d6272aecf95db467402e4b8821"
+
+[[anchors]]
+file = "third_party/iris/jpeg.h"
+kind = "exact"
+text = "if (tc > 1 || idx > 1) goto fail;"
+count = 1
+
+[[shadow_patch]]
+file = "third_party/iris/jpeg.h"
+patch = "patches/core/jpeg-huffman-table-ids.patch"
+
+[[retire_probe]]
+kind = "symbol"
+file = "third_party/iris/jpeg.h"
+text = "if (tc > 1 || idx > 1) goto fail;"
