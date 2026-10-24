@@ -70,6 +70,11 @@ const NEXT_PHASE = Object.freeze({
   cancelled: "terminal",
 });
 
+const REPORT_MISSING_GUIDANCE =
+  "The computation ran but no structured report reached the validator: assign __ds4_report__ " +
+  "in the Sage code (kind \"math_report\" unless the task is function_study; see the sage tool " +
+  "description) and call sage with phase=validate.";
+
 /** One imperative sentence per class. The model acts on it, it does not read it. */
 const GUIDANCE = Object.freeze({
   success_publishable:
@@ -334,7 +339,14 @@ export function classifySageResult(result, context = {}) {
   const sameFailureCount = repeated ? Number(context.sameFailureCount ?? 1) + 1 : 1;
   const strategyChangeRequired = retryable && sameFailureCount >= maxSameFailure;
 
-  const guidance = GUIDANCE[failureClass] ?? GUIDANCE.execution_error;
+  let guidance = GUIDANCE[failureClass] ?? GUIDANCE.execution_error;
+  // Name what failed: "correct the mathematics" alone sent the model to
+  // recompute a right result whose only defect was the missing report.
+  const failed = [...new Set([...failedChecks, ...codes])].filter((code) => /^[A-Z][A-Z0-9_]+$/.test(code));
+  if (failed.includes("STRUCTURED_REPORT_PRESENT")) {
+    guidance = `${REPORT_MISSING_GUIDANCE} ${guidance}`;
+  }
+  if (failed.length && !terminal) guidance = `${guidance} Failed checks: ${failed.sort().join(", ")}.`;
   const nextAction = strategyChangeRequired ? `${guidance}${STRATEGY_CHANGE_SUFFIX}` : guidance;
 
   return {

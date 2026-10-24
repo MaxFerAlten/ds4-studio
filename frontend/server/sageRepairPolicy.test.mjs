@@ -224,3 +224,42 @@ test("ogni classe ha una guida imperativa e nessuna chiede un nuovo turno utente
   }
   assert.ok(seen.size > 1);
 });
+
+// Regression: a generic Sage run without __ds4_report__ failed
+// STRUCTURED_REPORT_PRESENT and was told only to "correct the mathematics":
+// the model recomputed a right result again and again and nothing was ever
+// published.  The guidance now names the check and the missing report.
+test("SRP-REGR a missing structured report is named in the repair guidance", () => {
+  const decision = classifySageResult(
+    validateResult({
+      checks: [
+        { code: "EXECUTION_OK", passed: true },
+        { code: "STRUCTURED_REPORT_PRESENT", passed: false }
+      ],
+      errors: ["STRUCTURED_REPORT_PRESENT"]
+    }),
+    { taskType: "auto", phase: "validate" }
+  );
+  assert.equal(decision.failureClass, "math_validation_failed");
+  assert.match(decision.nextAction, /__ds4_report__/);
+  assert.match(decision.nextAction, /math_report/);
+  assert.match(decision.nextAction, /Failed checks: STRUCTURED_REPORT_PRESENT/);
+});
+
+test("SRP-REGR other validation failures list their failed checks", () => {
+  const decision = classifySageResult(
+    validateResult({ checks: [{ code: "GENERIC_REPORT_KIND", passed: false }], errors: ["GENERIC_REPORT_KIND"] }),
+    { taskType: "auto", phase: "validate" }
+  );
+  assert.doesNotMatch(decision.nextAction, /__ds4_report__/);
+  assert.match(decision.nextAction, /Failed checks: GENERIC_REPORT_KIND/);
+});
+
+test("SRP-REGR the sage tool description documents the report contract", async () => {
+  const catalog = await import("./agentToolCatalog.mjs");
+  const tools = Object.values(catalog).find((v) => Array.isArray(v) && v.some((t) => t?.function?.name === "sage"));
+  const code = tools.find((t) => t.function.name === "sage").function.parameters.properties.code.description;
+  assert.match(code, /__ds4_report__/);
+  assert.match(code, /"kind": "math_report"/);
+  assert.match(code, /STRUCTURED_REPORT_PRESENT/);
+});
