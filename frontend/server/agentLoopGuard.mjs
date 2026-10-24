@@ -290,7 +290,10 @@ export function normalizeAgentIntentText(text) {
 
 export function normalizeAmbiguityText(text) {
   const content = String(text || "").toLowerCase();
-  if (!/(maybe|perhaps|given the ambiguity|could mean|forse|potrebbe voler dire|ambiguit)/i.test(content)) {
+  // Phrases that reopen an interpretation decision.  Bare maybe/perhaps/forse
+  // are ordinary hedging (two "forse il file è in..." steps killed live turns
+  // that were making progress), so they no longer count.
+  if (!/(given the ambiguity|could mean|potrebbe voler dire|ambiguit)/i.test(content)) {
     return "";
   }
 
@@ -488,7 +491,11 @@ export class AgentLoopGuard {
     return decision;
   }
 
-  checkAmbiguity(text) {
+  // One ambiguity assessment per turn is allowed.  The second earns a nudge
+  // (the caller injects the guidance and the turn goes on); only a third,
+  // after the nudge, blocks.  A non-empty final answer is the deliverable and
+  // is never discarded for hedging: it is published with a warning.
+  checkAmbiguity(text, { isFinalResponse = false } = {}) {
     const key = normalizeAmbiguityText(text);
     if (!key) return undefined;
 
@@ -496,19 +503,23 @@ export class AgentLoopGuard {
     this.ambiguityCounts.set(key, count);
     if (count < 2) return undefined;
 
-    return this._applyMode({
+    const decision = this._applyMode({
       block: true,
       type: "STOP_AMBIGUITY_LOOP",
       reason: "Repeated ambiguity reasoning detected.",
       guidance: "Choose an operating assumption, produce [TARGET_SELECTED], or stop with [VERDICT]."
     }, this.loopMode);
+    if (!decision?.block) return decision;
+    if (isFinalResponse && String(text || "").trim()) return { ...decision, block: false, warn: true };
+    if (count === 2) return { ...decision, block: false, nudge: true };
+    return decision;
   }
 
   checkAssistantText(text, options = {}) {
     const observationDecision = this._checkObservationFlow(text, options);
     if (observationDecision) return observationDecision;
 
-    const ambiguityDecision = this.checkAmbiguity(text);
+    const ambiguityDecision = this.checkAmbiguity(text, options);
     if (ambiguityDecision) return ambiguityDecision;
 
     const intent = normalizeAgentIntentText(text);

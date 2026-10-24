@@ -3931,9 +3931,16 @@ const authoritativeSageChat = compactSageChat &&
     let checkpointNudges = 0;
     let checkpointFinalAsked = false;
     let truncationNudges = 0;
+    // Set by the ambiguity guard's nudge; delivered before the next model call
+    // so the round's tool calls still run.
+    let pendingGuardGuidance = null;
 
     while (true) {
       if (controller.signal.aborted) break;
+      if (pendingGuardGuidance) {
+        pushGuidanceMessage(fullMessages, pendingGuardGuidance);
+        pendingGuardGuidance = null;
+      }
       await yieldEpistemicShadow();
       if (iteration > AGENT_MAX_ITERATIONS) {
         // Even the tool-less wrap-up round answered with tool calls.
@@ -4453,12 +4460,13 @@ const authoritativeSageChat = compactSageChat &&
       const intentDecision = agentSession.loopGuard.checkAssistantText(assistantContent, {
         isFinalResponse
       });
-      if (intentDecision?.warn) {
+      if (intentDecision?.warn || intentDecision?.nudge) {
         writeAgentSse("agent_warning", {
           type: intentDecision.type,
           warning: `${intentDecision.reason}\n${intentDecision.guidance}`
         });
       }
+      if (intentDecision?.nudge) pendingGuardGuidance = `${intentDecision.reason}\n${intentDecision.guidance}`;
       // A final answer that is empty, or a checkpoint missing markers, after a
       // compressed observation: ask for the answer instead of ending the turn
       // on an error (the work was done; only its write-up is missing).

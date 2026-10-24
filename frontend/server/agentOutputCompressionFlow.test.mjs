@@ -50,13 +50,19 @@ test("scenario B: third documentation read requires synthesis", () => {
   assert.equal(block?.type, "DOC_READ_SUMMARY_REQUIRED");
 });
 
-test("scenario C: repeated ambiguity is blocked", () => {
+test("scenario C: repeated ambiguity is nudged, then blocked", () => {
   const guard = new AgentLoopGuard();
 
+  // Bare "perhaps" is ordinary hedging, not an ambiguity assessment.
   assert.equal(guard.checkAssistantText("Perhaps the user means doc/ or the parent repository."), undefined);
-  const block = guard.checkAssistantText("Given the ambiguity, maybe the docs or the parent repository.");
+  assert.equal(guard.checkAssistantText("This could mean doc/ or the parent repository."), undefined);
+  const nudge = guard.checkAssistantText("Given the ambiguity, maybe the docs or the parent repository.");
+  assert.equal(nudge?.type, "STOP_AMBIGUITY_LOOP");
+  assert.equal(nudge?.nudge, true);
+  const block = guard.checkAssistantText("It could mean either one.");
 
   assert.equal(block?.type, "STOP_AMBIGUITY_LOOP");
+  assert.equal(block?.block, true);
 });
 
 test("scenario D: verified claim without evidence is blocked", () => {

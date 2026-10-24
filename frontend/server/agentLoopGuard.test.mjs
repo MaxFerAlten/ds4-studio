@@ -76,22 +76,54 @@ test("new observation resets no-progress", () => {
   assert.equal(guard.recordProgress("tool-result", { content: "b" }), undefined); // no-progress 1 again
 });
 
-test("blocks repeated ambiguity reasoning", () => {
+test("repeated ambiguity reasoning: nudge, then block", () => {
   const guard = new AgentLoopGuard();
 
   assert.equal(typeof loopGuardModule.normalizeAmbiguityText, "function");
   assert.match(
-    loopGuardModule.normalizeAmbiguityText("Perhaps the user means the doc directory, or perhaps the parent codebase."),
+    loopGuardModule.normalizeAmbiguityText("Given the ambiguity, the user may mean the docs."),
     /ambiguity/
   );
   assert.equal(
-    guard.checkAssistantText("Perhaps the user means the doc directory, or perhaps the parent codebase."),
+    guard.checkAssistantText("This could mean the doc directory or the parent codebase."),
     undefined
   );
 
-  const block = guard.checkAssistantText("Given the ambiguity, perhaps the user wants the docs or the real codebase.");
+  const nudge = guard.checkAssistantText("Given the ambiguity, the user wants the docs or the real codebase.");
+  assert.equal(nudge?.type, "STOP_AMBIGUITY_LOOP");
+  assert.equal(nudge?.block, false);
+  assert.equal(nudge?.nudge, true);
+
+  const block = guard.checkAssistantText("It still could mean either directory.");
   assert.equal(block?.type, "STOP_AMBIGUITY_LOOP");
   assert.equal(block?.block, true);
+});
+
+// Regression: bare hedging words ("forse", "maybe", "perhaps") in two steps of
+// one turn used to kill an Italian agent turn that was making progress.
+test("ordinary hedging is not ambiguity reasoning", () => {
+  const guard = new AgentLoopGuard();
+  for (const text of [
+    "Forse il file è in frontend/server, controllo.",
+    "Forse conviene leggere anche index.mjs.",
+    "Maybe the test lives next to it.",
+    "Perhaps the helper is exported from utils."
+  ]) {
+    assert.equal(loopGuardModule.normalizeAmbiguityText(text), "", text);
+    assert.equal(guard.checkAssistantText(text, { isFinalResponse: false }), undefined, text);
+  }
+});
+
+// Regression: the final answer was discarded with STOP_AMBIGUITY_LOOP after
+// the work was done.  A non-empty final answer is published with a warning.
+test("a final answer is never discarded for ambiguity", () => {
+  const guard = new AgentLoopGuard();
+  guard.checkAssistantText("Given the ambiguity, I will check both.", { isFinalResponse: false });
+  guard.checkAssistantText("It could mean either; reading the docs first.", { isFinalResponse: false });
+  const final = guard.checkAssistantText("Given the ambiguity, here is the report for both readings: ...", { isFinalResponse: true });
+  assert.equal(final?.type, "STOP_AMBIGUITY_LOOP");
+  assert.equal(final?.block, false);
+  assert.equal(final?.warn, true);
 });
 
 test("beginTurn clears all counters", () => {

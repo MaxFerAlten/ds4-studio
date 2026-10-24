@@ -27,8 +27,11 @@ test("JS slash fallback is wired before the wrapper guard", async () => {
   assert.notEqual(fallback, -1, "route delegates recognized commands to handleAgentSlashCommand");
   assert.notEqual(guard, -1, "wrapper guard still present");
   assert.ok(fallback < guard, "the JS fallback must precede the wrapper guard");
-  assert.match(route, /!wrapperEnabled\(\) && isAgentSlashCommand\(command\) && parseAgentSlashCommand\(command\)/,
-    "fallback fires only without the wrapper, for slash commands the JS parser recognizes");
+  // The js engine owns these commands whether or not the wrapper is enabled
+  // (with the wrapper it stays in server mode and the C agent would 409);
+  // resolveAgentEngine() is always "js" without the wrapper.
+  assert.match(route, /agentEngine\(\) !== "native" && isAgentSlashCommand\(command\) && parseAgentSlashCommand\(command\)/,
+    "fallback fires on the js engine, for slash commands the JS parser recognizes");
   assert.match(route, /session: agentSessions\.get\(sessionKey\)/,
     "session comes from the per-request agent session (drives AGENT_MODE_REQUIRED)");
   assert.match(route, /skillState: agentSkillStateFor\(sessionKey\)/);
