@@ -2102,7 +2102,10 @@ export default function App() {
             deltaBatcher.push("", reasoning);
           } else if (event === "agent_tool_call") {
             deltaBatcher.flush();
-            if (data.name === "sage" && data.hiddenByDefault !== false) return;
+            // `continue`, not `return`: a return here left sendAgentMessage and
+            // stopped reading the stream at the first hidden Sage call, while
+            // the server went on with the turn and its answer was never shown.
+            if (data.name === "sage" && data.hiddenByDefault !== false) continue;
             setMessages((prev) => {
               const last = prev[prev.length - 1];
               if (last.role !== "assistant") return prev;
@@ -2140,7 +2143,7 @@ export default function App() {
                 if (!runId) return prev;
                 return { ...prev, [runId]: finalizeSageActivity(prev[runId]) };
               });
-              return;
+              continue;
             }
             const toolMsgs = toolResultMessages(data);
             if (toolMsgs.length) {
