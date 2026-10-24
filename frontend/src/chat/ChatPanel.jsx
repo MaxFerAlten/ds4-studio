@@ -22,6 +22,11 @@ const MessagesList = memo(function MessagesList({ messages, messagesRef, sageAct
               <MessageContent content={message.reasoning} />
             </details>
           ) : null}
+          {message.pendingStatus && !message.content ? (
+            <div className="agent-pending-status" aria-live="polite" data-agent-id="agent-pending-status">
+              {message.pendingStatus}
+            </div>
+          ) : null}
           {message.sageRunId && sageActivities?.[message.sageRunId] ? (
             <SageActivityCard activity={sageActivities[message.sageRunId]} />
           ) : null}

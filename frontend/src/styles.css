@@ -2740,3 +2740,12 @@ pre {
 }
 
 .lean-attempt-index { font-family: monospace; }
+
+/* Agent reply with no text yet: prefill progress (a long prompt streams nothing). */
+.agent-pending-status {
+  color: #9ad9b3;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  margin: 4px 0;
+  opacity: 0.85;
+}

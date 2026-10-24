@@ -267,6 +267,7 @@ import {
   SageCallLog,
   activateSagePolicy,
   applySagePolicyToMessages,
+  sagePolicyPromptFor,
   deactivateSagePolicy,
   sageBinaryExists,
   sagePolicyIsActive,
@@ -287,6 +288,8 @@ import { SERVER_SESSION_PREFIX, createThreadStore } from "./agent/threadStore.mj
 import { openLocalThreadStorage } from "./agent/localThreadStorage.mjs";
 import { createRunIngress, createRunRoutes } from "./agent/runIngress.mjs";
 import { normalizeTurnImages, withTurnImages } from "./agent/agentTurnImages.mjs";
+import { isFunctionStudyRequest } from "./sagePolicySlim.mjs";
+import { relayPrefillProgress } from "./agent/backendPrefillProgress.mjs";
 import { aguiFeatureFlags } from "./agui/featureFlags.mjs";
 import { loadAguiSdk } from "./agui/sdk.mjs";
 import { createAguiRecorder } from "./agui/recorder.mjs";
@@ -3540,6 +3543,7 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
         delete agentSession.saveIdentity;
         agentSkillStates.delete(sessionKey); // WP4/WP5 note: release the cached state
         deactivateSagePolicy(); // a fresh session starts without opt-in skills
+        delete agentSession.sageFullPolicy;
         payload = { ok: true, message: "New session started.", active: true };
       }
       return { kind: AGENT_RUN_OUTCOME.COMMAND, ok: payload.ok !== false, events: nativeCommandEvents(payload, payload.ok !== false) };
@@ -3629,7 +3633,12 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
     else fullMessages = [systemMessage, ...fullMessages.filter((message) => message?.role !== "system")];
   }
   if (userMessage) fullMessages.push({ role: "user", content: String(userMessage) });
-  fullMessages = applySagePolicyToMessages(fullMessages);
+  // ~17k-token function-study rules only when the session does one; a plain
+  // Sage computation gets the ~2k-token core (sagePolicySlim.mjs).
+  if (isFunctionStudyRequest(userMessage)) agentSession.sageFullPolicy = true;
+  fullMessages = applySagePolicyToMessages(fullMessages, {
+    prompt: sagePolicyPromptFor({ fullPolicy: agentSession.sageFullPolicy === true })
+  });
   // WP12: date/time context once per session, first message after the system
   // prompt (C agent_worker_maybe_append_datetime_context, shadow
   // ds4_agent.c:3352-3370).  Deviation: the C role "system" rides instead as
@@ -3752,6 +3761,8 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
   function writeAgentSse(event, data) {
     emit(event, data);
   }
+  // Long prefills stream nothing; relay the backend's progress lines.
+  const stopPrefillRelay = relayPrefillProgress(manager, (progress) => writeAgentSse("agent_prefill", progress));
 
   // Opt-in per request (/debug start in the composer sets the header), so a
   // normal run pays nothing and no server-wide flag can be left switched on.
@@ -3949,12 +3960,18 @@ const authoritativeSageChat = compactSageChat &&
     // Set by the ambiguity guard's nudge; delivered before the next model call
     // so the round's tool calls still run.
     let pendingGuardGuidance = null;
+    // Set when a function_study Sage call arrives under the core policy.
+    let sagePolicyUpgradePending = false;
 
     while (true) {
       if (controller.signal.aborted) break;
       if (pendingGuardGuidance) {
         pushGuidanceMessage(fullMessages, pendingGuardGuidance);
         pendingGuardGuidance = null;
+      }
+      if (sagePolicyUpgradePending) {
+        fullMessages = applySagePolicyToMessages(fullMessages, { prompt: sagePolicyPromptFor({ fullPolicy: true }) });
+        sagePolicyUpgradePending = false;
       }
       await yieldEpistemicShadow();
       if (iteration > AGENT_MAX_ITERATIONS) {
@@ -4972,6 +4989,10 @@ const authoritativeSageChat = compactSageChat &&
 
       const runToolCall = async (tc) => {
         const isSage = tc.name === "sage";
+        if (isSage && tc.arguments?.task_type === "function_study" && agentSession.sageFullPolicy !== true) {
+          agentSession.sageFullPolicy = true;
+          sagePolicyUpgradePending = true;
+        }
         const compactSage = isSage && authoritativeSageChat &&
           String(tc.arguments?.output_mode || "auto").toLowerCase() !== "legacy";
         let sagePhase = normalizeSagePhase(tc.arguments?.phase);
@@ -5609,6 +5630,7 @@ const authoritativeSageChat = compactSageChat &&
     writeAgentSse("agent_error", { error: err.message || String(err) });
   } finally {
     signal.removeEventListener("abort", abort);
+    stopPrefillRelay();
     // A run left mid-flight (abort, error, iteration cap) stays non-terminal in
     // the registry, and the registry only evicts terminal entries: without this
     // the 64 slots fill with runs nobody will ever finish.

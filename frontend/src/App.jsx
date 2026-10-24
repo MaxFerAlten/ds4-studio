@@ -25,6 +25,7 @@ import { workspaceFromPath, pathForWorkspace } from "./workspaceRouting.mjs";
 import {
   AGENT_HEADERS, AGENT_COMMANDS, ENV_FIELDS, AGENT_SESSION_KEY,
   savePendingAgentRun, readPendingAgentRun, clearPendingAgentRun,
+  tagLastAssistant, prefillStatusText,
   appendAssistantDelta, replaceAssistantMessage,
   appendAssistantNotice, appendTransientNotice, buildChatMessages, chatMessageText,
   injectSearchResults, searchResultsBlock,
@@ -2160,6 +2161,12 @@ export default function App() {
               ...prev,
               [data.runId]: applySageStatus(prev[data.runId], data)
             }));
+            // The activity card renders only on a message carrying the run id;
+            // nothing set it, so Sage attempts were invisible.
+            if (data.runId) setMessages((prev) => tagLastAssistant(prev, { sageRunId: data.runId }));
+          } else if (event === "agent_prefill") {
+            const status = prefillStatusText(data);
+            if (status) setMessages((prev) => tagLastAssistant(prev, { pendingStatus: status }));
           } else if (event === "agent_sage_artifact") {
             deltaBatcher.flush();
             setSageActivities((prev) => ({
@@ -2266,6 +2273,7 @@ export default function App() {
     } finally {
       deltaBatcher.cancel();
       setGenerationBusy(false);
+      setMessages((prev) => tagLastAssistant(prev, { pendingStatus: undefined }));
       if (abortRef.current === controller) abortRef.current = null;
       if (!rejoin) clearPendingAgentRun(sessionStorage, runId);
     }

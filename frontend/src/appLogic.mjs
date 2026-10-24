@@ -570,3 +570,27 @@ export async function requestFreshNativeAgentSession(
 
   return payload;
 }
+
+// Patch the trailing assistant message (the one an agent turn is filling).
+export function tagLastAssistant(messages, patch) {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.role !== "assistant") continue;
+    const next = messages.slice();
+    next[i] = { ...messages[i], ...patch };
+    return next;
+  }
+  return messages;
+}
+
+// Status shown in an agent reply that has no text yet: a 34k-token prefill
+// runs for minutes with nothing else on screen.
+export function prefillStatusText(progress = {}) {
+  const percent = Number(progress.percent);
+  if (!Number.isFinite(percent)) return "";
+  if (percent >= 100) return "Prompt elaborato, il modello sta generando…";
+  const eta = Number(progress.etaSeconds);
+  const etaText = Number.isFinite(eta) && eta > 0
+    ? ` · ~${eta >= 90 ? `${Math.round(eta / 60)} min` : `${eta} s`} rimanenti`
+    : "";
+  return `Elaborazione prompt ${Math.floor(percent)}% (${progress.doneTokens}/${progress.totalTokens} token)${etaText}`;
+}

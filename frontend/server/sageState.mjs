@@ -12,6 +12,7 @@ import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { sageCorePolicy } from "./sagePolicySlim.mjs";
 import {
   loadSagePolicy,
   SAGE_POLICY_PATH
@@ -133,6 +134,9 @@ export const sageState = {
   version: null,
   lastCheck: null,
   policyPrompt: null,
+  // The rules every Sage task needs, without the function-study gate
+  // (sagePolicySlim.mjs); the JS loop sends it until a function study starts.
+  policyPromptCore: null,
   policyPath: DEFAULT_SAGE_SKILL_PATH,
   policyRevision: null
 };
@@ -142,6 +146,7 @@ export function activateSagePolicy({ skillPath = DEFAULT_SAGE_SKILL_PATH } = {})
   if (!policy.ready) throw new Error(`Sage policy is unavailable: ${policy.path}`);
   sageState.enabled = true;
   sageState.policyPrompt = policy.prompt;
+  sageState.policyPromptCore = sageCorePolicy(policy.prompt) || policy.prompt;
   sageState.policyPath = policy.path;
   sageState.policyRevision = policy.revision;
   return policy.prompt;
@@ -150,7 +155,13 @@ export function activateSagePolicy({ skillPath = DEFAULT_SAGE_SKILL_PATH } = {})
 export function deactivateSagePolicy() {
   sageState.enabled = false;
   sageState.policyPrompt = null;
+  sageState.policyPromptCore = null;
   sageState.policyRevision = null;
+}
+
+// Full policy once the session works on a function study, core otherwise.
+export function sagePolicyPromptFor({ fullPolicy = false } = {}) {
+  return fullPolicy ? sageState.policyPrompt : (sageState.policyPromptCore ?? sageState.policyPrompt);
 }
 
 export function sagePolicyIsActive() {
