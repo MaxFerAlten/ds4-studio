@@ -4974,7 +4974,7 @@ const authoritativeSageChat = compactSageChat &&
         const isSage = tc.name === "sage";
         const compactSage = isSage && authoritativeSageChat &&
           String(tc.arguments?.output_mode || "auto").toLowerCase() !== "legacy";
-        const sagePhase = normalizeSagePhase(tc.arguments?.phase);
+        let sagePhase = normalizeSagePhase(tc.arguments?.phase);
         let sageSnapshot = null;
         const sageCodeSha256 = typeof tc.arguments?.code === "string"
           ? sha256Hex(tc.arguments.code)
@@ -5011,6 +5011,12 @@ const authoritativeSageChat = compactSageChat &&
             codeSha256: sageCodeSha256 ?? undefined
           });
           sageSnapshot = sageTracker.snapshot();
+          // The tracker may apply the phase the runtime requires (compute
+          // resent after a failure runs as repair); everything below follows it.
+          if (callState.allowed && callState.phase && callState.phase !== sagePhase) {
+            sagePhase = callState.phase;
+            tc.arguments = { ...tc.arguments, phase: sagePhase };
+          }
           if (!callState.allowed) {
             emitSageTransition(snapshotBeforeCall, sageSnapshot, callState.code);
             sageMetrics.recordOrchestration(

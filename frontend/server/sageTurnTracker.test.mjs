@@ -332,3 +332,29 @@ test("§26 il rollback ferma l'orchestrazione autonoma ma non apre il gate", () 
   assert.equal(tracker.canFinalize(), false);
   assert.equal(tracker.snapshot().publishable, false);
 });
+
+// Regression: after a failure the runtime requires phase=repair; a model that
+// resent phase=compute with a fixed candidate was refused forever
+// (SAGE_PHASE_TRANSITION_INVALID costs no attempt and had no bound), so Sage
+// never ran again and the agent turn spun with no result.
+test("S-TRACK-REGR a compute resent after a failure runs as repair", () => {
+  const tracker = begin();
+  compute(tracker);
+  assert.equal(validateFailure(tracker).state, "repair_required");
+  const call = tracker.recordCall({ phase: "compute", codeSha256: "fixed-candidate" });
+  assert.equal(call.allowed, true, call.code);
+  assert.equal(call.phase, "repair");
+  assert.equal(tracker.snapshot().repairCount, 1);
+});
+
+test("S-TRACK-REGR wrong-phase refusals are bounded", () => {
+  const tracker = begin();
+  compute(tracker);
+  let last;
+  for (let i = 0; i < 20 && !tracker.isTerminal(); i++) {
+    last = tracker.recordCall({ phase: "publish" });
+    assert.equal(last.allowed, false);
+  }
+  assert.equal(tracker.isTerminal(), true);
+  assert.equal(last.code, "SAGE_PHASE_REJECTION_BUDGET_EXHAUSTED");
+});

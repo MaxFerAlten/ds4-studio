@@ -39,6 +39,8 @@ function uniqueSorted(values) {
   return [...new Set(values.filter(Boolean).map(String))].sort();
 }
 
+const CANDIDATE_PHASES = new Set(["compute", "repair"]);
+
 export class SageTurnTracker {
   /**
    * @param {object} [config] - resolved sage orchestration config. Defaults to
@@ -82,6 +84,7 @@ export class SageTurnTracker {
     this.prematureFinalizations = 0;
     this.terminalNoticeDelivered = false;
     this.unchangedCandidateRejections = 0;
+    this.phaseRejections = 0;
     this.lastCodeSha256 = null;
     this.terminalReason = null;
     this.failureCode = null;
@@ -156,7 +159,7 @@ export class SageTurnTracker {
    * @param {string} [call.codeSha256] - hash of the candidate source
    */
   beforeCall({ phase, candidateRevision, codeSha256 } = {}) {
-    const normalized = normalizeSagePhase(phase);
+    let normalized = normalizeSagePhase(phase);
     if (this.isTerminal()) {
       return {
         allowed: false,
@@ -175,9 +178,22 @@ export class SageTurnTracker {
     }
 
     const required = this.#phaseFor(this.state);
+    // compute and repair both submit a new candidate; only the runtime state
+    // tells them apart.  A model that resends phase=compute after a failure
+    // was refused forever (no attempt consumed, nothing executed), so the
+    // runtime applies the phase it requires.
+    if (required && normalized !== required && CANDIDATE_PHASES.has(normalized) && CANDIDATE_PHASES.has(required)) {
+      normalized = required;
+    }
     if (required && normalized !== required) {
       // The phase is deterministic (§15.3): a different one is refused with the
-      // instruction, not silently accepted.
+      // instruction, not silently accepted.  The refusal costs no attempt, so
+      // it is bounded like the unchanged-candidate one.
+      this.phaseRejections += 1;
+      if (this.phaseRejections > this.config.maxPrematureFinalizations) {
+        this.#terminate("budget_exhausted", "SAGE_PHASE_REJECTION_BUDGET_EXHAUSTED");
+        return { allowed: false, code: "SAGE_PHASE_REJECTION_BUDGET_EXHAUSTED", ...this.snapshot() };
+      }
       return {
         allowed: false,
         code: "SAGE_PHASE_TRANSITION_INVALID",
