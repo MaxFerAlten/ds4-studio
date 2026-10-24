@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ds4-cmf"
+version = "0.1.0"
+description = "DS4 Cognitive Memory Fabric: local, opt-in memory sidecar for DS4 Studio"
+requires-python = ">=3.12"
+license = "MIT"
+# M1 is stdlib-only by design (docs/M1-acceptance.md). Optional extras
+# (embedding, hindsight, engram, bench) arrive with the milestones that need them.
+dependencies = []
+
+[project.scripts]
+cmf = "ds4_cmf.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

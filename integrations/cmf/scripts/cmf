@@ -1,0 +1,4 @@
+#!/bin/sh
+# Run the CMF CLI from source: stdlib only, nothing to install.
+here=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+PYTHONPATH="$here/src${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m ds4_cmf.cli "$@"

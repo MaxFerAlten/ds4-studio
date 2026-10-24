@@ -1,0 +1,21 @@
+# DS4-CMF Strix Halo low-RAM profile (plan §28.2): FTS only, no embedder, no reflection.
+# Precedence: CLI > environment (when set) > this file > built-in default.
+
+[core]
+enabled = false
+store_root = "~/.local/share/ds4-cmf"
+network_egress = "deny"
+# socket_path defaults to $XDG_RUNTIME_DIR/ds4-cmf/cmf.sock
+
+[auth]
+tokens_file = "~/.config/ds4/cmf-tokens.json"
+
+[limits]
+max_text_bytes = 1048576
+max_ds4_bytes = 1048576
+episode_prefix_bytes = 16384
+request_timeout_s = 2.0
+
+[ds4]
+# project_id = "<DS4 context-blob base_dir>"; read-only, verified by digest.
+blob_roots = {}
