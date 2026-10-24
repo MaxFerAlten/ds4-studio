@@ -44,7 +44,6 @@ test("leaves JS-loop session commands to the agent chat route", () => {
 });
 
 test("does not intercept direct native commands outside agent mode except crawl", () => {
-  assert.equal(parseAgentInput("/save", false), null);
   assert.equal(parseAgentInput("/unknown", false), null);
   assert.deepEqual(parseAgentInput("/crawl start https://example.com", false), {
     type: "native",
@@ -298,4 +297,17 @@ test("formatDebugFrames renders a turn with its compression and guard block", ()
 test("formatDebugFrames stays silent with nothing to report", () => {
   assert.equal(formatDebugFrames([]), "");
   assert.equal(formatDebugFrames(undefined), "");
+});
+
+// Regression: outside Agent Mode "/new" reached the model as prose and got a
+// canned greeting back.  Agent-only verbs are answered locally now.
+test("agent-only verbs outside agent mode become a local notice", () => {
+  for (const command of ["/new", "/save", "/list", "/switch abc123", "/del abc", "/strip abc",
+    "/history 5", "/compact", "/help", "/quit", "/exit", "/soul start", "/ethic stop", "/metacognition status"]) {
+    assert.deepEqual(parseAgentInput(command, false), { type: "agentOnly", action: "inactive", command }, command);
+  }
+  assert.equal(parseAgentInput("/newsletter idea", false), null);
+  assert.equal(parseAgentInput("/unknown", false), null);
+  assert.equal(parseAgentInput("/list", true), null, "in agent mode /list still travels as a chat message");
+  assert.deepEqual(parseAgentInput("/soul start", true), { type: "native", command: "/soul start" });
 });

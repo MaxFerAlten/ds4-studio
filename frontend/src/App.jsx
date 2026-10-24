@@ -4,7 +4,7 @@ import { Play, Power, RefreshCw, Terminal } from "lucide-react";
 import { commandLineFromConfig } from "../server/commandBuilder.mjs";
 import { REQUEST_DEFAULTS } from "../server/requestDefaults.mjs";
 import { buildChatPayload, isAutoMaxTokens } from "../server/requestPayload.mjs";
-import { backendHealthLabel, backendStartupDetail, streamFailureNotice, formatNativeAgentNotice, parseAgentInput, withAgentPriming, commandRebuildsSessionKeepingContext, historyHasPersistableAssistant, sessionHasAgentMetadata, sessionsExposeMetadata, clearStoredExportIncludeReasoning, readStoredExportDir, readStoredExportIncludeReasoning, writeStoredExportDir, writeStoredExportIncludeReasoning, createDeltaBatcher, documentIsVisible, formatDebugFrames, clearCallDebug, fetchCallDebug, nativeCommandRearmsPriming } from "./utils.mjs";
+import { backendHealthLabel, backendStartupDetail, streamFailureNotice, formatNativeAgentNotice, parseAgentInput, withAgentPriming, agentRequestTakesPriming, commandRebuildsSessionKeepingContext, historyHasPersistableAssistant, sessionHasAgentMetadata, sessionsExposeMetadata, clearStoredExportIncludeReasoning, readStoredExportDir, readStoredExportIncludeReasoning, writeStoredExportDir, writeStoredExportIncludeReasoning, createDeltaBatcher, documentIsVisible, formatDebugFrames, clearCallDebug, fetchCallDebug, nativeCommandRearmsPriming } from "./utils.mjs";
 import {
   exportConversationMarkdown,
   exportConversationMarkdownRaw,
@@ -1911,12 +1911,14 @@ export default function App() {
     }
   }
 
-  async function sendAgentMessage(text, searchResult = null) {
+  async function sendAgentMessage(text, searchResult = null, images = []) {
     handleInputChange("");
     setError("");
     const nextMessages = [
       ...messages,
-      { role: "user", content: text },
+      images.length
+        ? { role: "user", content: text, images: images.map((img) => img.url) }
+        : { role: "user", content: text },
       { role: "assistant", content: "", reasoning: "" }
     ];
     setMessages(nextMessages);
@@ -1976,7 +1978,7 @@ export default function App() {
     // agent receives the context it needs (e.g. the document `/sage` should
     // validate). The locally rendered turns stay untouched.
     let outboundMessage = text;
-    if (agentPrimingPendingRef.current) {
+    if (agentPrimingPendingRef.current && agentRequestTakesPriming(text)) {
       outboundMessage = withAgentPriming(messages, text);
       agentPrimingPendingRef.current = false;
     }
@@ -1993,6 +1995,7 @@ export default function App() {
         messages: messages,
         request: { ...request, openwiki_enabled: openwikiEnabled }
       };
+      if (images.length) payload.images = images.map((img) => img.url);
 
       const res = await fetch("/api/agent/chat", {
         method: "POST",
@@ -2204,6 +2207,8 @@ export default function App() {
         deltaBatcher.flush();
         setMessages(appendTransientNotice(streamFailureNotice(err).replace(/^Stream/, "Agent stream")));
       }
+      // Re-encoding a dropped image means picking the file again; hand it back.
+      if (images.length) setPendingImages((prev) => [...images, ...prev]);
     } finally {
       deltaBatcher.cancel();
       setGenerationBusy(false);
@@ -2274,6 +2279,18 @@ export default function App() {
         ]);
         return;
       }
+      if (agentInput.type === "agentOnly") {
+        const verb = agentInput.command.split(/\s+/)[0];
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: `Il comando ${verb} è disponibile solo in Agent Mode. Attiva Agent Mode con /agent start.`,
+            agentNotice: true
+          }
+        ]);
+        return;
+      }
       if (agentInput.type === "lean" && agentInput.action === "inactive") {
         setMessages((prev) => [
           ...prev,
@@ -2331,7 +2348,9 @@ export default function App() {
     }
 
     if (agentMode) {
-      return sendAgentMessage(text, searchResult);
+      const agentImages = pendingImages;
+      setPendingImages([]);
+      return sendAgentMessage(text, searchResult, agentImages);
     }
 
     if (attachedDoc && searchStrategy === "D") {

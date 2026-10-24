@@ -180,3 +180,21 @@ test("a failed command is not a success, whatever the payload says", () => {
     false
   );
 });
+
+// Regression: after /agent start with prior chat turns the priming was armed,
+// and the next input "/list" went out as "<preamble>\nNew user request:\n/list";
+// the JS route no longer matched it as a command and the model answered it.
+test("slash commands are never wrapped in the priming preamble", async () => {
+  const { agentRequestTakesPriming } = await import("./utils.mjs");
+  const history = [
+    { role: "user", content: "/new" },
+    { role: "assistant", content: "你好！我是 DeepSeek" }
+  ];
+  for (const command of ["/list", "/new", "/save", "/switch abc123", "/compact", "  /lean status "]) {
+    assert.equal(agentRequestTakesPriming(command), false, command);
+    assert.equal(withAgentPriming(history, command), command);
+  }
+  assert.equal(agentRequestTakesPriming("descrivi l'immagine"), true);
+  assert.equal(agentRequestTakesPriming("/"), true);
+  assert.match(withAgentPriming(history, "descrivi l'immagine"), /New user request:\ndescrivi l'immagine$/);
+});

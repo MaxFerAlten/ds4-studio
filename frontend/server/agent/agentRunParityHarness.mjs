@@ -152,6 +152,9 @@ export async function startFakeBackend(spec = {}) {
   const nativeTurns = spec.nativeTurns || [];
   let nativeIdx = 0;
   const releases = new Set();
+  // enforceMode: answer like the real wrapper, which only serves the C agent
+  // in agent mode.  Off by default so existing fixtures keep their replies.
+  let activeMode = "server";
 
   const server = createServer((req, res) => {
     let raw = "";
@@ -195,15 +198,21 @@ export async function startFakeBackend(spec = {}) {
       if (key === "POST /tokenize" || key === "GET /props") return json(404, { error: "not found" });
       if (key === "POST /api/wrapper/switch-mode") {
         log.push({ path: key, body });
+        activeMode = body.mode;
         return json(200, { ok: true, mode: body.mode, active_mode: body.mode });
       }
-      if (key === "GET /api/wrapper/status") return json(200, { state: "ready", active_mode: "agent" });
+      if (key === "GET /api/wrapper/status") {
+        return json(200, { state: "ready", active_mode: spec.enforceMode ? activeMode : "agent" });
+      }
       if (key === "POST /api/native-agent/prepare") {
         log.push({ path: key });
         return json(200, { ok: true, ready: true });
       }
       if (key === "POST /api/native-agent/command") {
         log.push({ path: key, body });
+        if (spec.enforceMode && activeMode !== "agent") {
+          return json(409, { error: "conflict", message: `wrong mode: active=${activeMode} required=agent` });
+        }
         return json(200, { ok: true, message: `native handled ${body.command}`, active: true });
       }
       if (key === "POST /api/native-agent/chat") {
@@ -238,14 +247,14 @@ export async function startFakeBackend(spec = {}) {
 
 // ── server child ────────────────────────────────────────────────────────────
 
-export async function startServerChild(backend, { env = {}, native = false, agentConfig = {} } = {}) {
+export async function startServerChild(backend, { env = {}, native = false, wrapper = native, agentConfig = {} } = {}) {
   const port = await freePort();
   const dir = mkdtempSync(join(tmpdir(), "wp1-parity-"));
   const cfgPath = join(dir, "ds4-ui.config.json");
   writeFileSync(cfgPath, JSON.stringify({
     control: { host: "127.0.0.1", port },
     server: { host: "127.0.0.1", port: backend.port, binary: "/usr/bin/true", model: "fake.gguf" },
-    wrapper: { enabled: native },
+    wrapper: { enabled: wrapper },
     agno: { enabled: false },
     crawl: { host: "127.0.0.1", port: backend.port + 1 },
     toolBlobs: { compressEnabled: false, dir: join(dir, "tool-blobs") },

@@ -286,6 +286,7 @@ import { createAdmissionGuards } from "./agent/admissionGuards.mjs";
 import { SERVER_SESSION_PREFIX, createThreadStore } from "./agent/threadStore.mjs";
 import { openLocalThreadStorage } from "./agent/localThreadStorage.mjs";
 import { createRunIngress, createRunRoutes } from "./agent/runIngress.mjs";
+import { normalizeTurnImages, withTurnImages } from "./agent/agentTurnImages.mjs";
 import { aguiFeatureFlags } from "./agui/featureFlags.mjs";
 import { loadAguiSdk } from "./agui/sdk.mjs";
 import { createAguiRecorder } from "./agui/recorder.mjs";
@@ -2416,6 +2417,11 @@ app.post("/api/agent/stop", asyncHandler(async (req, res) => {
     const status = agentSessions.stop(agentSessionKey(req));
     return res.json({ ...status, native: true, wrapper: body });
   }
+  // Leaving Agent Mode drops the opt-in skills (lean per session, sage
+  // process-wide): left on, they silently re-inflated the next agent prompt
+  // by ~20k tokens.  Defaults are re-staged on the next turn.
+  agentSkillStates.delete(agentSessionKey(req));
+  deactivateSagePolicy();
   const status = agentSessions.stop(agentSessionKey(req));
   res.json({ ...status, native: false });
 }));
@@ -2576,7 +2582,9 @@ app.post("/api/agent/pony", asyncHandler(async (req, res) => {
 const SAGE_NATIVE_POLICY_TIMEOUT_MS = 5 * 60 * 1000;
 
 async function nativeSagePolicyCommand(action) {
-  if (!wrapperEnabled()) return null;
+  // The js engine keeps the wrapper in server mode and owns the Sage policy
+  // itself (sageAgentLoopPolicy.mjs); /sage-pol would 409 "wrong mode".
+  if (!wrapperEnabled() || agentEngine() !== "native") return null;
   return proxyNativeAgentCommand(
     fetch,
     backendBase(),
@@ -3095,6 +3103,9 @@ async function runNativeAgentTurn({ body, sessionKey, requestSignal }, emit, sig
   if (typeof message !== "string" || !message.trim()) {
     return { kind: AGENT_RUN_OUTCOME.REJECTED, status: 400, body: { error: "message is required and must be a non-empty string" } };
   }
+  if (Array.isArray(body.images) && body.images.length) {
+    return { kind: AGENT_RUN_OUTCOME.REJECTED, status: 400, body: { error: "images are supported by the js agent engine only" } };
+  }
 
   const ponyCommand = ponyCommandFromText(message);
   if (ponyCommand) {
@@ -3233,6 +3244,10 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
   const userMessage = body?.message;
   const conversationMessages = Array.isArray(body?.messages) ? body.messages : [];
   const reqParams = body?.request || {};
+  const turnImages = normalizeTurnImages(body?.images);
+  if (turnImages.error) {
+    return { kind: AGENT_RUN_OUTCOME.REJECTED, status: 400, body: { error: turnImages.error } };
+  }
   const parsedUserSlash = isAgentSlashCommand(userMessage) ? parseAgentSlashCommand(userMessage) : null;
   const openWikiRequested = openWikiEnabledForAgentRequest(reqParams.openwiki_enabled, sessionKey, openWikiGenerationService)
     && parsedUserSlash?.kind !== "openwiki";
@@ -3510,6 +3525,7 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
         agentSession.reset("new session");
         delete agentSession.saveIdentity;
         agentSkillStates.delete(sessionKey); // WP4/WP5 note: release the cached state
+        deactivateSagePolicy(); // a fresh session starts without opt-in skills
         payload = { ok: true, message: "New session started.", active: true };
       }
       return { kind: AGENT_RUN_OUTCOME.COMMAND, ok: payload.ok !== false, events: nativeCommandEvents(payload, payload.ok !== false) };
@@ -4074,7 +4090,8 @@ const authoritativeSageChat = compactSageChat &&
           backendRes = await fetch(url, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(modeChoice.payload),
+            // The turn's images ride on the wire only; the session keeps text.
+            body: JSON.stringify(withTurnImages(modeChoice.payload, String(userMessage ?? ""), turnImages.images)),
             signal: controller.signal
           });
         } catch (err) {
@@ -5737,7 +5754,9 @@ app.post("/api/native-agent/command", asyncHandler(async (req, res) => {
   // agent, but the JS loop speaks the same slash contract
   // (agentSlashCommands.mjs).  Serve the commands its parser recognizes
   // locally; anything else falls through to the wrapper guard below.
-  if (!wrapperEnabled() && isAgentSlashCommand(command) && parseAgentSlashCommand(command)) {
+  // The js engine keeps the wrapper in server mode, so its slash commands are
+  // served here even when the wrapper is enabled (the C agent would 409).
+  if (agentEngine() !== "native" && isAgentSlashCommand(command) && parseAgentSlashCommand(command)) {
     const sessionKey = agentSessionKey(req);
     const commandResult = handleAgentSlashCommand({
       message: command,

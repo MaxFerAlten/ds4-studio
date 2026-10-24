@@ -370,6 +370,11 @@ export function parseAgentInput(text, agentMode) {
   }
 
   if (/^\/agent$/i.test(trimmed)) return null;
+  // Agent-only verbs typed outside Agent Mode used to reach the model as
+  // prose ("/new" got a canned greeting back).  Answer them locally instead.
+  if (!agentMode && /^\/(new|save|list|switch|del|strip|history|compact|help|quit|exit|soul|ethic|metacognition)(?:\s|$)/i.test(trimmed)) {
+    return { type: "agentOnly", action: "inactive", command: trimmed };
+  }
   // The JS agent loop owns these (WP8/WP9): its chat route intercepts them on
   // the JS session, so they must travel as a chat message.  Routed to the
   // native endpoint they fail without the DS4 wrapper (Vitronia, Halogen).
@@ -443,7 +448,15 @@ export function buildAgentPrimingPreamble(messages) {
  * Wrap a fresh user request with the priming preamble built from `messages`.
  * When the preamble is empty the request text is returned unchanged.
  */
+// A slash command must reach the agent verbatim: wrapped in the preamble,
+// "/list" stops matching the route's command intercept and goes to the model
+// as prose.  Callers keep the priming armed for the next real request.
+export function agentRequestTakesPriming(requestText) {
+  return !/^\/\S/.test(String(requestText ?? "").trim());
+}
+
 export function withAgentPriming(messages, requestText) {
+  if (!agentRequestTakesPriming(requestText)) return requestText;
   const preamble = buildAgentPrimingPreamble(messages);
   if (!preamble) return requestText;
   return `${preamble}\nNew user request:\n${requestText}`;

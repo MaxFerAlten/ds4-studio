@@ -181,7 +181,10 @@ export function ChatPanel({
               type="button"
               className="agent-stop-btn"
               onClick={() => toggleAgentMode(false)}
-              title="Stop Agent Mode"
+              // Mid-turn this only earned "another inference is active"; the
+              // composer's Stop is the control that interrupts a reply.
+              disabled={generationBusy}
+              title={generationBusy ? "Stop the reply first (Stop button), then exit Agent Mode" : "Stop Agent Mode"}
               data-agent-id="chat-agent-stop-button"
             >
               <Square size={12} />
