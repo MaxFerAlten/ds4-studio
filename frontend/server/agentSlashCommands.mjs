@@ -541,6 +541,10 @@ export function handleAgentSlashCommand({
       return failResult(501, "NOT_IMPLEMENTED_YET",
         "/lean preflight is served by the native agent loop for now");
     }
+    // A stopped verifier leaves the session's stable tool catalog too.
+    if (parsed.arg === "stop" && session?.mathToolOffers && (name === "sage" || name === "lean")) {
+      session.mathToolOffers[name] = false;
+    }
     return applyLegacy(skillState, name, parsed.arg, env, session);
   }
 

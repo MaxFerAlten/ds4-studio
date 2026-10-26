@@ -25,6 +25,7 @@ const EXPECTED = [
   "chat_history_search",
   "page_snapshot",
   "page_action",
+  "lean_prepare",
   "lean_inspect",
   "lean_check",
   "page_task"
@@ -87,7 +88,7 @@ test("advertisedAgentTools gates sage independently of lean", () => {
 test("advertisedAgentTools leaves the rest of the catalog untouched", () => {
   const off = advertisedAgentTools({ leanEnabled: false });
   const all = listAgentTools();
-  assert.equal(off.length, all.length - 2);
+  assert.equal(off.length, all.length - 3);
   for (const name of ["bash", "read", "write", "edit", "search", "list"]) {
     assert.ok(off.some((t) => t.function.name === name), `${name} must survive gating`);
   }

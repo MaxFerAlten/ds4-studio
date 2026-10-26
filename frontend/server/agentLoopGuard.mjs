@@ -143,9 +143,19 @@ export function findRepeatedNgrams(text, n = 5) {
   const counts = new Map();
   for (let i = 0; i + n <= words.length; i++) {
     const gram = words.slice(i, i + n).join(" ");
-    counts.set(gram, (counts.get(gram) || 0) + 1);
+    const previous = counts.get(gram);
+    // Sliding windows overlap by design. Counting those as repeated phrases
+    // misclassifies periodic math/prose such as "c x y c x y c x y" as an
+    // echo even though the phrase was never repeated as a separate unit.
+    if (!previous) counts.set(gram, { count: 1, lastIndex: i });
+    else if (i - previous.lastIndex >= n) {
+      previous.count++;
+      previous.lastIndex = i;
+    }
   }
-  return [...counts.entries()].filter(([, count]) => count > 1);
+  return [...counts.entries()]
+    .map(([gram, occurrence]) => [gram, occurrence.count])
+    .filter(([, count]) => count > 1);
 }
 
 // A markdown table row that names a file and carries another non-empty cell

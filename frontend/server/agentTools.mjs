@@ -26,6 +26,8 @@ import { toolPageSnapshot, toolPageAction } from "./pageAgentTool.mjs";
 import { toolPageTask } from "./pageAgentTask.mjs";
 import { enqueuePageAgentTool, isClientConnected } from "./pageAgentBridge.mjs";
 import { classifyRepositoryMutation } from "./leanRepositoryGuard.mjs";
+import { resolveLeanToolProfile } from "./lean/leanToolProfile.mjs";
+import { formatLeanGoalPreparation } from "./lean/leanGoalPreparation.mjs";
 import {
   SAGE_RESULT_CONTRACT_VERSION,
   buildLegacySageResult,
@@ -269,6 +271,7 @@ export function formatLeanResult(result) {
       lines.push(`- ${d.severity || "error"} ${where}: ${d.message || d.raw || ""}`);
     }
   }
+  if (result.importHints?.length) lines.push("", ...result.importHints);
 
   // Evidence entries are objects ({type, keyword, line, placeholder}); an
   // `axiom` is reported but is not a placeholder, so the two are split.
@@ -287,9 +290,19 @@ export function formatLeanResult(result) {
   }
 
   if (result.status === "checked") {
+    // Two separate facts (INV-016, U37): the kernel accepted *this* statement;
+    // whether the statement answers the question is a different obligation.
+    const warnings = (result.diagnostics || []).filter((d) => d?.severity === "warning");
     lines.push(
       "",
-      "Lean elaborated the file without errors. certified=false: this is a typecheck, not a formal certification. Do not report this as a certified proof."
+      orch?.verified
+        ? "Lean kernel-checked the locked target statement. You may say that this exact statement is formally verified by Lean. " +
+          "Do not say the answer to the question is verified unless the statement singles out that answer against the alternatives. " +
+          "certified=false: no external certification exists; never use the word certified."
+        : "Lean elaborated the file without errors. certified=false: this is a typecheck, not a formal certification. Do not report this as a certified proof.",
+      ...(warnings.length
+        ? ["The checked source has warnings (listed above): mention them in the report, or remove the cause and check again. They do not invalidate the proof."]
+        : [])
     );
   }
 
@@ -331,7 +344,7 @@ export async function toolLeanCheck(args = {}, options = {}) {
     code: args.code,
     mode: "check",
     taskMode,
-    profile: args.profile || undefined,
+    profile: resolveLeanToolProfile(args, { defaultProfile: null }) || undefined,
     timeoutSec: args.timeout_sec === undefined ? undefined : Number(args.timeout_sec),
     sessionId: sanitizeSessionId(options.sessionKey),
     // attempt and proofId come from the caller's Lean turn tracker: a proof
@@ -395,8 +408,17 @@ async function toolLeanInspect(args = {}, options = {}) {
   for (const s of result.symbols) {
     lines.push(`${s.name}: ${s.output}`);
   }
+  if (result.importHints?.length) lines.push(...result.importHints);
 
   return { content: lines.join("\n"), isError: result.status !== "inspected", raw: result };
+}
+
+async function toolLeanPrepare(args = {}, options = {}) {
+  if (typeof options.leanPrepareExecutor !== "function") {
+    return { content: "lean_prepare is unavailable: goal preparation is not enabled.", isError: true };
+  }
+  const result = await options.leanPrepareExecutor(args, options);
+  return { content: formatLeanGoalPreparation(result), isError: !result.prepared, code: result.code, raw: result };
 }
 
 /**
@@ -488,6 +510,8 @@ export async function executeTool(name, args = {}, options = {}) {
         return await toolLeanCheck(args, options);
       case "lean_inspect":
         return await toolLeanInspect(args, options);
+      case "lean_prepare":
+        return await toolLeanPrepare(args, options);
       case "page_task":
         if (isClientConnected()) {
           const result = await enqueuePageAgentTool("page_task", args);

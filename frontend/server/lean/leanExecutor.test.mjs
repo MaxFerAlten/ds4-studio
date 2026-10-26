@@ -12,6 +12,9 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
 import { executeLeanCheck, leanTelemetryFailureCount } from "./leanExecutor.mjs";
+import { LeanTurnTracker } from "./leanTurnTracker.mjs";
+import { formatLeanResult } from "../agentTools.mjs";
+import { AuthoritativeVerificationPlan } from "../authoritativeVerificationPlan.mjs";
 
 const RUNS_ROOT = resolve(tmpdir(), `ds4-lean-exec-${process.pid}`);
 
@@ -125,6 +128,49 @@ test("a timeout is reported as timeout, not failure", async () => {
   });
   assert.equal(result.status, "timeout");
   assert.equal(result.isError, true);
+});
+
+test("the recorded Mathlib memory crash terminates Lean and is visible in chat", async () => {
+  const code = "theorem t : True := by trivial";
+  const tracker = new LeanTurnTracker();
+  tracker.begin({ targetDeclaration: "t", profile: "mathlib" });
+  tracker.beforeAttempt({ code });
+  const result = await run(request({
+    code, profile: "mathlib", taskMode: "proof", targetDeclaration: "t", targetStatement: "theorem t : True"
+  }), { processRunner: runner({ exitCode: 134, stderr:
+    "libc++abi: terminating due to uncaught exception of type lean::memory_exception: excessive memory consumption detected at 'interpreter' (potential solution: increase memory consumption threshold)\n"
+  }) });
+  assert.equal(result.errorCode, "LEAN_RUNTIME_MEMORY_EXHAUSTED");
+  assert.equal(result.orchestration.failureClass, "infrastructure");
+  assert.equal(result.orchestration.retryable, false);
+  const state = tracker.recordResult(result);
+  assert.equal(state.terminal, true);
+  assert.equal(state.verified, false);
+  assert.equal(tracker.canFinalize(), true);
+  const chat = formatLeanResult(result);
+  assert.match(chat, /state=terminal/);
+  assert.match(chat, /LEAN_RUNTIME_MEMORY_EXHAUSTED/);
+  assert.match(chat, /NOT_VERIFIED/);
+  const plan = new AuthoritativeVerificationPlan();
+  plan.finishVerifier("sage", "verified");
+  plan.recordDispatch({ callId: "oom", toolName: "lean_check" });
+  plan.recordResult({ callId: "oom", isError: true, code: result.errorCode });
+  plan.finishVerifier("lean", "not_verified", state.terminalReason);
+  assert.equal(plan.complete, true);
+  assert.deepEqual(plan.allowedTools, []);
+  assert.match(plan.finalPrompt(), /SageMath: VERIFIED/);
+  assert.match(plan.finalPrompt(), /Lean 4: NOT_VERIFIED \(LEAN_RUNTIME_MEMORY_EXHAUSTED\)/);
+});
+
+test("a fatal Lean process signal is terminal while a proof diagnostic remains repairable", async () => {
+  const crash = await run(request(), { processRunner: runner({ exitCode: null, signal: "SIGABRT" }) });
+  assert.equal(crash.errorCode, "LEAN_RUNTIME_PROCESS_CRASH");
+  assert.equal(crash.orchestration.terminal, true);
+  const proofFailure = await run(request(), { processRunner: runner({
+    exitCode: 1, stdout: "/work/Main.lean:1:1: error: unsolved goals\n⊢ True\n"
+  }) });
+  assert.equal(proofFailure.orchestration.retryable, true);
+  assert.equal(proofFailure.orchestration.terminal, false);
 });
 
 test("a cancellation is reported as cancelled", async () => {

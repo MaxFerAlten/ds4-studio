@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { checkToolAttestations, toolAttestationNote } from "./claimGuard.mjs";
 
 async function claimGuard() {
   return import("./claimGuard.mjs");
@@ -19,6 +20,29 @@ test("blocks Lean-specific positive claims without checked evidence", async () =
     const decision = checkVerifiedClaim(text, "", { mode: "block" });
     assert.equal(decision?.block, true, text);
   }
+});
+
+test("explicitly negative verification results pass without restarting the agent", async () => {
+  const { checkVerifiedClaim } = await claimGuard();
+  for (const text of [
+    "The proof is not verified.",
+    "The theorem has not yet been proved.",
+    "This result has not been confirmed.",
+    "STATO: NOT_VERIFIED",
+    "La prova non è stata verificata.",
+    "Il teorema non è dimostrato."
+  ]) assert.equal(checkVerifiedClaim(text, "", { mode: "block" }), undefined, text);
+
+  assert.equal(
+    checkVerifiedClaim("The proof is not verified. The test did not pass.", ""),
+    undefined
+  );
+});
+
+test("a positive assertion after a negative sentence remains protected", async () => {
+  const { checkVerifiedClaim } = await claimGuard();
+  assert.equal(checkVerifiedClaim("The proof is not verified. A different proof is verified.", "")?.block, true);
+  assert.equal(checkVerifiedClaim("The theorem was not proved. This code is tested.", "")?.block, true);
 });
 
 test("checked Lean evidence permits the claim for the authoritative source gate", async () => {
@@ -108,4 +132,23 @@ test("the lexical guard flags risk without deciding the verdict", async () => {
   assert.equal(checkVerifiedClaim("This is the official architecture.", ""), undefined);
   assert.equal(checkVerifiedClaim("We measured the spectrum.", ""), undefined);
   assert.equal(checkVerifiedClaim("See arXiv:2103.00020.", ""), undefined);
+});
+
+test("a verifier result needs that verifier's own receipt; another tool's success does not count", () => {
+  const leanOnly = [{ tool: "lean_check", ok: true }];
+  const decision = checkToolAttestations("SageMath: VERIFICATO per i casi piccoli.\nLean 4: verificato.", leanOnly);
+  assert.equal(decision.type, "TOOL_ATTESTATION_UNSUPPORTED");
+  assert.deepEqual(decision.tools, ["sage"]);
+  assert.match(decision.sentences[0], /SageMath: VERIFICATO/);
+  assert.match(toolAttestationNote(decision), /Nessuna esecuzione riuscita di SageMath/);
+});
+
+test("a failed run, negations, hypotheticals and status codes are handled without false alarms", () => {
+  assert.deepEqual(checkToolAttestations("Lean ha verificato il teorema.", [{ tool: "lean_check", ok: false }]).tools, ["lean"]);
+  assert.equal(checkToolAttestations("Non ho eseguito SageMath in questo turno.", []), undefined);
+  assert.equal(checkToolAttestations("SageMath avrebbe confermato il caso minimo.", []), undefined);
+  assert.equal(checkToolAttestations("Con SageMath si potrebbe verificare il caso n = 2.", []), undefined);
+  assert.equal(checkToolAttestations("SageMath: NOT_VERIFIED (SAGE_TOOL_UNAVAILABLE)", []), undefined);
+  assert.equal(checkToolAttestations("| SageMath | verificato |", [{ tool: "sage", ok: true }]), undefined);
+  assert.equal(checkToolAttestations("The identity was verified by hand.", []), undefined);
 });

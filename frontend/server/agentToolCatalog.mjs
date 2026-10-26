@@ -274,6 +274,25 @@ const BASE_AGENT_TOOLS = [
   {
     type: "function",
     function: {
+      name: "lean_prepare",
+      description: "Prepare a Lean proof goal before writing proof code. Supply the original claim, narrow imports and a complete theorem header. The runtime checks syntax/types and the model reviews task correspondence before locking it. This never proves the claim. Then use lean_check for the proof.",
+      parameters: {
+        type: "object",
+        properties: {
+          claim: { type: "string", description: "Original mathematical claim, its assumptions and any indexing/order convention; describe a correction or refutation when needed." },
+          target_declaration: { type: "string", description: "Name of the theorem to prove." },
+          target_statement: { type: "string", description: "Complete self-contained theorem header with explicit variable types and conclusion; no proof body or ellipses." },
+          imports: { type: "array", maxItems: 8, items: { type: "string" }, description: "Narrow module imports needed to typecheck the statement." },
+          profile: { type: "string", enum: ["core", "mathlib"] }
+        },
+        required: ["claim", "target_declaration", "target_statement"],
+        additionalProperties: false
+      }
+    }
+  },
+  {
+    type: "function",
+    function: {
       name: "lean_inspect",
       description: "Discover the signature of uncertain Lean/Mathlib symbols. This tool is optional discovery: it never authorizes lean_check, never creates a proof task, and never verifies. Use it only when a symbol signature is genuinely uncertain.",
       parameters: {
@@ -336,7 +355,7 @@ const BASE_AGENT_TOOLS = [
               "Required on the first task_mode=proof call: it seals what this task means before any " +
               "candidate runs, so a later candidate cannot redefine the task to something easier."
           },
-          profile: { type: "string", enum: ["core", "mathlib"], description: "Runtime profile. Default core." },
+          profile: { type: "string", enum: ["core", "mathlib"], description: "Runtime profile. In the JS engine, omission selects mathlib for Mathlib imports, otherwise the configured default (normally core). Proof repairs reuse the locked profile." },
           timeout_sec: { type: "number", minimum: 1, maximum: 120, description: "Timeout in seconds. Default 30." },
           expected_declarations: {
             type: "array",
@@ -434,11 +453,11 @@ export function advertisedAgentTools({ sageEnabled = true, leanEnabled = false, 
     .filter((tool) => {
       const name = tool.function?.name;
       if (name === "sage") return sageEnabled;
-      if (name === "lean_check" || name === "lean_inspect") return leanEnabled;
+      if (["lean_check", "lean_prepare", "lean_inspect"].includes(name)) return leanEnabled;
       return true;
     })
     .map((tool) => {
-      if (tool.function?.name !== "lean_check" || !leanCoreOnly) return tool;
+      if (!["lean_check", "lean_prepare", "lean_inspect"].includes(tool.function?.name) || !leanCoreOnly) return tool;
       const leanCheck = structuredClone(tool);
       leanCheck.function.parameters.properties.profile = {
         type: "string",

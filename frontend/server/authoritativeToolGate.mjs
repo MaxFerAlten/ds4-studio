@@ -38,10 +38,30 @@ function namesOf(toolCalls) {
 export function evaluateAuthoritativeToolCalls({
   leanSnapshot,
   sageSnapshot,
+  verificationPlan,
   toolCalls,
 } = {}) {
   const calls = namesOf(toolCalls);
   if (calls.length === 0) return ALLOWED;
+
+  // Explicit dual-verifier requests have their own ordered plan. Its gate
+  // admits only the active verifier, allowing the second backend to run after
+  // the first reaches a terminal result without weakening single-tool turns.
+  if (verificationPlan) {
+    const decision = verificationPlan.allowsToolBatch(toolCalls);
+    if (!decision.allowed) {
+      return {
+        allowed: false,
+        terminal: false,
+        code: decision.code,
+        finishReason: null,
+        action: "retry_ordered_verifier",
+        blockedTools: decision.blockedTools || calls,
+        activeVerifier: decision.activeVerifier || verificationPlan.activeVerifier
+      };
+    }
+    return ALLOWED;
+  }
 
   const lean = leanSnapshot || {};
   const sage = sageSnapshot || {};
@@ -105,6 +125,16 @@ export function authoritativeToolBlockGuidance(decision = {}) {
         "AUTHORITATIVE_MODE_CONFLICT: two authoritative backends were used in " +
         "one turn, so neither owns the verdict. The turn is stopped."
       );
+    case "VERIFICATION_TOOL_OUT_OF_ORDER":
+      return `VERIFICATION_TOOL_OUT_OF_ORDER: the active verifier is ${decision.activeVerifier || "none"}. Do not call another verifier or unrelated tool in this batch; call only the active verifier shown in the verification plan.`;
+    case "LEAN_GOAL_NOT_PREPARED":
+      return "LEAN_GOAL_NOT_PREPARED: use lean_prepare to validate the theorem header against the original question before submitting a proof. lean_inspect is available for symbol signatures.";
+    case "LEAN_GOAL_ALREADY_PREPARED":
+      return "LEAN_GOAL_ALREADY_PREPARED: the approved target is locked. Use lean_check for its proof or lean_inspect for signatures; do not replace the target.";
+    case "VERIFICATION_PLAN_COMPLETE":
+      return "VERIFICATION_PLAN_COMPLETE: all requested verifiers have terminal results. Do not call more tools; report each verifier's recorded status.";
+    case "SAGE_MIXED_TOOL_BLOCK_FORBIDDEN":
+      return "SAGE_MIXED_TOOL_BLOCK_FORBIDDEN: Sage must be called alone. Retry only the sage tool, then continue with the next verifier after Sage completes.";
     default:
       return "";
   }

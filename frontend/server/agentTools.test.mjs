@@ -707,3 +707,19 @@ test("ADAPTER-TASK-06 profile mathlib round-trips through the adapter in proof m
   assert.equal(seen.profile, "mathlib");
   assert.equal(seen.taskMode, "proof");
 });
+
+test("a verified proof names the statement as verified, not the answer, and surfaces warnings", () => {
+  const content = formatLeanResult({
+    status: "checked",
+    profile: "mathlib",
+    summary: "Lean elaboration completed without errors.",
+    diagnostics: [{ severity: "warning", line: 4, column: 2, message: "This simp argument is unused: Nat.cast_mul" }],
+    orchestration: { verified: true, terminal: true, attempt: 2, maxAttempts: 6, retryable: false },
+    certified: false
+  });
+  assert.match(content, /this exact statement is formally verified/);
+  assert.match(content, /singles out that answer against the alternatives/);
+  assert.match(content, /never use the word certified/);
+  assert.match(content, /This simp argument is unused: Nat.cast_mul/);
+  assert.match(content, /has warnings \(listed above\)/);
+});

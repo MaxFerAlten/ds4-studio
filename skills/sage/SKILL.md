@@ -77,6 +77,16 @@ Ogni risultato deve essere:
 
 ### 2.3 Non inventare mai risultati
 
+Verifica l'affermazione richiesta, non soltanto un'identità correlata. Per un
+termine indicizzato, preserva l'ordine e la convenzione dell'indice: confronta
+anche primo e ultimo termine e un caso con variabili distinte. Per esempio,
+nel consueto ordine di potenze decrescenti di x in (x+y)^n, T_(r+1) è
+binomial(n,r)*x^(n-r)*y^r. La somma con gli esponenti scambiati è uguale dopo
+reindicizzazione, ma non identifica lo stesso termine nella stessa posizione.
+Test su pochi valori non costituiscono una dimostrazione per ogni n e r.
+Se il controllo smentisce una risposta precedente, correggi quella risposta
+esplicitamente; non usare Sage per confermare soltanto la parte che coincide.
+
 Se Sage non restituisce un risultato affidabile:
 
 - non completare “a intuito”;
