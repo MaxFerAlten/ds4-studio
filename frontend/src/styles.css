@@ -1061,6 +1061,26 @@ pre {
   padding: 0;
 }
 
+.tool-call-status,
+.tool-call-id {
+  color: #9baec5;
+  font-size: 11px;
+  font-weight: 450;
+}
+
+.tool-call-id {
+  padding: 5px 9px 0;
+}
+
+.tool-call-status.completed {
+  color: #8ed6aa;
+}
+
+.tool-call-status.error,
+.tool-call-status.blocked {
+  color: #f09a9a;
+}
+
 .tool-result-header code {
   color: #f3c781;
 }
@@ -2749,3 +2769,12 @@ pre {
   margin: 4px 0;
   opacity: 0.85;
 }
+.agent-verification-status {
+  margin: 0.5rem 0;
+  padding: 0.65rem 0.8rem;
+  border-left: 3px solid var(--accent, #7187ff);
+  border-radius: 0.35rem;
+  background: color-mix(in srgb, var(--accent, #7187ff) 8%, transparent);
+  font-size: 0.9rem;
+}
+.agent-verification-status strong { display: block; margin-bottom: 0.25rem; }

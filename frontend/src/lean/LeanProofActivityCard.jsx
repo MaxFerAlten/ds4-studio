@@ -30,7 +30,7 @@ export const LeanProofActivityCard = memo(function LeanProofActivityCard({ activ
         <ul className="lean-proof-attempts">
           {props.attempts.map((step) => (
             <li key={step.id} className={`lean-proof-attempt ${step.state}`}>
-              <span className="lean-attempt-index">#{step.attempt}</span>
+              <span className="lean-attempt-index">{step.attempt > 0 ? `#${step.attempt}` : "Candidato"}</span>
               <span className="lean-attempt-label">{step.label}</span>
               {step.detail ? <span className="lean-attempt-detail">{step.detail}</span> : null}
             </li>

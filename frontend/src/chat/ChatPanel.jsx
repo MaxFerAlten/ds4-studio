@@ -27,14 +27,35 @@ const MessagesList = memo(function MessagesList({ messages, messagesRef, sageAct
               {message.pendingStatus}
             </div>
           ) : null}
+          {message.verificationStatus ? (
+            <section className="agent-verification-status" aria-live="polite">
+              <strong>Verifica SageMath + Lean 4</strong>
+              <div>Fase attiva: {message.verificationStatus.activeVerifier || "sintesi finale"}</div>
+              {message.verificationStatus.required?.map((name) => {
+                const verifier = message.verificationStatus.verifiers?.[name] || {};
+                return <div key={name}>{name}: {verifier.status || "pending"}{verifier.code ? ` · ${verifier.code}` : ""}</div>;
+              })}
+              {message.verificationStatus.receipts?.map((receipt) => (
+                <div key={`${receipt.callId}:${receipt.state}`}>ID {receipt.callId} · {receipt.toolName} · {receipt.state}{receipt.code ? ` · ${receipt.code}` : ""}</div>
+              ))}
+            </section>
+          ) : null}
           {message.sageRunId && sageActivities?.[message.sageRunId] ? (
             <SageActivityCard activity={sageActivities[message.sageRunId]} />
           ) : null}
           {message.tool_calls ? (
             <div className="tool-calls-container">
-              {message.tool_calls.filter((tc) => tc.name !== "sage").map(tc => (
+              {message.tool_calls.map(tc => (
                 <div key={tc.id} className="tool-call-block">
-                  <div className="tool-call-header">Tool Call: <code>{tc.name}</code></div>
+                  <div className="tool-call-header">
+                    Tool Call: <code>{tc.name}</code>
+                    <span className={`tool-call-status ${tc.status || "running"}`}>
+                      {tc.status === "completed" ? " · risposta ricevuta" :
+                        tc.status === "error" ? " · risposta con errore" :
+                          tc.status === "blocked" ? " · bloccata" : " · in corso"}
+                    </span>
+                  </div>
+                  <div className="tool-call-id">ID chiamata: <code>{tc.id}</code></div>
                   <pre className="tool-call-args">{tc.arguments}</pre>
                   {tc.progress ? (
                     <pre className="tool-call-progress" aria-live="polite">{tc.progress}</pre>
@@ -48,6 +69,7 @@ const MessagesList = memo(function MessagesList({ messages, messagesRef, sageAct
               <div className={`tool-result-block ${message.isError ? "error" : ""} ${message.guarded ? "guarded" : ""}`}>
                 <div className="tool-result-header">
                   Tool Result: <code>{message.name}</code>
+                  {message.toolCallId ? <span> · ID chiamata: <code>{message.toolCallId}</code></span> : null}
                   {message.guarded ? <span className="tool-result-guard">guarded</span> : null}
                 </div>
                 <pre className="tool-result-content">{message.content}</pre>

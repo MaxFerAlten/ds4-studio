@@ -18,6 +18,7 @@ const STATE_COPY = Object.freeze({
 
 /** Human-readable reason per failure class. Short: this is a badge, not a log. */
 const FAILURE_COPY = Object.freeze({
+  candidate_preflight: "candidato rifiutato: Lean non eseguito",
   syntax: "errore di sintassi",
   unknown_identifier: "identificatore o import sconosciuto",
   rewrite_miss: "riscrittura non applicabile",
@@ -66,6 +67,8 @@ export function applyLeanStatus(previous, event = {}) {
     state: event.state || base.state,
     attempt: Number.isInteger(event.attempt) ? event.attempt : base.attempt,
     maxAttempts: Number.isInteger(event.maxAttempts) ? event.maxAttempts : base.maxAttempts,
+    candidatePreflightRejections: Number.isInteger(event.candidatePreflightRejections)
+      ? event.candidatePreflightRejections : base.candidatePreflightRejections || 0,
     profile: event.profile || base.profile,
     failureClass: event.failureClass ?? base.failureClass,
     strategyChangeRequired:
@@ -100,6 +103,9 @@ export function leanProofActivityProps(activity) {
   const copy = STATE_COPY[activity.state] || STATE_COPY.idle;
   const terminal = TERMINAL_STATES.includes(activity.state);
   const detailParts = [];
+  if (activity.candidatePreflightRejections > 0) {
+    detailParts.push(`candidati rifiutati ${activity.candidatePreflightRejections}/${activity.maxAttempts}`);
+  }
   if (activity.attempt > 0 && activity.maxAttempts > 0) {
     detailParts.push(`tentativo ${activity.attempt}/${activity.maxAttempts}`);
   }

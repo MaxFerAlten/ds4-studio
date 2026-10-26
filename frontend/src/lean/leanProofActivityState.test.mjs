@@ -7,6 +7,19 @@ import { applyLeanStatus, leanProofActivityProps } from "./leanProofActivityStat
 
 const PROOF = "proof-abcdef012345-1-1";
 
+test("a rejected placeholder is shown as an unexecuted candidate with its own budget", () => {
+  const activity = applyLeanStatus(null, {
+    proofId: PROOF, state: "repair_required", attempt: 0, maxAttempts: 6,
+    profile: "mathlib", failureClass: "candidate_preflight", candidatePreflightRejections: 1
+  });
+  const props = leanProofActivityProps(activity);
+  assert.match(props.detail, /candidati rifiutati 1\/6/);
+  assert.match(props.detail, /profilo mathlib/);
+  assert.match(props.detail, /Lean non eseguito/);
+  assert.doesNotMatch(props.detail, /tentativo 1\/6/);
+  assert.equal(props.badge, null);
+});
+
 test("nothing is rendered before a proof task exists", () => {
   assert.equal(leanProofActivityProps(null), null);
   assert.equal(leanProofActivityProps({ state: "checking" }), null);

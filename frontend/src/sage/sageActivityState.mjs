@@ -296,6 +296,7 @@ export function toolResultMessages(data, compactEnabled = true) {
     {
       role: "tool",
       name: data?.name,
+      toolCallId: data?.id,
       content: data?.content || "",
       isError: Boolean(data?.isError),
       guarded: Boolean(data?.guarded)

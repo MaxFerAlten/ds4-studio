@@ -2114,7 +2114,7 @@ export default function App() {
               const argsStr = typeof data.arguments === "object" ? JSON.stringify(data.arguments, null, 2) : data.arguments;
               return [
                 ...prev.slice(0, -1),
-                { ...last, tool_calls: [...toolCalls, { id: data.id, name: data.name, arguments: argsStr }] }
+                { ...last, tool_calls: [...toolCalls, { id: data.id, name: data.name, arguments: argsStr, status: "running" }] }
               ];
             });
           } else if (event === "agent_tool_progress") {
@@ -2146,6 +2146,23 @@ export default function App() {
               });
               continue;
             }
+            setMessages((prev) => {
+              const next = [...prev];
+              for (let i = next.length - 1; i >= 0; i--) {
+                const calls = next[i].tool_calls;
+                if (!Array.isArray(calls)) continue;
+                const index = calls.findIndex((call) => call.id === data.id);
+                if (index < 0) continue;
+                const updated = [...calls];
+                updated[index] = {
+                  ...updated[index],
+                  status: data.guarded ? "blocked" : data.isError ? "error" : "completed"
+                };
+                next[i] = { ...next[i], tool_calls: updated };
+                break;
+              }
+              return next;
+            });
             const toolMsgs = toolResultMessages(data);
             if (toolMsgs.length) {
               setMessages((prev) => [...prev, ...toolMsgs]);
@@ -2155,6 +2172,9 @@ export default function App() {
             setLeanProofActivity((prev) =>
               applyLeanStatus(prev && prev.proofId === data.proofId ? prev : null, data)
             );
+          } else if (event === "agent_verification_status") {
+            deltaBatcher.flush();
+            setMessages((prev) => tagLastAssistant(prev, { verificationStatus: data }));
           } else if (event === "agent_sage_status") {
             deltaBatcher.flush();
             setSageActivities((prev) => ({
