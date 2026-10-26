@@ -47,3 +47,33 @@ test("js engine: utility lean_check calls stop at the per-turn budget", async ()
     await backend.close();
   }
 });
+
+// Regression: inspections refused past their own cap still spent the shared
+// utility budget, so the next lean_prepare ended the proof with
+// LEAN_UTILITY_BUDGET_EXHAUSTED before any proof was attempted.
+test("js engine: refused lean_inspect calls do not spend the lean_prepare budget", async () => {
+  const inspect = (id) => ({ toolCalls: [{ id, name: "lean_inspect", arguments: { symbols: [`Nat.add_comm_${id}`] } }], finish: "tool_calls" });
+  const backend = await startFakeBackend({ turns: [
+    { content: JSON.stringify({ verification_requested: false, required_tools: [], tool_selection: ["lean_check"], skill_actions: [] }), finish: "stop" },
+    ...["i1", "i2", "i3", "i4", "i5", "i6"].map(inspect),
+    { toolCalls: [{ id: "p1", name: "lean_prepare", arguments: { claim: "c", target_declaration: "t", target_statement: "theorem t : True" } }], finish: "tool_calls" },
+    { content: "Done.", finish: "stop" }
+  ] });
+  const server = await startServerChild(backend, { env: { DS4_AGENT_LEAN_MAX_UTILITY_CHECKS: "6", DS4_LEAN_ENABLED: "0" } });
+  try {
+    await fetch(`${server.base}/api/agent/start`, { method: "POST", headers, body: "{}" });
+    const res = await fetch(`${server.base}/api/agent/chat`, {
+      method: "POST", headers, body: JSON.stringify({ message: "inspect then prepare a Lean goal" })
+    });
+    const sse = await res.text();
+    assert.equal(res.status, 200, sse);
+    const results = [...sse.matchAll(/event: agent_tool_result\ndata: (.*)\n/g)].map((m) => JSON.parse(m[1]));
+    assert.equal(results.filter((r) => r.content.includes("LEAN_INSPECT_BUDGET_EXHAUSTED")).length, 2);
+    const prepare = results.find((r) => r.id === "p1");
+    assert.ok(prepare, sse.slice(-1500));
+    assert.doesNotMatch(prepare.content, /LEAN_UTILITY_BUDGET_EXHAUSTED/);
+  } finally {
+    server.stop();
+    await backend.close();
+  }
+});

@@ -54,7 +54,7 @@ test("function-study requests are recognized, plain computations are not", () =>
 test("the agent loop selects the policy per turn and upgrades on a function_study call", () => {
   const index = readFileSync(new URL("./index.mjs", import.meta.url), "utf8");
   assert.match(index, /if \(isFunctionStudyRequest\(userMessage\)\) agentSession\.sageFullPolicy = true;/);
-  assert.match(index, /prompt: sagePolicyPromptFor\(\{ fullPolicy: agentSession\.sageFullPolicy === true \}\)/);
+  assert.match(index, /: sagePolicyPromptFor\(\{ fullPolicy: agentSession\.sageFullPolicy === true \}\)/);
   assert.match(index, /tc\.arguments\?\.task_type === "function_study" && agentSession\.sageFullPolicy !== true/);
   assert.match(index, /relayPrefillProgress\(manager, \(progress\) => writeAgentSse\("agent_prefill", progress\)\)/);
   assert.match(index, /stopPrefillRelay\(\);/);

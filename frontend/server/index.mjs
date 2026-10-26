@@ -89,6 +89,14 @@ import {
   authoritativeToolBlockGuidance,
   evaluateAuthoritativeToolCalls
 } from "./authoritativeToolGate.mjs";
+import { createAuthoritativeVerificationPlan } from "./authoritativeVerificationPlan.mjs";
+import { compactVerificationConversation, verificationPhaseInstruction } from "./verificationConversationContext.mjs";
+import {
+  AGENT_INTENT_SYSTEM_PROMPT,
+  TOOL_EVALUATION_INSTRUCTION,
+  agentIntentContext,
+  parseAgentIntentContent
+} from "./agentRequestIntent.mjs";
 import { appendPonyPolicy, buildPonyPolicy, normalizePonyMode, ponyCommandMessage } from "./agentPonyPolicy.mjs";
 import {
   checkBashFileReadFallback,
@@ -142,7 +150,8 @@ import { pruneExpiredLeanRuns } from "./lean/leanPaths.mjs";
 import { createLeanMetrics } from "./lean/leanMetrics.mjs";
 import { createLeanRouter } from "./lean/leanRoutes.mjs";
 import { executeLeanCheck } from "./lean/leanExecutor.mjs";
-import { executeLeanInspect } from "./lean/leanInspect.mjs";
+import { executeLeanInspect, LEAN_INSPECT_MAX_PER_TASK } from "./lean/leanInspect.mjs";
+import { prepareLeanGoal, LEAN_GOAL_REVIEW_PROMPT, parseLeanGoalReview } from "./lean/leanGoalPreparation.mjs";
 import { LeanRunRegistry } from "./lean/leanRunRegistry.mjs";
 import { getLeanPolicyState as loadLeanPolicyState } from "./lean/leanPolicyBundle.mjs";
 import {
@@ -168,13 +177,15 @@ import { compressToolOutput } from "./toolOutputCompressor.mjs";
 import { createCompressionMetrics, createCompressionMetricsHandler } from "./compressionMetrics.mjs";
 import { compressAgentToolResult as compressAgentToolResultIfEnabled } from "./agentToolOutputCompression.mjs";
 import { guardAssistantDelta, hasStructuredSynthesis, readStructuredCheckpoint } from "./agentLoopGuard.mjs";
-import { checkVerifiedClaim } from "./claimGuard.mjs";
+import { checkVerifiedClaim, checkToolAttestations, toolAttestationNote } from "./claimGuard.mjs";
 import { envBooleanWithAliases } from "./envBoolean.mjs";
 import {
   evaluateLeanFinalCandidate,
   leanVerificationEvidence
 } from "./authoritativeFinalizationGate.mjs";
-import { createLeanTaskSpec } from "./lean/leanTaskSpec.mjs";
+import { hashLeanTargetStatement } from "./lean/leanTaskSpec.mjs";
+import { extractLeanTargetIdentity } from "./lean/leanTargetIdentity.mjs";
+import { resolveLeanToolProfile } from "./lean/leanToolProfile.mjs";
 import { AuthoritativeOutputBuffer } from "./authoritativeOutputBuffer.mjs";
 import { createEpistemicTurn, evaluateEpistemicTurn, withholdsOutput } from "./epistemic/epistemicTurn.mjs";
 import { EpistemicSourceContext } from "./epistemic/epistemicSourceContext.mjs";
@@ -288,7 +299,8 @@ import { SERVER_SESSION_PREFIX, createThreadStore } from "./agent/threadStore.mj
 import { openLocalThreadStorage } from "./agent/localThreadStorage.mjs";
 import { createRunIngress, createRunRoutes } from "./agent/runIngress.mjs";
 import { normalizeTurnImages, withTurnImages } from "./agent/agentTurnImages.mjs";
-import { isFunctionStudyRequest } from "./sagePolicySlim.mjs";
+import { isFunctionStudyRequest, sageCorePolicy } from "./sagePolicySlim.mjs";
+import { leanCorePolicy } from "./lean/leanPolicySlim.mjs";
 import { relayPrefillProgress } from "./agent/backendPrefillProgress.mjs";
 import { aguiFeatureFlags } from "./agui/featureFlags.mjs";
 import { loadAguiSdk } from "./agui/sdk.mjs";
@@ -1231,12 +1243,26 @@ const openWikiCommand = createOpenWikiAgentCommandHandler({
   },
 });
 
+// The catalog never depends on the turn's intent or verification phase:
+// ds4-server renders the tool schemas first, so any change to this list
+// re-prefills the whole conversation. The verification plan gates execution
+// (allowsToolBatch); ds4-server ignores tool_choice other than "none".
 function modelFacingTools({ includeSage, leanEnabled, leanCoreOnly, evidenceEnabled = false, openWikiEnabled = false }) {
   const tools = advertisedAgentTools({ sageEnabled: includeSage, leanEnabled, leanCoreOnly });
   // The C loop announces evidence_guard only while the skill is loaded (shadow
   // ds4_agent.c:7903-7909); same rule here.
   const withEvidence = evidenceEnabled ? appendOptionalTools(tools, [EVIDENCE_GUARD_TOOL]) : tools;
   return appendOpenWikiTools(withEvidence, openWikiEnabled);
+}
+
+// A math tool the model once selected stays in the session's catalog, so a
+// later ordinary turn reuses the cached prefix instead of dropping the schema
+// (and with it every cached token). /sage stop and /lean stop clear the offer.
+function sessionMathToolOffers(session, selectedMathTools = []) {
+  const offers = session.mathToolOffers ||= { sage: false, lean: false };
+  if (sagePolicyIsActive() || selectedMathTools.includes("sage")) offers.sage = true;
+  if (selectedMathTools.includes("lean_check")) offers.lean = true;
+  return offers;
 }
 
 /**
@@ -1251,12 +1277,56 @@ function modelFacingTools({ includeSage, leanEnabled, leanCoreOnly, evidenceEnab
 // NOT_VERIFIED report.  Without the tool the policy still said "use
 // lean_check" and the model wandered through page/bash tools until the
 // iteration cap (WP17 follow-up).
-async function leanToolFlags(skillState = null) {
+async function leanToolFlags(skillState = null, selectedMathTools = []) {
   const state = await leanRuntimeState.get();
+  const selectedLean = Array.isArray(selectedMathTools) && selectedMathTools.includes("lean_check");
   return {
-    leanEnabled: isLeanToolAdvertised(state) || Boolean(skillState?.promptSkills?.().lean),
+    leanEnabled: selectedLean || isLeanToolAdvertised(state) || Boolean(skillState?.promptSkills?.().lean),
     leanCoreOnly: leanToolCapability(state) === "core-only"
   };
+}
+
+async function classifyAgentRequestIntent({ request, userMessage, recentMessages, activeSkills, signal }) {
+  const payload = buildChatPayload({ ...request, stream: false, max_tokens: 256 }, [
+    { role: "system", content: AGENT_INTENT_SYSTEM_PROMPT },
+    {
+      role: "user",
+      content: JSON.stringify({
+        recent_conversation: agentIntentContext(recentMessages, userMessage),
+        active_skills: activeSkills
+      })
+    }
+  ]);
+  delete payload.tools;
+  delete payload.tool_choice;
+  // The router is this turn's first backend call: free the slot a shadow
+  // evaluation of the previous answer may still hold.
+  await yieldEpistemicShadow();
+  const response = await fetchWithBusyRetry(fetch, `${backendBase()}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    signal
+  });
+  if (!response.ok) throw new Error(`AGENT_INTENT_BACKEND_HTTP_${response.status}`);
+  const result = await response.json();
+  return parseAgentIntentContent(result?.choices?.[0]?.message?.content);
+}
+
+async function reviewAgentLeanGoal({ request, goal, originalContext, sageReport, signal }) {
+  // Room for the competing statement the discrimination check writes. Thinking
+  // stays off: at decode speed it would add about a minute to every prepare.
+  const payload = buildChatPayload({ model: request.model, stream: false, max_tokens: 640, thinking: false, temperature: 0 }, [
+    { role: "system", content: LEAN_GOAL_REVIEW_PROMPT },
+    { role: "user", content: JSON.stringify({ original_conversation: originalContext,
+      sage_report: String(sageReport || "").slice(0, 8000), proposal: goal }) }
+  ]);
+  const response = await fetchWithBusyRetry(fetch, `${backendBase()}/v1/chat/completions`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload), signal
+  });
+  if (!response.ok) throw new Error(`LEAN_GOAL_REVIEW_HTTP_${response.status}`);
+  const result = await response.json();
+  return parseLeanGoalReview(result?.choices?.[0]?.message?.content);
 }
 
 async function callBackendCompletion({ messages, request, stream, signal }) {
@@ -3272,6 +3342,9 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
     ? generationService().readConfig(sessionKey)
     : readOpenWikiConfig(process.env);
   const dot = body?.dot ?? null;
+  // Scoped per user turn. Only explicit dual-verifier requests create this
+  // coordinator; the normal tool catalog and single-verifier flows stay intact.
+  let verificationPlan = null;
 
   const ponyCommand = ponyCommandFromText(userMessage);
   if (ponyCommand) {
@@ -3374,7 +3447,7 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
         ctxInfo.tokens
         - (requestThinkingEnabled(reqParams) ? 8192 : 0)
         - estimateMessagesTokens([{ role: "system", content: JSON.stringify(
-          dotTools(modelFacingTools({ includeSage: !dot && sagePolicyIsActive(), openWikiEnabled, ...(await leanToolFlags(runSkillState)) }))
+          dotTools(modelFacingTools({ includeSage: !dot && (sagePolicyIsActive() || agentSession.mathToolOffers?.sage === true), openWikiEnabled, ...(await leanToolFlags(runSkillState, agentSession.mathToolOffers?.lean ? ["lean_check"] : [])) }))
         ) }])
       )),
       callModel: async (summaryMessages, options) => {
@@ -3384,7 +3457,7 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
         // the template changes the system block and a ~240k transcript was
         // prefilled from zero.  tool_choice "none" keeps it a plain answer.
         // (withContextTool is declared later in the route; same expression.)
-        const baseTools = dotTools(modelFacingTools({ includeSage: !dot && sagePolicyIsActive(), openWikiEnabled, ...(await leanToolFlags(runSkillState)) }));
+        const baseTools = dotTools(modelFacingTools({ includeSage: !dot && (sagePolicyIsActive() || agentSession.mathToolOffers?.sage === true), openWikiEnabled, ...(await leanToolFlags(runSkillState, agentSession.mathToolOffers?.lean ? ["lean_check"] : [])) }));
         const payload = buildChatPayload({ ...reqParams, stream: false }, summaryMessages);
         payload.tools = dotTools(contextConfig.enabled ? [...baseTools, CONTEXT_SEARCH_TOOL] : baseTools);
         payload.tool_choice = "none";
@@ -3585,11 +3658,56 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
     return { kind: AGENT_RUN_OUTCOME.REJECTED, status: 400, body: { error: "message or messages array required" } };
   }
 
+  // Route natural-language requests through model reasoning before building
+  // this turn's skill prompt and tool catalog. Explicit slash commands above
+  // remain server-owned commands and never pass through this classifier.
+  let requestIntent;
+  try {
+    requestIntent = await classifyAgentRequestIntent({
+      request: reqParams,
+      userMessage,
+      recentMessages: agentSession.messages().length
+        ? agentSession.messages()
+        : normalizeAgentMessages(conversationMessages),
+      activeSkills: Object.keys(skillState?.promptSkills?.() || {}),
+      signal: requestSignal
+    });
+  } catch (error) {
+    return { kind: AGENT_RUN_OUTCOME.REJECTED, status: 502, body: {
+      error: `Could not classify the agent request safely: ${error?.message || "invalid model intent"}`,
+      code: "AGENT_INTENT_UNAVAILABLE"
+    } };
+  }
+  for (const action of requestIntent.skillActions) {
+    const command = `/${action.skill} ${action.action}`;
+    const result = handleAgentSlashCommand({ message: command, session: agentSession, skillState, env: process.env });
+    syncSageStateFromNativeCommand(command, result.payload);
+    if (!result.ok) return { kind: AGENT_RUN_OUTCOME.COMMAND, ok: false, events: nativeCommandEvents(result.payload, false) };
+  }
+  if (requestIntent.skillActions.length && !requestIntent.verificationRequested && !requestIntent.toolSelection.length) {
+    return { kind: AGENT_RUN_OUTCOME.COMMAND, ok: true, events: nativeCommandEvents({
+      ok: true,
+      message: requestIntent.skillActions.map(({ skill, action }) => `/${skill} ${action} completed.`).join("\n"),
+      active: true
+    }, true) };
+  }
+
   // ContextWiki (§8/§9/§13): read config once per turn. When disabled (default),
   // the context memory rules are omitted so the base system prompt is unchanged.
   // (WP8: these two moved above the slash intercept, where runCompaction
   // needs the model id; both are pure reads, order is behavior-neutral.)
   let fullMessages = agentSession.messages();
+  const leanOriginalContext = agentIntentContext(
+    (fullMessages.length ? fullMessages : normalizeAgentMessages(conversationMessages)).filter((message) =>
+      !message.tool_calls && typeof message.content === "string" && message.content.trim() &&
+      !message.content.trim().startsWith("[DS4") && !/^VERIFICATION_(?:PLAN|CALL_REQUIRED)/.test(message.content.trim())
+    ), userMessage
+  );
+  const mathToolOffers = sessionMathToolOffers(agentSession, requestIntent.toolSelection);
+  if (isFunctionStudyRequest(userMessage)) agentSession.sageFullPolicy = true;
+  const sageRulesForTurn = () => runSkills?.sage
+    ? agentSession.sageFullPolicy ? runSkills.sage : sageCorePolicy(runSkills.sage)
+    : sagePolicyPromptFor({ fullPolicy: agentSession.sageFullPolicy === true });
   const buildAgentSystemMessage = () => {
     const caps = isServerEnabled()
       ? { ...agentCapabilities, pageAgent: true }
@@ -3606,8 +3724,14 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
       ],
       // WP4 of convergenza.loop.md: the skill blocks ride after the Node
       // sections, in the order agent_worker_build_system_text_ex uses.  With no
-      // skill staged the text is byte-identical to the pre-WP4 prompt.
-      skills: runSkills
+      // skill staged the text is byte-identical to the pre-WP4 prompt.  The
+      // math policies stay here in verification turns too: one system text
+      // for every turn and phase keeps the whole conversation in the KV cache.
+      skills: runSkills ? {
+        ...runSkills,
+        sage: runSkills.sage ? sageRulesForTurn() : null,
+        lean: runSkills.lean ? leanCorePolicy(runSkills.lean) : null
+      } : runSkills
     });
     const scopedPrompt = dotContextText(dot);
     return { role: "system", content: appendPonyPolicy(scopedPrompt ? `${prompt}\n\n${scopedPrompt}` : prompt, agentSession.ponyMode) };
@@ -3620,24 +3744,27 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
   }
   if (!fullMessages.length) {
     fullMessages = [buildAgentSystemMessage(), ...normalizeAgentMessages(conversationMessages)];
-  } else if (skillState?.syspromptDirty) {
-    // WP5: /skill ... start|stop changed the skill set (rt->sysprompt_dirty
-    // in the C loop): rebuild the first message before the next model call.
+  } else {
+    // Restore the current turn's skills after a previous verifier phase scoped
+    // its system prompt. Rebuilding identical text preserves the cache prefix.
     if (fullMessages[0]?.role === "system") fullMessages[0] = buildAgentSystemMessage();
     else fullMessages = [buildAgentSystemMessage(), ...fullMessages];
-    skillState.syspromptDirty = false;
+    if (skillState) skillState.syspromptDirty = false;
   }
   if (dot) {
     const systemMessage = buildAgentSystemMessage();
     if (fullMessages[0]?.role === "system") fullMessages[0] = systemMessage;
     else fullMessages = [systemMessage, ...fullMessages.filter((message) => message?.role !== "system")];
   }
-  if (userMessage) fullMessages.push({ role: "user", content: String(userMessage) });
-  // ~17k-token function-study rules only when the session does one; a plain
-  // Sage computation gets the ~2k-token core (sagePolicySlim.mjs).
-  if (isFunctionStudyRequest(userMessage)) agentSession.sageFullPolicy = true;
+  const verificationTurnAnchor = userMessage
+    ? { role: "user", content: String(userMessage) }
+    : null;
+  if (verificationTurnAnchor) fullMessages.push(verificationTurnAnchor);
+  // Use one Sage policy block: core for ordinary computations, full for a
+  // function study. Loaded builtin rules already ride in the skill block.
   fullMessages = applySagePolicyToMessages(fullMessages, {
-    prompt: sagePolicyPromptFor({ fullPolicy: agentSession.sageFullPolicy === true })
+    enabled: !runSkills?.sage && sagePolicyIsActive(),
+    prompt: sageRulesForTurn()
   });
   // WP12: date/time context once per session, first message after the system
   // prompt (C agent_worker_maybe_append_datetime_context, shadow
@@ -3662,9 +3789,31 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
   const withContextTool = (base) => dotTools(contextConfig.enabled ? [...base, CONTEXT_SEARCH_TOOL] : base);
   // Resolve the Lean advertising flags once per request so the context-tools
   // hash and the real payload hash below cannot drift apart.
-  const leanFlags = await leanToolFlags(runSkillState);
+  const leanFlags = await leanToolFlags(runSkillState, mathToolOffers.lean ? ["lean_check"] : []);
+  const compactSageChat = process.env.DS4_SAGE_COMPACT_CHAT !== "0" &&
+    process.env.DS4_SAGE_STRUCTURED_RESULT !== "0";
+  const authoritativeSageChat = compactSageChat &&
+    envBooleanWithAliases({
+      env: process.env,
+      key: "DS4_SAGE_AUTONOMOUS_ORCHESTRATION",
+      defaultValue: true,
+    });
+  verificationPlan = dot ? null : createAuthoritativeVerificationPlan({
+    verificationRequested: requestIntent.verificationRequested,
+    requiredTools: requestIntent.requiredTools,
+    sageAvailable: mathToolOffers.sage && authoritativeSageChat,
+    leanAvailable: leanFlags.leanEnabled
+  });
+  // F26: a request to evaluate the tools is itself a question to answer, not
+  // a cue to silently pick one.
+  if (requestIntent.toolEvaluationRequested) {
+    fullMessages.push({ role: "user", content: `[DS4 Studio] ${TOOL_EVALUATION_INSTRUCTION}` });
+  }
+  if (verificationPlan) {
+    fullMessages.push({ role: "user", content: `[DS4 Studio] ${verificationPlan.promptForActiveVerifier()}` });
+  }
   const contextTools = withContextTool(
-    dotTools(modelFacingTools({ includeSage: !dot && sagePolicyIsActive(), evidenceEnabled: evidenceActive, openWikiEnabled, ...leanFlags }))
+    dotTools(modelFacingTools({ includeSage: !dot && mathToolOffers.sage, evidenceEnabled: evidenceActive, openWikiEnabled, ...leanFlags }))
   );
   const contextInjection = await prepareContextInjection({
     sessionKey,
@@ -3677,6 +3826,11 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
   if (contextInjection?.capsuleMessage) fullMessages.push(contextInjection.capsuleMessage);
 
   const turnEvidence = [];
+  // One record per dispatched verifier call, written by the server: the only
+  // source a "verified with <tool>" sentence may cite (audit F27).
+  const toolReceipts = [];
+  const AGENT_MAX_ATTESTATION_REWRITES = 2;
+  let attestationRewrites = 0;
   // QF-03 §25.6 — structured provenance alongside the legacy text blob, which
   // stays until the claim guard stops reading it. Collected in parallel, not
   // instead.
@@ -3761,6 +3915,12 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
   function writeAgentSse(event, data) {
     emit(event, data);
   }
+  const writeVerificationStatus = () => {
+    if (verificationPlan) {
+      writeAgentSse("agent_verification_status", verificationPlan.snapshot());
+    }
+  };
+  writeVerificationStatus();
   // Long prefills stream nothing; relay the backend's progress lines.
   const stopPrefillRelay = relayPrefillProgress(manager, (progress) => writeAgentSse("agent_prefill", progress));
 
@@ -3775,14 +3935,6 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
     writeAgentSse("agent_debug", { stage, ...data });
   }
 
-const compactSageChat = process.env.DS4_SAGE_COMPACT_CHAT !== "0" &&
-    process.env.DS4_SAGE_STRUCTURED_RESULT !== "0";
-const authoritativeSageChat = compactSageChat &&
-    envBooleanWithAliases({
-      env: process.env,
-      key: "DS4_SAGE_AUTONOMOUS_ORCHESTRATION",
-      defaultValue: true,
-    });
   // §15.1: one tracker per run, owned by the registry. The native path
   // (POST /api/sage/exec) and this loop must not each keep their own idea of
   // the same run's state — that divergence is what the whole plan removes.
@@ -3804,6 +3956,7 @@ const authoritativeSageChat = compactSageChat &&
   let leanTaskSpec = null;
   let leanFinalStatusEmitted = false;
   let leanUtilityChecks = 0;
+  let leanInspectChecks = 0;
 
   const writeLeanStatus = (data) => {
     const snapshot = leanTracker.snapshot();
@@ -3813,6 +3966,8 @@ const authoritativeSageChat = compactSageChat &&
       state: snapshot.state,
       attempt: snapshot.attempt,
       maxAttempts: snapshot.maxAttempts,
+      profile: snapshot.profile,
+      candidatePreflightRejections: snapshot.candidatePreflightRejections,
       failureClass: snapshot.failureClass,
       strategyChangeRequired: snapshot.strategyChangeRequired,
       verified: snapshot.verified,
@@ -3962,6 +4117,7 @@ const authoritativeSageChat = compactSageChat &&
     let pendingGuardGuidance = null;
     // Set when a function_study Sage call arrives under the core policy.
     let sagePolicyUpgradePending = false;
+    let verificationContextStats = { compactedCalls: 0, retainedCalls: 0 };
 
     while (true) {
       if (controller.signal.aborted) break;
@@ -3970,8 +4126,39 @@ const authoritativeSageChat = compactSageChat &&
         pendingGuardGuidance = null;
       }
       if (sagePolicyUpgradePending) {
-        fullMessages = applySagePolicyToMessages(fullMessages, { prompt: sagePolicyPromptFor({ fullPolicy: true }) });
+        if (!verificationPlan) {
+          fullMessages = [buildAgentSystemMessage(), ...fullMessages.filter((message) => message?.role !== "system")];
+          fullMessages = applySagePolicyToMessages(fullMessages, {
+            enabled: !runSkills?.sage && sagePolicyIsActive(), prompt: sageRulesForTurn()
+          });
+          forceResetNextIteration = true;
+        } else if (sageRulesForTurn()) {
+          // Mid-verification the system text stays put; the full rules ride at
+          // the tail once and reach the system prompt with the next turn.
+          fullMessages.push({ role: "user", content: `[DS4 Studio] [DS4 SAGE FULL POLICY]\n${sageRulesForTurn()}` });
+        }
         sagePolicyUpgradePending = false;
+      }
+      if (verificationPlan && verificationTurnAnchor) {
+        const compacted = compactVerificationConversation(fullMessages, {
+          turnAnchor: verificationTurnAnchor,
+          activeTool: verificationPlan.allowedTools[0],
+          activeTools: verificationPlan.contextTools,
+          blockedCallIds: verificationPlan.receipts.filter((receipt) => receipt.state === "blocked").map((receipt) => receipt.callId),
+          activeInstruction: verificationPhaseInstruction(verificationPlan),
+          // A full window is about 18k tokens of verifier traffic; past it one
+          // compaction rewrites the turn's tail, short of it nothing is rewritten.
+          maxRetainedCalls: 8,
+          maxRetainedChars: 64000
+        });
+        verificationContextStats = {
+          compactedCalls: compacted.compactedCalls,
+          retainedCalls: compacted.retainedCalls
+        };
+        if (compacted.changed) {
+          fullMessages = compacted.messages;
+          forceResetNextIteration = true;
+        }
       }
       await yieldEpistemicShadow();
       if (iteration > AGENT_MAX_ITERATIONS) {
@@ -3991,7 +4178,7 @@ const authoritativeSageChat = compactSageChat &&
         // tokens, and without them the count stayed under the 400 limit.
         const compactionUsed = await countPromptTokens({
           messages: fullMessages,
-          tools: withContextTool(dotTools(modelFacingTools({ includeSage: !dot && sagePolicyIsActive(), evidenceEnabled: evidenceActive, openWikiEnabled, ...leanFlags })))
+          tools: withContextTool(dotTools(modelFacingTools({ includeSage: !dot && mathToolOffers.sage, evidenceEnabled: evidenceActive, openWikiEnabled, ...leanFlags })))
         }, {
           fetchImpl: fetch, base: backendBase(), signal: requestSignal
         });
@@ -4085,11 +4272,28 @@ const authoritativeSageChat = compactSageChat &&
       let basePayload = buildChatPayload({ ...requestWithThinkMode, stream: true }, fullMessages);
       // Filter out sage tool if SageMath is not enabled
       basePayload.tools = withContextTool(
-        dotTools(modelFacingTools({ includeSage: !dot && sagePolicyIsActive(), evidenceEnabled: evidenceActive, openWikiEnabled, ...leanFlags }))
+        dotTools(modelFacingTools({ includeSage: !dot && mathToolOffers.sage, evidenceEnabled: evidenceActive, openWikiEnabled, ...leanFlags }))
       );
-      // Tools stay declared so the prompt prefix (and the backend's prompt
-      // cache) is unchanged; "none" stops the server from parsing tool calls.
-      if (wrapUpRound) basePayload.tool_choice = "none";
+      if (verificationPlan) basePayload.parallel_tool_calls = false;
+      // During an authoritative verification, the active verifier is the only
+      // valid next action. Force its function at the API boundary while the
+      // server gate owns execution permission. A stable catalog preserves KV.
+      if (verificationPlan?.complete) {
+        // DS4 removes the schema prefix for "none", invalidating the entire
+        // cache. Ask for the final report with the same catalog; the completed
+        // server plan rejects every tool call before dispatch.
+        basePayload.tool_choice = "auto";
+      } else if (verificationPlan && verificationPlan.activeVerifier) {
+        const [activeTool] = verificationPlan.allowedTools;
+        if (activeTool) {
+          basePayload.tool_choice = verificationPlan.activeVerifier === "lean"
+            ? "required" : { type: "function", function: { name: activeTool } };
+        }
+      } else if (wrapUpRound) {
+        // Tools stay declared so the prompt prefix (and backend prompt cache)
+        // stays stable; "none" requests a plain final answer.
+        basePayload.tool_choice = "none";
+      }
       basePayload.stream = true;
       basePayload.stream_options = { include_usage: true };
       basePayload = await resolveAutoMaxTokensPayload(basePayload, controller.signal);
@@ -4122,7 +4326,13 @@ const authoritativeSageChat = compactSageChat &&
           mode: modeChoice.mode,
           reason: modeChoice.reason,
           statefulSupported: allowDelta,
-          ponyMode: agentSession.ponyMode
+          ponyMode: agentSession.ponyMode,
+          verificationContext: verificationPlan ? {
+            activeVerifier: verificationPlan.activeVerifier,
+            compactedToolCalls: verificationContextStats.compactedCalls,
+            retainedToolCalls: verificationContextStats.retainedCalls,
+            messageCount: fullMessages.length
+          } : undefined
         });
         const url = `${backendBase()}${allowDelta ? AGENT_STATEFUL_PATH : "/v1/chat/completions"}`;
         try {
@@ -4194,9 +4404,13 @@ const authoritativeSageChat = compactSageChat &&
         evidenceMode === EVIDENCE_MODE_ENUM.BLOCK;
       const deferPotentialAuthoritativeOutput =
         epistemicWithholdsOutput ||
+        Boolean(verificationPlan) ||
         (authoritativeSageChat &&
           (sagePolicyIsActive() || Boolean(sageTracker.snapshot().runId))) ||
-        leanTracker.used;
+        leanTracker.used ||
+        // A turn that offers a verifier may credit it in prose: hold the text
+        // until the attestation check has ruled (INV-022).
+        mathToolOffers.sage || mathToolOffers.lean || toolReceipts.length > 0;
       const deferredAssistantText = new AuthoritativeOutputBuffer();
       const deferredAssistantReasoning = new AuthoritativeOutputBuffer();
       // C agent_repetition_detector: reasoning and prose of ONE round that
@@ -4348,11 +4562,16 @@ const authoritativeSageChat = compactSageChat &&
       // A Lean turn that is still repairable withholds its prose too: the gate
       // below discards it, so streaming it first would publish exactly the
       // premature claim the gate exists to stop.
-      const responseWithheldForLean = leanTracker.used;
+      const responseWithheldForLean = leanTracker.used || Boolean(verificationPlan && !verificationPlan.complete);
+      // With a verifier on offer the prose may attribute results to it, and a
+      // sentence already streamed cannot be withdrawn: hold it for the check.
+      const responseWithheldForAttestation = !responseBelongsToSage && !responseWithheldForLean &&
+        (mathToolOffers.sage || mathToolOffers.lean || toolReceipts.length > 0);
       // §37 — with tool calls pending this prose is a candidate, not a
       // publication, and in block mode a candidate is never streamed before the
       // gate has ruled on it.
-      if (!responseBelongsToSage && !responseWithheldForLean && !epistemicWithholdsOutput) {
+      if (!responseBelongsToSage && !responseWithheldForLean && !epistemicWithholdsOutput &&
+          !responseWithheldForAttestation) {
         deferredAssistantText.flush((content) => writeAgentSse("agent_text", { content }));
         deferredAssistantReasoning.flush((content) => writeAgentSse("agent_reasoning", { content }));
       }
@@ -4383,6 +4602,13 @@ const authoritativeSageChat = compactSageChat &&
       // the iteration cap and drops the status report with a bare error.  Publish
       // it as-is, flagged as unvalidated.  Sage and Lean keep their own paths.
       if (wrapUpRound && isFinalResponse && !responseBelongsToSage && !responseWithheldForLean) {
+        const wrapUpAttestation = checkToolAttestations(assistantContent, toolReceipts);
+        if (wrapUpAttestation) {
+          const note = toolAttestationNote(wrapUpAttestation);
+          assistantContent += note;
+          assistantMessage.content = assistantContent;
+          deferredAssistantText.append(note);
+        }
         agentSession.commit(modeChoice.pending, assistantMessage);
         fullMessages = agentSession.messages();
         deferredAssistantText.flush((content) => writeAgentSse("agent_text", { content }));
@@ -4489,6 +4715,31 @@ const authoritativeSageChat = compactSageChat &&
         });
         continue;
       }
+      // INV-022/INV-023: a result attributed to a verifier needs that
+      // verifier's own receipt, and the final answer is gated like any other.
+      const attestationDecision = isFinalResponse ? checkToolAttestations(assistantContent, toolReceipts) : undefined;
+      if (attestationDecision) {
+        writeAgentSse("agent_warning", {
+          type: attestationDecision.type,
+          // The offending sentences stay out of the stream: echoing them
+          // would publish the very claim being withheld.
+          warning: attestationDecision.reason
+        });
+        if (attestationRewrites < AGENT_MAX_ATTESTATION_REWRITES) {
+          attestationRewrites += 1;
+          deferredAssistantText.discard();
+          deferredAssistantReasoning.discard();
+          pushGuidanceMessage(fullMessages, `${attestationDecision.type}: ${attestationDecision.reason}\n` +
+            `Unsupported: ${attestationDecision.sentences.join(" | ")}\n${attestationDecision.guidance}`);
+          forceResetNextIteration = true;
+          continue;
+        }
+        // Out of rewrites: publish, but never without the server's own note.
+        const note = toolAttestationNote(attestationDecision);
+        assistantContent += note;
+        assistantMessage.content = assistantContent;
+        deferredAssistantText.append(note);
+      }
       const intentDecision = agentSession.loopGuard.checkAssistantText(assistantContent, {
         isFinalResponse
       });
@@ -4567,6 +4818,21 @@ const authoritativeSageChat = compactSageChat &&
             claimDecision
           })
         : null;
+      if (isFinalResponse && verificationPlan && !verificationPlan.complete) {
+        deferredAssistantText.discard();
+        deferredAssistantReasoning.discard();
+        const decision = verificationPlan.finalizationDecision();
+        writeVerificationStatus();
+        if (decision.advanced) {
+          fullMessages.push({ role: "user", content: `[DS4 Studio] ${verificationPlan.promptForActiveVerifier()}` });
+        } else {
+          fullMessages.push({ role: "user", content:
+            `VERIFICATION_CALL_REQUIRED: the ${decision.verifier || verificationPlan.activeVerifier} verifier has no completed server-side call/result receipt. Call the active verifier now; do not synthesize or finalize.` });
+        }
+        writeAgentSse("agent_warning", { type: decision.code, warning: "Verifica duale incompleta: continuo il turno senza pubblicare la sintesi." });
+        forceResetNextIteration = true;
+        continue;
+      }
       if (authoritativeDecision && !authoritativeDecision.allowed) {
         deferredAssistantText.discard();
         deferredAssistantReasoning.discard();
@@ -4814,7 +5080,8 @@ const authoritativeSageChat = compactSageChat &&
 
       // §37 — the withheld prose is released here, after every gate ruled and
       // never before. Sage and Lean turns flush on their own paths below.
-      if (epistemicWithholdsOutput && !responseBelongsToSage && !responseWithheldForLean) {
+      if ((epistemicWithholdsOutput || responseWithheldForAttestation) &&
+          !responseBelongsToSage && !responseWithheldForLean) {
         deferredAssistantText.flush((content) => writeAgentSse("agent_text", { content }));
         deferredAssistantReasoning.flush((content) => writeAgentSse("agent_reasoning", { content }));
       }
@@ -4907,12 +5174,14 @@ const authoritativeSageChat = compactSageChat &&
       const toolGate = evaluateAuthoritativeToolCalls({
         leanSnapshot: leanSnapshotBeforeCommit,
         sageSnapshot: sageTracker.snapshot(),
+        verificationPlan,
         toolCalls
       });
       if (!toolGate.allowed) {
         const guidance = authoritativeToolBlockGuidance(toolGate);
         writeAgentSse("agent_warning", { type: toolGate.code, warning: guidance });
         for (const tc of toolCalls) {
+          verificationPlan?.recordBlocked({ callId: tc.id, toolName: tc.name, code: toolGate.code });
           writeAgentSse("agent_tool_call", {
             id: tc.id,
             name: tc.name,
@@ -4932,6 +5201,36 @@ const authoritativeSageChat = compactSageChat &&
           });
           agentSession.reminder.toolTokensSince += estimateTextTokens(`${toolGate.code}\n${guidance}`);
         }
+        writeVerificationStatus();
+        if (verificationPlan?.complete) {
+          const finalState = verificationPlan.snapshot();
+          const verifierLabels = { sage: "SageMath", lean: "Lean 4" };
+          const summary = [
+            "Verifica conclusa. Il backend ha richiesto un tool dopo che il piano era terminato; la chiamata è stata bloccata.",
+            ...verificationPlan.required.map((name) => {
+              const result = finalState.verifiers[name];
+              return `${verifierLabels[name]}: ${result.status === "verified" ? "VERIFICATO" : "NON VERIFICATO"}${result.code ? ` (${result.code})` : ""}.`;
+            })
+          ].join("\n");
+          writeAgentSse("agent_text", { content: summary });
+          writeAgentSse("agent_done", {
+            iterations: iteration,
+            finish_reason: "verification_plan_complete",
+            totals: agentSession.usageTotals
+          });
+          break;
+        }
+        if (verificationPlan && toolGate.action === "retry_ordered_verifier") {
+          const decision = verificationPlan.blockedCallDecision();
+          const nextInstruction = verificationPlan.complete
+            ? verificationPlan.finalPrompt()
+            : verificationPlan.promptForActiveVerifier();
+          fullMessages.push({
+            role: "user",
+            content: `[DS4 Studio] ${nextInstruction}\nBlocked tool calls do not count as verifier results. Repeated inability to call the active verifier will be marked NOT_VERIFIED.`
+          });
+          writeVerificationStatus();
+        }
         continue;
       }
 
@@ -4942,7 +5241,8 @@ const authoritativeSageChat = compactSageChat &&
           warning: sageBlock.message
         });
         for (const tc of toolCalls) {
-          const hiddenByDefault = tc.name === "sage";
+          verificationPlan?.recordBlocked({ callId: tc.id, toolName: tc.name, code: sageBlock.code });
+          const hiddenByDefault = false;
           writeAgentSse("agent_tool_call", {
             id: tc.id,
             name: tc.name,
@@ -4964,6 +5264,7 @@ const authoritativeSageChat = compactSageChat &&
           });
           agentSession.reminder.toolTokensSince += estimateTextTokens(sageBlock.code);
         }
+        writeVerificationStatus();
         continue;
       }
 
@@ -4988,6 +5289,11 @@ const authoritativeSageChat = compactSageChat &&
       agentSession.readGuard.beginTurn();
 
       const runToolCall = async (tc) => {
+        if (verificationPlan && tc.name === "lean_check" && tc.arguments?.task_mode !== "proof") {
+          verificationPlan.recordBlocked({ callId: tc.id, toolName: tc.name, code: "LEAN_PROOF_MODE_REQUIRED" });
+          writeVerificationStatus();
+          return { id: tc.id, name: tc.name, content: "LEAN_PROOF_MODE_REQUIRED: questa richiesta richiede task_mode=proof con target_declaration e target_statement. La chiamata utility non conta come verifica.", isError: true, guarded: true };
+        }
         const isSage = tc.name === "sage";
         if (isSage && tc.arguments?.task_type === "function_study" && agentSession.sageFullPolicy !== true) {
           agentSession.sageFullPolicy = true;
@@ -5009,6 +5315,12 @@ const authoritativeSageChat = compactSageChat &&
               taskType: tc.arguments?.task_type
             });
             if (!registered.ok) {
+              writeAgentSse("agent_tool_call", {
+                id: tc.id,
+                name: tc.name,
+                arguments: tc.arguments,
+                hiddenByDefault: false
+              });
               return {
                 id: tc.id,
                 name: tc.name,
@@ -5064,7 +5376,7 @@ const authoritativeSageChat = compactSageChat &&
             id: tc.id,
             name: tc.name,
             arguments: tc.arguments,
-            hiddenByDefault: true
+            hiddenByDefault: false
           });
           if (!callState.allowed) {
             // §15.3: a refused call is answered with the phase the runtime
@@ -5083,7 +5395,7 @@ const authoritativeSageChat = compactSageChat &&
                 : "Fase SageMath rifiutata; il runtime indica quella corretta.",
               isError: true,
               guarded: true,
-              hiddenByDefault: true,
+              hiddenByDefault: false,
               runId: sageSnapshot.runId,
               taskType: sageSnapshot.taskType,
               phase: sagePhase,
@@ -5180,7 +5492,21 @@ const authoritativeSageChat = compactSageChat &&
             args: tc.arguments
           });
           if (decision?.block) {
-            return { id: tc.id, name: tc.name, content: `${decision.reason}\n${decision.guidance}`, isError: true, guarded: true };
+            const activeVerifier = verificationPlan?.allowedTools.includes(tc.name) === true;
+            if (activeVerifier && tc.name === "lean_check") {
+              writeLeanStatus({ callId: tc.id, status: "blocked", code: "LEAN_REPEATED_TOOL_ACTION" });
+            }
+            return {
+              id: tc.id,
+              name: tc.name,
+              content: `${decision.reason}\n${decision.guidance}`,
+              isError: true,
+              guarded: true,
+              verificationTerminal: activeVerifier,
+              verificationFailureCode: activeVerifier
+                ? (tc.name === "sage" ? "SAGE_REPEATED_TOOL_ACTION" : "LEAN_REPEATED_TOOL_ACTION")
+                : null
+            };
           }
         }
 
@@ -5193,34 +5519,50 @@ const authoritativeSageChat = compactSageChat &&
         const isLeanProofCall =
           tc.name === "lean_check" && leanTaskMode(tc.arguments) === "proof";
 
+        if (["lean_check", "lean_inspect", "lean_prepare"].includes(tc.name)) {
+          tc.arguments = {
+            ...tc.arguments,
+            profile: resolveLeanToolProfile({ ...tc.arguments,
+              code: tc.arguments?.code || (Array.isArray(tc.arguments?.imports) ? tc.arguments.imports.map((name) => `import ${name}`).join("\n") : "")
+            }, {
+              defaultProfile: runtimeConfig.lean.defaultProfile,
+              lockedProfile: leanTaskSpec?.requiredProfile ?? null
+            })
+          };
+        }
+
+        if (tc.name === "lean_prepare" || tc.name === "lean_inspect") {
+          // Refusals cost nothing: only a call that reaches Lean spends the
+          // shared budget, so refused extra inspections cannot end the proof.
+          if (tc.name === "lean_inspect" && leanInspectChecks >= LEAN_INSPECT_MAX_PER_TASK) {
+            return { id: tc.id, name: tc.name, content: "LEAN_INSPECT_BUDGET_EXHAUSTED: use the signatures already received; continue with lean_prepare or lean_check.", isError: true, guarded: true };
+          }
+          if (tc.name === "lean_prepare" && leanTaskSpec) {
+            return { id: tc.id, name: tc.name, content: "LEAN_GOAL_ALREADY_PREPARED: the target is locked; use lean_check for the proof.", isError: true, guarded: true };
+          }
+          if (leanUtilityChecks >= AGENT_LEAN_MAX_UTILITY_CHECKS) {
+            return { id: tc.id, name: tc.name, content: "LEAN_UTILITY_BUDGET_EXHAUSTED: diagnostic and goal preparation budget spent; the proof is NOT_VERIFIED.",
+              isError: true, guarded: true, verificationTerminal: Boolean(verificationPlan), verificationFailureCode: "LEAN_UTILITY_BUDGET_EXHAUSTED" };
+          }
+          leanUtilityChecks += 1;
+          if (tc.name === "lean_inspect") leanInspectChecks += 1;
+        }
+
         if (isLeanProofCall) {
           const targetDeclaration = tc.arguments?.target_declaration;
-          const profile = tc.arguments?.profile || "core";
-          // §11.2 — the target may not be derived from the first lean_check.
-          // Sealing here, before the tracker starts and before Lean is spawned,
-          // is what stops `theorem cauchy_mvt : True := by trivial` from
-          // locking itself as the task and then matching itself.
+          const profile = tc.arguments.profile;
+          // Only the separately typechecked and semantically reviewed goal may
+          // define the task. A candidate never locks its own statement.
           if (!leanTaskSpec) {
-            const sealed = createLeanTaskSpec({
-              targetDeclaration,
-              targetStatement: tc.arguments?.target_statement,
-              requiredProfile: profile,
-              expectedDeclarations: tc.arguments?.expected_declarations,
-              taskMode: "proof"
-            });
-            if (!sealed.ok) {
-              writeLeanStatus({ callId: tc.id, status: "blocked" });
-              return {
-                id: tc.id,
-                name: tc.name,
-                content:
-                  `LEAN_ORCHESTRATION\ncode=${sealed.error.code}\n` +
-                  `attemptConsumed=false\n${sealed.error.message}`,
-                isError: true,
-                guarded: true
-              };
-            }
-            leanTaskSpec = sealed.value;
+            return { id: tc.id, name: tc.name, content: "LEAN_GOAL_NOT_PREPARED: call lean_prepare with the original claim and theorem header before writing its proof.",
+              isError: true, guarded: true };
+          }
+          const candidate = extractLeanTargetIdentity(tc.arguments?.code || "", targetDeclaration);
+          const declared = tc.arguments?.target_statement ? hashLeanTargetStatement(tc.arguments.target_statement, targetDeclaration) : candidate;
+          if (!candidate.ok || !declared.ok || candidate.value.statementSha256 !== leanTaskSpec.targetStatementSha256 ||
+              declared.value.statementSha256 !== leanTaskSpec.targetStatementSha256 || profile !== leanTaskSpec.requiredProfile) {
+            return { id: tc.id, name: tc.name, content: "LEAN_TARGET_STATEMENT_MISMATCH: restore the prepared theorem statement and profile. Change only the proof body, imports or helper lemmas. attemptConsumed=false",
+              isError: true, guarded: true };
           }
           leanTracker.begin({ targetDeclaration, profile, taskSpec: leanTaskSpec });
           leanSourceSha256 = sha256Hex(tc.arguments?.code ?? "");
@@ -5301,6 +5643,12 @@ const authoritativeSageChat = compactSageChat &&
           leanPolicyRevision: tc.name === "lean_check" ? leanCheckPolicyRevision : undefined,
           leanExecutor: tc.name === "lean_check" ? runLeanCheckForAgent : undefined,
           leanInspectExecutor: tc.name === "lean_inspect" ? runLeanInspectForAgent : undefined,
+          leanPrepareExecutor: tc.name === "lean_prepare" ? (args, options) => prepareLeanGoal(args, {
+            checkGoal: (goalRequest) => runLeanCheckForAgent({ ...goalRequest, sessionId: sanitizeSessionId(sessionKey) }, options),
+            reviewGoal: (goal) => reviewAgentLeanGoal({ request: reqParams, goal,
+              originalContext: leanOriginalContext,
+              sageReport: authoritativeSageFinal?.content, signal: options.signal })
+          }) : undefined,
           leanAttempt: isLeanProofCall ? leanTracker.snapshot().attempt : undefined,
           leanProofId: isLeanProofCall ? leanTracker.snapshot().proofId : undefined,
           leanExpectedTargetStatementSha256:
@@ -5332,6 +5680,8 @@ const authoritativeSageChat = compactSageChat &&
           moreState: agentSession.more,
         };
         let rawResult;
+        verificationPlan?.recordDispatch({ callId: tc.id, toolName: tc.name });
+        writeVerificationStatus();
         if (OPENWIKI_TOOL_NAMES.has(tc.name)) {
           rawResult = await dispatchOpenWikiTool(tc.name, tc.arguments, {
             enabled: openWikiEnabled,
@@ -5342,6 +5692,13 @@ const authoritativeSageChat = compactSageChat &&
         } else {
           rawResult = await executeTool(tc.name, tc.arguments, opts);
         }
+        verificationPlan?.recordResult({ callId: tc.id, isError: Boolean(rawResult?.isError), guarded: false, code: rawResult?.code });
+        toolReceipts.push({ tool: tc.name, ok: !rawResult?.isError });
+        if (tc.name === "lean_prepare" && rawResult?.raw?.prepared === true && rawResult.raw.spec?.sealed) {
+          leanTaskSpec = rawResult.raw.spec;
+          verificationPlan?.recordLeanPreparation(leanTaskSpec);
+        }
+        writeVerificationStatus();
         if (tc.name === "retrieve_context_blob") {
           compressionMetrics.recordRetrieve(!rawResult?.isError);
         }
@@ -5543,7 +5900,9 @@ const authoritativeSageChat = compactSageChat &&
           };
         }
 
-        return { id: tc.id, name: tc.name, content: result.content, isError: result.isError };
+        return { id: tc.id, name: tc.name, content: result.content, isError: result.isError,
+          verificationTerminal: tc.name === "lean_prepare" && !rawResult?.raw?.prepared && rawResult?.raw?.retryable === false,
+          verificationFailureCode: tc.name === "lean_prepare" ? rawResult?.raw?.code : null };
       };
 
       for (const group of groups) {
@@ -5553,6 +5912,7 @@ const authoritativeSageChat = compactSageChat &&
           : await Promise.all(group.map(runToolCall));
 
         for (const r of results) {
+          verificationPlan?.recordResult({ callId: r.id, isError: Boolean(r.isError), guarded: Boolean(r.guarded) });
           if (r.name === "sage" && r.hiddenByDefault) {
             writeAgentSse("agent_tool_result", {
               id: r.id,
@@ -5560,7 +5920,7 @@ const authoritativeSageChat = compactSageChat &&
               content: r.displayContent,
               isError: r.isError,
               guarded: Boolean(r.guarded),
-              hiddenByDefault: true,
+              hiddenByDefault: false,
               sage: {
                 contractVersion: r.sageResult?.contractVersion,
                 runId: r.runId,
@@ -5584,10 +5944,56 @@ const authoritativeSageChat = compactSageChat &&
             tool_call_id: r.id,
             content: r.content
           });
+          if (verificationPlan && r.verificationTerminal) {
+            const verifier = r.name === "sage" ? "sage" : "lean";
+            verificationPlan.finishVerifier(verifier, "not_verified", r.verificationFailureCode);
+            if (verifier === "sage") {
+              finalizeSageStatus("failed", "Chiamata Sage ripetuta senza progresso.", r.verificationFailureCode);
+            }
+            writeVerificationStatus();
+          }
           agentSession.reminder.toolTokensSince += estimateTextTokens(r.content);
         }
 
-        if (authoritativeSageFinal && sageTracker.canFinalize()) {
+        if (verificationPlan) {
+          const sageState = sageTracker.snapshot();
+          const repeatedSageFailureLimitReached = sageState.strategyChangeRequired &&
+            verificationPlan.sageRepeatedFailureLimitReached(sageTracker.config.maxSameFailure);
+          if (repeatedSageFailureLimitReached && verificationPlan.verifiers.sage.status !== "not_verified") {
+            verificationPlan.finishVerifier("sage", "not_verified", "SAGE_REPEATED_FAILURE_LIMIT");
+            finalizeSageStatus(
+              "failed",
+              "SageMath ha ripetuto il fallimento dopo il cambio di strategia richiesto; passo a Lean 4.",
+              "SAGE_REPEATED_FAILURE_LIMIT"
+            );
+          } else if (sageState.terminal && !sageState.publishable && verificationPlan.verifiers.sage.status !== "not_verified") {
+            verificationPlan.finishVerifier("sage", "not_verified", sageState.terminalReason || "SAGE_NOT_PUBLISHABLE");
+          }
+          const leanState = leanTracker.snapshot();
+          if (leanState.terminal && verificationPlan.verifiers.lean.status !== "verified" && verificationPlan.verifiers.lean.status !== "not_verified") {
+            verificationPlan.finishVerifier("lean", leanState.verified ? "verified" : "not_verified", leanState.terminalReason || (leanState.verified ? null : "LEAN_NOT_VERIFIED"));
+          }
+          writeVerificationStatus();
+          if (verificationPlan.activeVerifier && !verificationPlan.complete &&
+              !(authoritativeSageFinal && sageTracker.canFinalize())) {
+            fullMessages.push({ role: "user", content: `[DS4 Studio] ${verificationPlan.promptForActiveVerifier()}` });
+          } else if (verificationPlan.complete) {
+            fullMessages.push({ role: "user", content: `[DS4 Studio] ${verificationPlan.finalPrompt()}` });
+          }
+        }
+
+        if (authoritativeSageFinal && sageTracker.canFinalize() &&
+            (!verificationPlan || verificationPlan.activeVerifier === "sage")) {
+          if (verificationPlan) {
+            verificationPlan.finishVerifier("sage", "verified");
+            writeVerificationStatus();
+            if (!verificationPlan.complete) {
+              fullMessages.push({ role: "assistant", content: "SageMath ha completato e validato il proprio risultato. Procedo ora con Lean 4; non pubblicare ancora la risposta finale." });
+            }
+            fullMessages.push({ role: "user", content: `[DS4 Studio] ${verificationPlan.promptForActiveVerifier()}` });
+            forceResetNextIteration = true;
+            continue;
+          }
           const content = authoritativeSageFinal.content;
           writeAgentSse("agent_text", {
             content,

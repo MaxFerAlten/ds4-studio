@@ -248,8 +248,9 @@ test("JS agent compresses tool results and activates observation flow before exp
   const source = await readFile(new URL("./index.mjs", import.meta.url), "utf8");
 
   // ecfb76d routes OpenWiki tools to their own dispatcher; every other tool
-  // still goes through executeTool into the same rawResult.
-  assert.match(source, /let rawResult;\s*if \(OPENWIKI_TOOL_NAMES\.has\(tc\.name\)\) \{[\s\S]*?\} else \{\s*rawResult = await executeTool\(tc\.name, tc\.arguments, opts\);\s*\}/);
+  // still goes through executeTool into the same rawResult. The verification
+  // plan records the dispatch in between.
+  assert.match(source, /let rawResult;[\s\S]{0,200}?if \(OPENWIKI_TOOL_NAMES\.has\(tc\.name\)\) \{[\s\S]*?\} else \{\s*rawResult = await executeTool\(tc\.name, tc\.arguments, opts\);\s*\}/);
   assert.match(
     source,
     /compressAgentToolResult\(tc\.name,\s*rawResult\)/
@@ -274,7 +275,9 @@ test("JS agent compresses crawl results before SSE and model context exposure", 
 test("JS agent gates unsupported verified claims using current-turn evidence", async () => {
   const source = await readFile(new URL("./index.mjs", import.meta.url), "utf8");
 
-  assert.match(source, /import \{ checkVerifiedClaim \} from "\.\/claimGuard\.mjs"/);
+  assert.match(source, /import \{ checkVerifiedClaim, checkToolAttestations, toolAttestationNote \} from "\.\/claimGuard\.mjs"/);
+  assert.match(source, /toolReceipts\.push\(\{ tool: tc\.name, ok: !rawResult\?\.isError \}\)/);
+  assert.match(source, /checkToolAttestations\(assistantContent, toolReceipts\)/);
   assert.match(source, /const turnEvidence = \[\]/);
   assert.match(source, /turnEvidence\.push\(/);
   assert.match(
@@ -319,6 +322,8 @@ test("JS agent emits additive compact Sage status and artifact events", async ()
   );
 });
 
+// The chat shows Sage's display content (a call the user can see, like Lean's);
+// the model alone receives the full result.
 test("JS agent keeps Sage model content private while preserving model context", async () => {
   const source = await readFile(new URL("./index.mjs", import.meta.url), "utf8");
   const start = source.indexOf("const runToolCall = async (tc) =>");
@@ -327,7 +332,7 @@ test("JS agent keeps Sage model content private while preserving model context",
 
   assert.match(
     block,
-    /name: r\.name,\s*content: r\.displayContent,[\s\S]*?hiddenByDefault: true/
+    /name: r\.name,\s*content: r\.displayContent,[\s\S]*?hiddenByDefault: false/
   );
   assert.doesNotMatch(block, /modelContent\s*:/);
   assert.match(

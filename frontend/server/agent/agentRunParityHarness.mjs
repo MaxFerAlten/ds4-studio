@@ -22,6 +22,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import net from "node:net";
 import { createHash } from "node:crypto";
+import { isIntentRequest, isScriptedIntent, neutralIntentCompletion } from "./fakeIntentRouter.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const REPO = join(here, "..", "..", "..");
@@ -171,6 +172,12 @@ export async function startFakeBackend(spec = {}) {
         res.end(JSON.stringify(value));
       };
       if (key === "POST /v1/chat/completions") {
+        // The goldens predate the intent router: answer it here, outside the
+        // recording, unless the fixture scripted the intent as its next turn.
+        if (isIntentRequest(body) && !isScriptedIntent(turns[turnIdx])) {
+          pathCounts[key] -= 1;
+          return json(200, neutralIntentCompletion(body.model));
+        }
         log.push({ path: key, body: summarizeChatBody(body) });
         const turn = nextTurn();
         if (turn.destroy) { req.socket.destroy(); return; }
