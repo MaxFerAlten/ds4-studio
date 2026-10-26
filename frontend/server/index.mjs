@@ -5135,9 +5135,12 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
         const leanSourceMatches = leanSnapshot.verified
           ? authoritativeDecision?.code === "LEAN_VERIFIED"
           : true;
+        // Every gate has ruled on this answer: release whatever was withheld.
+        // Sage-owned prose has no later publisher, and without this flush a
+        // turn that ran Sage ended with the answer committed but never shown.
+        deferredAssistantText.flush((content) => writeAgentSse("agent_text", { content }));
+        deferredAssistantReasoning.flush((content) => writeAgentSse("agent_reasoning", { content }));
         if (leanSnapshot.proofId) {
-          deferredAssistantText.flush((content) => writeAgentSse("agent_text", { content }));
-          deferredAssistantReasoning.flush((content) => writeAgentSse("agent_reasoning", { content }));
           finalizeLeanStatus(
             leanSnapshot.verified && leanSourceMatches
               ? "Prova verificata: status=checked."
