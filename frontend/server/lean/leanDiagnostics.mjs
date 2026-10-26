@@ -12,11 +12,13 @@ import { LEAN_MAX_DIAGNOSTICS } from "./leanConstants.mjs";
 //
 // The path prefix varies with how the file was passed to lean/lake, the end
 // position is only present for ranged messages, and Lean 4.32 emits
-// `information:` where older releases emitted `info:`. Every following line
-// that is not itself a header belongs to the message body and keeps its
-// indentation, which is load-bearing in Lean's pretty-printed terms.
+// `information:` where older releases emitted `info:`. Newer releases may tag
+// the severity with an error code, as in `error(lean.unknownIdentifier):`.
+// Every following line that is not itself a header belongs to the message
+// body and keeps its indentation, which is load-bearing in Lean's
+// pretty-printed terms.
 const DIAGNOSTIC_HEADER =
-  /^.*?Main\.lean:(\d+):(\d+)(?:-(\d+):(\d+))?:\s*(error|warning|info|information):\s*(.*)$/;
+  /^.*?Main\.lean:(\d+):(\d+)(?:-(\d+):(\d+))?:\s*(error|warning|info|information)(?:\([\w.]+\))?:\s*(.*)$/;
 
 /**
  * Parse Lean diagnostics from raw process output.

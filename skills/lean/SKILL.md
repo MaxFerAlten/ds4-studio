@@ -5,6 +5,14 @@
 ## Missione
 Fornire all'agente un metodo sicuro, riproducibile e strutturato per verificare codice Lean 4 in un progetto Lake pinato con sandbox obbligatoria.
 
+### Preparazione dell'obiettivo nel motore JS
+- Prima di costruire la prova, chiama `lean_prepare` con l'affermazione originale, gli import minimi e l'intestazione completa del teorema, con tutte le variabili tipate. Non inviare una prova o puntini di sospensione.
+- Il runtime controlla sintassi e tipi tramite una definizione che restituisce `Prop`; poi il modello controlla la corrispondenza con la domanda originale. Solo un esito positivo di entrambi i controlli sigilla l'obiettivo. Un rifiuto consente di correggerlo.
+- Usa `lean_inspect` per conoscere firme di simboli o lemmi incerti. È disponibile nella fase Lean e non verifica una prova.
+- Dopo `prepared=true`, usa `lean_check` con `task_mode=proof` per dimostrare esattamente l'obiettivo approvato. Preparazione e ispezione hanno sempre `verified=false`; soltanto la prova accettata può essere riportata come verificata.
+- Se la domanda chiede di scegliere fra alternative (opzioni, quale termine, quale oggetto), l'obiettivo deve distinguere la risposta: un'identità aggregata (somma, insieme) che resta vera anche per l'alternativa concorrente viene rifiutata con `LEAN_GOAL_NOT_DISCRIMINATING`. Enuncia l'oggetto richiesto stesso, ad esempio il termine in funzione del suo indice.
+- Una prova accettata verifica l'enunciato sigillato, non automaticamente la risposta: scrivi «Lean ha verificato l'enunciato S» e dì se S distingue la risposta dalle alternative. Non usare la parola «certificato».
+
 ## Quando usare Lean
 - Per scrivere e verificare dichiarazioni e dimostrazioni in Lean 4.
 - Per controllare che un file `.lean` sia sintatticamente ed elaborato correttamente.
@@ -107,6 +115,13 @@ il gate di certificazione tratta la sua presenza nelle policy come corruzione.
 - `mathlib`: profilo con Mathlib incluso per dimostrazioni che richiedono la libreria.
 
 Specifica `profile=mathlib` solo quando il codice importa moduli da Mathlib.
+
+Scegli il profilo sulla **prima** chiamata proof, prima del sigillo: una prova
+con import Mathlib richiede `profile=mathlib`. Nel motore JS, se ometti il
+campo, gli import Mathlib selezionano automaticamente quel profilo; altrimenti
+vale il default configurato. Le riparazioni senza profilo riusano quello
+sigillato. Un profilo esplicito resta vincolante e non può cambiare durante
+la prova. Non rimuovere Mathlib riducendo il teorema generale a un esempio.
 
 ### Regola sugli import Mathlib
 **Preferisci import mirati** per ridurre latenza e memoria. Usa `import Mathlib`

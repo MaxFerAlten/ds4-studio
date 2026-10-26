@@ -56,6 +56,22 @@ function checkedResult(overrides = {}) {
   };
 }
 
+test("legacy exit-134 memory results are terminal even without an errorCode", () => {
+  const result = failedResult("", { exitCode: 134,
+    stderr: "libc++abi: terminating due to uncaught exception of type lean::memory_exception: excessive memory consumption detected at 'interpreter'"
+  });
+  const decision = classifyLeanResult(result);
+  assert.equal(decision.failureClass, "infrastructure");
+  assert.equal(decision.terminalReason, "LEAN_RUNTIME_MEMORY_EXHAUSTED");
+  assert.equal(decision.terminal, true);
+  assert.equal(decision.retryable, false);
+  assert.equal(decision.verified, false);
+  assert.equal(classifyLeanResult({ ...result, status: "timeout", timedOut: true }).failureClass,
+    "timeout_repairable");
+  assert.equal(classifyLeanResult({ ...result, status: "cancelled", cancelled: true }).failureClass,
+    "user_cancelled");
+});
+
 test("checked with sound invariants is the only verified outcome", () => {
   const decision = classifyLeanResult(checkedResult());
   assert.equal(decision.verified, true);

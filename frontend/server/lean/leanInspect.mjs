@@ -21,6 +21,8 @@ import {
 } from "./leanConstants.mjs";
 import { buildLeanSandboxCommand, resolveLeanSandbox } from "./leanSandbox.mjs";
 import { runBoundedProcess } from "./leanProcess.mjs";
+import { parseLeanDiagnostics } from "./leanDiagnostics.mjs";
+import { leanImportHints } from "./leanImportHints.mjs";
 import { createLeanRunDirectory, cleanupLeanRunDirectory, createLeanRunId } from "./leanPaths.mjs";
 
 /** Maximum inspect calls per user turn. */
@@ -173,6 +175,7 @@ export function inspectResult(opts = {}) {
     processStarted = false,
     nextAction = null,
     retried = false,
+    importHints = [],
   } = opts;
 
   return {
@@ -194,6 +197,7 @@ export function inspectResult(opts = {}) {
     timedOut,
     processStarted,
     retried,
+    importHints,
     // INV-LEAN-002: inspect NEVER consumes attempts or verifies.
     attemptConsumed: false,
     verified: false,
@@ -366,17 +370,33 @@ export async function executeLeanInspect(body, options = {}) {
       ? procResult.stdout.split("\n").filter(l => l.trim())
       : [];
 
+    // A failed #check prints an error, not "<name> : <type>". Its line in the
+    // generated source (imports, a blank line, one #check per symbol) ties it
+    // to the symbol, so the model learns why instead of repeating the call.
+    const importCount = (body.imports || []).length;
+    const errors = parseLeanDiagnostics(`${procResult.stdout || ""}\n${procResult.stderr || ""}`)
+      .diagnostics.filter((d) => d.severity === "error");
+    const brief = (d) => d.message.replace(/\s+/g, " ").trim().slice(0, 300);
+    const importError = errors.find((d) => d.line <= importCount);
     const symbols = body.symbols.map((name, i) => {
       // Lean prints "<name> : <type>" on stdout for #check.
       // Match name followed by space/colon to avoid substring collisions
       // (WP10: Nat.add vs Nat.add_comm).
-      const line = outputLines.find(l => {
+      const at = outputLines.findIndex(l => {
         const trimmed = l.trimStart();
-        return trimmed === name || trimmed.startsWith(name + " ") || trimmed.startsWith(name + "\t") || trimmed.startsWith(name + " :");
+        // Universe-polymorphic constants print as "add_pow.{u_1} {R : ...".
+        return trimmed === name || trimmed.startsWith(name + " ") || trimmed.startsWith(name + "\t") ||
+          trimmed.startsWith(name + " :") || trimmed.startsWith(name + ".{");
       });
+      // Long signatures wrap onto indented lines; the conclusion is there.
+      let end = at + 1;
+      while (at >= 0 && end < outputLines.length && /^\s/.test(outputLines[end])) end += 1;
+      const line = at >= 0 ? outputLines.slice(at, end).map((l) => l.trim()).join(" ") : null;
+      const error = importError || errors.find((d) => d.line === importCount + 2 + i);
       return {
         name,
-        output: line || (procResult.timedOut ? "[timed out]" : "[no output]"),
+        output: line || (procResult.timedOut ? "[timed out]"
+          : error ? `[error] ${brief(error)}` : "[no output]"),
       };
     });
 
@@ -390,6 +410,7 @@ export async function executeLeanInspect(body, options = {}) {
       status,
       profile,
       symbols,
+      importHints: leanImportHints(errors, { profileDir: resolve(config.runtimeRoot, profile), imports: body.imports || [] }),
       sourceSha256,
       durationMs: procResult.durationMs || 0,
       timedOut: procResult.timedOut,

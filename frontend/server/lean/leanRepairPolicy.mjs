@@ -74,6 +74,20 @@ const CLASS_CHANGE_SUFFIX =
 /** Error codes that name a broken runtime rather than a broken proof. */
 const INFRASTRUCTURE_CODE = /^(LEAN_SANDBOX|LEAN_RUNTIME|LEAN_TOOLCHAIN|LEAN_SPAWN|LEAN_PREFLIGHT|LEAN_INTERNAL|LEAN_RESULT_CONTRACT|LEAN_DISABLED)/;
 
+/** Process failures cannot be repaired by changing a proof term. */
+export function detectLeanRuntimeFailure(result = {}) {
+  if (result.timedOut || result.cancelled || ["timeout", "cancelled", "checked"].includes(result.status)) return null;
+  if (result.exitCode === 0 && !result.signal) return null;
+  const stderr = String(result.stderr || "");
+  if (/lean::memory_exception|excessive memory consumption detected/i.test(stderr)) {
+    return "LEAN_RUNTIME_MEMORY_EXHAUSTED";
+  }
+  if (result.signal || (Number.isInteger(result.exitCode) && result.exitCode >= 128)) {
+    return "LEAN_RUNTIME_PROCESS_CRASH";
+  }
+  return null;
+}
+
 /**
  * Patterns keyed by failure class, in the priority order of §6.3. First match
  * over the joined error diagnostics wins.
@@ -230,6 +244,11 @@ function classifyFailure(result) {
   // 6. timeout — repairable: narrow imports, cut automation, change strategy.
   if (result.status === "timeout" || result.timedOut === true) {
     return { failureClass: "timeout_repairable", terminalReason: null };
+  }
+
+  const runtimeFailure = detectLeanRuntimeFailure(result);
+  if (runtimeFailure) {
+    return { failureClass: "infrastructure", terminalReason: runtimeFailure };
   }
 
   // 7..11. proof failures, separated by the reported diagnostics.

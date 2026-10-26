@@ -143,6 +143,19 @@ test("mathlib: a targeted Mathlib import checks under the mathlib profile", MATH
   assert.equal(r.certified, false);
 });
 
+test("mathlib: the general binomial formula verifies with a narrow import and the existing memory cap", MATHLIB, async () => {
+  const statement = "theorem binomial_expansion (R : Type*) [CommSemiring R] (x y : R) (n : ℕ) : (x + y)^n = ∑ r ∈ Finset.range (n + 1), (n.choose r : R) * x^(n-r) * y^r";
+  const result = await executeLeanCheck({
+    contractVersion: "lean_check_request_v1",
+    code: `import Mathlib.Data.Nat.Choose.Sum\nopen BigOperators\n${statement} := by\n  simpa only [add_comm y x, mul_comm, mul_left_comm, mul_assoc] using (add_pow y x n)\n`,
+    profile: "mathlib", timeoutSec: 120, sessionId: "real-tests-binomial",
+    taskMode: "proof", targetDeclaration: "binomial_expansion", targetStatement: statement
+  }, { config: CONFIG, preflight: PREFLIGHT });
+  assert.equal(result.status, "checked", result.summary + "\n" + result.stdout + result.stderr);
+  assert.equal(result.orchestration.verified, true);
+  assert.equal(result.targetIdentityMatched, true);
+});
+
 // A root `import Mathlib` is expensive, but "it always times out" is not an
 // invariant: how it ends depends on version, cache, hardware and the sandbox
 // budget. Observed on the reference machine it does not time out at all — it

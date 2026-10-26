@@ -436,6 +436,41 @@ test("TRACK-CP-01: candidate preflight rolls back attempt and sets repair_requir
   assert.equal(snap.failureClass, "candidate_preflight");
 });
 
+test("placeholder rejections have a separate finite budget even when source changes", () => {
+  const t = tracker({ maxAttempts: 3 });
+  t.begin({ targetDeclaration: "t", profile: "mathlib" });
+  for (let i = 0; i < 3; i += 1) {
+    assert.equal(t.beforeAttempt({ code: `theorem t : True := by sorry -- ${i}` }).allowed, true);
+    const snapshot = t.recordResult(failed("", {
+      status: "rejected", errorCode: "LEAN_CANDIDATE_PREFLIGHT_BLOCKED", attemptConsumed: false,
+      diagnostics: [], exitCode: null
+    }));
+    assert.equal(snapshot.attempt, 0, "no compiler execution was consumed");
+    assert.equal(snapshot.candidatePreflightRejections, i + 1);
+    assert.equal(snapshot.terminal, i === 2);
+  }
+  assert.equal(t.snapshot().terminalReason, "CANDIDATE_PREFLIGHT_BUDGET_EXHAUSTED");
+  assert.match(t.snapshot().nextAction, /NOT_VERIFIED/);
+  assert.equal(t.mustContinue(), false);
+  assert.equal(t.canFinalize(), true);
+  assert.equal(t.beforeAttempt({ code: "theorem t : True := by trivial" }).allowed, false);
+});
+
+test("a preflight rejection cannot reopen a proof whose wall-clock budget expired", () => {
+  let now = 0;
+  const t = tracker({ maxWallClockMs: 100 }, () => now);
+  t.begin({ targetDeclaration: "t", profile: "core" });
+  t.beforeAttempt({ code: "theorem t : True := by sorry" });
+  now = 101;
+  const snapshot = t.recordResult(failed("", {
+    status: "rejected", errorCode: "LEAN_CANDIDATE_PREFLIGHT_BLOCKED", attemptConsumed: false,
+    diagnostics: [], exitCode: null
+  }));
+  assert.equal(snapshot.terminalReason, "WALL_CLOCK_EXHAUSTED");
+  assert.equal(snapshot.terminal, true);
+  assert.equal(snapshot.attempt, 0);
+});
+
 test("TRACK-CP-02: after preflight rollback, next attempt is allowed at attempt=1", () => {
   const t = tracker();
   t.begin({ targetDeclaration: "t", profile: "core" });

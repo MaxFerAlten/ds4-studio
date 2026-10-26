@@ -627,3 +627,32 @@ describe("INSPECT-RETRY-005 escalation caps at LEAN_INSPECT_MAX_TIMEOUT_SEC", ()
     assert.equal(callTimeouts[1], 120000, "escalation caps at MAX_TIMEOUT_SEC (120)");
   });
 });
+
+describe("INSPECT-WRAP failed and wrapped #check output reaches the model", () => {
+  const inspect = (body, stdout, exitCode = 0) => executeLeanInspect(body, {
+    config: CONFIG, preflight: PREFLIGHT, resolveSandbox: SANDBOX_OK,
+    processRunner: runner({ stdout, exitCode }),
+  });
+
+  it("keeps the indented continuation of a universe-polymorphic signature", async () => {
+    const result = await inspect({ symbols: ["add_pow"] },
+      "add_pow.{u_1} {R : Type u_1} [CommSemiring R] (x y : R) (n : ℕ) :\n  (x + y) ^ n = ∑ m ∈ Finset.range (n + 1), x ^ m * y ^ (n - m) * ↑(n.choose m)\n");
+    assert.equal(result.symbols[0].output,
+      "add_pow.{u_1} {R : Type u_1} [CommSemiring R] (x y : R) (n : ℕ) : (x + y) ^ n = ∑ m ∈ Finset.range (n + 1), x ^ m * y ^ (n - m) * ↑(n.choose m)");
+  });
+
+  it("attaches each #check error to its own symbol by source line", async () => {
+    // source: line 1 blank, #check per symbol from line 2
+    const result = await inspect({ symbols: ["Nat.add_comm", "Nat.no_such_lemma"] },
+      "Nat.add_comm (n m : Nat) : n + m = m + n\n/work/Main.lean:3:7: error(lean.unknownConstant): Unknown constant `Nat.no_such_lemma`\n", 1);
+    assert.equal(result.status, "error");
+    assert.equal(result.symbols[0].output, "Nat.add_comm (n m : Nat) : n + m = m + n");
+    assert.equal(result.symbols[1].output, "[error] Unknown constant `Nat.no_such_lemma`");
+  });
+
+  it("reports an import failure on every symbol", async () => {
+    const result = await inspect({ symbols: ["add_pow"], imports: ["Mathlib.Nope"] },
+      "/work/Main.lean:1:0: error: unknown module prefix 'Mathlib.Nope'\n", 1);
+    assert.match(result.symbols[0].output, /^\[error\] unknown module prefix/);
+  });
+});

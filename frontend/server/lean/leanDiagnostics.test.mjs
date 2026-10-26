@@ -24,6 +24,15 @@ test("parseLeanDiagnostics — error diagnostic", () => {
   assert.equal(diagnostics[0].message, "type mismatch");
 });
 
+test("parseLeanDiagnostics — severity tagged with an error code", () => {
+  const { diagnostics } = parseLeanDiagnostics(
+    "/work/Main.lean:2:43: error(lean.unknownIdentifier): Unknown identifier `ℕ`\n\nHint: Perhaps you meant `Nat` in place of `ℕ`\n");
+  assert.equal(diagnostics.length, 1);
+  assert.equal(diagnostics[0].severity, "error");
+  assert.equal(diagnostics[0].line, 2);
+  assert.equal(diagnostics[0].message, "Unknown identifier `ℕ`\n\nHint: Perhaps you meant `Nat` in place of `ℕ`");
+});
+
 test("parseLeanDiagnostics — warning diagnostic", () => {
   const { diagnostics } = parseLeanDiagnostics("/tmp/Main.lean:5:10: warning: unused variable\n");
   assert.equal(diagnostics.length, 1);

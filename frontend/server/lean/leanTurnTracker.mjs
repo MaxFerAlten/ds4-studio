@@ -180,6 +180,7 @@ export class LeanTurnTracker {
     this.lastSourceSha256 = null;
     this.lastSource = null;
     this.unchangedSourceRejections = 0;
+    this.candidatePreflightRejections = 0;
     this.checkedSourceSha256 = null;
     this.checkedSource = null;
     this.checkedRunId = null;
@@ -473,12 +474,22 @@ export class LeanTurnTracker {
       this.lastSource = null;
     }
 
-    // WP03: candidate_preflight is repairable, not terminal. Do not count it
-    // as a same-failure (it's not a Lean diagnostic failure) and do not force
-    // a strategy change.
+    // A rejected candidate does not spend a compiler attempt, but it still
+    // spends a model round. Bound those rounds separately so changing a sorry
+    // candidate cannot keep the proof task alive forever at attempt zero.
     if (decision.failureClass === "candidate_preflight") {
-      this.state = "repair_required";
       this.lastFailureClass = decision.failureClass;
+      this.candidatePreflightRejections += 1;
+      if (this.#wallClockExpired()) {
+        this.#terminate("budget_exhausted", "WALL_CLOCK_EXHAUSTED");
+      } else if (this.candidatePreflightRejections >= this.config.maxAttempts) {
+        this.#terminate("budget_exhausted", "CANDIDATE_PREFLIGHT_BUDGET_EXHAUSTED");
+      } else {
+        this.state = "repair_required";
+      }
+      if (TERMINAL_STATES.includes(this.state)) {
+        this.nextAction = `Publish NOT_VERIFIED (${this.terminalReason}); do not submit another candidate in this proof task.`;
+      }
       return this.snapshot();
     }
 
@@ -585,6 +596,7 @@ export class LeanTurnTracker {
       strategyGeneration: this.strategyGeneration,
       strategyChangeRequired: this.strategyChangeRequired,
       prematureFinalizations: this.prematureFinalizations,
+      candidatePreflightRejections: this.candidatePreflightRejections,
       verified:
         this.state === "verified" &&
         this.targetStatementSha256 !== null &&

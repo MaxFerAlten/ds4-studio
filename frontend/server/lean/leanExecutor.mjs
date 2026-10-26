@@ -33,6 +33,8 @@ import {
   appendLeanProofIndex,
 } from "./leanPaths.mjs";
 import { leanRunEvent } from "./leanMetrics.mjs";
+import { detectLeanRuntimeFailure } from "./leanRepairPolicy.mjs";
+import { leanImportHints } from "./leanImportHints.mjs";
 
 // Telemetry that throws is swallowed — an observability sink must never turn a
 // completed check into a failure — but it is counted, so a permanently broken
@@ -392,8 +394,13 @@ export async function executeLeanCheck(request, options = {}) {
   }
 
   // Step 11: Build result
+  const runtimeFailure = detectLeanRuntimeFailure(procResult);
   const summary =
-    missingDeclarations.length > 0
+    runtimeFailure === "LEAN_RUNTIME_MEMORY_EXHAUSTED"
+      ? "Lean exhausted its configured memory limit before verification completed. Use narrower imports in a new attempt; the proof is NOT_VERIFIED."
+      : runtimeFailure
+      ? `Lean process crashed (exit ${procResult.exitCode ?? "unknown"}, signal ${procResult.signal || "none"}); the proof is NOT_VERIFIED.`
+      : missingDeclarations.length > 0
       ? `Lean elaboration completed, but expected declarations are missing: ${missingDeclarations.join(", ")}.`
       : summarizeLeanDiagnostics(diagnostics, status, { timeoutSec, exitCode: procResult.exitCode });
 
@@ -415,6 +422,11 @@ export async function executeLeanCheck(request, options = {}) {
     durationMs: procResult.durationMs,
     attemptConsumed: true,
     diagnostics,
+    importHints: leanImportHints(diagnostics, {
+      profileDir: runtimeSnapshot.profileDir,
+      imports: [...request.code.matchAll(/^import\s+(\S+)/gm)].map((m) => m[1]),
+      code: request.code
+    }),
     summary,
     stdout: procResult.stdout,
     stderr: procResult.stderr,
@@ -451,7 +463,9 @@ export async function executeLeanCheck(request, options = {}) {
       diagnostics: parsed.truncated,
     },
   });
-  if (missingDeclarations.length > 0) {
+  if (runtimeFailure) {
+    result.errorCode = runtimeFailure;
+  } else if (missingDeclarations.length > 0) {
     result.errorCode = "LEAN_DECLARATION_MISSING";
   }
 
