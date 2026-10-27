@@ -877,3 +877,16 @@ test("export adds no verification line when the answer already carries the serve
   assert.equal(markdown.match(/Verifica \(DS4 Studio\)/g).length, 1);
   assert.doesNotMatch(markdown, /> Verifica:/);
 });
+
+test("export prints the server's receipt under each tool call", () => {
+  const messages = [{
+    role: "assistant",
+    content: "",
+    tool_calls: [{ id: "l1", name: "lean_prepare", arguments: "{}", receipt: {
+      sequence: 2, status: "error", code: "LEAN_GOAL_NOT_DISCRIMINATING", durationMs: 8123,
+      inputSha256: "a".repeat(64), outputSha256: "b".repeat(64)
+    } }]
+  }];
+  const markdown = exportConversationMarkdown(messages);
+  assert.match(markdown, /### Tool Call: lean_prepare\n\ncall_id: `l1`\n\nreceipt: `#2 · error · LEAN_GOAL_NOT_DISCRIMINATING · 8123 ms · input sha256:aaaaaaaaaaaa · output sha256:bbbbbbbbbbbb`\n\n```json/);
+});

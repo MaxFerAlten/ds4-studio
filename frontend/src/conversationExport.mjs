@@ -84,6 +84,17 @@ function fenceBlock(content, language = "") {
 
 // The chat shows every Sage call except the compact trace the server marks
 // hidden (code, stdout, local paths): the export shows exactly the same.
+// The server's event for the call (plan §12): outcome, time and digests.
+function receiptLine(receipt) {
+  if (!receipt?.status) return "";
+  const parts = [`#${receipt.sequence}`, receipt.status];
+  if (receipt.code) parts.push(receipt.code);
+  if (Number.isFinite(receipt.durationMs)) parts.push(`${receipt.durationMs} ms`);
+  if (receipt.inputSha256) parts.push(`input sha256:${String(receipt.inputSha256).slice(0, 12)}`);
+  if (receipt.outputSha256) parts.push(`output sha256:${String(receipt.outputSha256).slice(0, 12)}`);
+  return `receipt: \`${parts.join(" · ")}\``;
+}
+
 function toolCallsMarkdown(toolCalls, { hiddenCallIds = new Set() } = {}) {
   if (!Array.isArray(toolCalls) || !toolCalls.length) return "";
   const filtered = toolCalls.filter((call) => !hiddenCallIds.has(call?.id));
@@ -92,7 +103,8 @@ function toolCallsMarkdown(toolCalls, { hiddenCallIds = new Set() } = {}) {
     .map((call) => {
       const name = toolCallName(call);
       const id = call?.id ? `\n\ncall_id: \`${call.id}\`` : "";
-      return `### Tool Call: ${name}${id}\n\n${fenceBlock(toolCallArguments(call), "json")}`;
+      const receipt = receiptLine(call?.receipt);
+      return `### Tool Call: ${name}${id}${receipt ? `\n\n${receipt}` : ""}\n\n${fenceBlock(toolCallArguments(call), "json")}`;
     })
     .join("\n\n");
 }

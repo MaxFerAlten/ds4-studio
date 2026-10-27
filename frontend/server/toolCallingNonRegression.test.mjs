@@ -75,7 +75,7 @@ test("the production non-Sage branch preserves legacy SSE and model payloads", a
   );
   assert.match(
     source,
-    /writeAgentSse\("agent_tool_result", \{\s*id: r\.id,\s*name: r\.name,\s*content: r\.content,\s*isError: r\.isError,\s*guarded: Boolean\(r\.guarded\)\s*\}\)/
+    /writeAgentSse\("agent_tool_result", \{\s*id: r\.id,\s*name: r\.name,\s*content: r\.content,\s*isError: r\.isError,\s*guarded: Boolean\(r\.guarded\),\s*receipt: r\.receipt\s*\}\)/
   );
   assert.match(
     source,

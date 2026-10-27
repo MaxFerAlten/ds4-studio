@@ -276,8 +276,9 @@ test("JS agent gates unsupported verified claims using current-turn evidence", a
   const source = await readFile(new URL("./index.mjs", import.meta.url), "utf8");
 
   assert.match(source, /import \{ checkVerifiedClaim, checkToolAttestations, toolAttestationNote \} from "\.\/claimGuard\.mjs"/);
-  assert.match(source, /toolReceipts\.push\(\{ tool: tc\.name, ok: !rawResult\?\.isError \}\)/);
-  assert.match(source, /checkToolAttestations\(assistantContent, toolReceipts\)/);
+  assert.match(source, /const toolEvents = new ToolEventLog\(\)/);
+  assert.match(source, /toolEvents\.record\(\{\s*call: tc, result, startedAt, aborted: controller\.signal\.aborted\s*\}\)/);
+  assert.match(source, /checkToolAttestations\(assistantContent, toolEvents\.events\)/);
   assert.match(source, /const turnEvidence = \[\]/);
   assert.match(source, /turnEvidence\.push\(/);
   assert.match(

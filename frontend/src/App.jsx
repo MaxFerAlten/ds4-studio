@@ -2156,7 +2156,8 @@ export default function App() {
                 const updated = [...calls];
                 updated[index] = {
                   ...updated[index],
-                  status: data.guarded ? "blocked" : data.isError ? "error" : "completed"
+                  status: data.guarded ? "blocked" : data.isError ? "error" : "completed",
+                  ...(data.receipt ? { receipt: data.receipt } : {})
                 };
                 next[i] = { ...next[i], tool_calls: updated };
                 break;

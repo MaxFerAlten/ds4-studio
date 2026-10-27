@@ -178,6 +178,7 @@ import { createCompressionMetrics, createCompressionMetricsHandler } from "./com
 import { compressAgentToolResult as compressAgentToolResultIfEnabled } from "./agentToolOutputCompression.mjs";
 import { guardAssistantDelta, hasStructuredSynthesis, readStructuredCheckpoint } from "./agentLoopGuard.mjs";
 import { checkVerifiedClaim, checkToolAttestations, toolAttestationNote } from "./claimGuard.mjs";
+import { ToolEventLog } from "./toolEventLog.mjs";
 import { envBooleanWithAliases } from "./envBoolean.mjs";
 import {
   evaluateLeanFinalCandidate,
@@ -3835,9 +3836,9 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
   if (contextInjection?.capsuleMessage) fullMessages.push(contextInjection.capsuleMessage);
 
   const turnEvidence = [];
-  // One record per dispatched verifier call, written by the server: the only
-  // source a "verified with <tool>" sentence may cite (audit F27).
-  const toolReceipts = [];
+  // One event per tool call, written by the dispatcher: the only source a
+  // "verified with <tool>" sentence may cite (audit F27, plan §12).
+  const toolEvents = new ToolEventLog();
   // Rewrites of a refused final answer, shared by the attestation and Lean
   // gates: each rewrite is a full uncached round, and two gates refusing in
   // turn otherwise run the turn to the iteration cap.
@@ -4427,7 +4428,7 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
         leanTracker.used ||
         // A turn that offers a verifier may credit it in prose: hold the text
         // until the attestation check has ruled (INV-022).
-        mathToolOffers.sage || mathToolOffers.lean || toolReceipts.length > 0;
+        mathToolOffers.sage || mathToolOffers.lean || toolEvents.length > 0;
       const deferredAssistantText = new AuthoritativeOutputBuffer();
       const deferredAssistantReasoning = new AuthoritativeOutputBuffer();
       // C agent_repetition_detector: reasoning and prose of ONE round that
@@ -4583,7 +4584,7 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
       // With a verifier on offer the prose may attribute results to it, and a
       // sentence already streamed cannot be withdrawn: hold it for the check.
       const responseWithheldForAttestation = !responseBelongsToSage && !responseWithheldForLean &&
-        (mathToolOffers.sage || mathToolOffers.lean || toolReceipts.length > 0);
+        (mathToolOffers.sage || mathToolOffers.lean || toolEvents.length > 0);
       // §37 — with tool calls pending this prose is a candidate, not a
       // publication, and in block mode a candidate is never streamed before the
       // gate has ruled on it.
@@ -4619,7 +4620,7 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
       // the iteration cap and drops the status report with a bare error.  Publish
       // it as-is, flagged as unvalidated.  Sage and Lean keep their own paths.
       if (wrapUpRound && isFinalResponse && !responseBelongsToSage && !responseWithheldForLean) {
-        const wrapUpAttestation = checkToolAttestations(assistantContent, toolReceipts);
+        const wrapUpAttestation = checkToolAttestations(assistantContent, toolEvents.events);
         if (wrapUpAttestation) {
           const note = toolAttestationNote(wrapUpAttestation);
           assistantContent += note;
@@ -4741,7 +4742,7 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
       }
       // INV-022/INV-023: a result attributed to a verifier needs that
       // verifier's own receipt, and the final answer is gated like any other.
-      const attestationDecision = isFinalResponse ? checkToolAttestations(assistantContent, toolReceipts) : undefined;
+      const attestationDecision = isFinalResponse ? checkToolAttestations(assistantContent, toolEvents.events) : undefined;
       if (attestationDecision) {
         writeAgentSse("agent_warning", {
           type: attestationDecision.type,
@@ -5242,6 +5243,8 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
         writeAgentSse("agent_warning", { type: toolGate.code, warning: guidance });
         for (const tc of toolCalls) {
           verificationPlan?.recordBlocked({ callId: tc.id, toolName: tc.name, code: toolGate.code });
+          const receipt = ToolEventLog.receipt(toolEvents.record({ call: tc, startedAt: Date.now(),
+            result: { content: toolGate.code, code: toolGate.code, isError: true, guarded: true } }));
           writeAgentSse("agent_tool_call", {
             id: tc.id,
             name: tc.name,
@@ -5252,7 +5255,8 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
             name: tc.name,
             content: toolGate.code,
             isError: true,
-            guarded: true
+            guarded: true,
+            receipt
           });
           fullMessages.push({
             role: "tool",
@@ -5310,6 +5314,8 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
         });
         for (const tc of toolCalls) {
           verificationPlan?.recordBlocked({ callId: tc.id, toolName: tc.name, code: sageBlock.code });
+          const receipt = ToolEventLog.receipt(toolEvents.record({ call: tc, startedAt: Date.now(),
+            result: { content: sageBlock.code, code: sageBlock.code, isError: true, guarded: true } }));
           const hiddenByDefault = false;
           writeAgentSse("agent_tool_call", {
             id: tc.id,
@@ -5323,7 +5329,8 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
             content: sageBlock.code,
             isError: true,
             guarded: true,
-            hiddenByDefault
+            hiddenByDefault,
+            receipt
           });
           fullMessages.push({
             role: "tool",
@@ -5767,7 +5774,6 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
           rawResult = await executeTool(tc.name, tc.arguments, opts);
         }
         verificationPlan?.recordResult({ callId: tc.id, isError: Boolean(rawResult?.isError), guarded: false, code: rawResult?.code });
-        toolReceipts.push({ tool: tc.name, ok: !rawResult?.isError });
         if (tc.name === "lean_prepare" && rawResult?.raw?.prepared === true && rawResult.raw.spec?.sealed) {
           leanTaskSpec = rawResult.raw.spec;
           verificationPlan?.recordLeanPreparation(leanTaskSpec);
@@ -5986,9 +5992,17 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
 
       for (const group of groups) {
         if (controller.signal.aborted) break;
+        const recordedToolCall = async (tc) => {
+          const startedAt = Date.now();
+          const result = await runToolCall(tc);
+          result.receipt = ToolEventLog.receipt(toolEvents.record({
+            call: tc, result, startedAt, aborted: controller.signal.aborted
+          }));
+          return result;
+        };
         const results = group.length === 1
-          ? [await runToolCall(group[0])]
-          : await Promise.all(group.map(runToolCall));
+          ? [await recordedToolCall(group[0])]
+          : await Promise.all(group.map(recordedToolCall));
 
         for (const r of results) {
           verificationPlan?.recordResult({ callId: r.id, isError: Boolean(r.isError), guarded: Boolean(r.guarded) });
@@ -6000,6 +6014,7 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
               isError: r.isError,
               guarded: Boolean(r.guarded),
               hiddenByDefault: false,
+              receipt: r.receipt,
               sage: {
                 contractVersion: r.sageResult?.contractVersion,
                 runId: r.runId,
@@ -6015,7 +6030,8 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
               name: r.name,
               content: r.content,
               isError: r.isError,
-              guarded: Boolean(r.guarded)
+              guarded: Boolean(r.guarded),
+              receipt: r.receipt
             });
           }
           fullMessages.push({
