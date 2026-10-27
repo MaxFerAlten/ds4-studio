@@ -833,3 +833,33 @@ test("UTF8-001 export round-trips Lean Unicode back through the parser", () => {
   assert.match(joined, /ℝ → ℝ/);
   assert.doesNotMatch(joined, /�/);
 });
+
+test("export shows the Sage calls the chat shows and each turn's verification result", () => {
+  const status = (sage, lean, code = null) => ({
+    required: ["sage", "lean"],
+    verifiers: { sage: { status: sage, code: null }, lean: { status: lean, code } }
+  });
+  const messages = [
+    { role: "user", content: "procedi" },
+    {
+      role: "assistant",
+      content: "",
+      tool_calls: [{ id: "s1", name: "sage", arguments: "{\"code\":\"expand((x+y)^3)\"}" }],
+      verificationStatus: status("running", "pending")
+    },
+    { role: "tool", name: "sage", toolCallId: "s1", content: "Report SageMath validato." },
+    {
+      role: "assistant",
+      content: "Risposta: D.",
+      verificationStatus: status("verified", "not_verified", "LEAN_GOAL_REJECTED_REPEATEDLY")
+    },
+    { role: "user", content: "grazie" },
+    { role: "assistant", content: "Prego." }
+  ];
+
+  const markdown = exportConversationMarkdown(messages);
+  assert.match(markdown, /### Tool Call: sage[\s\S]*expand\(\(x\+y\)\^3\)/);
+  assert.match(markdown, /## Tool: sage\n\ntool_call_id: `s1`\n\n```text\nReport SageMath validato\.\n```/);
+  assert.match(markdown, /Risposta: D\.\n\n> Verifica: SageMath: VERIFICATO · Lean 4: NON VERIFICATO \(LEAN_GOAL_REJECTED_REPEATEDLY\)/);
+  assert.equal(markdown.match(/> Verifica:/g).length, 1);
+});

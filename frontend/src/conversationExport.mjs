@@ -82,9 +82,11 @@ function fenceBlock(content, language = "") {
   return `${fence}${language}\n${raw}\n${fence}`;
 }
 
-function toolCallsMarkdown(toolCalls, { hideSage = false } = {}) {
+// The chat shows every Sage call except the compact trace the server marks
+// hidden (code, stdout, local paths): the export shows exactly the same.
+function toolCallsMarkdown(toolCalls, { hiddenCallIds = new Set() } = {}) {
   if (!Array.isArray(toolCalls) || !toolCalls.length) return "";
-  const filtered = hideSage ? toolCalls.filter((call) => toolCallName(call) !== "sage") : toolCalls;
+  const filtered = toolCalls.filter((call) => !hiddenCallIds.has(call?.id));
   if (!filtered.length) return "";
   return filtered
     .map((call) => {
@@ -95,10 +97,10 @@ function toolCallsMarkdown(toolCalls, { hideSage = false } = {}) {
     .join("\n\n");
 }
 
-function toolResultMarkdown(message, { hideSage = false } = {}) {
-  if (hideSage && message.name === "sage") return "";
+function toolResultMarkdown(message) {
   const parts = [];
-  if (message.tool_call_id) parts.push(`tool_call_id: \`${message.tool_call_id}\``);
+  const callId = message.tool_call_id || message.toolCallId;
+  if (callId) parts.push(`tool_call_id: \`${callId}\``);
   parts.push(fenceBlock(message.content || "", "text"));
   return parts.join("\n\n");
 }
@@ -236,21 +238,65 @@ export async function exportProfessionalMarkdown(
   return `${body.trim()}\n`;
 }
 
+const VERIFIER_LABELS = { sage: "SageMath", lean: "Lean 4" };
+const VERIFIER_STATUS_LABELS = { verified: "VERIFICATO", not_verified: "NON VERIFICATO" };
+
+function verificationLine(status) {
+  const required = Array.isArray(status?.required) ? status.required : [];
+  if (!required.length) return "";
+  const results = required.map((name) => {
+    const result = status.verifiers?.[name] || {};
+    const label = VERIFIER_STATUS_LABELS[result.status] || "NON CONCLUSO";
+    return `${VERIFIER_LABELS[name] || name}: ${label}${result.code ? ` (${result.code})` : ""}`;
+  });
+  return `> Verifica: ${results.join(" · ")}`;
+}
+
+// One line per turn, under its last written answer, from the turn's latest
+// verification status: the status is tagged on whichever assistant message was
+// last when it arrived, often an empty placeholder.
+function turnVerificationNotes(messages) {
+  const notes = new Map();
+  let status = null;
+  let answerIndex = -1;
+  const close = () => {
+    const line = verificationLine(status);
+    if (line && answerIndex >= 0) notes.set(answerIndex, line);
+    status = null;
+    answerIndex = -1;
+  };
+  messages.forEach((message, index) => {
+    if (message?.role === "user") close();
+    if (message?.role !== "assistant") return;
+    if (message.verificationStatus) status = message.verificationStatus;
+    if (!message.agentNotice && String(message.content || "").trim()) answerIndex = index;
+  });
+  close();
+  return notes;
+}
+
 function buildConversationMarkdown(messages, { includeReasoning = false, metadata = null, mode = "obsidian", hideCompactSageTrace = true } = {}) {
   const blocks = [mode === "raw" ? "# DS4 Conversation (raw)" : "# DS4 Conversation"];
+  const isHiddenSageTrace = (message) => hideCompactSageTrace &&
+    message?.role === "tool" && message.name === "sage" && message.hiddenByDefault === true;
+  const hiddenCallIds = new Set((messages || [])
+    .filter(isHiddenSageTrace)
+    .map((message) => message.tool_call_id || message.toolCallId)
+    .filter(Boolean));
+  const verificationNotes = turnVerificationNotes(messages || []);
 
-  for (const message of messages || []) {
+  for (const [index, message] of (messages || []).entries()) {
     // Client-side notices (agent mode toggles, error banners) are UI-only and
     // must not be serialised as assistant turns: they would corrupt the
     // transcript if it were ever re-injected into a backend conversation.
     // Exception: notices flagged `exportable` (e.g. /crawl results) carry real
     // content the user wants in the export.
     if (message.agentNotice && !message.exportable) continue;
-    if (hideCompactSageTrace && message.role === "tool" && message.name === "sage") continue;
+    if (isHiddenSageTrace(message)) continue;
 
     const content = renderContent(message, "content", mode);
     const reasoning = renderContent(message, "reasoning", mode);
-    const toolCalls = toolCallsMarkdown(message.tool_calls, { hideSage: hideCompactSageTrace });
+    const toolCalls = toolCallsMarkdown(message.tool_calls, { hiddenCallIds });
     if (!content && !toolCalls && (!includeReasoning || !reasoning)) continue;
 
     const title = message.role === "tool" && message.name
@@ -260,9 +306,9 @@ function buildConversationMarkdown(messages, { includeReasoning = false, metadat
     if (includeReasoning && reasoning) parts.push(`### Reasoning\n\n${reasoning}`);
     if (toolCalls) parts.push(toolCalls);
     if (message.role === "tool") {
-      const resultMd = toolResultMarkdown(message, { hideSage: hideCompactSageTrace });
-      if (resultMd) parts.push(resultMd);
+      parts.push(toolResultMarkdown(message));
     } else if (content) parts.push(content);
+    if (verificationNotes.has(index)) parts.push(verificationNotes.get(index));
     blocks.push(parts.join("\n\n"));
   }
 
