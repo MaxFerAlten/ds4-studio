@@ -21,8 +21,8 @@ const question = [
   "B) C(m,k) a^(m-k) b^k",
   "Rispondi e verifica con Lean."
 ].join("\n");
-// True of both alternatives: it sums the terms instead of naming one.
-const aggregate = "theorem term_sum (m : Nat) : 2 ^ m = 2 ^ m";
+// True of both alternatives (and not by rfl alone): it names no term.
+const aggregate = "theorem term_sum (m : Nat) : 0 + m = m";
 const intent = { content: JSON.stringify({ verification_requested: true, tool_evaluation_requested: false,
   required_tools: ["lean_check"], tool_selection: ["lean_check"], skill_actions: [] }), finish: "stop" };
 // The model rewords its claim on every retry, as it did in the audit: only the

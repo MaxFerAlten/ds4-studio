@@ -71,7 +71,15 @@ export function buildLeanGoalCheck(args = {}) {
     ""
   ].join("\n");
   return { prepared: false, verified: false, profile, statement, source,
-    targetDeclaration: args.target_declaration, claim: args.claim.trim(), imports };
+    targetDeclaration: args.target_declaration, claim: args.claim.trim(), imports,
+    // Binders before the colon, or a ∀ after it: the statement is about variables.
+    general: /[({[]/.test(statement.slice(0, colon)) || /∀|\bforall\b/.test(statement.slice(colon + 1)),
+    definitionalProbe: [
+      ...imports.map((name) => `import ${name}`),
+      "set_option autoImplicit false",
+      `${statement} := by\n  intros\n  rfl`,
+      ""
+    ].join("\n") };
 }
 
 /** Only successful compiler and semantic checks may create an immutable spec. */
@@ -88,6 +96,20 @@ export async function prepareLeanGoal(args, { checkGoal, reviewGoal } = {}) {
       profile: goal.profile, diagnostics: checked?.diagnostics || [], importHints: checked?.importHints || [],
       retryable: checked?.orchestration?.terminal !== true, preparationSource: goal.source
     });
+  }
+  // P4 (plan §10.3): a statement about variables that the kernel closes by
+  // unfolding definitions alone restates them; proving it says nothing about
+  // the question. A closed fact closed by rfl is a computation, and stays.
+  if (goal.general) {
+    const probe = await checkGoal({ contractVersion: "lean_check_request_v1", code: goal.definitionalProbe,
+      taskMode: "utility", profile: goal.profile, mode: "check", proofPolicy: "typecheck" });
+    if (probe?.status === "checked" && probe.exitCode === 0 && !probe.isError && !probe.timedOut && !probe.cancelled) {
+      return rejected("LEAN_GOAL_DEFINITIONAL",
+        "Lean proves this statement by `rfl` alone: it holds by unfolding its own definitions, so proving it checks nothing. " +
+        "State the property the answer must satisfy from the question's own data (for example a recursive definition or the first terms), " +
+        "so that the formula has to be derived.",
+        { profile: goal.profile, preparationSource: goal.source });
+    }
   }
   let review;
   try {

@@ -1,4 +1,4 @@
-import { taskContractInstruction } from "./taskContract.mjs";
+import { taskContractInstruction, taskContractLanguage } from "./taskContract.mjs";
 const TOOL_VERIFIER = Object.freeze({ sage: "sage", lean_check: "lean", lean_prepare: "lean", lean_inspect: "lean" });
 const TOOL_NAMES = Object.freeze({
   sage: Object.freeze(["sage"]),
@@ -235,7 +235,8 @@ export class AuthoritativeVerificationPlan {
       "Never attribute a result to a tool that is not listed above as run in this turn.",
       CONVENTION_CHECK_INSTRUCTION,
       ...(taskContractInstruction(this.taskContract) ? [taskContractInstruction(this.taskContract)] : []),
-      "Write the final answer directly in the language of the user's question, starting with the answer: do not narrate your plan or restate these instructions."
+      "Write the final answer directly in the language of the user's question, starting with the answer: do not narrate your plan, the tools' outcome (the server reports it) or these instructions.",
+      ...(taskContractLanguage(this.taskContract) ? [taskContractLanguage(this.taskContract)] : [])
     ].join("\n");
   }
 

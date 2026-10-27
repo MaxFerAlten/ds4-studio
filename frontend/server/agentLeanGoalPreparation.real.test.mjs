@@ -111,7 +111,7 @@ test("real JS agent refuses a rejected goal again without review and ends Lean a
   const turns = [intent, call("w1", "lean_prepare", prepare(weak)), review(false),
     // Same statement with a reworded claim: only the statement decides a refusal.
     call("w2", "lean_prepare", { ...prepare(weak), claim: "The sum of two naturals does not depend on their order." }),
-    call("w3", "lean_prepare", prepare("theorem addition_commutes (x : Nat) : x = x")), review(false),
+    call("w3", "lean_prepare", prepare("theorem addition_commutes (x : Nat) : 0 + x = x")), review(false),
     { content: "Lean: NOT_VERIFIED.", finish: "stop" }];
   const backend = await startFakeBackend({ turns });
   const runsRoot = resolve(tmpdir(), `ds4-agent-goals-${process.pid}-rejections`);

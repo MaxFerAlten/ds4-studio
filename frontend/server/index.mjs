@@ -179,7 +179,7 @@ import { compressAgentToolResult as compressAgentToolResultIfEnabled } from "./a
 import { guardAssistantDelta, hasStructuredSynthesis, readStructuredCheckpoint } from "./agentLoopGuard.mjs";
 import { checkVerifiedClaim, checkToolAttestations, toolAttestationNote } from "./claimGuard.mjs";
 import { ToolEventLog } from "./toolEventLog.mjs";
-import { TASK_CONTRACT_PROMPT, parseTaskContract, taskContractInstruction } from "./taskContract.mjs";
+import { TASK_CONTRACT_PROMPT, parseTaskContract, taskContractInstruction, taskContractLanguage } from "./taskContract.mjs";
 import { OPTION_CLAIMS_PROMPT, optionClaimsReportLines, optionClaimsRequest, parseOptionClaims } from "./optionClaims.mjs";
 import { envBooleanWithAliases } from "./envBoolean.mjs";
 import {
@@ -3875,7 +3875,7 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
   if (requestIntent.toolEvaluationRequested) {
     // With a verification plan the convention check belongs to its final
     // prompt: asked during the tool phases it competes with the tool work.
-    const contractNote = verificationPlan ? "" : taskContractInstruction(taskContract);
+    const contractNote = verificationPlan ? "" : [taskContractInstruction(taskContract), taskContractLanguage(taskContract)].filter(Boolean).join("\n");
     fullMessages.push({ role: "user", content: `[DS4 Studio] ${TOOL_EVALUATION_INSTRUCTION}${verificationPlan ? "" : ` ${CONVENTION_CHECK_INSTRUCTION}`}${contractNote ? `\n${contractNote}` : ""}` });
   }
   if (verificationPlan) {

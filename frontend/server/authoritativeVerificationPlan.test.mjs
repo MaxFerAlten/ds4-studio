@@ -229,3 +229,15 @@ test("the final prompt carries the task contract's open readings", () => {
   bare.finishVerifier("sage", "verified");
   assert.doesNotMatch(bare.finalPrompt(), /TASK_CONTRACT/);
 });
+
+test("the final prompt leaves the tools' outcome to the server's status block", () => {
+  const plan = createAuthoritativeVerificationPlan({ verificationRequested: true, requiredTools: ["lean_check"] });
+  plan.finishVerifier("lean", "not_verified", "LEAN_GOAL_REJECTED_REPEATEDLY");
+  assert.match(plan.finalPrompt(), /starting with the answer: do not narrate your plan, the tools' outcome \(the server reports it\) or these instructions\./);
+});
+
+test("the final prompt names the answer's language from the task contract", () => {
+  const plan = createAuthoritativeVerificationPlan({ verificationRequested: true, requiredTools: ["sage"], taskContract: { language: "Italian", openConventions: [] } });
+  plan.finishVerifier("sage", "verified");
+  assert.match(plan.finalPrompt(), /\nWrite the whole final answer in Italian\.$/);
+});

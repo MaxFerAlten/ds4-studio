@@ -1,8 +1,9 @@
 import { hashLeanTargetStatement } from "./leanTaskSpec.mjs";
 
-// Refusals the semantic review decided on the statement itself. A typecheck
+// Refusals decided on the statement itself (semantic review, definitional
+// probe). A typecheck
 // failure can depend on imports, so it never marks a statement as rejected.
-const SEMANTIC_REFUSALS = new Set(["LEAN_GOAL_SCOPE_MISMATCH", "LEAN_GOAL_NOT_DISCRIMINATING"]);
+const SEMANTIC_REFUSALS = new Set(["LEAN_GOAL_SCOPE_MISMATCH", "LEAN_GOAL_NOT_DISCRIMINATING", "LEAN_GOAL_DEFINITIONAL"]);
 
 function statementKey(args) {
   const hashed = hashLeanTargetStatement(args?.target_statement, args?.target_declaration);

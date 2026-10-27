@@ -50,3 +50,16 @@ test("real goal preparation permits fixing legacy sum syntax before the target i
   assert.equal(ready.prepared, true, JSON.stringify(ready));
   assert.equal(ready.verified, false);
 });
+
+// P4 (plan §10.3), observed live: a target that defines the sequence by the
+// formula under test and then states the formula is closed by rfl.
+test("real goal preparation refuses a statement Lean closes by rfl alone", core, async () => {
+  const tautology = await prepareLeanGoal({ claim: "The n-th term of a geometric progression.", target_declaration: "nth_term",
+    target_statement: "theorem nth_term (a q n : Nat) : (fun k : Nat => a * q ^ (k - 1)) n = a * q ^ (n - 1)" }, { checkGoal, reviewGoal });
+  assert.equal(tautology.prepared, false);
+  assert.equal(tautology.code, "LEAN_GOAL_DEFINITIONAL");
+  const recursive = await prepareLeanGoal({ claim: "The n-th term of a geometric progression.", target_declaration: "nth_term",
+    target_statement: "theorem nth_term (a q : Nat) (g : Nat → Nat) (h1 : g 1 = a) (hs : ∀ k, 1 ≤ k → g (k + 1) = q * g k) (n : Nat) (hn : 1 ≤ n) : g n = a * q ^ (n - 1)" },
+  { checkGoal, reviewGoal });
+  assert.equal(recursive.prepared, true, JSON.stringify(recursive));
+});

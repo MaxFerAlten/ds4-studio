@@ -4,12 +4,16 @@ import { buildLeanGoalCheck, prepareLeanGoal, parseLeanGoalReview, formatLeanGoa
 
 const goal = (extra = {}) => ({ claim: "Addition of naturals is commutative.", target_declaration: "addition_commutes",
   target_statement: "theorem addition_commutes (x n : ℕ) : x + n = n + x", ...extra });
-const checked = async () => ({ status: "checked", exitCode: 0, taskMode: "utility", isError: false });
+// The goal typechecks; its definitional probe (`intros; rfl`) does not close it.
+const isProbe = (body) => /:= by\n  intros\n  rfl/.test(body?.code || "");
+const checked = async (body) => isProbe(body)
+  ? { status: "failed", exitCode: 1, isError: true, summary: "rfl failed" }
+  : { status: "checked", exitCode: 0, taskMode: "utility", isError: false };
 const accepted = async () => ({ matches_request: true, selection_question: false, discriminates: true, feedback: "The quantified equality matches the task." });
 
 test("preparation checks a Prop definition with explicit variables, without claiming a proof", async () => {
   let request;
-  const result = await prepareLeanGoal(goal(), { checkGoal: async (body) => { request = body; return checked(); }, reviewGoal: accepted });
+  const result = await prepareLeanGoal(goal(), { checkGoal: async (body) => { request ??= body; return checked(body); }, reviewGoal: accepted });
   assert.equal(request.taskMode, "utility");
   assert.match(request.code, /set_option autoImplicit false/);
   assert.match(request.code, /noncomputable def addition_commutes \(x n : ℕ\) : Prop :=/);
@@ -99,4 +103,29 @@ test("a single stated claim is never refused for lack of discrimination", async 
   const result = await prepareLeanGoal(goal(), { checkGoal: checked,
     reviewGoal: async () => ({ matches_request: true, selection_question: false, discriminates: false, feedback: "ok" }) });
   assert.equal(result.prepared, true);
+});
+
+test("P4: a general statement Lean closes by rfl alone is refused before review", async () => {
+  let reviewed = false;
+  const bodies = [];
+  const result = await prepareLeanGoal(goal({ target_declaration: "nth_term",
+    target_statement: "theorem nth_term (a q : ℕ) (n : ℕ) : (fun k : ℕ => a * q ^ (k - 1)) n = a * q ^ (n - 1)" }), {
+    checkGoal: async (body) => { bodies.push(body.code); return { status: "checked", exitCode: 0, isError: false }; },
+    reviewGoal: async () => { reviewed = true; return accepted(); }
+  });
+  assert.equal(result.prepared, false);
+  assert.equal(result.code, "LEAN_GOAL_DEFINITIONAL");
+  assert.equal(result.retryable, true);
+  assert.equal(reviewed, false);
+  assert.match(bodies[1], /theorem nth_term \(a q : ℕ\) \(n : ℕ\) : .* := by\n  intros\n  rfl/);
+});
+
+test("P4: a closed fact is never probed, a general one that rfl cannot close goes on to review", async () => {
+  const bodies = [];
+  const closed = await prepareLeanGoal(goal({ target_declaration: "pow_ten", target_statement: "theorem pow_ten : 2 ^ 10 = 1024" }),
+    { checkGoal: async (body) => { bodies.push(body.code); return checked(body); }, reviewGoal: accepted });
+  assert.equal(closed.prepared, true);
+  assert.equal(bodies.length, 1);
+  const general = await prepareLeanGoal(goal(), { checkGoal: checked, reviewGoal: accepted });
+  assert.equal(general.prepared, true);
 });
