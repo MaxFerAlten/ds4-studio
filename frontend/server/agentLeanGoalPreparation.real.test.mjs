@@ -103,3 +103,73 @@ test("real JS agent refuses a non-discriminating target and locks the one that s
     server.stop(); await backend.close(); await rm(runsRoot, { recursive: true, force: true });
   }
 });
+
+test("real JS agent refuses a rejected goal again without review and ends Lean after the refusal budget", {
+  skip: process.env.DS4_TEST_REAL_LEAN !== "1", timeout: 120000
+}, async () => {
+  const weak = "theorem addition_commutes : True";
+  const turns = [intent, call("w1", "lean_prepare", prepare(weak)), review(false),
+    // Same statement with a reworded claim: only the statement decides a refusal.
+    call("w2", "lean_prepare", { ...prepare(weak), claim: "The sum of two naturals does not depend on their order." }),
+    call("w3", "lean_prepare", prepare("theorem addition_commutes (x : Nat) : x = x")), review(false),
+    { content: "Lean: NOT_VERIFIED.", finish: "stop" }];
+  const backend = await startFakeBackend({ turns });
+  const runsRoot = resolve(tmpdir(), `ds4-agent-goals-${process.pid}-rejections`);
+  const server = await startServerChild(backend, { env: {
+    DS4_LEAN_ENABLED: "1", DS4_LEAN_DEFAULT_PROFILE: "core", DS4_LEAN_POLICY_AUTO: "0",
+    DS4_SAGE_POLICY_AUTO: "0", DS4_SAGE_SKILL_AUTO: "0", DS4_AGENT_LEAN_MAX_GOAL_REJECTIONS: "3",
+    DS4_LEAN_RUNTIME_ROOT: resolve(root, "lean-runtime"), DS4_LEAN_RUNS_ROOT: runsRoot
+  } });
+  try {
+    const headers = { "Content-Type": "application/json", "X-Agent-Session-Key": "goal-rejections" };
+    await fetch(`${server.base}/api/agent/start`, { method: "POST", headers, body: "{}" });
+    const response = await fetch(`${server.base}/api/agent/chat`, { method: "POST", headers,
+      body: JSON.stringify({ message: "Dimostra che l'addizione dei naturali è commutativa usando Lean." }), signal: AbortSignal.timeout(110000) });
+    const sse = await response.text();
+    assert.equal(response.status, 200, sse);
+    assert.match(sse, /LEAN_GOAL_ALREADY_REJECTED/);
+    assert.match(sse, /LEAN_GOAL_REJECTED_REPEATEDLY/);
+    assert.match(sse, /Lean: NOT_VERIFIED\./);
+    assert.doesNotMatch(sse, /prepared=true|event: agent_error/);
+    const statuses = [...sse.matchAll(/event: agent_verification_status\ndata: (.*)\n/g)].map((m) => JSON.parse(m[1]));
+    assert.ok(statuses.some((s) => JSON.stringify(s).includes("LEAN_GOAL_REJECTED_REPEATEDLY")), JSON.stringify(statuses.at(-1)));
+    const requests = backend.log.filter((entry) => entry.path === "POST /v1/chat/completions");
+    assert.equal(requests.filter((entry) => entry.body.messages[0]?.content?.includes?.("faithfully formalizes")).length, 2);
+  } finally {
+    server.stop(); await backend.close(); await rm(runsRoot, { recursive: true, force: true });
+  }
+});
+
+test("real JS agent publishes a refused final answer with a server note once its rewrites run out", {
+  skip: process.env.DS4_TEST_REAL_LEAN !== "1", timeout: 120000
+}, async () => {
+  // Each answer omits the checked source, so the Lean gate refuses every one.
+  const unsourced = (i) => ({ content: `STATO: VERIFIED (${i}) — Lean ha verificato la commutatività.`, finish: "stop" });
+  const turns = [intent, call("prepare", "lean_prepare", prepare()), review(true), proof,
+    unsourced(1), unsourced(2), unsourced(3), unsourced(4), unsourced(5)];
+  const backend = await startFakeBackend({ turns });
+  const runsRoot = resolve(tmpdir(), `ds4-agent-goals-${process.pid}-rewrites`);
+  const server = await startServerChild(backend, { env: {
+    DS4_LEAN_ENABLED: "1", DS4_LEAN_DEFAULT_PROFILE: "core", DS4_LEAN_POLICY_AUTO: "0",
+    DS4_SAGE_POLICY_AUTO: "0", DS4_SAGE_SKILL_AUTO: "0",
+    DS4_LEAN_RUNTIME_ROOT: resolve(root, "lean-runtime"), DS4_LEAN_RUNS_ROOT: runsRoot
+  } });
+  try {
+    const headers = { "Content-Type": "application/json", "X-Agent-Session-Key": "goal-final-rewrites" };
+    await fetch(`${server.base}/api/agent/start`, { method: "POST", headers, body: "{}" });
+    const response = await fetch(`${server.base}/api/agent/chat`, { method: "POST", headers,
+      body: JSON.stringify({ message: "Dimostra che l'addizione dei naturali è commutativa usando Lean." }), signal: AbortSignal.timeout(110000) });
+    const sse = await response.text();
+    assert.equal(response.status, 200, sse);
+    assert.match(sse, /"verified":true/);
+    assert.match(sse, /STATO: VERIFIED \(3\)/);
+    assert.match(sse, /\[DS4 Studio\] Lean: nessuna prova verificata corrisponde a questa risposta \(LEAN_ANSWER_SOURCE_MISMATCH\)/);
+    assert.doesNotMatch(sse, /STATO: VERIFIED \((?:1|2|4)\)/);
+    assert.match(sse, /"leanVerified":false/);
+    const finals = backend.log.filter((entry) => entry.path === "POST /v1/chat/completions").length;
+    // router, prepare, review, proof, then exactly three final candidates.
+    assert.equal(finals, 7);
+  } finally {
+    server.stop(); await backend.close(); await rm(runsRoot, { recursive: true, force: true });
+  }
+});

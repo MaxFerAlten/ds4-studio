@@ -7,6 +7,9 @@ const TOOL_TO_VERIFIER = Object.freeze({ sage: "sage", lean_check: "lean" });
 
 const VERIFIER_ORDER = Object.freeze(["sage", "lean"]);
 
+/** For the answer itself: the final prompt, and a tool evaluation answered without a verification plan. */
+export const CONVENTION_CHECK_INSTRUCTION = "When the question offers alternatives, answer under the standard convention of the field and state it. An alternative equal to the reference with its terms listed in reverse order, or with its index shifted, is correct under exactly that rearrangement of the convention, whether a tool or your own check on the smallest instance finds it. For each alternative you reject, state the reading under which it would be correct (or that none exists), checked on the smallest instance where the alternatives take different values, and whether a symbol or word of the question itself excludes that reading. Name as the convention the answer depends on exactly a reading the question does not exclude that would select a different alternative; if none remains, say the notation fixes the answer.";
+
 /**
  * Server-owned state for an LLM-classified mathematical verification request.
  * Tool trackers still own verifier semantics; this object only serializes the
@@ -198,7 +201,7 @@ export class AuthoritativeVerificationPlan {
     const reminder = this.missingCallNudges[verifier] > 0
       ? " VERIFICATION_CALL_REQUIRED: the active verifier still needs an actual server-side tool call/result; blocked calls are not executions."
       : "";
-    const scope = " Independently challenge the previous answer against the original problem. Preserve the hypotheses, quantifiers, indexing and ordering. Do not define the desired answer as the expected value and then compare it with itself. An aggregate identity or finite examples do not by themselves verify an indexed claim or a general theorem. Before formalizing, state the convention the answer depends on and evaluate the answer and its competing alternatives on the smallest admissible case; if that case contradicts the answer, correct the answer first. A convention matters only if switching it changes which alternative is right: check that on the same smallest case, and do not cite a convention the notation already fixes.";
+    const scope = ` Independently challenge the previous answer against the original problem. Preserve the hypotheses, quantifiers, indexing and ordering. Do not define the desired answer as the expected value and then compare it with itself. An aggregate identity or finite examples do not by themselves verify an indexed claim or a general theorem. Before formalizing, evaluate the answer and each competing alternative on the smallest instance where they take different values and report those values; if that instance contradicts the answer, correct the answer first. Compute the reference under the standard convention of the field and say which convention that is; for an indexed object, print each alternative's values at every index and whether that list equals the reference, the reference reversed, or the reference shifted by one index.`;
     if (verifier === "sage") {
       return `VERIFICATION_PLAN: The user requested SageMath${this.required.includes("lean") ? " and Lean 4" : ""}. Run SageMath now using only the sage tool, one call at a time. Complete its required phases; do not produce the final answer yet.${this.required.includes("lean") ? " The server will then enable Lean 4." : ""}${scope}${reminder}`;
     }
@@ -214,17 +217,22 @@ export class AuthoritativeVerificationPlan {
   finalPrompt() {
     const sage = this.verifiers.sage;
     const lean = this.verifiers.lean;
-    const render = (name, result) =>
-      `${name}: ${result.status.toUpperCase()}${result.code ? ` (${result.code})` : ""}`;
+    // Named as run in this turn: once the tool results are compacted away, the
+    // model otherwise reads its own verifier as a result from earlier turns.
+    const ran = (verifier) => this.receipts.some((receipt) => receipt.verifier === verifier && receipt.state === "result_received");
+    const render = (name, result, verifier) =>
+      `${name}: ${result.status.toUpperCase()}${result.code ? ` (${result.code})` : ""}${ran(verifier) ? " — executed in this turn" : ""}`;
     return [
       "VERIFICATION_PLAN_COMPLETE: All model-selected verifier workflows have reached a terminal state.",
-      ...(this.required.includes("sage") ? [render("SageMath", sage)] : []),
-      ...(this.required.includes("lean") ? [render("Lean 4", lean)] : []),
+      ...(this.required.includes("sage") ? [render("SageMath", sage, "sage")] : []),
+      ...(this.required.includes("lean") ? [render("Lean 4", lean, "lean")] : []),
       ...(this.required.includes("lean") && lean.status === "verified" && this.leanGoal.prepared
         ? [`Lean verified exactly this statement: ${this.leanGoal.targetStatement}. Say what it establishes and whether it singles out the answer against the alternatives; do not call the answer itself formally verified unless it does.`]
         : []),
       "Report each result separately. Claim successful execution only when a matching tool-result receipt exists; do not present NOT_VERIFIED as success.",
-      "Never attribute a result to a tool that is not listed above as run in this turn."
+      "Never attribute a result to a tool that is not listed above as run in this turn.",
+      CONVENTION_CHECK_INSTRUCTION,
+      "Write the final answer directly in the language of the user's question, starting with the answer: do not narrate your plan or restate these instructions."
     ].join("\n");
   }
 

@@ -80,7 +80,8 @@ test("a terminal Lean plan blocks execution while keeping the catalog for the fi
   const backend = await startFakeBackend({ turns: [
     { content: JSON.stringify({ verification_requested: true, required_tools: ["lean_check"], tool_selection: ["lean_check"], skill_actions: [] }), finish: "stop" },
     { toolCalls: [preparation], finish: "tool_calls" },
-    { toolCalls: [leanCall], finish: "tool_calls" }
+    { toolCalls: [leanCall], finish: "tool_calls" },
+    { toolCalls: [{ ...leanCall, id: "after-final-prompt" }], finish: "tool_calls" }
   ] });
   const server = await startServerChild(backend, { env: {
     DS4_SAGE_POLICY_AUTO: "0", DS4_SAGE_SKILL_AUTO: "0", DS4_LEAN_ENABLED: "0"
@@ -101,9 +102,11 @@ test("a terminal Lean plan blocks execution while keeping the catalog for the fi
     assert.match(sse, /LEAN_RUNTIME_UNAVAILABLE|LEAN_PROFILE_NOT_PREPARED|LEAN_TOOL_UNAVAILABLE|LEAN_DISABLED/);
     assert.match(sse, /finish_reason":"verification_plan_complete/);
     const chatCalls = backend.log.filter((entry) => entry.path === "POST /v1/chat/completions");
-    assert.equal(chatCalls.length, 3, sse);
+    assert.equal(chatCalls.length, 4, sse);
     assert.equal(chatCalls[1].body.tool_choice, "required");
     assert.equal(chatCalls[2].body.tool_choice, "auto");
+    // A tool call after the plan completed buys one more round, with tools off.
+    assert.equal(chatCalls[3].body.tool_choice, "none");
     assert.deepEqual(chatCalls[2].body.tools, chatCalls[1].body.tools);
     assert.deepEqual(chatCalls[2].body.messages.find((message) => message.role === "system").content,
       chatCalls[1].body.messages.find((message) => message.role === "system").content);

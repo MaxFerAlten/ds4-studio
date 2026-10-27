@@ -245,6 +245,28 @@ test("blocks repeated five-gram narration", () => {
   assert.equal(checkAssistantFileListEcho(text)?.type, "STOP_REPEATED_TEXT_ECHO");
 });
 
+test("an answer that walks through each alternative is not narration echo", () => {
+  // Live quiz: the final answer checked four options with the same framing and
+  // was discarded as STOP_REPEATED_TEXT_ECHO before reaching the user.
+  const text = [
+    "## Analisi delle alternative",
+    "Sul caso n = 2 lo sviluppo è x² + 2xy + y², quindi il primo termine è x² e il secondo è 2xy.",
+    "- A: il termine con esponente di x pari a r; per r = 0 dà y², che è l'ultimo termine e non il primo. Sarebbe giusta solo ordinando i termini per potenze crescenti di x.",
+    "- B: il termine con esponente di x pari a n-r ha il coefficiente C(n, r+1); per r = 0 dà 2x², ma il primo termine è x². Nessuna lettura della domanda la rende giusta.",
+    "- C: il termine con esponente di x pari a n-r+1 corrisponde a T_r e non a T_{r+1}; per r = 0 il coefficiente C(2, -1) vale zero.",
+    "- D: per r = 0 dà x², per r = 1 dà 2xy, per r = 2 dà y²: coincide con lo sviluppo in ordine di potenze decrescenti di x.",
+    "## Convenzione",
+    "La notazione T_{r+1} fissa l'origine dell'indice; resta aperto solo l'ordine dei termini, che separa A da D.",
+    "## Conclusione", "La risposta è D."].join("\n");
+  assert.equal(checkAssistantFileListEcho(text), undefined);
+});
+
+test("a long answer that loops on one sentence is still narration echo", () => {
+  const filler = Array.from({ length: 200 }, (_, i) => `word${i}`).join(" ");
+  const text = `${filler} ${Array.from({ length: 12 }, () => "let me check the same case again").join(" ")}`;
+  assert.equal(checkAssistantFileListEcho(text)?.type, "STOP_REPEATED_TEXT_ECHO");
+});
+
 test("repeated code expressions in an analysis are not narration echo", () => {
   // WP16 live on DS4: an audit of ds4_agent_evidence_guard.c quoted the bound
   // expression three times and the turn died before reaching evidence_guard.
@@ -553,4 +575,10 @@ test("glob tails are not file tokens for the echo guard", () => {
   ].join("\n");
   assert.deepEqual(loopGuardModule.equivalentFileMentions(text), []);
   assert.notEqual(checkAssistantFileListEcho(text)?.type, "STOP_REPEATED_FILE_ECHO");
+});
+
+test("a term list written out once per alternative is not narration echo", () => {
+  const list = "[x^4, 4x^3y, 6x^2y^2, 4xy^3, y^4]";
+  const text = `Riferimento: ${list}. D: ${list} coincide. Lo sviluppo di (x+y)^4 dà ${list}.`;
+  assert.equal(checkAssistantFileListEcho(text), undefined);
 });

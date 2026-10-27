@@ -1625,7 +1625,18 @@ function redactSageLocalPaths(value, cwd) {
   return text.replace(/\/(?:home|mnt|tmp|var\/tmp)\/[^\s"'`<>\])}]+/g, "[local-path]");
 }
 
-function sageModelContent({ stdout, latexOutput, report, artifacts, status, cwd }) {
+// The exception and the line of the submitted code that raised it: enough to
+// repair the code. The rest of the traceback (frames, local paths) stays in debug.
+function sageErrorSummary(stderr, cwd) {
+  const lines = redactSageLocalPaths(stderr, cwd).split("\n").map((line) => line.trim()).filter(Boolean);
+  const exception = lines.at(-1);
+  if (!exception) return "";
+  const frame = lines.findLast((line) => line.startsWith('File "<ds4-sage-tool>", line '));
+  const line = frame?.match(/line (\d+)/)?.[1];
+  return `${exception.slice(0, 400)}${line ? ` (line ${line} of the submitted code)` : ""}`;
+}
+
+function sageModelContent({ stdout, stderr, latexOutput, report, artifacts, status, cwd }) {
   const parts = [];
   const cleanStdout = redactSageLocalPaths(stdout, cwd).trim();
   if (cleanStdout) parts.push(cleanStdout);
@@ -1646,6 +1657,8 @@ function sageModelContent({ stdout, latexOutput, report, artifacts, status, cwd 
       })
     ].join("\n"));
   }
+  const error = status === "ok" ? "" : sageErrorSummary(stderr, cwd);
+  if (error) parts.push(`SageMath error:\n${error}`);
   if (!parts.length) {
     parts.push(status === "ok"
       ? "SageMath completed without standard output."
@@ -1706,6 +1719,7 @@ export function structuredSageResult({
   fallback.artifacts = artifacts;
   fallback.model.content = sageModelContent({
     stdout,
+    stderr,
     latexOutput,
     report: null,
     artifacts,
@@ -1733,6 +1747,7 @@ export function structuredSageResult({
   fallback.model = {
     content: sageModelContent({
       stdout,
+      stderr,
       latexOutput,
       report: candidateReport,
       artifacts,

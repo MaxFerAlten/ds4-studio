@@ -166,13 +166,33 @@ test("inspection is allowed only in Lean and neither prepares a goal nor verifie
 test("the final prompt names the statement Lean verified and asks whether it singles out the answer", () => {
   const plan = createAuthoritativeVerificationPlan({ verificationRequested: true, requiredTools: ["lean_check"],
     sageAvailable: false, leanAvailable: true });
-  assert.match(plan.promptForActiveVerifier(), /smallest admissible case/);
-  assert.match(plan.promptForActiveVerifier(), /switching it changes which alternative is right/);
+  assert.match(plan.promptForActiveVerifier(), /each competing alternative on the smallest instance where they take different values/);
+  // The convention analysis is asked of the answer, not of the tool phases.
+  assert.doesNotMatch(plan.promptForActiveVerifier(), /for each one you reject/);
+  assert.match(plan.promptForActiveVerifier(), /Compute the reference under the standard convention of the field/);
+  assert.match(plan.promptForActiveVerifier(), /the reference reversed, or the reference shifted by one index/);
   sealGoal(plan);
   plan.finishVerifier("lean", "verified");
   const final = plan.finalPrompt();
   assert.match(final, /Lean verified exactly this statement: theorem /);
   assert.match(final, /singles out the answer against the alternatives/);
   assert.match(final, /Never attribute a result to a tool that is not listed above/);
+  assert.match(final, /whether a symbol or word of the question itself excludes that reading/);
+  assert.match(final, /smallest instance where the alternatives take different values/);
+  assert.match(final, /answer under the standard convention of the field and state it/);
+  assert.match(final, /correct under exactly that rearrangement of the convention/);
+  assert.match(final, /exactly a reading the question does not exclude that would select a different alternative/);
+  assert.match(final, /in the language of the user's question, starting with the answer/);
   assert.doesNotMatch(final, /SageMath:/);
+});
+
+test("the final prompt names each verifier whose result arrived as executed in this turn", () => {
+  const plan = createAuthoritativeVerificationPlan({ verificationRequested: true, requiredTools: ["sage", "lean_check"] });
+  plan.recordDispatch({ callId: "s1", toolName: "sage" });
+  plan.recordResult({ callId: "s1" });
+  plan.finishVerifier("sage", "verified");
+  plan.finishVerifier("lean", "not_verified", "LEAN_CALL_NOT_COMPLETED");
+  const final = plan.finalPrompt();
+  assert.match(final, /SageMath: VERIFIED — executed in this turn/);
+  assert.match(final, /Lean 4: NOT_VERIFIED \(LEAN_CALL_NOT_COMPLETED\)\n/);
 });

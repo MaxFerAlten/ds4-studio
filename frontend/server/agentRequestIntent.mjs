@@ -10,7 +10,9 @@ export const AGENT_INTENT_SYSTEM_PROMPT = [
   "A Lean skill action changes Lean instructions/policy state; it does not run a Lean proof.",
   "If the user asks to start, stop, or inspect a skill, put that operation in skill_actions.",
   "If a mathematical claim should be checked by tools, set verification_requested=true and select every requested verifier in required_tools.",
-  "If the user asks you to evaluate, compare or choose which tool or method suits the task, set tool_evaluation_requested=true. Set verification_requested=true as well only if the user also asks to run the verification.",
+  "If the user asks you to evaluate, compare or choose which tool or method suits the task, set tool_evaluation_requested=true. Set verification_requested=true as well only if the user also asks to run the verification: the goal a tool would serve (which tool to use to prove this) is part of what to evaluate, not a request to run it.",
+  "When the user asks you to choose among tools and then verify, the choice is yours: select only the verifier(s) that can settle this task at the lowest cost, and both only when neither alone can.",
+  "A short consent to continue (for example go ahead) right after the assistant evaluated tools or offered a verification is a request to run that verification: set verification_requested=true and select the verifier(s) that answer recommended or offered.",
   "When verification is requested without naming a verifier, choose the appropriate verifier(s) from the task: SageMath for computation, Lean 4 for formal proof, both only when useful or requested.",
   "For ordinary tasks with no math tool or skill action, return empty arrays and verification_requested=false.",
   "Return exactly one JSON object with this schema:",
@@ -20,9 +22,10 @@ export const AGENT_INTENT_SYSTEM_PROMPT = [
 ].join("\n");
 
 export const TOOL_EVALUATION_INSTRUCTION = [
-  "TOOL_EVALUATION_REQUESTED: the user asked which tool or method fits this task. Answer that question explicitly in the final answer:",
-  "for each candidate tool, say what it can establish here and at what cost, and say plainly when no tool can settle the point (for example a choice of convention, which must be stated first; name the convention whose switch would change the answer).",
-  "Run a tool only if the user also asked to run it, and attribute to a tool only results whose call completed in this turn."
+  "TOOL_EVALUATION_REQUESTED: open the final answer with the tool or method you recommend for this task, then,",
+  "for each candidate tool, say what it can establish here and at what cost, and say plainly when no tool can settle the point (for example a choice of convention, which must be stated first).",
+  "Run a tool only if the user also asked to run it, and attribute to a tool only results whose call completed in this turn.",
+  "Write the answer directly in the language of the user's question, starting with the answer: do not narrate your plan or restate these instructions."
 ].join(" ");
 
 function uniqueAllowed(values, allowed) {
@@ -83,11 +86,18 @@ export function parseAgentIntentContent(content) {
   return parseAgentRequestIntent(value);
 }
 
+// A long answer states its result first and offers the next step last: keep both.
+function clipMiddle(text, max) {
+  if (text.length <= max) return text;
+  const half = Math.floor((max - 5) / 2);
+  return `${text.slice(0, half)} […] ${text.slice(-half)}`;
+}
+
 export function agentIntentContext(messages = [], currentMessage = "") {
   const recent = (Array.isArray(messages) ? messages : [])
     .filter((message) => message?.role === "user" || message?.role === "assistant")
     .slice(-6)
-    .map((message) => `${message.role}: ${String(message.content || "").slice(0, 1800)}`);
+    .map((message) => `${message.role}: ${clipMiddle(String(message.content || ""), 1800)}`);
   if (currentMessage) recent.push(`current user request: ${String(currentMessage).slice(0, 4000)}`);
   return recent.join("\n\n");
 }

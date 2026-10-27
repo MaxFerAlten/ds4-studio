@@ -89,7 +89,7 @@ import {
   authoritativeToolBlockGuidance,
   evaluateAuthoritativeToolCalls
 } from "./authoritativeToolGate.mjs";
-import { createAuthoritativeVerificationPlan } from "./authoritativeVerificationPlan.mjs";
+import { CONVENTION_CHECK_INSTRUCTION, createAuthoritativeVerificationPlan } from "./authoritativeVerificationPlan.mjs";
 import { compactVerificationConversation, verificationPhaseInstruction } from "./verificationConversationContext.mjs";
 import {
   AGENT_INTENT_SYSTEM_PROMPT,
@@ -181,9 +181,11 @@ import { checkVerifiedClaim, checkToolAttestations, toolAttestationNote } from "
 import { envBooleanWithAliases } from "./envBoolean.mjs";
 import {
   evaluateLeanFinalCandidate,
+  leanFinalGateNote,
   leanVerificationEvidence
 } from "./authoritativeFinalizationGate.mjs";
 import { hashLeanTargetStatement } from "./lean/leanTaskSpec.mjs";
+import { LeanGoalRejections } from "./lean/leanGoalRejections.mjs";
 import { extractLeanTargetIdentity } from "./lean/leanTargetIdentity.mjs";
 import { resolveLeanToolProfile } from "./lean/leanToolProfile.mjs";
 import { AuthoritativeOutputBuffer } from "./authoritativeOutputBuffer.mjs";
@@ -1287,7 +1289,8 @@ async function leanToolFlags(skillState = null, selectedMathTools = []) {
 }
 
 async function classifyAgentRequestIntent({ request, userMessage, recentMessages, activeSkills, signal }) {
-  const payload = buildChatPayload({ ...request, stream: false, max_tokens: 256 }, [
+  // Greedy decoding: the same request must route the same way on every run.
+  const payload = buildChatPayload({ ...request, stream: false, max_tokens: 256, temperature: 0 }, [
     { role: "system", content: AGENT_INTENT_SYSTEM_PROMPT },
     {
       role: "user",
@@ -1313,13 +1316,14 @@ async function classifyAgentRequestIntent({ request, userMessage, recentMessages
   return parseAgentIntentContent(result?.choices?.[0]?.message?.content);
 }
 
-async function reviewAgentLeanGoal({ request, goal, originalContext, sageReport, signal }) {
+async function reviewAgentLeanGoal({ request, goal, originalContext, signal }) {
   // Room for the competing statement the discrimination check writes. Thinking
   // stays off: at decode speed it would add about a minute to every prepare.
   const payload = buildChatPayload({ model: request.model, stream: false, max_tokens: 640, thinking: false, temperature: 0 }, [
     { role: "system", content: LEAN_GOAL_REVIEW_PROMPT },
-    { role: "user", content: JSON.stringify({ original_conversation: originalContext,
-      sage_report: String(sageReport || "").slice(0, 8000), proposal: goal }) }
+    // No Sage report: like the model's claim, it carries the conclusion, and a
+    // reviewer told the answer is confirmed accepts a goal that restates it.
+    { role: "user", content: JSON.stringify({ original_conversation: originalContext, proposal: goal }) }
   ]);
   const response = await fetchWithBusyRetry(fetch, `${backendBase()}/v1/chat/completions`, {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload), signal
@@ -2217,6 +2221,9 @@ const AGENT_LEAN_ROUND_MAX_TOKENS = Number(process.env.DS4_AGENT_LEAN_ROUND_MAX_
 // wall-clock budget), so a model "proving" through utility calls looped for
 // 12+ rounds.  Cap them per turn.
 const AGENT_LEAN_MAX_UTILITY_CHECKS = Number(process.env.DS4_AGENT_LEAN_MAX_UTILITY_CHECKS) || 8;
+// Semantic refusals of proposed Lean targets (repeats included) before Lean
+// ends NOT_VERIFIED for the turn.
+const AGENT_LEAN_MAX_GOAL_REJECTIONS = Number(process.env.DS4_AGENT_LEAN_MAX_GOAL_REJECTIONS) || 3;
 // A reply made only of [OBSERVATION]..[VERDICT] is a checkpoint the
 // compressed-output contract asked for, not an answer: GO with a target means
 // the model meant to keep going. Nudge it on instead of ending the turn there,
@@ -3807,7 +3814,9 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
   // F26: a request to evaluate the tools is itself a question to answer, not
   // a cue to silently pick one.
   if (requestIntent.toolEvaluationRequested) {
-    fullMessages.push({ role: "user", content: `[DS4 Studio] ${TOOL_EVALUATION_INSTRUCTION}` });
+    // With a verification plan the convention check belongs to its final
+    // prompt: asked during the tool phases it competes with the tool work.
+    fullMessages.push({ role: "user", content: `[DS4 Studio] ${TOOL_EVALUATION_INSTRUCTION}${verificationPlan ? "" : ` ${CONVENTION_CHECK_INSTRUCTION}`}` });
   }
   if (verificationPlan) {
     fullMessages.push({ role: "user", content: `[DS4 Studio] ${verificationPlan.promptForActiveVerifier()}` });
@@ -3829,8 +3838,14 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
   // One record per dispatched verifier call, written by the server: the only
   // source a "verified with <tool>" sentence may cite (audit F27).
   const toolReceipts = [];
-  const AGENT_MAX_ATTESTATION_REWRITES = 2;
-  let attestationRewrites = 0;
+  // Rewrites of a refused final answer, shared by the attestation and Lean
+  // gates: each rewrite is a full uncached round, and two gates refusing in
+  // turn otherwise run the turn to the iteration cap.
+  const AGENT_MAX_FINAL_ANSWER_REWRITES = 2;
+  // The guidance is English; without this the rewrite answers in English too.
+  const FINAL_ANSWER_REWRITE_LANGUAGE = "Rewrite the whole answer in the language of the user's question, starting with the answer; do not narrate this correction.";
+  let finalAnswerRewrites = 0;
+  let planCompleteToolsOff = false;
   // QF-03 §25.6 — structured provenance alongside the legacy text blob, which
   // stays until the claim guard stops reading it. Collected in parallel, not
   // instead.
@@ -3957,6 +3972,7 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
   let leanFinalStatusEmitted = false;
   let leanUtilityChecks = 0;
   let leanInspectChecks = 0;
+  const leanGoalRejections = new LeanGoalRejections({ maxRejections: AGENT_LEAN_MAX_GOAL_REJECTIONS });
 
   const writeLeanStatus = (data) => {
     const snapshot = leanTracker.snapshot();
@@ -4281,8 +4297,9 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
       if (verificationPlan?.complete) {
         // DS4 removes the schema prefix for "none", invalidating the entire
         // cache. Ask for the final report with the same catalog; the completed
-        // server plan rejects every tool call before dispatch.
-        basePayload.tool_choice = "auto";
+        // server plan rejects every tool call before dispatch. Only a model
+        // that called a tool anyway pays for "none".
+        basePayload.tool_choice = planCompleteToolsOff ? "none" : "auto";
       } else if (verificationPlan && verificationPlan.activeVerifier) {
         const [activeTool] = verificationPlan.allowedTools;
         if (activeTool) {
@@ -4704,7 +4721,14 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
           warning: `${claimDecision.reason}\n${claimDecision.guidance}`
         });
       }
-      if (claimDecision?.block && !isFinalResponse) {
+      // Narration before a tool call: drop the claim, keep the call. Refusing the
+      // whole round makes the model repeat both, one uncached round at a time.
+      if (claimDecision?.block && !isFinalResponse && toolCalls.length > 0) {
+        deferredAssistantText.discard();
+        assistantContent = "";
+        assistantMessage.content = null;
+        writeAgentSse("agent_warning", { type: claimDecision.type, warning: claimDecision.reason });
+      } else if (claimDecision?.block && !isFinalResponse) {
         deferredAssistantText.discard();
         deferredAssistantReasoning.discard();
         pushGuidanceMessage(fullMessages, `${claimDecision.reason}\n${claimDecision.guidance}`);
@@ -4725,12 +4749,12 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
           // would publish the very claim being withheld.
           warning: attestationDecision.reason
         });
-        if (attestationRewrites < AGENT_MAX_ATTESTATION_REWRITES) {
-          attestationRewrites += 1;
+        if (finalAnswerRewrites < AGENT_MAX_FINAL_ANSWER_REWRITES) {
+          finalAnswerRewrites += 1;
           deferredAssistantText.discard();
           deferredAssistantReasoning.discard();
           pushGuidanceMessage(fullMessages, `${attestationDecision.type}: ${attestationDecision.reason}\n` +
-            `Unsupported: ${attestationDecision.sentences.join(" | ")}\n${attestationDecision.guidance}`);
+            `Unsupported: ${attestationDecision.sentences.join(" | ")}\n${attestationDecision.guidance}\n${FINAL_ANSWER_REWRITE_LANGUAGE}`);
           forceResetNextIteration = true;
           continue;
         }
@@ -4763,6 +4787,21 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
           warning: "Risposta finale vuota o checkpoint incompleto: richiesto il report finale."
         });
         fullMessages.push({ role: "user", content: AGENT_CHECKPOINT_FINAL_PROMPT });
+        forceResetNextIteration = true;
+        continue;
+      }
+      // A loop inside a verifier ends that verifier, not the turn: the verifiers
+      // already finished still owe the user their answer.
+      if (intentDecision?.block && verificationPlan?.activeVerifier && !verificationPlan.complete) {
+        const verifier = verificationPlan.activeVerifier;
+        deferredAssistantText.discard();
+        deferredAssistantReasoning.discard();
+        writeAgentSse("agent_warning", { type: intentDecision.type, warning: intentDecision.reason });
+        verificationPlan.finishVerifier(verifier, "not_verified", intentDecision.type);
+        if (verifier === "sage") finalizeSageStatus("failed", "Composizione finale non completata.", intentDecision.type);
+        writeVerificationStatus();
+        fullMessages.push({ role: "user", content: `[DS4 Studio] ${verificationPlan.complete
+          ? verificationPlan.finalPrompt() : verificationPlan.promptForActiveVerifier()}` });
         forceResetNextIteration = true;
         continue;
       }
@@ -4833,10 +4872,19 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
         forceResetNextIteration = true;
         continue;
       }
-      if (authoritativeDecision && !authoritativeDecision.allowed) {
+      // Out of rewrites: publish, qualified by the server's own note.
+      const leanGateNote = authoritativeDecision && !authoritativeDecision.allowed &&
+        finalAnswerRewrites >= AGENT_MAX_FINAL_ANSWER_REWRITES ? leanFinalGateNote(authoritativeDecision) : undefined;
+      if (leanGateNote) {
+        writeAgentSse("agent_warning", { type: authoritativeDecision.code, warning: authoritativeDecision.guidance });
+        assistantContent += leanGateNote;
+        assistantMessage.content = assistantContent;
+        deferredAssistantText.append(leanGateNote);
+      } else if (authoritativeDecision && !authoritativeDecision.allowed) {
+        if (authoritativeDecision.code !== "LEAN_FINALIZATION_BLOCKED") finalAnswerRewrites += 1;
         deferredAssistantText.discard();
         deferredAssistantReasoning.discard();
-        pushGuidanceMessage(fullMessages, authoritativeDecision.guidance);
+        pushGuidanceMessage(fullMessages, `${authoritativeDecision.guidance}\n${FINAL_ANSWER_REWRITE_LANGUAGE}`);
         forceResetNextIteration = true;
         writeAgentSse("agent_warning", {
           type: authoritativeDecision.code,
@@ -5205,6 +5253,14 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
           agentSession.reminder.toolTokensSince += estimateTextTokens(`${toolGate.code}\n${guidance}`);
         }
         writeVerificationStatus();
+        // A tool call after the plan completed: ask once more for the answer,
+        // this time with tools off, before falling back to the bare summary.
+        if (verificationPlan?.complete && !planCompleteToolsOff) {
+          planCompleteToolsOff = true;
+          fullMessages.push({ role: "user", content: `[DS4 Studio] ${verificationPlan.finalPrompt()}` });
+          forceResetNextIteration = true;
+          continue;
+        }
         if (verificationPlan?.complete) {
           const finalState = verificationPlan.snapshot();
           const verifierLabels = { sage: "SageMath", lean: "Lean 4" };
@@ -5543,6 +5599,13 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
           if (tc.name === "lean_prepare" && leanTaskSpec) {
             return { id: tc.id, name: tc.name, content: "LEAN_GOAL_ALREADY_PREPARED: the target is locked; use lean_check for the proof.", isError: true, guarded: true };
           }
+          // A statement the review already refused gets the same answer, without
+          // spending Lean, the reviewer or the shared budget.
+          const goalRefusal = tc.name === "lean_prepare" ? leanGoalRejections.check(tc.arguments) : undefined;
+          if (goalRefusal) {
+            return { id: tc.id, name: tc.name, content: goalRefusal.content, isError: true, guarded: true,
+              verificationTerminal: Boolean(verificationPlan) && leanGoalRejections.exhausted, verificationFailureCode: goalRefusal.code };
+          }
           if (leanUtilityChecks >= AGENT_LEAN_MAX_UTILITY_CHECKS) {
             return { id: tc.id, name: tc.name, content: "LEAN_UTILITY_BUDGET_EXHAUSTED: diagnostic and goal preparation budget spent; the proof is NOT_VERIFIED.",
               isError: true, guarded: true, verificationTerminal: Boolean(verificationPlan), verificationFailureCode: "LEAN_UTILITY_BUDGET_EXHAUSTED" };
@@ -5649,8 +5712,7 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
           leanPrepareExecutor: tc.name === "lean_prepare" ? (args, options) => prepareLeanGoal(args, {
             checkGoal: (goalRequest) => runLeanCheckForAgent({ ...goalRequest, sessionId: sanitizeSessionId(sessionKey) }, options),
             reviewGoal: (goal) => reviewAgentLeanGoal({ request: reqParams, goal,
-              originalContext: leanOriginalContext,
-              sageReport: authoritativeSageFinal?.content, signal: options.signal })
+              originalContext: leanOriginalContext, signal: options.signal })
           }) : undefined,
           leanAttempt: isLeanProofCall ? leanTracker.snapshot().attempt : undefined,
           leanProofId: isLeanProofCall ? leanTracker.snapshot().proofId : undefined,
@@ -5701,6 +5763,7 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
           leanTaskSpec = rawResult.raw.spec;
           verificationPlan?.recordLeanPreparation(leanTaskSpec);
         }
+        const leanGoalExhausted = tc.name === "lean_prepare" ? leanGoalRejections.record(tc.arguments, rawResult?.raw) : undefined;
         writeVerificationStatus();
         if (tc.name === "retrieve_context_blob") {
           compressionMetrics.recordRetrieve(!rawResult?.isError);
@@ -5903,6 +5966,10 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
           };
         }
 
+        if (leanGoalExhausted) {
+          return { id: tc.id, name: tc.name, content: `${result.content}\n\n${leanGoalExhausted.content}`, isError: true,
+            verificationTerminal: Boolean(verificationPlan), verificationFailureCode: leanGoalExhausted.code };
+        }
         return { id: tc.id, name: tc.name, content: result.content, isError: result.isError,
           verificationTerminal: tc.name === "lean_prepare" && !rawResult?.raw?.prepared && rawResult?.raw?.retryable === false,
           verificationFailureCode: tc.name === "lean_prepare" ? rawResult?.raw?.code : null };

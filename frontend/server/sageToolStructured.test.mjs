@@ -166,17 +166,20 @@ test("stderr stays out of content and remains in bounded debug", { skip: !HAS_SA
   });
 });
 
-test("tracebacks are debug-only and set isError", { skip: !HAS_SAGE }, async () => {
+test("a failed run shows the model its exception line, not the traceback", { skip: !HAS_SAGE }, async () => {
   await withTmpDir("ds4-sage-traceback-", async (sageWorkdir) => {
     const result = await withStructuredSage(() => executeTool(
       "sage",
-      { code: "raise ValueError('private-failure')", phase: "compute" },
+      { code: "a = 1\nprint(a + undefined_name)", phase: "compute" },
       { sageWorkdir }
     ));
 
     assert.equal(result.isError, true);
-    assert.doesNotMatch(result.content, /Traceback|private-failure|stderr:/);
-    assert.match(result.debug.stderrPreview, /Traceback|private-failure/);
+    // Without the exception the model can only guess what to repair.
+    assert.match(result.content, /SageMath error:\nNameError: name 'undefined_name' is not defined/);
+    assert.match(result.content, /\(line 2 of the submitted code\)/);
+    assert.doesNotMatch(result.content, /Traceback|File "|\/tmp\/|stderr:/);
+    assert.match(result.debug.stderrPreview, /Traceback/);
   });
 });
 

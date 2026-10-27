@@ -133,6 +133,19 @@ export function withoutCode(text) {
     .join(" ");
 }
 
+// Words after a repeated phrase that decide whether it said the same thing.
+const NGRAM_CONTEXT_WORDS = 10;
+
+/**
+ * Phrases of n words repeated as separate units, each with the size of its
+ * largest group of occurrences followed by the same (or reworded) text. A loop
+ * repeats what follows the phrase too; an answer that walks through several
+ * items reuses a framing phrase and goes on with different content, so its
+ * occurrences fall in different groups.
+ */
+const NARRATION_WORD_RE = /^[a-z]{3,}$/;
+const NARRATION_MIN_WORDS = 2;
+
 export function findRepeatedNgrams(text, n = 5) {
   const words = String(text || "")
     .toLowerCase()
@@ -143,18 +156,30 @@ export function findRepeatedNgrams(text, n = 5) {
   const counts = new Map();
   for (let i = 0; i + n <= words.length; i++) {
     const gram = words.slice(i, i + n).join(" ");
+    // Narration repeats words; a formula or a list of terms written out once
+    // per alternative repeats symbols, and the comparison needs every copy.
+    if (words.slice(i, i + n).filter((word) => NARRATION_WORD_RE.test(word)).length < NARRATION_MIN_WORDS) continue;
     const previous = counts.get(gram);
     // Sliding windows overlap by design. Counting those as repeated phrases
     // misclassifies periodic math/prose such as "c x y c x y c x y" as an
     // echo even though the phrase was never repeated as a separate unit.
-    if (!previous) counts.set(gram, { count: 1, lastIndex: i });
-    else if (i - previous.lastIndex >= n) {
-      previous.count++;
-      previous.lastIndex = i;
+    if (previous && i - previous.lastIndex < n) continue;
+    const key = echoContextKey(words.slice(i + n, i + n + NGRAM_CONTEXT_WORDS).join(" "));
+    if (!previous) {
+      counts.set(gram, { lastIndex: i, clusters: [{ key, count: 1 }] });
+      continue;
     }
+    previous.lastIndex = i;
+    // The newest occurrence of a streamed loop has no text after it yet: it
+    // belongs with whatever group it can still turn into.
+    const same = key.size === 0
+      ? previous.clusters.reduce((best, cluster) => (cluster.count > best.count ? cluster : best))
+      : previous.clusters.find((cluster) => echoContextSimilarity(cluster.key, key) >= ECHO_CONTEXT_SIMILARITY);
+    if (same) same.count++;
+    else previous.clusters.push({ key, count: 1 });
   }
   return [...counts.entries()]
-    .map(([gram, occurrence]) => [gram, occurrence.count])
+    .map(([gram, occurrence]) => [gram, Math.max(...occurrence.clusters.map((cluster) => cluster.count))])
     .filter(([, count]) => count > 1);
 }
 

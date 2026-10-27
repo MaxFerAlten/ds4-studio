@@ -500,3 +500,23 @@ test("authoritative Sage loop publishes directly without legacy synthesis prompt
   assert.doesNotMatch(source, /A validated mathematical report is available below\./);
   assert.doesNotMatch(source, /SageMath has completed the requested mathematical work\./);
 });
+
+test("JS agent routes the same request the same way: the intent router decodes greedily", async () => {
+  const source = await readFile(new URL("./index.mjs", import.meta.url), "utf8");
+  assert.match(source, /async function classifyAgentRequestIntent[\s\S]*?buildChatPayload\(\{ \.\.\.request, stream: false, max_tokens: 256, temperature: 0 \}/);
+});
+
+test("JS agent asks for the convention check in the tool phases only without a verification plan", async () => {
+  const source = await readFile(new URL("./index.mjs", import.meta.url), "utf8");
+  assert.match(source, /\$\{TOOL_EVALUATION_INSTRUCTION\}\$\{verificationPlan \? "" : ` \$\{CONVENTION_CHECK_INSTRUCTION\}`\}/);
+});
+
+test("JS agent ends a looping verifier, not the turn: the plan moves on to its final answer", async () => {
+  const source = await readFile(new URL("./index.mjs", import.meta.url), "utf8");
+  assert.match(source, /if \(intentDecision\?\.block && verificationPlan\?\.activeVerifier && !verificationPlan\.complete\) \{[\s\S]*?verificationPlan\.finishVerifier\(verifier, "not_verified", intentDecision\.type\);[\s\S]*?verificationPlan\.finalPrompt\(\)[\s\S]*?continue;/);
+});
+
+test("JS agent drops an unsupported claim narrated before a tool call and still runs the call", async () => {
+  const source = await readFile(new URL("./index.mjs", import.meta.url), "utf8");
+  assert.match(source, /if \(claimDecision\?\.block && !isFinalResponse && toolCalls\.length > 0\) \{\s*deferredAssistantText\.discard\(\);\s*assistantContent = "";\s*assistantMessage\.content = null;[\s\S]*?\} else if \(claimDecision\?\.block && !isFinalResponse\)/);
+});

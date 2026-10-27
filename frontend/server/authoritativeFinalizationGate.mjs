@@ -227,3 +227,15 @@ export function evaluateLeanFinalCandidate({
     finishReason: "lean_not_verified",
   };
 }
+
+/**
+ * Server note appended to a final answer published after its rewrites ran
+ * out while the Lean gate still refused it. Every refusal except
+ * LEAN_FINALIZATION_BLOCKED (the proof is still repairable) qualifies the
+ * answer: what it says about Lean is not a checked result.
+ */
+export function leanFinalGateNote(decision) {
+  if (!decision || decision.allowed || decision.code === "LEAN_FINALIZATION_BLOCKED") return undefined;
+  return `\n\n> [DS4 Studio] Lean: nessuna prova verificata corrisponde a questa risposta (${decision.code}). ` +
+    "Ogni affermazione di verifica Lean qui sopra non è supportata dal run registrato.";
+}
