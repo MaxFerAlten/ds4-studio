@@ -1,3 +1,4 @@
+import { taskContractInstruction } from "./taskContract.mjs";
 const TOOL_VERIFIER = Object.freeze({ sage: "sage", lean_check: "lean", lean_prepare: "lean", lean_inspect: "lean" });
 const TOOL_NAMES = Object.freeze({
   sage: Object.freeze(["sage"]),
@@ -16,7 +17,8 @@ export const CONVENTION_CHECK_INSTRUCTION = "When the question offers alternativ
  * two workflows and records dispatch/result receipts.
  */
 export class AuthoritativeVerificationPlan {
-  constructor({ requiredTools = ["sage", "lean_check"], sageAvailable = true, leanAvailable = true, maxMissingCallNudges = 2 } = {}) {
+  constructor({ requiredTools = ["sage", "lean_check"], sageAvailable = true, leanAvailable = true, maxMissingCallNudges = 2, taskContract = null } = {}) {
+    this.taskContract = taskContract;
     const selected = new Set(Array.isArray(requiredTools) ? requiredTools : []);
     this.required = VERIFIER_ORDER.filter((name) => selected.has(name === "sage" ? "sage" : "lean_check"));
     if (!this.required.length) throw new TypeError("VERIFICATION_PLAN_REQUIRES_A_TOOL");
@@ -232,6 +234,7 @@ export class AuthoritativeVerificationPlan {
       "The server appends the status of each verifier under your answer: do not write status lines or a verification summary of your own. Use these results only in the mathematical analysis, and never present NOT_VERIFIED as success.",
       "Never attribute a result to a tool that is not listed above as run in this turn.",
       CONVENTION_CHECK_INSTRUCTION,
+      ...(taskContractInstruction(this.taskContract) ? [taskContractInstruction(this.taskContract)] : []),
       "Write the final answer directly in the language of the user's question, starting with the answer: do not narrate your plan or restate these instructions."
     ].join("\n");
   }

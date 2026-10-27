@@ -19,7 +19,7 @@
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { isIntentRequest, isScriptedIntent, neutralIntentCompletion } from "./agent/fakeIntentRouter.mjs";
+import { isIntentRequest, isScriptedIntent, isScriptedTaskContract, isTaskContractRequest, neutralIntentCompletion, neutralTaskContractCompletion } from "./agent/fakeIntentRouter.mjs";
 import { spawn } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -172,6 +172,9 @@ async function startBackend(variant, spec) {
         // The scenarios predate the intent router: it is not an agent round.
         if (isIntentRequest(body) && !isScriptedIntent(turns[turnIdx])) {
           return json(200, neutralIntentCompletion(body.model));
+        }
+        if (isTaskContractRequest(body) && !isScriptedTaskContract(turns[turnIdx])) {
+          return json(200, neutralTaskContractCompletion(body.model));
         }
         if (isSideCall(body)) {
           sideCalls++;

@@ -219,3 +219,13 @@ test("the status block names the statement Lean proved", () => {
   assert.match(plan.verificationReport(), /- Enunciato dimostrato da Lean: `theorem t : 1 \+ 1 = 2`$/);
   assert.doesNotMatch(plan.verificationReport(), /SageMath/);
 });
+
+test("the final prompt carries the task contract's open readings", () => {
+  const plan = createAuthoritativeVerificationPlan({ verificationRequested: true, requiredTools: ["sage"],
+    taskContract: { openConventions: ["the order in which the terms are listed"] } });
+  plan.finishVerifier("sage", "verified");
+  assert.match(plan.finalPrompt(), /TASK_CONTRACT[^\n]*\n- the order in which the terms are listed\n/);
+  const bare = createAuthoritativeVerificationPlan({ verificationRequested: true, requiredTools: ["sage"] });
+  bare.finishVerifier("sage", "verified");
+  assert.doesNotMatch(bare.finalPrompt(), /TASK_CONTRACT/);
+});

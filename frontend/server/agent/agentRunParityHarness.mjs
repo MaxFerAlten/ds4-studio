@@ -22,7 +22,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import net from "node:net";
 import { createHash } from "node:crypto";
-import { isIntentRequest, isScriptedIntent, neutralIntentCompletion } from "./fakeIntentRouter.mjs";
+import { isIntentRequest, isScriptedIntent, isScriptedTaskContract, isTaskContractRequest, neutralIntentCompletion, neutralTaskContractCompletion } from "./fakeIntentRouter.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const REPO = join(here, "..", "..", "..");
@@ -177,6 +177,10 @@ export async function startFakeBackend(spec = {}) {
         if (isIntentRequest(body) && !isScriptedIntent(turns[turnIdx])) {
           pathCounts[key] -= 1;
           return json(200, neutralIntentCompletion(body.model));
+        }
+        if (isTaskContractRequest(body) && !isScriptedTaskContract(turns[turnIdx])) {
+          pathCounts[key] -= 1;
+          return json(200, neutralTaskContractCompletion(body.model));
         }
         log.push({ path: key, body: summarizeChatBody(body) });
         const turn = nextTurn();

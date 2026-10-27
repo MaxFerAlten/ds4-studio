@@ -179,6 +179,7 @@ import { compressAgentToolResult as compressAgentToolResultIfEnabled } from "./a
 import { guardAssistantDelta, hasStructuredSynthesis, readStructuredCheckpoint } from "./agentLoopGuard.mjs";
 import { checkVerifiedClaim, checkToolAttestations, toolAttestationNote } from "./claimGuard.mjs";
 import { ToolEventLog } from "./toolEventLog.mjs";
+import { TASK_CONTRACT_PROMPT, parseTaskContract, taskContractInstruction } from "./taskContract.mjs";
 import { envBooleanWithAliases } from "./envBoolean.mjs";
 import {
   evaluateLeanFinalCandidate,
@@ -1315,6 +1316,26 @@ async function classifyAgentRequestIntent({ request, userMessage, recentMessages
   if (!response.ok) throw new Error(`AGENT_INTENT_BACKEND_HTTP_${response.status}`);
   const result = await response.json();
   return parseAgentIntentContent(result?.choices?.[0]?.message?.content);
+}
+
+// Pass A of the plan (§7.2): the question alone, never an answer. Advisory: a
+// failed extraction leaves the turn as it would have been without it.
+async function extractAgentTaskContract({ request, userMessages, signal }) {
+  const payload = buildChatPayload({ model: request.model, stream: false, max_tokens: 400, thinking: false, temperature: 0 }, [
+    { role: "system", content: TASK_CONTRACT_PROMPT },
+    { role: "user", content: JSON.stringify({ user_messages: userMessages }) }
+  ]);
+  try {
+    const response = await fetchWithBusyRetry(fetch, `${backendBase()}/v1/chat/completions`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload), signal
+    });
+    if (!response.ok) return null;
+    const result = await response.json();
+    return parseTaskContract(result?.choices?.[0]?.message?.content, userMessages);
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return null;
+  }
 }
 
 async function reviewAgentLeanGoal({ request, goal, originalContext, signal }) {
@@ -3686,6 +3707,21 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
       code: "AGENT_INTENT_UNAVAILABLE"
     } };
   }
+  // Only for turns that check mathematics: the contract feeds their final prompt.
+  const taskContract = requestIntent.verificationRequested || requestIntent.toolEvaluationRequested
+    ? await extractAgentTaskContract({
+        request: reqParams,
+        userMessages: [
+          ...(agentSession.messages().length ? agentSession.messages() : normalizeAgentMessages(conversationMessages))
+            .filter((message) => message?.role === "user" && typeof message.content === "string" &&
+              !message.content.trim().startsWith("[DS4"))
+            .slice(-2)
+            .map((message) => message.content),
+          userMessage
+        ],
+        signal: requestSignal
+      })
+    : null;
   for (const action of requestIntent.skillActions) {
     const command = `/${action.skill} ${action.action}`;
     const result = handleAgentSlashCommand({ message: command, session: agentSession, skillState, env: process.env });
@@ -3810,14 +3846,16 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
     verificationRequested: requestIntent.verificationRequested,
     requiredTools: requestIntent.requiredTools,
     sageAvailable: mathToolOffers.sage && authoritativeSageChat,
-    leanAvailable: leanFlags.leanEnabled
+    leanAvailable: leanFlags.leanEnabled,
+    taskContract
   });
   // F26: a request to evaluate the tools is itself a question to answer, not
   // a cue to silently pick one.
   if (requestIntent.toolEvaluationRequested) {
     // With a verification plan the convention check belongs to its final
     // prompt: asked during the tool phases it competes with the tool work.
-    fullMessages.push({ role: "user", content: `[DS4 Studio] ${TOOL_EVALUATION_INSTRUCTION}${verificationPlan ? "" : ` ${CONVENTION_CHECK_INSTRUCTION}`}` });
+    const contractNote = verificationPlan ? "" : taskContractInstruction(taskContract);
+    fullMessages.push({ role: "user", content: `[DS4 Studio] ${TOOL_EVALUATION_INSTRUCTION}${verificationPlan ? "" : ` ${CONVENTION_CHECK_INSTRUCTION}`}${contractNote ? `\n${contractNote}` : ""}` });
   }
   if (verificationPlan) {
     fullMessages.push({ role: "user", content: `[DS4 Studio] ${verificationPlan.promptForActiveVerifier()}` });
@@ -3937,6 +3975,7 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
     }
   };
   writeVerificationStatus();
+  if (taskContract) writeAgentSse("agent_task_contract", taskContract);
   // Long prefills stream nothing; relay the backend's progress lines.
   const stopPrefillRelay = relayPrefillProgress(manager, (progress) => writeAgentSse("agent_prefill", progress));
 
