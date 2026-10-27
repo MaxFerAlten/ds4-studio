@@ -243,7 +243,7 @@ export class AuthoritativeVerificationPlan {
    * The status block appended under the final answer. Written by the server
    * from the plan and its receipts, so the model cannot misreport a verifier.
    */
-  verificationReport() {
+  verificationReport(extraLines = []) {
     const labels = { verified: "VERIFICATO", not_verified: "NON VERIFICATO" };
     const ran = (verifier) => this.receipts.some((receipt) => receipt.verifier === verifier && receipt.state === "result_received");
     const line = (name, verifier) => {
@@ -258,7 +258,8 @@ export class AuthoritativeVerificationPlan {
       ...(this.required.includes("lean") ? [line("Lean 4", "lean")] : []),
       ...(this.required.includes("lean") && lean.status === "verified" && this.leanGoal.prepared
         ? [`- Enunciato dimostrato da Lean: \`${this.leanGoal.targetStatement}\``]
-        : [])
+        : []),
+      ...extraLines
     ].join("\n");
   }
 

@@ -180,6 +180,7 @@ import { guardAssistantDelta, hasStructuredSynthesis, readStructuredCheckpoint }
 import { checkVerifiedClaim, checkToolAttestations, toolAttestationNote } from "./claimGuard.mjs";
 import { ToolEventLog } from "./toolEventLog.mjs";
 import { TASK_CONTRACT_PROMPT, parseTaskContract, taskContractInstruction } from "./taskContract.mjs";
+import { OPTION_CLAIMS_PROMPT, optionClaimsReportLines, optionClaimsRequest, parseOptionClaims } from "./optionClaims.mjs";
 import { envBooleanWithAliases } from "./envBoolean.mjs";
 import {
   evaluateLeanFinalCandidate,
@@ -1332,6 +1333,26 @@ async function extractAgentTaskContract({ request, userMessages, signal }) {
     if (!response.ok) return null;
     const result = await response.json();
     return parseTaskContract(result?.choices?.[0]?.message?.content, userMessages);
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return null;
+  }
+}
+
+// Pass B of the plan (§7.2): the final answer and this turn's tool outputs,
+// read back per option. Advisory like the contract: null leaves the report as it was.
+async function extractAgentOptionClaims({ request, answer, options, outputs, signal }) {
+  const payload = buildChatPayload({ model: request.model, stream: false, max_tokens: 600, thinking: false, temperature: 0 }, [
+    { role: "system", content: OPTION_CLAIMS_PROMPT },
+    { role: "user", content: JSON.stringify(optionClaimsRequest({ answer, options, outputs })) }
+  ]);
+  try {
+    const response = await fetchWithBusyRetry(fetch, `${backendBase()}/v1/chat/completions`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload), signal
+    });
+    if (!response.ok) return null;
+    const result = await response.json();
+    return parseOptionClaims(result?.choices?.[0]?.message?.content, { options, outputs });
   } catch (error) {
     if (signal?.aborted) throw error;
     return null;
@@ -3877,6 +3898,9 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
   // One event per tool call, written by the dispatcher: the only source a
   // "verified with <tool>" sentence may cite (audit F27, plan §12).
   const toolEvents = new ToolEventLog();
+  // What each call returned to the model, by event number: the text an
+  // option's counterexample must be found in (optionClaims.mjs).
+  const toolOutputs = [];
   // Rewrites of a refused final answer, shared by the attestation and Lean
   // gates: each rewrite is a full uncached round, and two gates refusing in
   // turn otherwise run the turn to the iteration cap.
@@ -5163,7 +5187,12 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
       // P-1.4: the verifier status under the answer is the server's, written
       // after every gate ruled on the model's prose.
       if (isFinalResponse && verificationPlan?.complete && assistantContent.trim()) {
-        const report = verificationPlan.verificationReport();
+        const options = taskContract?.taskKind === "select_option" ? taskContract.options : [];
+        const optionClaims = options.length > 1 && toolOutputs.some((output) => output.status === "success")
+          ? await extractAgentOptionClaims({ request: reqParams, answer: assistantContent, options, outputs: toolOutputs, signal: controller.signal })
+          : null;
+        if (optionClaims) writeAgentSse("agent_option_claims", optionClaims);
+        const report = verificationPlan.verificationReport(optionClaimsReportLines(optionClaims));
         assistantContent += report;
         assistantMessage.content = assistantContent;
         deferredAssistantText.append(report);
@@ -6009,6 +6038,8 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
                     : sageTracker.continuationInstruction()
                 ].filter(Boolean).join("\n\n"),
             displayContent: rawResult?.displayContent || "SageMath completato.",
+            // What Sage printed, before the READY marker replaced it for the model.
+            toolOutput: String(result.content ?? ""),
             isError: result.isError,
             sageResult: rawResult?.sageResult,
             artifacts: rawResult?.artifacts || [],
@@ -6034,9 +6065,9 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
         const recordedToolCall = async (tc) => {
           const startedAt = Date.now();
           const result = await runToolCall(tc);
-          result.receipt = ToolEventLog.receipt(toolEvents.record({
-            call: tc, result, startedAt, aborted: controller.signal.aborted
-          }));
+          const event = toolEvents.record({ call: tc, result, startedAt, aborted: controller.signal.aborted });
+          result.receipt = ToolEventLog.receipt(event);
+          toolOutputs.push({ sequence: event.sequence, tool: event.tool, status: event.status, text: String(result.toolOutput ?? result.content ?? "") });
           return result;
         };
         const results = group.length === 1
