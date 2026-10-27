@@ -196,3 +196,26 @@ test("the final prompt names each verifier whose result arrived as executed in t
   assert.match(final, /SageMath: VERIFIED — executed in this turn/);
   assert.match(final, /Lean 4: NOT_VERIFIED \(LEAN_CALL_NOT_COMPLETED\)\n/);
 });
+
+test("the server writes the verifier status block; the model is told not to", () => {
+  const plan = createAuthoritativeVerificationPlan({ verificationRequested: true, requiredTools: ["sage", "lean_check"] });
+  plan.recordDispatch({ callId: "s1", toolName: "sage" });
+  plan.recordResult({ callId: "s1" });
+  plan.finishVerifier("sage", "verified");
+  plan.finishVerifier("lean", "not_verified", "LEAN_GOAL_REJECTED_REPEATEDLY");
+  assert.equal(plan.verificationReport(), [
+    "\n\n---\n\n**Verifica (DS4 Studio)**\n",
+    "- SageMath: VERIFICATO — eseguito in questo turno",
+    "- Lean 4: NON VERIFICATO (LEAN_GOAL_REJECTED_REPEATEDLY)"
+  ].join("\n"));
+  assert.match(plan.finalPrompt(), /The server appends the status of each verifier under your answer: do not write status lines/);
+});
+
+test("the status block names the statement Lean proved", () => {
+  const plan = createAuthoritativeVerificationPlan({ verificationRequested: true, requiredTools: ["lean_check"] });
+  assert.equal(plan.recordLeanPreparation({ sealed: true, targetStatementSha256: "abc", targetDeclaration: "t",
+    targetStatementText: "theorem t : 1 + 1 = 2", requiredProfile: "core" }), true);
+  plan.finishVerifier("lean", "verified");
+  assert.match(plan.verificationReport(), /- Enunciato dimostrato da Lean: `theorem t : 1 \+ 1 = 2`$/);
+  assert.doesNotMatch(plan.verificationReport(), /SageMath/);
+});

@@ -33,6 +33,9 @@ test("js engine: a verification plan's final answer after Sage reaches the clien
     assert.match(sse, /Report SageMath validato/);
     assert.match(sse, /event: agent_done/);
     assert.match(sse, /event: agent_text\ndata: \{"content":"FINAL_ANSWER_AFTER_SAGE/);
+    // P-1.4: the status under the answer is written by the server, not the model.
+    const text = [...sse.matchAll(/event: agent_text\ndata: (.*)/g)].map((m) => JSON.parse(m[1]).content).join("");
+    assert.match(text, /FINAL_ANSWER_AFTER_SAGE: option D\.\n\n---\n\n\*\*Verifica \(DS4 Studio\)\*\*\n\n- SageMath: VERIFICATO — eseguito in questo turno$/);
   } finally {
     server.stop();
     await backend.close();

@@ -238,6 +238,7 @@ export async function exportProfessionalMarkdown(
   return `${body.trim()}\n`;
 }
 
+const SERVER_VERIFICATION_HEADING = "**Verifica (DS4 Studio)**";
 const VERIFIER_LABELS = { sage: "SageMath", lean: "Lean 4" };
 const VERIFIER_STATUS_LABELS = { verified: "VERIFICATO", not_verified: "NON VERIFICATO" };
 
@@ -259,17 +260,21 @@ function turnVerificationNotes(messages) {
   const notes = new Map();
   let status = null;
   let answerIndex = -1;
+  let reportWritten = false;
   const close = () => {
     const line = verificationLine(status);
-    if (line && answerIndex >= 0) notes.set(answerIndex, line);
+    if (line && answerIndex >= 0 && !reportWritten) notes.set(answerIndex, line);
     status = null;
     answerIndex = -1;
+    reportWritten = false;
   };
   messages.forEach((message, index) => {
     if (message?.role === "user") close();
     if (message?.role !== "assistant") return;
     if (message.verificationStatus) status = message.verificationStatus;
     if (!message.agentNotice && String(message.content || "").trim()) answerIndex = index;
+    // The server already wrote the status block into this answer (P-1.4).
+    if (String(message.content || "").includes(SERVER_VERIFICATION_HEADING)) reportWritten = true;
   });
   close();
   return notes;

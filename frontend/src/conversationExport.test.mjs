@@ -863,3 +863,17 @@ test("export shows the Sage calls the chat shows and each turn's verification re
   assert.match(markdown, /Risposta: D\.\n\n> Verifica: SageMath: VERIFICATO · Lean 4: NON VERIFICATO \(LEAN_GOAL_REJECTED_REPEATEDLY\)/);
   assert.equal(markdown.match(/> Verifica:/g).length, 1);
 });
+
+test("export adds no verification line when the answer already carries the server's block", () => {
+  const messages = [
+    { role: "user", content: "procedi" },
+    {
+      role: "assistant",
+      content: "Risposta: D.\n\n---\n\n**Verifica (DS4 Studio)**\n\n- SageMath: VERIFICATO — eseguito in questo turno",
+      verificationStatus: { required: ["sage"], verifiers: { sage: { status: "verified", code: null } } }
+    }
+  ];
+  const markdown = exportConversationMarkdown(messages);
+  assert.equal(markdown.match(/Verifica \(DS4 Studio\)/g).length, 1);
+  assert.doesNotMatch(markdown, /> Verifica:/);
+});

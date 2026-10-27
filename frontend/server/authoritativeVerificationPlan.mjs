@@ -229,10 +229,33 @@ export class AuthoritativeVerificationPlan {
       ...(this.required.includes("lean") && lean.status === "verified" && this.leanGoal.prepared
         ? [`Lean verified exactly this statement: ${this.leanGoal.targetStatement}. Say what it establishes and whether it singles out the answer against the alternatives; do not call the answer itself formally verified unless it does.`]
         : []),
-      "Report each result separately. Claim successful execution only when a matching tool-result receipt exists; do not present NOT_VERIFIED as success.",
+      "The server appends the status of each verifier under your answer: do not write status lines or a verification summary of your own. Use these results only in the mathematical analysis, and never present NOT_VERIFIED as success.",
       "Never attribute a result to a tool that is not listed above as run in this turn.",
       CONVENTION_CHECK_INSTRUCTION,
       "Write the final answer directly in the language of the user's question, starting with the answer: do not narrate your plan or restate these instructions."
+    ].join("\n");
+  }
+
+  /**
+   * The status block appended under the final answer. Written by the server
+   * from the plan and its receipts, so the model cannot misreport a verifier.
+   */
+  verificationReport() {
+    const labels = { verified: "VERIFICATO", not_verified: "NON VERIFICATO" };
+    const ran = (verifier) => this.receipts.some((receipt) => receipt.verifier === verifier && receipt.state === "result_received");
+    const line = (name, verifier) => {
+      const result = this.verifiers[verifier];
+      return `- ${name}: ${labels[result.status] || "NON CONCLUSO"}${result.code ? ` (${result.code})` : ""}` +
+        (ran(verifier) ? " — eseguito in questo turno" : "");
+    };
+    const lean = this.verifiers.lean;
+    return [
+      "\n\n---\n\n**Verifica (DS4 Studio)**\n",
+      ...(this.required.includes("sage") ? [line("SageMath", "sage")] : []),
+      ...(this.required.includes("lean") ? [line("Lean 4", "lean")] : []),
+      ...(this.required.includes("lean") && lean.status === "verified" && this.leanGoal.prepared
+        ? [`- Enunciato dimostrato da Lean: \`${this.leanGoal.targetStatement}\``]
+        : [])
     ].join("\n");
   }
 

@@ -5120,6 +5120,15 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
         }
       }
 
+      // P-1.4: the verifier status under the answer is the server's, written
+      // after every gate ruled on the model's prose.
+      if (isFinalResponse && verificationPlan?.complete && assistantContent.trim()) {
+        const report = verificationPlan.verificationReport();
+        assistantContent += report;
+        assistantMessage.content = assistantContent;
+        deferredAssistantText.append(report);
+      }
+
       // Commit only after every authoritative finalization decision accepted it.
       if (persistEpistemicClaims && epistemicDecision) {
         agentSession.epistemic.commitClaims(epistemicTurn.ledger.allClaims());
