@@ -1,6 +1,7 @@
 # M1 — Contratto proposto e criteri di accettazione
 
-24 ottobre 2026 — **PROPOSTA IN REVIEW**, non implementazione o test superati.
+24 ottobre 2026 — contratto M1. **Verificato il 28 ottobre 2026**;
+risultati e limiti in `M1-test-status.md`.
 Owner: Codex; reviewer: Claude Code. Piano v1.0: §36, §5–8.3, §10.3,
 §29, §32.1–32.2 e G1. Branch unico: `feature/deepseek-infer`.
 M0 discovery richiede correzioni e review; G0 completo resta aperto per la

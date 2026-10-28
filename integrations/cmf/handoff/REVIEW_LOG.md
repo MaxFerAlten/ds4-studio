@@ -102,3 +102,21 @@ forbids (test side: set `projection.RETRY_BASE_S = 0` or wait). The 2 SKIPs are 
 
 Suite (run by Claude outside the sandbox): 46 tests, 46 PASS, 0 SKIP. 21 acceptance cases stay
 `NOT_RUN` (see `docs/M1-test-status.md`): **G1 stays OPEN**; G0 stays OPEN (no real-model baseline).
+
+
+## 28 ottobre 2026 — chiusura G1 standalone dopo ripresa
+
+Utente: Codex autonomo fino al 30 ottobre alle 11:00, al posto di Claude
+indisponibile. Due peer Codex con ownership distinta e review reciproca.
+Main: CLI/server/migrations/sqlite/blob durability e 25 nuovi test.
+Peer: backup/restore e 13 nuovi test. Suite main 84/84 PASS, zero skip;
+peer 18/18 backup e 7/7 prove main mirate. M1 standalone APPROVATO.
+
+Regressioni riprodotte prima del fix: OFF ignorato, log/traceback con contenuti,
+busy 500, client drip, URI non escaped, schema futuro mutato, parent directory
+blob non fsyncate, manifest e restore TOCTOU. La copia privata del DB viene
+verificata prima del publish. Nessun hook/sorgente nativa DS4 modificata.
+G0/G2 aperti. Impronte: `docs/M1-verification.json`.
+detect_changes(all) completo: 19 file nel working tree, 32 simboli, 3
+processi cmd_admin; rischio MEDIUM, nessun partial/truncated. Commit limitato
+ai 14 file CMF rivisti; modifiche concorrenti fuori da CMF preservate.

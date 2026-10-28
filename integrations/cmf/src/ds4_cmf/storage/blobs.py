@@ -40,9 +40,19 @@ def _open_dir(root: Path, *, create: bool) -> int:
     if not stat.S_ISDIR(st.st_mode):
         raise CmfError("SOURCE_UNAVAILABLE", "blob root is not a directory")
     rfd = os.open(root, _DIR_FLAGS)
+    dfd = None
     try:
+        if create:
+            # A durable file inside sha256 is insufficient if the entries for
+            # root/sha256 can disappear on power loss. Also sync on retry: a
+            # previous failed write may have left unsynced directory entries.
+            parent = os.open(root.parent, _DIR_FLAGS)
+            try:
+                os.fsync(parent)
+            finally:
+                os.close(parent)
         try:
-            return os.open("sha256", _DIR_FLAGS, dir_fd=rfd)
+            dfd = os.open("sha256", _DIR_FLAGS, dir_fd=rfd)
         except FileNotFoundError:
             if not create:
                 raise CmfError("SOURCE_UNAVAILABLE", "blob directory missing") from None
@@ -50,11 +60,18 @@ def _open_dir(root: Path, *, create: bool) -> int:
                 os.mkdir("sha256", 0o700, dir_fd=rfd)
             except FileExistsError:
                 pass
-            return os.open("sha256", _DIR_FLAGS, dir_fd=rfd)
+            dfd = os.open("sha256", _DIR_FLAGS, dir_fd=rfd)
         except OSError as exc:
             if exc.errno in (errno.ELOOP, errno.ENOTDIR):
                 raise CmfError("SOURCE_UNAVAILABLE", "blob directory is a link") from None
             raise
+        if create:
+            os.fsync(rfd)
+        return dfd
+    except BaseException:
+        if dfd is not None:
+            os.close(dfd)
+        raise
     finally:
         os.close(rfd)
 

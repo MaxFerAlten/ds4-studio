@@ -19,7 +19,7 @@ from ..domain.identity import Principal, ensure_scope
 
 def connect(path: Path, *, readonly: bool = False, busy_timeout_ms: int = 2000) -> sqlite3.Connection:
     if readonly:
-        db = sqlite3.connect(f"file:{path}?mode=ro", uri=True, isolation_level=None,
+        db = sqlite3.connect(path.absolute().as_uri() + "?mode=ro", uri=True, isolation_level=None,
                              check_same_thread=False)
         db.execute("PRAGMA query_only = ON")
     else:

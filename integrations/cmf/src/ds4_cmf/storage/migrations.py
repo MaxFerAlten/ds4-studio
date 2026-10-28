@@ -85,15 +85,19 @@ def migrate(path: Path, migrations_dir: Path = MIGRATIONS_DIR, *,
             dry_run: bool = False) -> tuple[int, ...]:
     """Apply pending migrations; return the versions applied (or planned)."""
     migrations = load_migrations(migrations_dir)
-    if dry_run:
-        if not path.exists():
-            return tuple(m.version for m in migrations)
+    existed = path.exists()
+    if existed:
+        # Refuse drift/future schemas before opening a writer: connect() switches
+        # journal mode to WAL, which would mutate even a database we must reject.
         db = connect(path, readonly=True)
         try:
-            return plan(db, migrations)
+            pending = plan(db, migrations)
         finally:
             db.close()
-    existed = path.exists()
+        if dry_run or not pending:
+            return pending
+    elif dry_run:
+        return tuple(m.version for m in migrations)
     db = connect(path)
     path.chmod(0o600)
     try:

@@ -53,14 +53,14 @@ def request(settings, method: str, route: str, body: object | None = None,
 
 def _local_owner(settings):
     from .domain.identity import Grant, Principal
-    from .storage.sqlite import ensure_store_dir
+    from .storage.sqlite import connect, ensure_store_dir
     ensure_store_dir(settings.store_root, create=False)
     uid = str(os.getuid())
     projects = []
     db_path = settings.db_path
     if db_path.exists():
         import sqlite3
-        db = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        db = connect(db_path, readonly=True)
         try:
             projects = [r[0] for r in db.execute("SELECT project_id FROM projects")]
         except sqlite3.Error:
@@ -87,7 +87,12 @@ def _settings(args):
 def cmd_serve(args) -> int:
     from .api.server import make_server
     from .storage import eventlog, projection
+    from .storage.sqlite import fts5_available
     settings = _settings(args)
+    if not settings.enabled:
+        raise CmfError("DEGRADED", "CMF is disabled; enable it explicitly before serving")
+    if not fts5_available():
+        raise CmfError("DEGRADED", "SQLite FTS5 is unavailable")
     ctx = eventlog.open_store(settings)
     try:
         res = projection.project_pending(ctx, max_events=10_000)
@@ -288,7 +293,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         return args.func(args)
     except CmfError as exc:
-        print(f"cmf: {exc.code}: {exc.detail or exc.body()['error']['message']}", file=sys.stderr)
+        print(f"cmf: {exc.code}: {exc.body()['error']['message']}", file=sys.stderr)
         return 2
     except (ConnectionRefusedError, FileNotFoundError) as exc:
         print(f"cmf: service unavailable ({type(exc).__name__})", file=sys.stderr)

@@ -1,0 +1,78 @@
+{
+  "base_commit": "bd38ef654c08ea75c256f41e7607e98d434004b2",
+  "branch": "feature/deepseek-infer",
+  "command": "PYTHONPATH=src python3 -m unittest discover -s tests",
+  "environment": {
+    "platform": "Linux",
+    "python": "3.12.3",
+    "sqlite": "3.45.1"
+  },
+  "gate": "G1_STANDALONE_PASS",
+  "graph_change_analysis": {
+    "commit_scope": "14 reviewed CMF files; other working tree changes excluded",
+    "partial": false,
+    "scope": "all",
+    "summary": {
+      "affected_count": 3,
+      "changed_count": 32,
+      "changed_files": 19,
+      "risk_level": "medium"
+    },
+    "truncated": false
+  },
+  "native_sources_sha256": {
+    "ds4_agent.c": "8b8911d242142641afabe4e0673d260dc1f99762aa8f6988f7b6b4aa206f6e65",
+    "ds4_context_blob.c": "83f76f222f79b0025be900791ea542d3237bf4363dd2aefbabb04dfd63aa749d",
+    "ds4_tool_compress.c": "4f43bad798b94d5a7563895443acddc60cb4a89de8a7b6cbf833e99c659060e7"
+  },
+  "recorded_at": "2026-10-28T15:09:30.967909+00:00",
+  "scope_limits": [
+    "G0 real-model baseline open",
+    "No native hook, compaction or release certification"
+  ],
+  "source_sha256": {
+    "migrations/0001_core.sql": "f3e54c081bf24a2338cfc64ecc5ab1f2a118b1a5a5daea101d010285577ac04e",
+    "migrations/0002_fts.sql": "dd2186904325b304bf808a3ca4187a1061348528b5bb1fb3a20811eadac3ec6d",
+    "src/ds4_cmf/__init__.py": "f64bfdbed92ab597415c6fd020d85ff4843f2bf000742bd96c08c442a69ad772",
+    "src/ds4_cmf/api/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "src/ds4_cmf/api/auth.py": "973e31e7cdc435f3985862349d8ac1e79d105e34d662d32096047ade24679b9c",
+    "src/ds4_cmf/api/errors.py": "efec9547181ae878484a46992af2b9c28202234622fdfb18db299b4b2992d460",
+    "src/ds4_cmf/api/server.py": "1f1b416d4772f84930cb78aba77e37ec6a41ecb79cfb749242b39d50144d6967",
+    "src/ds4_cmf/cli.py": "471f61cd230350147a5fbdb221df879c2f2c1199b4e58e286f712ec4b0bf4ad8",
+    "src/ds4_cmf/config.py": "de9811f121616b0c0d82ef98678f83ce1732613c4cc720ae7502da4b9c24cc43",
+    "src/ds4_cmf/domain/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "src/ds4_cmf/domain/events.py": "ec495c48e7ffaa73a1c60c954e424cd7f1ebb1016d813edea85abf5435ba918d",
+    "src/ds4_cmf/domain/identity.py": "53994ddde49b01ac63843c8cdbd5ab90de13fd9d739c0a56f2c14af5a030295f",
+    "src/ds4_cmf/ingest/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "src/ds4_cmf/ingest/redact.py": "bccf2adba6a34a84b634468b733681aadc6beca5ad2257e455fff68c07dd7aed",
+    "src/ds4_cmf/search/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "src/ds4_cmf/search/fts.py": "d0430abe39dca1a45992f8218415ec2f5e9eda49c343f4a262fb636041d8c1f2",
+    "src/ds4_cmf/storage/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "src/ds4_cmf/storage/backup.py": "5e3fbf5e29d6cb2a54a4848948a3d733af3c20f17d8410b9b4e6d7582b40eb82",
+    "src/ds4_cmf/storage/blobs.py": "0fd21e7c1662cf5881aac9c493ba5eb4bb4c5ca9ea5f8dc2599122336812bf59",
+    "src/ds4_cmf/storage/eventlog.py": "4c82b69519573c8d2781b2d92cdd7216d1a063e23188946ba8c3a44664a5138c",
+    "src/ds4_cmf/storage/migrations.py": "8daf75b96ff8d01e91be9a59c6abecbe44ae062ca6a609aaf07c40ea5864058b",
+    "src/ds4_cmf/storage/projection.py": "794f1ac0d9bc0ddb19500fe602c33b1365c412b42cf65737afc4227b397d54c7",
+    "src/ds4_cmf/storage/sqlite.py": "55c000537d068ac069353f464f830f8e60e6c8bfa9b1d92b01fa62aaa4282639",
+    "tests/support.py": "fab50afdb904d732e9a5f388ad7e6fdd4b13918d79eaa98085ef7b63e11255e7",
+    "tests/test_acceptance_gaps.py": "2795c6782e3963bb414e2bdb0eccfc19972092552bebfb190edb7af03a54cbe6",
+    "tests/test_acl.py": "a245ef09a8dc0e125a9721fdab3aac3efc6d3e0052035182dc8e80d1f799917b",
+    "tests/test_backup.py": "2cb99cd3a6f7adc23cebf0b762d7a444e964eaa90d76193c8e1a52326a18c398",
+    "tests/test_backup_hardening.py": "25a77c6d26906e4ad8c1daa193d11638d9c810e8a35c9f3bdf2318587e7bd024",
+    "tests/test_blobs.py": "8a7535a2c41fe805de1dfb234171fcc8aa88942e1e88434e5283bcba11bb69c2",
+    "tests/test_bootstrap.py": "5f2a6550ccd9cb83eb6eab6f108db0c40d3eb04d1a6ec4b75238789f0a3714ec",
+    "tests/test_eventlog.py": "b5efa2bc294af9973bfe33b49a1adc67bbeb556c733037c6f8663ff64c86cc2f",
+    "tests/test_fts.py": "6fc014c28bd904041f6cd843e4cbf920fb6dc61dd35517eb1b6b910da35d7f1c",
+    "tests/test_migrations.py": "b977c76e7f322408a67531746c0bd2c10b172d97b4d76883b5319c5bfc40d9cd",
+    "tests/test_projection.py": "0a4e16e10f1b5810196dd6dd1164b6d5d753aabcc0482b03519f150f2c814479",
+    "tests/test_transport.py": "5945d370d377ae6684411d6985a4b760e133f1122dde67b2fe1790a2138c8a97"
+  },
+  "tests": {
+    "contract_cases": 58,
+    "failures": 0,
+    "missing_contract_cases": [],
+    "passed": 84,
+    "run": 84,
+    "skipped": 0
+  }
+}

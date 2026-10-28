@@ -13,9 +13,11 @@ import os
 import re
 import socket
 import socketserver
+import sqlite3
 import stat
 import struct
 import sys
+import threading
 import time
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
@@ -96,7 +98,8 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def log_request(self, code="-", size="-") -> None:
-        print(f"cmf {self.command or '-'} {self._route} {code}", file=sys.stderr, flush=True)
+        method = self.command if self.command in {"GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"} else "-"
+        print(f"cmf {method} {self._route} {code}", file=sys.stderr, flush=True)
 
     def send_error(self, code, message=None, explain=None) -> None:
         mapping = {400: "SCHEMA", 404: "NOT_VISIBLE", 405: "METHOD", 408: "DEADLINE",
@@ -189,8 +192,13 @@ class Handler(BaseHTTPRequestHandler):
         except CmfError as exc:
             self.close_connection = True
             self._send(exc.status, exc.body())
-        except (socket.timeout, TimeoutError):
+        except (socket.timeout, TimeoutError, BrokenPipeError, ConnectionResetError):
             self.close_connection = True
+        except sqlite3.OperationalError as exc:
+            self.close_connection = True
+            code = getattr(exc, "sqlite_errorcode", 0) & 0xff
+            err = CmfError("DEGRADED" if code in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED) else "INTERNAL")
+            self._send(err.status, err.body())
         except Exception as exc:  # noqa: BLE001 - last-resort, content-free
             print(f"cmf internal {type(exc).__name__}", file=sys.stderr, flush=True)
             self.close_connection = True
@@ -291,8 +299,28 @@ class CmfServer(socketserver.UnixStreamServer):
                 self._project_after = time.monotonic() + PROJECTION_ERROR_DELAY_S
 
     def finish_request(self, request, client_address) -> None:
-        super().finish_request(request, client_address)
+        # A per-recv timeout alone lets a drip client monopolize this serial
+        # server forever. One timer caps the complete request's socket lifetime.
+        def expire():
+            try:
+                request.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+        timer = threading.Timer(self.settings.limits.request_timeout_s, expire)
+        timer.daemon = True
+        timer.start()
+        try:
+            super().finish_request(request, client_address)
+        finally:
+            timer.cancel()
+            timer.join()
         self.service_actions()
+
+    def handle_error(self, request, client_address) -> None:
+        # BaseServer prints traceback, paths and the exception's raw message.
+        # The transport boundary must remain content-free even on disconnect.
+        print("cmf request failed", file=sys.stderr, flush=True)
 
     def server_close(self) -> None:
         super().server_close()

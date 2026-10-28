@@ -26,6 +26,7 @@ Nothing in DS4 calls CMF; disabling it means not starting it.
 ## Try it
 
 ```sh
+export DS4_CMF_ENABLED=1
 export DS4_CMF_STORE_ROOT=$HOME/.local/share/ds4-cmf
 export DS4_CMF_TOKENS_FILE=$HOME/.config/ds4/cmf-tokens.json
 C=integrations/cmf/scripts/cmf
@@ -46,3 +47,7 @@ so stop the service first (M1 has no online snapshot endpoint).
 ## Tests
 
 `PYTHONPATH=src python3 -m unittest discover -s tests -v` (from this directory).
+
+M1 verification: 84/84 tests pass, including all 58 acceptance cases; see
+`docs/M1-test-status.md`. Backup manifests are capped at 16 MiB. Restore
+validates the copied database and uses Linux renameat2 without replacement.
