@@ -205,6 +205,14 @@ turno**. Non chiedere all'utente di scrivere «continua».
 | `contract` | sì | correggi gli argomenti di `lean_check`, non la dimostrazione |
 | `user_cancelled` | sì | pubblica NOT_VERIFIED; nessuna prova è stata completata |
 
+### Induzione da un limite inferiore
+
+Per un enunciato `∀ n, k ≤ n → P n` usa `intro n hn` e
+`induction n, hn using Nat.le_induction with | base => … | succ m hm ih => …`:
+il caso base è `P k`, il passo ha `hm : k ≤ m` e `ih : P m`. Evita `Nat.rec`
+con `omega` su `Nat.zero`: il caso `0` non soddisfa `k ≤ n` e resta aperto.
+Per togliere `m + 1 - 1` scrivi `obtain ⟨j, rfl⟩ : ∃ j, m = j + 1 := ⟨m - 1, by omega⟩`.
+
 ## No checked, no proof claim
 
 Una risposta può dichiarare la dimostrazione verificata **solo** dopo un
