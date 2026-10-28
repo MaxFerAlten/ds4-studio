@@ -215,7 +215,10 @@ const isSafeValue = (text) => SAFE_VALUE.test(text) && !text.includes("__") && !
 export function valueCheckScript(values = []) {
   const pairs = values
     .map((item, index) => ({ index, a: item.answerValue, b: item.printedValue }))
-    .filter((pair) => pair.b && isSafeValue(pair.a) && isSafeValue(pair.b));
+    .filter((pair) => pair.b && isSafeValue(pair.a) && isSafeValue(pair.b))
+    // A list and a single value are different quantities (a list and its sum,
+    // live): the reading paired them wrongly, so there is nothing to compare.
+    .filter((pair) => Boolean(listItems(pair.a)) === Boolean(listItems(pair.b)));
   if (!pairs.length) return null;
   const names = [...new Set(pairs.flatMap((pair) => `${pair.a} ${pair.b}`.match(/[A-Za-z_]\w*/g) || []))];
   return [

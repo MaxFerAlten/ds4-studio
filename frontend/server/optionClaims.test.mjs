@@ -167,3 +167,15 @@ test("the critique's lists: B and C as stated differ from what Sage printed", ()
   const checked = applyValueCheck(values, 'DS4_VALUE_CHECK {"0": "mismatch", "1": "mismatch", "2": "match"}');
   assert.match(valueMismatchGuidance(checked), /B_list \(n=2\): the answer says \[0, x\*y, 2\*x\*y\], output #2 printed \[0, x\*y, 2\*y\^2\]\n- C_list \(n=2\): the answer says \[0, x\*y, 0\], output #2 printed \[2\*x\^2, x\*y, 0\]$/);
 });
+
+test("a list is never compared with a single value: the pairing is wrong, not the answer", () => {
+  const values = [
+    { quantity: "D at n=2", answerValue: "[x^2, 2*x*y, y^2]", printedValue: "x^2 + 2*x*y + y^2", sequence: 1, status: "PENDING" },
+    { quantity: "sum at n=2", answerValue: "x^2 + 2*x*y + y^2", printedValue: "x^2 + 2*x*y + y^2", sequence: 1, status: "PENDING" }
+  ];
+  assert.match(valueCheckScript(values), /\[\[1,"x\^2 \+ 2\*x\*y \+ y\^2"/);
+  assert.doesNotMatch(valueCheckScript(values), /\[0,/);
+  const checked = applyValueCheck(values, 'DS4_VALUE_CHECK {"1": "match"}');
+  assert.deepEqual(checked.map((item) => item.status), ["UNCHECKED", "MATCH"]);
+  assert.equal(valueMismatchGuidance(checked), "");
+});

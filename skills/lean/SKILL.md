@@ -220,6 +220,10 @@ risultato `status=checked` con `exitCode=0`, `timedOut=false`, `cancelled=false`
 In ogni altro caso la risposta deve dire `STATO: NOT_VERIFIED` e riportare la
 causa terminale. Un timeout non è una prova falsa: è un fallimento riparabile.
 
+Quando DS4 Studio aggiunge sotto la risposta il blocco **Verifica (DS4 Studio)**,
+lo stato e la causa li riporta quel blocco: la risposta comincia dalla risposta
+alla domanda, non dall'esito di Lean, e non dichiara Lean verificato.
+
 ## TERMINAL MEANS TERMINAL
 
 Quando il runtime Lean riporta `terminal=true` o `retryable=false` con un

@@ -59,3 +59,19 @@ test("js engine: a shell command that prints a SageMath verdict is not a SageMat
   assert.match(sse, /TOOL_ATTESTATION_UNSUPPORTED/);
   assert.match(sse, /Nessuna esecuzione riuscita di SageMath/);
 });
+
+// F26: a turn that only evaluates the tools refuses to run one. Seen live: the
+// model computed with bash in place of the verifier it was recommending.
+test("js engine: a tool-evaluation turn refuses to run a computation", async () => {
+  const evaluateOnly = { content: JSON.stringify({ verification_requested: false, tool_evaluation_requested: true,
+    required_tools: [], tool_selection: [], skill_actions: [] }), finish: "stop" };
+  const compute = { toolCalls: [{ id: "calc", name: "bash", arguments: { command: "python3 -c 'print(2**10)'" } }], finish: "tool_calls" };
+  const { sse, calls } = await run([evaluateOnly, compute, { content: "Raccomando SageMath.", finish: "stop" }], "evaluation-only");
+  const result = JSON.parse(sse.match(/event: agent_tool_result\ndata: (.*)/)[1]);
+  assert.equal(result.guarded, true);
+  assert.match(result.content, /^TOOL_EVALUATION_ONLY:/);
+  assert.equal(result.receipt.status, "blocked");
+  assert.doesNotMatch(sse, /1024/);
+  assert.match(sse, /Raccomando SageMath\./);
+  assert.match(JSON.stringify(calls.at(-1).body.messages), /TOOL_EVALUATION_ONLY/);
+});

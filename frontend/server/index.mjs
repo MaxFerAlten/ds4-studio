@@ -1343,6 +1343,10 @@ async function extractAgentTaskContract({ request, userMessages, images = [], si
   }
 }
 
+// What a turn that only evaluates the tools refuses: the verifiers, and the
+// shell the model reached for to compute in their place.
+const EVALUATION_TURN_REFUSED_TOOLS = new Set(["sage", "lean_check", "lean_prepare", "lean_inspect", "bash"]);
+
 const SAGE_PRINTED_FOR_MODEL_CHARS = 3000;
 function sagePrintedForModel(printed) {
   const text = String(printed || "").trim();
@@ -3932,6 +3936,7 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
   // The guidance is English; without this the rewrite answers in English too.
   const FINAL_ANSWER_REWRITE_LANGUAGE = "Rewrite the whole answer in the language of the user's question, starting with the answer; do not narrate this correction.";
   let finalAnswerRewrites = 0;
+  const evaluationOnlyTurn = requestIntent.toolEvaluationRequested && !requestIntent.verificationRequested;
   let planCompleteToolsOff = false;
   // QF-03 §25.6 — structured provenance alongside the legacy text blob, which
   // stays until the claim guard stops reading it. Collected in parallel, not
@@ -5481,6 +5486,12 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
       agentSession.readGuard.beginTurn();
 
       const runToolCall = async (tc) => {
+        // F26: asked which tool fits, not to run one. The router decided the
+        // turn runs nothing; a computation here answers a question nobody asked.
+        if (evaluationOnlyTurn && EVALUATION_TURN_REFUSED_TOOLS.has(tc.name)) {
+          return { id: tc.id, name: tc.name, isError: true, guarded: true, content:
+            "TOOL_EVALUATION_ONLY: the user asked which tool fits this task, not to run one. Answer the evaluation without running anything; the user will ask for the verification." };
+        }
         if (verificationPlan && tc.name === "lean_check" && tc.arguments?.task_mode !== "proof") {
           verificationPlan.recordBlocked({ callId: tc.id, toolName: tc.name, code: "LEAN_PROOF_MODE_REQUIRED" });
           writeVerificationStatus();
