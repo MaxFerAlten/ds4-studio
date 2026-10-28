@@ -1,0 +1,49 @@
+id = "kv-prior-decay"
+enabled = true
+owner = "downstream"
+description = """
+Age the baseline of the disk KV cache eviction score like its hits.
+
+ds4_kvstore_entry_eviction_score() scored (effective_hits + 1) * tokens/size:
+hits decayed with a 6 h half-life, the +1 did not. With the disk budget full
+of older checkpoints, any entry with one past hit outranked a checkpoint
+stored seconds earlier with hits=0. In DS4 Studio the single-slot backend
+saves the live session to disk before each side request (Lean goal review,
+task contract, claim readings) and restores it right after; the session
+checkpoint was the next eviction victim, so the restore missed and each
+Lean round re-prefilled 10-17k tokens from zero (106-171 s, live 2026-10-27).
+
+The +1 now decays with the same factor as the hits, floored at
+KV_CACHE_MIN_EFFECTIVE_HITS so entries equally old still rank by density.
+An entry just used scores as before (decay = 1). Test in ds4_server.c:
+a fresh checkpoint outranks a day-old single hit; a just-used hit still
+counts double. The existing eviction tests pass unchanged.
+"""
+
+[upstream]
+reviewed_sha = "b09a3e8eb3ca051e175b1919bafa96927f431d69"
+
+[[anchors]]
+file = "ds4_kvstore.c"
+kind = "exact"
+text = "    double effective_hits = (double)e->hits;"
+count = 1
+
+[[anchors]]
+file = "ds4_server.c"
+kind = "exact"
+text = "static void test_kv_cache_eviction_decayed_hits_tie_break_by_age(void) {"
+count = 1
+
+[[shadow_patch]]
+file = "ds4_kvstore.c"
+patch = "patches/core/kv-prior-decay__ds4_kvstore.c.patch"
+
+[[shadow_patch]]
+file = "ds4_server.c"
+patch = "patches/core/kv-prior-decay__ds4_server.c.patch"
+
+[[retire_probe]]
+kind = "symbol"
+file = "ds4_kvstore.c"
+text = "double prior = 1.0;"

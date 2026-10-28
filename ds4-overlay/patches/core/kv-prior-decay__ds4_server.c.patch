@@ -1,0 +1,34 @@
+diff --git a/ds4_server.c b/ds4_server.c
+index b88aa44..2bfefd1 100644
+--- a/ds4_server.c
++++ b/ds4_server.c
+@@ -22194,6 +22194,21 @@ static void test_kv_cache_eviction_score_decays_stale_hits(void) {
+     TEST_ASSERT(f_on == 1.0 * (double)fresh.tokens / (double)fresh.file_size);
+ }
+ 
++static void test_kv_cache_eviction_fresh_checkpoint_outranks_day_old_hit(void) {
++    /* A live session saved to disk before a side request (hits=0, stored
++     * now) must outlive a prompt that was hit once a day ago, even at a
++     * slightly better density: the session is restored seconds later. */
++    const uint64_t now = 1000u + 4u * KV_CACHE_HIT_HALF_LIFE_SECONDS;
++    kv_entry stale = {.tokens = 1100, .hits = 1, .file_size = 4096, .last_used = 1000};
++    kv_entry fresh = {.tokens = 1000, .hits = 0, .file_size = 4096, .last_used = now};
++    TEST_ASSERT(kv_entry_eviction_score(&stale, NULL, now, NULL) <
++                kv_entry_eviction_score(&fresh, NULL, now, NULL));
++    /* Just used, a hit still counts double. */
++    kv_entry hot = {.tokens = 1000, .hits = 1, .file_size = 4096, .last_used = now};
++    TEST_ASSERT(kv_entry_eviction_score(&hot, NULL, now, NULL) ==
++                2.0 * kv_entry_eviction_score(&fresh, NULL, now, NULL));
++}
++
+ static void test_kv_cache_eviction_decayed_hits_tie_break_by_age(void) {
+     char tmpl[] = "/tmp/ds4-kv-stale-hit-evict-test.XXXXXX";
+     char *dir = mkdtemp(tmpl);
+@@ -23096,6 +23111,7 @@ static void ds4_server_unit_tests_run(void) {
+     test_kv_cache_eviction_prefers_superseded_continued_prefix();
+     test_kv_cache_eviction_keeps_smaller_context_prefix();
+     test_kv_cache_eviction_score_decays_stale_hits();
++    test_kv_cache_eviction_fresh_checkpoint_outranks_day_old_hit();
+     test_kv_cache_eviction_decayed_hits_tie_break_by_age();
+     test_kv_cache_eviction_keeps_aligned_continued_frontiers();
+ }
