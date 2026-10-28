@@ -6129,7 +6129,10 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
           const result = await runToolCall(tc);
           const event = toolEvents.record({ call: tc, result, startedAt, aborted: controller.signal.aborted });
           result.receipt = ToolEventLog.receipt(event);
-          toolOutputs.push({ sequence: event.sequence, tool: event.tool, status: event.status, text: String(result.toolOutput ?? result.content ?? "") });
+          // The code too: a printed value means nothing without the inputs it was computed for.
+          toolOutputs.push({ sequence: event.sequence, tool: event.tool, status: event.status,
+            code: typeof tc.arguments?.code === "string" ? tc.arguments.code : undefined,
+            text: String(result.toolOutput ?? result.content ?? "") });
           return result;
         };
         const results = group.length === 1

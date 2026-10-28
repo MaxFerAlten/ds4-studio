@@ -179,3 +179,13 @@ test("a list is never compared with a single value: the pairing is wrong, not th
   assert.deepEqual(checked.map((item) => item.status), ["UNCHECKED", "MATCH"]);
   assert.equal(valueMismatchGuidance(checked), "");
 });
+
+test("the tool reading gets each output's code, so it can tell which inputs a value is for", () => {
+  const request = toolReadingRequest({ answerReading: { options: [], values: [{ quantity: "det(A+B) for A=B=I_2" }] },
+    outputs: [{ sequence: 1, tool: "sage", status: "success", code: "A = matrix([[1,2],[3,4]])", text: "det(A+B) = -8" },
+      { sequence: 2, tool: "bash", status: "success", text: "ok" }] });
+  assert.equal(request.tool_outputs[0].code, "A = matrix([[1,2],[3,4]])");
+  assert.equal("code" in request.tool_outputs[1], false);
+  assert.match(TOOL_READING_PROMPT, /use the code to tell which inputs a printed value is for/);
+  assert.match(TOOL_READING_PROMPT, /A value printed for other inputs \(other matrices, another n\) is a different quantity/);
+});
