@@ -655,6 +655,8 @@ export class AgentSessionManager {
     this.state.messages = [];
     this.thinkMode = undefined;
     this.openwikiWorkspace = null;
+    // The last picture the user sent (index.mjs, task contract): a new chat forgets it.
+    this.questionImages = undefined;
     this.lastMode = "none";
     this.lastReason = reason;
     this.readGuard.clearAll();

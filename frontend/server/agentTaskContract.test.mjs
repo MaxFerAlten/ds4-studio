@@ -47,3 +47,31 @@ test("js engine: the task contract comes from the user's words and reaches the a
     await backend.close();
   }
 });
+
+// Critique 2026-10-27: the question came as a picture, so the contract of the
+// later "verify it" turn had no options. The extractor now gets the picture.
+test("js engine: a later turn's contract reads the question from the picture the user sent", async () => {
+  const picture = "data:image/png;base64,iVBORw0KGgo=";
+  const backend = await startFakeBackend({ turns: [
+    { content: "Ho letto il quiz.", finish: "stop" },
+    evaluate, contract, { content: "Raccomando SageMath.", finish: "stop" }
+  ] });
+  const server = await startServerChild(backend);
+  try {
+    const session = { ...headers, "X-Agent-Session-Key": "task-contract-picture" };
+    await fetch(`${server.base}/api/agent/start`, { method: "POST", headers: session, body: "{}" });
+    for (const body of [{ message: "analizza immagine", images: [picture] }, { message: "valuta quale strumento usare" }]) {
+      const res = await fetch(`${server.base}/api/agent/chat`, { method: "POST", headers: session, body: JSON.stringify(body) });
+      assert.equal(res.status, 200, await res.text());
+    }
+    const calls = backend.log.filter((entry) => entry.path === "POST /v1/chat/completions");
+    const extraction = calls.find((call) => call.body.messages[0]?.content === TASK_CONTRACT_PROMPT);
+    const content = extraction.body.messages[1].content;
+    assert.ok(Array.isArray(content), JSON.stringify(content));
+    assert.deepEqual(content.slice(1), [{ type: "image_url", image_url: { url: picture } }]);
+    assert.match(content[0].text, /analizza immagine/);
+  } finally {
+    server.stop();
+    await backend.close();
+  }
+});

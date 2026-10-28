@@ -169,7 +169,7 @@ test("the final prompt names the statement Lean verified and asks whether it sin
   assert.match(plan.promptForActiveVerifier(), /each competing alternative on the smallest instance where they take different values/);
   // The convention analysis is asked of the answer, not of the tool phases.
   assert.doesNotMatch(plan.promptForActiveVerifier(), /for each one you reject/);
-  assert.match(plan.promptForActiveVerifier(), /Compute the reference under the standard convention of the field/);
+  assert.match(plan.promptForActiveVerifier(), /never with one of the alternatives. formulas, under the standard convention of the field/);
   assert.match(plan.promptForActiveVerifier(), /the reference reversed, or the reference shifted by one index/);
   sealGoal(plan);
   plan.finishVerifier("lean", "verified");
@@ -240,4 +240,9 @@ test("the final prompt names the answer's language from the task contract", () =
   const plan = createAuthoritativeVerificationPlan({ verificationRequested: true, requiredTools: ["sage"], taskContract: { language: "Italian", openConventions: [] } });
   plan.finishVerifier("sage", "verified");
   assert.match(plan.finalPrompt(), /\nWrite the whole final answer in Italian\.$/);
+});
+
+test("the phase prompt asks for a reference independent of the alternatives", () => {
+  const plan = createAuthoritativeVerificationPlan({ verificationRequested: true, requiredTools: ["sage"] });
+  assert.match(plan.promptForActiveVerifier(), /Compute the reference from the problem's own definition [^.]*never with one of the alternatives' formulas/);
 });

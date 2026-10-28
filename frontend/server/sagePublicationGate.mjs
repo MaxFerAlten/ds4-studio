@@ -138,7 +138,9 @@ function topLevelResult(sageResult, raw, { forceError = false } = {}) {
     // object, not the nested contract.
     orchestration: sageResult.orchestration ?? null,
     artifacts: Array.isArray(sageResult.artifacts) ? sageResult.artifacts : [],
-    finalMarkdown: markdown
+    finalMarkdown: markdown,
+    // What the code printed, apart from the report (agentTools.structuredSageResult).
+    printed: String(raw?.sageResult?.printed ?? sageResult.printed ?? "")
   };
 }
 

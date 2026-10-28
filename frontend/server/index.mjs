@@ -180,7 +180,7 @@ import { guardAssistantDelta, hasStructuredSynthesis, readStructuredCheckpoint }
 import { checkVerifiedClaim, checkToolAttestations, toolAttestationNote } from "./claimGuard.mjs";
 import { ToolEventLog } from "./toolEventLog.mjs";
 import { TASK_CONTRACT_PROMPT, parseTaskContract, taskContractInstruction, taskContractLanguage } from "./taskContract.mjs";
-import { OPTION_CLAIMS_PROMPT, optionClaimsReportLines, optionClaimsRequest, parseOptionClaims } from "./optionClaims.mjs";
+import { ANSWER_CLAIMS_PROMPT, TOOL_READING_PROMPT, answerClaimsRequest, applyValueCheck, mergeClaimReadings, optionClaimsReportLines, parseOptionClaims, toolReadingRequest, valueCheckScript, valueMismatchGuidance, valueReportLines } from "./optionClaims.mjs";
 import { envBooleanWithAliases } from "./envBoolean.mjs";
 import {
   evaluateLeanFinalCandidate,
@@ -1321,10 +1321,14 @@ async function classifyAgentRequestIntent({ request, userMessage, recentMessages
 
 // Pass A of the plan (§7.2): the question alone, never an answer. Advisory: a
 // failed extraction leaves the turn as it would have been without it.
-async function extractAgentTaskContract({ request, userMessages, signal }) {
+async function extractAgentTaskContract({ request, userMessages, images = [], signal }) {
+  const text = JSON.stringify({ user_messages: userMessages });
   const payload = buildChatPayload({ model: request.model, stream: false, max_tokens: 400, thinking: false, temperature: 0 }, [
     { role: "system", content: TASK_CONTRACT_PROMPT },
-    { role: "user", content: JSON.stringify({ user_messages: userMessages }) }
+    // A question asked as a picture is still the user's own input.
+    { role: "user", content: images.length
+      ? [{ type: "text", text }, ...images.map((url) => ({ type: "image_url", image_url: { url } }))]
+      : text }
   ]);
   try {
     const response = await fetchWithBusyRetry(fetch, `${backendBase()}/v1/chat/completions`, {
@@ -1339,20 +1343,36 @@ async function extractAgentTaskContract({ request, userMessages, signal }) {
   }
 }
 
+const SAGE_PRINTED_FOR_MODEL_CHARS = 3000;
+function sagePrintedForModel(printed) {
+  const text = String(printed || "").trim();
+  if (!text) return "";
+  return "Printed output of the validated run, the only source for computed values (the report's prose is not evidence):\n" +
+    (text.length > SAGE_PRINTED_FOR_MODEL_CHARS ? `${text.slice(0, SAGE_PRINTED_FOR_MODEL_CHARS)}\n[…]` : text);
+}
+
 // Pass B of the plan (§7.2): the final answer and this turn's tool outputs,
 // read back per option. Advisory like the contract: null leaves the report as it was.
 async function extractAgentOptionClaims({ request, answer, options, outputs, signal }) {
-  const payload = buildChatPayload({ model: request.model, stream: false, max_tokens: 600, thinking: false, temperature: 0 }, [
-    { role: "system", content: OPTION_CLAIMS_PROMPT },
-    { role: "user", content: JSON.stringify(optionClaimsRequest({ answer, options, outputs })) }
-  ]);
-  try {
+  // Two calls, each blind to the other's text: reading the answer next to the
+  // outputs, the model transcribed a wrong value as the printed one.
+  const ask = async (system, user) => {
+    const payload = buildChatPayload({ model: request.model, stream: false, max_tokens: 700, thinking: false, temperature: 0 }, [
+      { role: "system", content: system },
+      { role: "user", content: JSON.stringify(user) }
+    ]);
     const response = await fetchWithBusyRetry(fetch, `${backendBase()}/v1/chat/completions`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload), signal
     });
     if (!response.ok) return null;
-    const result = await response.json();
-    return parseOptionClaims(result?.choices?.[0]?.message?.content, { options, outputs });
+    return (await response.json())?.choices?.[0]?.message?.content ?? null;
+  };
+  try {
+    const answerContent = await ask(ANSWER_CLAIMS_PROMPT, answerClaimsRequest({ answer, options }));
+    let answerReading;
+    try { answerReading = JSON.parse(String(answerContent || "").trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "")); } catch { return null; }
+    const toolContent = await ask(TOOL_READING_PROMPT, toolReadingRequest({ answerReading, outputs }));
+    return parseOptionClaims(mergeClaimReadings(answerContent, toolContent), { options, outputs });
   } catch (error) {
     if (signal?.aborted) throw error;
     return null;
@@ -3728,6 +3748,9 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
       code: "AGENT_INTENT_UNAVAILABLE"
     } };
   }
+  // The last picture the user sent, for the contract of a later turn ("verify
+  // it"): images reach the backend only with their own turn. Memory only.
+  if (turnImages.images.length) agentSession.questionImages = turnImages.images;
   // Only for turns that check mathematics: the contract feeds their final prompt.
   const taskContract = requestIntent.verificationRequested || requestIntent.toolEvaluationRequested
     ? await extractAgentTaskContract({
@@ -3740,6 +3763,7 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
             .map((message) => message.content),
           userMessage
         ],
+        images: agentSession.questionImages || [],
         signal: requestSignal
       })
     : null;
@@ -5187,12 +5211,37 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
       // P-1.4: the verifier status under the answer is the server's, written
       // after every gate ruled on the model's prose.
       if (isFinalResponse && verificationPlan?.complete && assistantContent.trim()) {
-        const options = taskContract?.taskKind === "select_option" ? taskContract.options : [];
-        const optionClaims = options.length > 1 && toolOutputs.some((output) => output.status === "success")
-          ? await extractAgentOptionClaims({ request: reqParams, answer: assistantContent, options, outputs: toolOutputs, signal: controller.signal })
+        const options = taskContract?.taskKind === "select_option" && taskContract.options.length > 1 ? taskContract.options : [];
+        // Values are checked against what Sage printed; options against any tool's output.
+        const printedOutputs = toolOutputs.filter((output) => output.status === "success" &&
+          (output.tool === "sage" || options.length));
+        const optionClaims = printedOutputs.length
+          ? await extractAgentOptionClaims({ request: reqParams, answer: assistantContent, options, outputs: printedOutputs, signal: controller.signal })
           : null;
+        const checkScript = valueCheckScript(optionClaims?.values);
+        if (checkScript) {
+          const checked = await executeTool("sage", { code: checkScript, output_mode: "legacy", timeout_sec: 30 }, {
+            signal: controller.signal, sessionKey, sageWorkdir: sageSessionDir(fileWorkspace.root, sessionKey)
+          });
+          optionClaims.values = applyValueCheck(optionClaims.values, checked?.content);
+        }
         if (optionClaims) writeAgentSse("agent_option_claims", optionClaims);
-        const report = verificationPlan.verificationReport(optionClaimsReportLines(optionClaims));
+        // Plan I2: a stated result that differs from the printed one is rewritten,
+        // within the rewrites shared with the other final-answer gates.
+        const mismatch = valueMismatchGuidance(optionClaims?.values);
+        if (mismatch && finalAnswerRewrites < AGENT_MAX_FINAL_ANSWER_REWRITES) {
+          finalAnswerRewrites += 1;
+          deferredAssistantText.discard();
+          deferredAssistantReasoning.discard();
+          writeAgentSse("agent_warning", { type: "VALUE_INTEGRITY_MISMATCH", warning: mismatch });
+          pushGuidanceMessage(fullMessages, `${mismatch}\n${FINAL_ANSWER_REWRITE_LANGUAGE}`);
+          forceResetNextIteration = true;
+          continue;
+        }
+        const report = verificationPlan.verificationReport([
+          ...valueReportLines(optionClaims?.values),
+          ...optionClaimsReportLines(optionClaims)
+        ]);
         assistantContent += report;
         assistantMessage.content = assistantContent;
         deferredAssistantText.append(report);
@@ -6029,8 +6078,10 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
             // §15.3: every non-final Sage result carries the phase the runtime
             // demands next, so the model does not have to guess it — and a
             // terminal run carries the NOT_PUBLISHABLE notice instead.
+            // With the READY marker the model also gets what the code printed:
+            // without it the answer restated the report's own prose as results.
             content: authoritativeSageFinal
-              ? "SAGE_AUTHORITATIVE_RESULT_READY"
+              ? ["SAGE_AUTHORITATIVE_RESULT_READY", sagePrintedForModel(rawResult?.printed ?? rawResult?.sageResult?.printed)].filter(Boolean).join("\n\n")
               : [
                   String(result.content ?? ""),
                   sageTracker.isTerminal()
@@ -6038,8 +6089,8 @@ async function runJsAgentTurn({ body, sessionKey, debug, requestSignal }, emit, 
                     : sageTracker.continuationInstruction()
                 ].filter(Boolean).join("\n\n"),
             displayContent: rawResult?.displayContent || "SageMath completato.",
-            // What Sage printed, before the READY marker replaced it for the model.
-            toolOutput: String(result.content ?? ""),
+            // What the code printed, never the report the model wrote.
+            toolOutput: String(rawResult?.printed ?? rawResult?.sageResult?.printed ?? result.content ?? ""),
             isError: result.isError,
             sageResult: rawResult?.sageResult,
             artifacts: rawResult?.artifacts || [],

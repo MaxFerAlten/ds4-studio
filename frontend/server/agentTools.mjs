@@ -1717,6 +1717,9 @@ export function structuredSageResult({
     latexOutput
   });
   fallback.artifacts = artifacts;
+  // What the code printed, apart from the report the model wrote: the only
+  // text a computed value may be quoted from (plan I2, evidence integrity).
+  fallback.printed = redactSageLocalPaths(stdout, cwd).trim();
   fallback.model.content = sageModelContent({
     stdout,
     stderr,
