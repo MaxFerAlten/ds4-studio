@@ -161,6 +161,10 @@ ds4-wrapper
 *.bak.*
 *.before-*
 
+# Logs and captured build output
+*.log
+/docs/riconciliazione/evidence/*.txt.gz
+
 # Build artifacts (binaries are produced by make, never committed)
 /ds4_agent_runtime_skill_test
 /ds4_agent_test

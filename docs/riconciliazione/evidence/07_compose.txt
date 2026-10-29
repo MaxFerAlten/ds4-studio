@@ -1,7 +1,0 @@
-shadow composed: /mnt/crucial_ai/COPARATOR/riconciliazione-ds4-studio/new-ds4-studio-build/e89754d48902be3d0868687dec7029e9f3922aa7/src
-  upstream   : /mnt/crucial_ai/COPARATOR/riconciliazione-ds4-studio/ds4-studio @ e89754d48902
-  symlinked  : 6971   copied: 14   overlay files: 34
-  features   : accelerator-span-bounds, cma-free-requires-cma-total, cuda-mmq-v41, deepseek41-harness, docs-strix-halo, dsv41-expert-streaming, model-span-bounds, openwiki-transport, rocm-deepseek41, rocm-disk-only-engram, rocm-qwen4-enable, rocm-strix-halo, rocm-vision-alpha-precision, studio-app-layer, vision-gpu-v41
-  patches    : 25 applied
-  manifest   : /mnt/crucial_ai/COPARATOR/riconciliazione-ds4-studio/new-ds4-studio-build/e89754d48902be3d0868687dec7029e9f3922aa7/compose.json
-compose_rc=0

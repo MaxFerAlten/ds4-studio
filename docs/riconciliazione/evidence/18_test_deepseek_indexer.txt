@@ -1,9 +1,0 @@
-cc -O3 -g -march=native -Wall -Wextra -std=c99 -D_GNU_SOURCE -fno-finite-math-only -fPIC -DDS4_ROCM_BUILD -Wno-unused-function -I. -c -o tests/test_deepseek_indexer.o tests/test_deepseek_indexer.c
-/usr/bin/hipcc -O3 --offload-arch=gfx1151 -o tests/test_deepseek_indexer tests/test_deepseek_indexer.o ds4_image.o ds4_distributed.o ds4_tp.o ds4_ssd.o ds4_rocm.o ds4_rocm_compat.o ds4_rocm_unavailable.o ds4_layer_pack.o ds4_engram.o cuda/mmq/ds4_mmq.rocm.o cuda/mmq/ds4_ggml_stubs.rocm.o cuda/mmq/quantize.rocm.o cuda/mmq/mmid.rocm.o cuda/mmq/mmvq.rocm.o cuda/mmq/d2r_stubs.rocm.o -lm -Xcompiler -pthread -L/usr/local/cuda/targets/sbsa-linux/lib -L/usr/local/cuda/lib64 -lcudart -lcublas
-clang++: warning: argument unused during compilation: '-Xcompiler' [-Wunused-command-line-argument]
-ld.lld: error: unable to find library -lcudart
-ld.lld: error: unable to find library -lcublas
-clang++: error: linker command failed with exit code 1 (use -v to see invocation)
-failed to execute:/opt/rocm-7.2.4/lib/llvm/bin/clang++ --driver-mode=g++ --hip-link  -O3 -o "tests/test_deepseek_indexer" tests/test_deepseek_indexer.o ds4_image.o ds4_distributed.o ds4_tp.o ds4_ssd.o ds4_rocm.o ds4_rocm_compat.o ds4_rocm_unavailable.o ds4_layer_pack.o ds4_engram.o cuda/mmq/ds4_mmq.rocm.o cuda/mmq/ds4_ggml_stubs.rocm.o cuda/mmq/quantize.rocm.o cuda/mmq/mmid.rocm.o cuda/mmq/mmvq.rocm.o cuda/mmq/d2r_stubs.rocm.o -lm -Xcompiler -pthread -L/usr/local/cuda/targets/sbsa-linux/lib -L/usr/local/cuda/lib64 -lcudart -lcublas
-make: *** [/mnt/crucial_ai/COPARATOR/riconciliazione-ds4-studio/ds4-studio/Makefile:1135: tests/test_deepseek_indexer] Errore 1
-rc=2
