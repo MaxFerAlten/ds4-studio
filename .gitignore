@@ -146,13 +146,20 @@ ds4-wrapper
 /.ds4_scan_logs/
 /.convergenza.loop.tmp.md
 
-# Generated research and agent runtime data
-/frontend/data/agent-context/
-/frontend/data/opendots/
-/frontend/data/research/cache/search/
-/frontend/workspace/lean-runs/
+# Generated research and agent runtime data. Everything under frontend/data and
+# frontend/workspace is machine-local state (caches, sessions, lean run output):
+# never commit it. graphify-out is a regenerable index.
+/frontend/data/
+/frontend/workspace/
+/frontend/graphify-out/
 /graphify-out/
 /lean-runtime/
+
+# Local backup copies: keep them out of the repo
+*.bak
+*.bak-*
+*.bak.*
+/frontend/**/*.before-*
 
 # Local documentation drafts and generated docs
 /ds4studio.1.md
