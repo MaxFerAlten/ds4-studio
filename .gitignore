@@ -159,7 +159,22 @@ ds4-wrapper
 *.bak
 *.bak-*
 *.bak.*
-/frontend/**/*.before-*
+*.before-*
+
+# Build artifacts (binaries are produced by make, never committed)
+/ds4_agent_runtime_skill_test
+/ds4_agent_test
+/ds4-agent-test-cpu
+
+# Scratch and tool state
+/tmp/
+temp/
+/traces/
+/sage_*/
+/artifacts/
+/.opencode/
+node_modules/
+/config-deepresearch.json
 
 # Local documentation drafts and generated docs
 /ds4studio.1.md
